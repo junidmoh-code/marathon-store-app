@@ -12,7 +12,7 @@
 //   cardIndex/dirtyAt            the last change seen in the campaign's data
 //   cardIndex/lease              { until } — one rebuild at a time
 // KEPT UP TO DATE BY THE SERVER: a write to picks/{pid}, photos/{pid},
-// items/{section}/{pid}, repost/{pid}, brain/sent/{pid}, posted/{pid} or a New
+// items/{section}/{pid}, repost/{pid}, brain/sent/{pid}, posted/{pid}, web/{pid} or a New
 // Arrivals status marks the list dirty and rebuilds it once the burst settles
 // (one at a time; changes that land during a rebuild get one more rebuild).
 // Every 10 minutes bfCardIndexTick rebuilds a dirty list, or any list older than
@@ -21,7 +21,7 @@
 // blackFriday.js) — this file reads nothing new and changes no campaign data:
 // no generation, captions, posting, approvals or Signal Studio.
 // Deploy BY NAME:
-//   firebase deploy --only functions:bfCampaignList,functions:bfCardIndexPick,functions:bfCardIndexPhoto,functions:bfCardIndexItem,functions:bfCardIndexRepost,functions:bfCardIndexSent,functions:bfCardIndexPosted,functions:bfCardIndexNa,functions:bfCardIndexTick
+//   firebase deploy --only functions:bfCampaignList,functions:bfCardIndexPick,functions:bfCardIndexPhoto,functions:bfCardIndexItem,functions:bfCardIndexRepost,functions:bfCardIndexSent,functions:bfCardIndexPosted,functions:bfCardIndexNa,functions:bfCardIndexWeb,functions:bfCardIndexTick
 "use strict";
 
 const { onValueWritten } = require("firebase-functions/v2/database");
@@ -193,6 +193,8 @@ const bfCardIndexPosted = onChange(`/${core.ROOT}/posted/{pid}`);
 // The New Arrivals tab is the New Arrivals queue: a new upload or a status change there changes it (a new
 // New Arrivals photo with no status change shows within STALE_MS, or at once after his own Generate).
 const bfCardIndexNa = onChange("/new_arrivals/items/{pid}/status");
+// The website status on each approved row (the Mac mini's runner writes web/{pid} only when it changes).
+const bfCardIndexWeb = onChange(`/${core.ROOT}/web/{pid}`);
 const bfCardIndexTick = onSchedule({ schedule: "every 10 minutes", region: "europe-west1", memory: "512MiB", timeoutSeconds: 300, retryCount: 0 }, async () => {
   const db = admin.database();
   const [at, dirtyAt] = await Promise.all([val(db, `${IDX}/main/at`), val(db, `${IDX}/dirtyAt`)]);
@@ -201,7 +203,7 @@ const bfCardIndexTick = onSchedule({ schedule: "every 10 minutes", region: "euro
 });
 
 module.exports = {
-  bfCardIndexPick, bfCardIndexPhoto, bfCardIndexItem, bfCardIndexRepost, bfCardIndexSent, bfCardIndexPosted, bfCardIndexNa, bfCardIndexTick,
+  bfCardIndexPick, bfCardIndexPhoto, bfCardIndexItem, bfCardIndexRepost, bfCardIndexSent, bfCardIndexPosted, bfCardIndexNa, bfCardIndexWeb, bfCardIndexTick,
   readHead, readPages,
   _internals: { isDirty, SKEW_MS, eventMs, splitView, approvedInBlocks, build, refresh, changed, takeLease, freeLease, readHead, readPages, PAGE, PAGES_MAX, TABS, IDX },
 };

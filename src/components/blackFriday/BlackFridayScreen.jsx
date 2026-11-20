@@ -222,11 +222,25 @@ export function useLongPress(onLong) {
     wasLong: () => Date.now() - firedAt.current < SWALLOW_MS,
   };
 }
+/**
+ * The website status of an approved row (Junid, 20 Nov 2026: published on the website before it posts).
+ * r.web = { s: "live" | "pub" | "fail" | "oos", why? } from the server; none yet = just approved = publishing.
+ * → { text, color } | null (not approved). Pure.
+ */
+export function webLabel(r) {
+  if (!r || r.tab !== "approved") return null;
+  const w = r.web || { s: "pub" };
+  if (w.s === "live") return { text: "On website ✓", color: GREEN };
+  if (w.s === "fail" || w.s === "oos") return { text: `Website failed: ${w.why || (w.s === "oos" ? "out of stock" : "no reason given")}`, color: RED };
+  return { text: "Publishing…", color: GRAY };
+}
+
 // No callout, no selection, no drag on product photos (iPhone's image menu suppressed).
 const NO_CALLOUT = { WebkitTouchCallout: "none", WebkitUserSelect: "none", userSelect: "none" };
 
 function Row({ r, busy, gen, on, selectMode, selected }) {
   const a = rowActions(r);
+  const web = webLabel(r);
   const sm = { ...bGray, padding: "4px 8px", fontSize: 11, minHeight: 28 };
   const lp = useLongPress(() => on.longPress(r));
   const { wasLong, ...press } = lp;
@@ -253,6 +267,7 @@ function Row({ r, busy, gen, on, selectMode, selected }) {
         {r.failed && !gen && !r.generating && <button data-testid={`failed-${r.pid}`} onClick={(e) => { e.stopPropagation(); on.generate(r); }} title={r.failed.reason} style={{ background: "none", border: "none", padding: 0, color: RED, fontSize: 11, textAlign: "left", cursor: "pointer", textDecoration: "underline" }}>Failed, tap to retry</button>}
         {r.postedN > 0 ? <div data-testid={`posted-${r.pid}`} style={{ fontSize: 11, color: GREEN }}>Posted {r.postedN}× · last {dayLabel(r.postedLast)}</div>
           : r.posted ? <div style={{ fontSize: 11, color: GREEN }}>Posted</div> : null}
+        {web && <div data-testid={`web-${r.pid}`} title={web.text} style={{ fontSize: 11, color: web.color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{web.text}</div>}
         {r.repostQueued && <div data-testid={`repost-queued-${r.pid}`} style={{ fontSize: 11, color: BLUE_L }}>Repost queued for the next slot</div>}
         {!selectMode && <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
           {a.approve && <button data-testid={`approve-${r.pid}`} disabled={busy || a.approveDisabled} onClick={() => on.approve(r)} style={{ ...bGreen, padding: "4px 10px", fontSize: 11, minHeight: 28 }}>Approve</button>}
