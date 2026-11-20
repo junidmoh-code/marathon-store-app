@@ -22,7 +22,8 @@
 // OFF SWITCH: /config/shopifyAutoPublish/enabled. Absent or anything but true
 // = the agent does nothing (the queue keeps filling, nothing is lost).
 
-import { PUBLISH_PATH, SYNC_PATH, storeNode } from "./storeConfig.mjs";
+import { PUBLISH_PATH, SYNC_PATH, storeNode, IS_MARATHON } from "./storeConfig.mjs";
+import { isConcreteProduct } from "../../src/utils/concreteListing.js";
 import { applyProposalMutator, conditionMutator, publishMutator, precheck }
   from "../../src/components/shopify/publishMutators.js";
 import { CONDITIONS } from "../../src/components/shopify/publishShared.js";
@@ -107,6 +108,8 @@ export function readiness(product, node) {
  */
 export async function autoPublishOne(db, pid, { now, locNames }) {
   const product = (await db.ref(`products/${pid}`).get()).val();
+  // Concrete-only (Junid, 20 Nov 2026): never auto-published on Marathon.
+  if (IS_MARATHON && isConcreteProduct(product)) return { outcome: "done", why: "Concrete-only — not sold on Marathon" };
   let node = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
   const ready = readiness(product, node);
   if (!ready.ready) return { outcome: ready.outcome, why: ready.why };

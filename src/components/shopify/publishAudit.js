@@ -51,6 +51,9 @@ export const OFF_REASONS = {
   cancelled_mid_run: "the publish was called back while it was being applied",
   // An Admin-SDK script. `actor` names which one.
   script: "changed by a maintenance script",
+  // Junid marked it Concrete-only (20 Nov 2026): it sells on the Concrete
+  // website only, so it comes off Marathon's (scripts/shopify/concreteOnly.mjs).
+  concrete_only: "Concrete-only — sold on the Concrete website only",
 };
 
 /** How many off events one product keeps. Rare events; ten is a long memory. */

@@ -1,21 +1,51 @@
 # Concrete store — second Shopify store, one stock pool
 
 Concrete World (`g2m9cm-9q.myshopify.com`, concreteworld.co.za) lists every
-product Junid marks **in addition to** Marathon's store. Both sell from the one
-stock engine. Marathon's publishing ignores the Concrete fields entirely.
+product Junid marks **Concrete**. Since 20 Nov 2026 a Concrete product is
+**CONCRETE-ONLY**: it sells on the Concrete website only (Marathon's
+publishing tab and reconciler skip it, and the Marathon reconciler switches
+off any that are live on marathonclub.co.za), and Missing Products lists it
+under the Concrete division, not Marathon. Both stores sell from the one stock
+engine.
 
 ## Data
 
 | path | what |
 |---|---|
-| `/products/{pid}.listOnConcrete` | `true` = also on Concrete. Absent/false = Marathon only |
-| `/products/{pid}.listOnConcreteSetBy` / `listOnConcreteSetAt` | who/when (serverNowMs) |
+| `/products/{pid}.concreteProduct` | `true` = Concrete-only. Absent/false = Marathon |
+| `/products/{pid}.concreteProductSetBy` / `concreteProductSetAt` | who/when (serverNowMs) |
+| `/settings/concreteOnlyIndex/{pid}` | `true` while Concrete-only — the small index the Marathon reconciler reads (no /products scan) |
+| `/settings/missingProductsSolved/{pushKey}` | Missing Products → Solved tab: every Solve and every Concrete mark, with what Undo needs |
+| `/products/{pid}.listOnConcrete` (+SetBy/SetAt) | LEGACY (#911). Still read when `concreteProduct` is absent; mirrored on every write for one release, then dropped |
 | `/products/{pid}.brandVerifiedAt` / `brandVerifiedBy` | the Brand Check stamp |
 | `/shopify_publish_concrete/{pid}` | same shape as `/shopify_publish/{pid}` |
 | `/shopify_sync_concrete/{pid}` | same shape as `/shopify_sync/{pid}` (Admin SDK only) |
 
-Helper: `src/utils/concreteListing.js` (`isOnConcrete`, `buildConcreteUpdate`,
-`setOnConcrete`, `buildBrandConfirmUpdate`, `needsBrandCheck`).
+Helper: `src/utils/concreteListing.js` (`isConcreteProduct`, `buildConcreteUpdate`,
+`setConcreteProduct`, `buildBrandConfirmUpdate`, `needsBrandCheck`). Migration:
+`scripts/concrete/migrate-concrete-only.mjs` (dry run by default; `--commit`;
+`--rollback FILE`). Marathon-side enforcement: `scripts/shopify/concreteOnly.mjs`.
+
+## Concrete-only rules (20 Nov 2026) — optional hardening
+
+`/products` and `/settings` are already writable by any signed-in staff
+account on the live rules, so nothing below is needed for the app to work.
+These add type checks. Inside `"products" → "$pid"`, next to `styleCode…`:
+
+```json
+"concreteProduct":      { ".validate": "newData.isBoolean()" },
+"concreteProductSetBy": { ".validate": "newData.isString() && newData.val() === auth.uid" },
+"concreteProductSetAt": { ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000" }
+```
+
+Inside `"settings"`:
+
+```json
+"concreteOnlyIndex": { "$pid": { ".validate": "newData.val() === true" } },
+"missingProductsSolved": {
+  "$id": { ".validate": "newData.hasChildren(['kind', 'pid', 'at', 'by']) && newData.child('at').isNumber() && newData.child('at').val() <= now + 86400000" }
+}
+```
 
 ## Rules to paste (Firebase console → Realtime Database → Rules)
 

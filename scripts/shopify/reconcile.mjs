@@ -44,7 +44,8 @@
 //   • Nodes still in pre-migration states (none/nominated/draft) are skipped
 //     loudly — run migrate-live-state.mjs first.
 import { PUBLISH_PATH, SYNC_PATH, storeNode, adminProductUrl, STORE, IS_MARATHON } from "./storeConfig.mjs";
-import { needsBrandCheck } from "../../src/utils/concreteListing.js";
+import { needsBrandCheck, isConcreteProduct } from "../../src/utils/concreteListing.js";
+import { enforceConcreteOnlyOnMarathon } from "./concreteOnly.mjs";
 import { readPendingForeign } from "./stockFanoutCore.mjs";
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
@@ -208,13 +209,30 @@ if (!IS_MARATHON && COMMIT) {
     const live = (await db.ref(PUBLISH_PATH).orderByChild("state").equalTo("live").get()).val() || {};
     for (const [pid, node] of Object.entries(live)) {
       if (node?.desiredState === "off") continue;
-      const marked = (await db.ref(`products/${pid}/listOnConcrete`).get()).val();
-      if (marked === true) continue;
+      const [cp, legacy] = await Promise.all([
+        db.ref(`products/${pid}/concreteProduct`).get(),
+        db.ref(`products/${pid}/listOnConcrete`).get(),
+      ]);
+      if (isConcreteProduct({ concreteProduct: cp.val() ?? undefined, listOnConcrete: legacy.val() })) continue;
       await db.ref(`${PUBLISH_PATH}/${pid}`).update({ desiredState: "off", updatedAt: await serverNowMs(db), updatedBy: UPDATED_BY });
       console.log(`  concrete: ${pid} is no longer marked for Concrete — switching its Concrete listing off`);
     }
   } catch (e) {
     console.error(`  ⚠ concrete: unmarked-product check failed (${String(e?.message || e)}) — next tick retries`);
+  }
+}
+// ── MARATHON: A CONCRETE-ONLY PRODUCT COMES OFF MARATHON (Junid, 20 Nov) ────
+// concreteProduct = sold on the Concrete website only. Any such product still
+// live on marathonclub.co.za gets its Marathon intent set to off (with the
+// "concrete_only" off record); the normal off path below unpublishes it in
+// this same tick — the write bumps updatedAt, which the incremental scan reads.
+// Found through the small /settings/concreteOnlyIndex, never a /products scan.
+if (IS_MARATHON && COMMIT) {
+  try {
+    const r = await enforceConcreteOnlyOnMarathon(db, { nowMs: () => serverNowMs(db), actor: UPDATED_BY, commit: true, log: (m) => console.log(m) });
+    for (const s of r.skipped) console.error(`  ⚠ concrete-only: ${s.pid} — ${s.why}`);
+  } catch (e) {
+    console.error(`  ⚠ marathon: concrete-only check failed (${String(e?.message || e)}) — next tick retries`);
   }
 }
 const scanState = COMMIT ? await readReconcileState(db, { meter }) : null;
@@ -779,11 +797,14 @@ for (const { pid, want } of capped) {
     // Concrete store. Checked here, at apply time, for the same reason as the
     // price-record refusal below — an intent written any other way must not
     // reach the storefront.
-    if (!IS_MARATHON && product.listOnConcrete !== true) { await refuse(pid, "not marked for Concrete (listOnConcrete is off) — mark it in Product Admin → All products"); continue; }
+    if (!IS_MARATHON && !isConcreteProduct(product)) { await refuse(pid, "not marked Concrete — switch it on in the Concrete Products card"); continue; }
+    // MARATHON: a Concrete-only product never goes on marathonclub.co.za
+    // (Junid, 20 Nov 2026). It publishes through the Concrete tab only.
+    if (IS_MARATHON && isConcreteProduct(product)) { await refuse(pid, "Concrete-only — it sells on the Concrete website only; publish it from the Concrete tab"); continue; }
     // …and brand-checked. A product marked from the upload form (staff) waits
     // in Product Admin → Brand Check; until Junid or an admin confirms it, it
     // cannot go on Concrete (PayFast branded-goods rule — a human looks first).
-    if (!IS_MARATHON && needsBrandCheck(product, pid)) { await refuse(pid, "waiting for Brand Check — confirm it in Product Admin → Brand Check, then publish again"); continue; }
+    if (!IS_MARATHON && needsBrandCheck(product, pid)) { await refuse(pid, "waiting for a brand check — tap Confirm on its row in the Concrete Products card (Junid/admin), then publish again"); continue; }
     // CONCRETE HOUSE STYLE: an APPROVED studio photo is the Concrete listing's
     // primary photo. Approving in the app writes it into this node's media
     // list when the node already exists; a product approved BEFORE its first

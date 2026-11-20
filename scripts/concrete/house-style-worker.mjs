@@ -25,6 +25,7 @@ import {
   HOUSE_STYLE_CONFIG_PATH, HOUSE_STYLE_JOBS_PATH, STATUS, MAX_ATTEMPTS,
   modelFor, subjectUrls, refsToSend, buildParts, afterFailure, money, isStaleRunning,
 } from "../../src/utils/concreteHouseStyle.js";
+import { isConcreteProduct } from "../../src/utils/concreteListing.js";
 
 const fnRequire = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = fnRequire("firebase-admin");
@@ -98,7 +99,7 @@ async function claim(pid, now) {
 async function generate(pid, job, cfg, key) {
   const product = (await db.ref(`products/${pid}`).get()).val();
   if (!product) throw new Error("product record is gone");
-  if (product.listOnConcrete !== true) throw new Error("product is not marked for Concrete");
+  if (!isConcreteProduct(product)) throw new Error("product is not marked Concrete");
   const subjects = subjectUrls(product);
   if (!subjects.length) throw new Error("product has no photo to use as the subject");
   const subjectImgs = await Promise.all(subjects.map(fetchImage));

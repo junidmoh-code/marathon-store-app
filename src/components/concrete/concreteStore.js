@@ -1,5 +1,6 @@
 // ─── Browser writes for the Concrete marking ─────────────────────────────────
-// The ONE place the browser writes listOnConcrete / brandVerified*. Everything
+// The ONE place the browser writes concreteProduct (and its one-release
+// listOnConcrete mirror) / brandVerified*. Everything
 // goes through src/utils/concreteListing.js (pure builders) and lands as ONE
 // root multi-path update, so a bulk mark is all-or-nothing. The offline mirror
 // is told about the write the same way productSave.js tells it (notePendingUpdate),
@@ -10,7 +11,7 @@ import { database, auth } from "../../firebase";
 import { notePendingUpdate } from "../../offline/pendingWrites";
 import { serverNowMs } from "../../utils/serverTime";
 import { isSuperAdmin } from "../../config/superAdmins";
-import { setOnConcrete, buildBrandConfirmUpdate, isOnConcrete, CONCRETE_PUBLISH_PATH } from "../../utils/concreteListing";
+import { setConcreteProduct, buildBrandConfirmUpdate, isConcreteProduct, CONCRETE_PUBLISH_PATH } from "../../utils/concreteListing";
 
 // Bulk writes are chunked: one RTDB update carries every path in a chunk, and
 // 150 products × 5 paths keeps each request well under the payload limits.
@@ -37,12 +38,25 @@ export async function markProducts(productIds, on, { verify = false, liveOnConcr
   let done = 0;
   for (let i = 0; i < productIds.length; i += BULK_CHUNK) {
     const chunk = productIds.slice(i, i + BULK_CHUNK);
-    const r = await setOnConcrete(applyRootUpdate, { productIds: chunk, on, uid, nowMs: serverNowMs(), verify, liveOnConcrete });
+    const r = await setConcreteProduct(applyRootUpdate, { productIds: chunk, on, uid, nowMs: serverNowMs(), verify, liveOnConcrete });
     if (!r.ok) return { ok: false, count: done, message: r.message };
     done += r.count;
     onProgress?.(done);
   }
   return { ok: true, count: done };
+}
+
+/**
+ * ONE product, Concrete-only on/off — the Concrete Products card and Missing
+ * Products' Concrete button. Junid/admin only (the callers gate), so the flip
+ * IS the brand check (verify:true). Returns { ok, message? }; a failure is
+ * always a visible message, never silent.
+ */
+export async function markConcreteProduct(productId, on, { liveOnConcrete = null } = {}) {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return { ok: false, message: "Not signed in — nothing was saved." };
+  const r = await setConcreteProduct(applyRootUpdate, { productIds: [productId], on, uid, nowMs: serverNowMs(), verify: true, liveOnConcrete });
+  return r.ok ? { ok: true } : { ok: false, message: r.message || "Couldn't save — nothing changed." };
 }
 
 /** Brand Check's one tap. `on` is the state being confirmed. */
@@ -53,9 +67,13 @@ export async function confirmBrand(product, on, { liveOnConcrete = null } = {}) 
     // The mark as the SERVER holds it now, not the list's snapshot: another
     // admin may have flipped it since this row rendered, and a confirm must
     // never stamp a mark nobody looked at (CodeRabbit, #911).
-    const fresh = (await get(ref(database, `products/${product.id}/listOnConcrete`))).val();
+    const [cp, legacy] = await Promise.all([
+      get(ref(database, `products/${product.id}/concreteProduct`)),
+      get(ref(database, `products/${product.id}/listOnConcrete`)),
+    ]);
+    const wasOn = isConcreteProduct({ concreteProduct: cp.val() ?? undefined, listOnConcrete: legacy.val() });
     await applyRootUpdate(buildBrandConfirmUpdate({
-      productId: product.id, on, wasOn: fresh === true, uid, nowMs: serverNowMs(), liveOnConcrete,
+      productId: product.id, on, wasOn, uid, nowMs: serverNowMs(), liveOnConcrete,
     }));
     return { ok: true };
   } catch (err) {
