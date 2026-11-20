@@ -1,0 +1,1242 @@
+{
+ "mode": "dry-run",
+ "at": "2026-10-16T17:12:34.405Z",
+ "steps": {
+  "routing": [],
+  "taxonomy": {
+   "noChange": true
+  },
+  "rekey": [],
+  "policy": {
+   "before": {
+    "hub2": {
+     "minQty": 25,
+     "reorderPoint": 10,
+     "target": 50
+    },
+    "marathon-pe": {
+     "carriedOnly": true,
+     "minQty": 25,
+     "reorderPoint": 10,
+     "target": 50
+    },
+    "trophy": {
+     "carriedOnly": true,
+     "minQty": 25,
+     "reorderPoint": 10,
+     "target": 50
+    }
+   },
+   "after": {
+    "hub2": {
+     "target": 50,
+     "minQty": 25,
+     "reorderPoint": 10
+    },
+    "marathon-pe": {
+     "target": 50,
+     "minQty": 25,
+     "reorderPoint": 10,
+     "carriedOnly": true
+    },
+    "trophy": {
+     "target": 50,
+     "minQty": 25,
+     "reorderPoint": 10,
+     "carriedOnly": true
+    }
+   },
+   "noChange": true
+  },
+  "keptSwitchOffs": [
+   {
+    "pid": "p1782727193104",
+    "name": "Nike paperbag",
+    "loc": "trophy",
+    "sizeKey": "L",
+    "row": {
+     "minQty": 0,
+     "prevAbsent": true,
+     "setAt": "2026-10-13T19:27:12.789Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 0
+    }
+   },
+   {
+    "pid": "p1791896283311",
+    "name": "Nike paperbag white",
+    "loc": "trophy",
+    "sizeKey": "_",
+    "row": {
+     "minQty": 0,
+     "prevAbsent": true,
+     "setAt": "2026-10-13T19:29:16.617Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 0
+    }
+   },
+   {
+    "pid": "p1782727110237",
+    "name": "Timberland paperbag",
+    "loc": "trophy",
+    "sizeKey": "L",
+    "row": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 0,
+     "prevRow": {
+      "approvedAt": "2026-09-29T14:19:22.672Z",
+      "approvedBy": "introduce-existing",
+      "batchId": "introduce-existing-2026-09-29",
+      "minQty": 1,
+      "source": "standard_policy_migration",
+      "target": 2
+     },
+     "setAt": "2026-10-13T19:30:23.558Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 0
+    }
+   }
+  ],
+  "rows": [],
+  "cancel": {
+   "cancelled": [],
+   "leftAlone": []
+  },
+  "model": [
+   {
+    "pid": "p1791971463851",
+    "name": "Alexander McQueen paperbag (small size)",
+    "central": "17",
+    "hub2": "22",
+    "pe": "–",
+    "trophy": "2",
+    "next": [
+     "trophy ← hub2 x48"
+    ]
+   },
+   {
+    "pid": "p1791889079314",
+    "name": "Amiri paperbag",
+    "central": "–",
+    "hub2": "0",
+    "pe": "1",
+    "trophy": "4",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791885011582",
+    "name": "Armani exchange paper bag (big size)",
+    "central": "347",
+    "hub2": "20",
+    "pe": "5",
+    "trophy": "5",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1782726989989",
+    "name": "Armani paperbag ",
+    "central": "–",
+    "hub2": "–",
+    "pe": "L:0",
+    "trophy": "L:0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791888755311",
+    "name": "Balenciaga paperbag ( small size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "3",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791889951053",
+    "name": "Boss paperbag  ( small size)",
+    "central": "409",
+    "hub2": "23",
+    "pe": "16",
+    "trophy": "16",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791886113857",
+    "name": "Boss paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791884333181",
+    "name": "Bottega veneta paperbag",
+    "central": "24",
+    "hub2": "13",
+    "pe": "4",
+    "trophy": "4",
+    "next": [
+     "marathon-pe ← hub2 x46"
+    ]
+   },
+   {
+    "pid": "p1791888294603",
+    "name": "Brunello cucinelli paperbag ( small size)",
+    "central": "1",
+    "hub2": "5",
+    "pe": "5",
+    "trophy": "20",
+    "next": [
+     "marathon-pe ← hub2 x45",
+     "hub2 ← central x45"
+    ]
+   },
+   {
+    "pid": "p1791885721460",
+    "name": "Burberry paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "1",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791884222521",
+    "name": "Christian louboutin paperbag",
+    "central": "34",
+    "hub2": "20",
+    "pe": "5",
+    "trophy": "21",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1791886235808",
+    "name": "D&G paperbag ( big size)",
+    "central": "165",
+    "hub2": "26",
+    "pe": "5",
+    "trophy": "10",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1782727067661",
+    "name": "Diesel paperbag ",
+    "central": "–",
+    "hub2": "–",
+    "pe": "L:0",
+    "trophy": "L:0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791885927781",
+    "name": "Diesel paperbag (big size)",
+    "central": "13",
+    "hub2": "20",
+    "pe": "–",
+    "trophy": "0",
+    "next": [
+     "trophy ← hub2 x50"
+    ]
+   },
+   {
+    "pid": "p1791891476692",
+    "name": "Dior paperbag",
+    "central": "62",
+    "hub2": "20",
+    "pe": "3",
+    "trophy": "4",
+    "next": [
+     "marathon-pe ← hub2 x47"
+    ]
+   },
+   {
+    "pid": "p1791973701920",
+    "name": "Dior paperbag ( big size)",
+    "central": "–",
+    "hub2": "4",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791884019159",
+    "name": "Dior paperbag (big size)",
+    "central": "17",
+    "hub2": "21",
+    "pe": "5",
+    "trophy": "13",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1791890345915",
+    "name": "Dior paperbag (small size)",
+    "central": "4",
+    "hub2": "21",
+    "pe": "5",
+    "trophy": "7",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1782726941853",
+    "name": "Giorgio armani paperbag",
+    "central": "L:114",
+    "hub2": "L:22",
+    "pe": "L:3",
+    "trophy": "L:27",
+    "next": [
+     "marathon-pe ← hub2 x47"
+    ]
+   },
+   {
+    "pid": "p1791886497941",
+    "name": "Giuseppe zanotti paperbag",
+    "central": "0",
+    "hub2": "13",
+    "pe": "2",
+    "trophy": "1",
+    "next": [
+     "marathon-pe ← hub2 x48"
+    ]
+   },
+   {
+    "pid": "p1791883636340",
+    "name": "Givenchy paperbag",
+    "central": "7",
+    "hub2": "21",
+    "pe": "5",
+    "trophy": "24",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1791884764527",
+    "name": "Gucci paperbag green ( big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "5",
+    "trophy": "27",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791883502646",
+    "name": "Gucci paperbag green (medium size)",
+    "central": "0",
+    "hub2": "5",
+    "pe": "5",
+    "trophy": "1",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1791887150502",
+    "name": "Gucci paperbag green (small size)",
+    "central": "38",
+    "hub2": "20",
+    "pe": "–",
+    "trophy": "0",
+    "next": [
+     "trophy ← hub2 x50"
+    ]
+   },
+   {
+    "pid": "p1791884636653",
+    "name": "Gucci paperbag maroon (big size)",
+    "central": "0",
+    "hub2": "1",
+    "pe": "1",
+    "trophy": "0",
+    "next": [
+     "marathon-pe ← hub2 x49"
+    ]
+   },
+   {
+    "pid": "p1791884531085",
+    "name": "Gucci paperbag maroon (small size)",
+    "central": "47",
+    "hub2": "20",
+    "pe": "4",
+    "trophy": "4",
+    "next": [
+     "marathon-pe ← hub2 x46"
+    ]
+   },
+   {
+    "pid": "p1791887358177",
+    "name": "Hermes paperbag",
+    "central": "–",
+    "hub2": "1",
+    "pe": "5",
+    "trophy": "7",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1782727152355",
+    "name": "Jordan paperbag",
+    "central": "L:233",
+    "hub2": "L:646",
+    "pe": "L:2",
+    "trophy": "–",
+    "next": [
+     "marathon-pe ← hub2 x48"
+    ]
+   },
+   {
+    "pid": "p1791882788043",
+    "name": "Karl lagerfeld paperbag (medium size)",
+    "central": "906",
+    "hub2": "46",
+    "pe": "5",
+    "trophy": "20",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1791882981980",
+    "name": "Karl lagerfeld paperbag (small size)",
+    "central": "56",
+    "hub2": "4",
+    "pe": "–",
+    "trophy": "7",
+    "next": [
+     "trophy ← hub2 x43",
+     "hub2 ← central x46"
+    ]
+   },
+   {
+    "pid": "p1782727235670",
+    "name": "Karl paper bag ",
+    "central": "–",
+    "hub2": "–",
+    "pe": "3:0",
+    "trophy": "3:0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791891317996",
+    "name": "Lacoste paperbag ( small size)",
+    "central": "3",
+    "hub2": "2",
+    "pe": "4",
+    "trophy": "21",
+    "next": [
+     "marathon-pe ← hub2 x46",
+     "hub2 ← central x48"
+    ]
+   },
+   {
+    "pid": "p1791885266632",
+    "name": "Louis Vuitton paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "3",
+    "trophy": "3",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791887272674",
+    "name": "Louis Vuitton paperbag (small size)",
+    "central": "0",
+    "hub2": "1",
+    "pe": "–",
+    "trophy": "6",
+    "next": [
+     "trophy ← hub2 x44"
+    ]
+   },
+   {
+    "pid": "p1782727193104",
+    "name": "Nike paperbag",
+    "central": "L:271",
+    "hub2": "L:270",
+    "pe": "L:7",
+    "trophy": "L:0",
+    "next": [
+     "marathon-pe ← hub2 x43"
+    ]
+   },
+   {
+    "pid": "p1791896283311",
+    "name": "Nike paperbag white",
+    "central": "201",
+    "hub2": "415",
+    "pe": "0",
+    "trophy": "–",
+    "next": [
+     "marathon-pe ← hub2 x50"
+    ]
+   },
+   {
+    "pid": "p1792151476022",
+    "name": "Paper bag black Dolce GABBANA small",
+    "central": "9",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792153215900",
+    "name": "Paper bag boss white medium",
+    "central": "129",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792153817693",
+    "name": "Paper bag DIOR white large",
+    "central": "2",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792152223010",
+    "name": "Paper bag DIOR white medium",
+    "central": "35",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792152075007",
+    "name": "Paper bag DSQUARED2 black  small",
+    "central": "16",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792151841872",
+    "name": "Paper bag Gucci green large",
+    "central": "42",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792151678286",
+    "name": "Paper bag Gucci green M",
+    "central": "10",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792151052119",
+    "name": "Paper bag Karl white large",
+    "central": "2",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792152599905",
+    "name": "Paper bag Loro piana brown",
+    "central": "153",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792153720360",
+    "name": "Paper bag LOUIS VUITTON orange large",
+    "central": "3",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792154053817",
+    "name": "Paper bag MICHAEL KORS large yellow",
+    "central": "1",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792154137342",
+    "name": "Paper bag MICHAEL KORS small yellow",
+    "central": "1",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792153513242",
+    "name": "Paper bag omega red small",
+    "central": "3",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792153442416",
+    "name": "Paper bag TAGHEUER BLACK Small",
+    "central": "10",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792151189805",
+    "name": "Paper bag white boss large",
+    "central": "9",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1791887047151",
+    "name": "Philip plein paperbag black (small size)",
+    "central": "193",
+    "hub2": "4",
+    "pe": "–",
+    "trophy": "1",
+    "next": [
+     "trophy ← hub2 x49",
+     "hub2 ← central x46"
+    ]
+   },
+   {
+    "pid": "p1791885522695",
+    "name": "Phillip plain paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "3",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791891084499",
+    "name": "Prada paperbag ( medium size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "5",
+    "trophy": "25",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791888468984",
+    "name": "Prada paperbag ( small size)",
+    "central": "11",
+    "hub2": "4",
+    "pe": "5",
+    "trophy": "9",
+    "next": [
+     "marathon-pe ← hub2 x45",
+     "hub2 ← central x46"
+    ]
+   },
+   {
+    "pid": "p1782727110237",
+    "name": "Timberland paperbag",
+    "central": "L:234",
+    "hub2": "L:36",
+    "pe": "L:9",
+    "trophy": "L:0",
+    "next": [
+     "marathon-pe ← hub2 x41"
+    ]
+   },
+   {
+    "pid": "p1791883316473",
+    "name": "Valentino paperbag (medium size)",
+    "central": "100",
+    "hub2": "4",
+    "pe": "5",
+    "trophy": "9",
+    "next": [
+     "marathon-pe ← hub2 x45",
+     "hub2 ← central x46"
+    ]
+   },
+   {
+    "pid": "p1791890124685",
+    "name": "Versace paperbag ( small size)",
+    "central": "0",
+    "hub2": "1",
+    "pe": "4",
+    "trophy": "4",
+    "next": [
+     "marathon-pe ← hub2 x46"
+    ]
+   },
+   {
+    "pid": "p1791886012494",
+    "name": "Versace paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "2",
+    "next": [
+     "nothing"
+    ]
+   }
+  ]
+ },
+ "paperBags": [
+  {
+   "pid": "p1791971463851",
+   "name": "Alexander McQueen paperbag (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791889079314",
+   "name": "Amiri paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791885011582",
+   "name": "Armani exchange paper bag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782726989989",
+   "name": "Armani paperbag ",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791888755311",
+   "name": "Balenciaga paperbag ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791889951053",
+   "name": "Boss paperbag  ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791886113857",
+   "name": "Boss paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884333181",
+   "name": "Bottega veneta paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791888294603",
+   "name": "Brunello cucinelli paperbag ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791885721460",
+   "name": "Burberry paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884222521",
+   "name": "Christian louboutin paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791886235808",
+   "name": "D&G paperbag ( big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782727067661",
+   "name": "Diesel paperbag ",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791885927781",
+   "name": "Diesel paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791891476692",
+   "name": "Dior paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791973701920",
+   "name": "Dior paperbag ( big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884019159",
+   "name": "Dior paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791890345915",
+   "name": "Dior paperbag (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782726941853",
+   "name": "Giorgio armani paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791886497941",
+   "name": "Giuseppe zanotti paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791883636340",
+   "name": "Givenchy paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884764527",
+   "name": "Gucci paperbag green ( big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791883502646",
+   "name": "Gucci paperbag green (medium size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791887150502",
+   "name": "Gucci paperbag green (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884636653",
+   "name": "Gucci paperbag maroon (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884531085",
+   "name": "Gucci paperbag maroon (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791887358177",
+   "name": "Hermes paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782727152355",
+   "name": "Jordan paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791882788043",
+   "name": "Karl lagerfeld paperbag (medium size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791882981980",
+   "name": "Karl lagerfeld paperbag (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782727235670",
+   "name": "Karl paper bag ",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "3"
+   ]
+  },
+  {
+   "pid": "p1791891317996",
+   "name": "Lacoste paperbag ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791885266632",
+   "name": "Louis Vuitton paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791887272674",
+   "name": "Louis Vuitton paperbag (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782727193104",
+   "name": "Nike paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791896283311",
+   "name": "Nike paperbag white",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792151476022",
+   "name": "Paper bag black Dolce GABBANA small",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792153215900",
+   "name": "Paper bag boss white medium",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792153817693",
+   "name": "Paper bag DIOR white large",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792152223010",
+   "name": "Paper bag DIOR white medium",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792152075007",
+   "name": "Paper bag DSQUARED2 black  small",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792151841872",
+   "name": "Paper bag Gucci green large",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792151678286",
+   "name": "Paper bag Gucci green M",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792151052119",
+   "name": "Paper bag Karl white large",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792152599905",
+   "name": "Paper bag Loro piana brown",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792153720360",
+   "name": "Paper bag LOUIS VUITTON orange large",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792154053817",
+   "name": "Paper bag MICHAEL KORS large yellow",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792154137342",
+   "name": "Paper bag MICHAEL KORS small yellow",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792153513242",
+   "name": "Paper bag omega red small",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792153442416",
+   "name": "Paper bag TAGHEUER BLACK Small",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792151189805",
+   "name": "Paper bag white boss large",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791887047151",
+   "name": "Philip plein paperbag black (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791885522695",
+   "name": "Phillip plain paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791891084499",
+   "name": "Prada paperbag ( medium size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791888468984",
+   "name": "Prada paperbag ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782727110237",
+   "name": "Timberland paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791883316473",
+   "name": "Valentino paperbag (medium size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791890124685",
+   "name": "Versace paperbag ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791886012494",
+   "name": "Versace paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  }
+ ]
+}

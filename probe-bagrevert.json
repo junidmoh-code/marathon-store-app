@@ -1,0 +1,7152 @@
+{
+ "at": "2026-10-17T14:00:23.945Z",
+ "policy": {
+  "hub2": {
+   "minQty": 25,
+   "reorderPoint": 10,
+   "target": 50
+  },
+  "marathon-pe": {
+   "carriedOnly": true,
+   "minQty": 25,
+   "reorderPoint": 10,
+   "target": 50
+  },
+  "trophy": {
+   "carriedOnly": true,
+   "minQty": 25,
+   "reorderPoint": 10,
+   "target": 50
+  }
+ },
+ "policyKeys": [
+  "bags",
+  "belts",
+  "caps-beanies",
+  "fitted-caps",
+  "gloves",
+  "paper-bags",
+  "perfumes",
+  "soccer-jerseys",
+  "sunglasses",
+  "underwear"
+ ],
+ "configScalars": {
+  "carriedOnlyEngineDeployedAt": "2026-08-25T10:46:55.353Z",
+  "defaultRunRecentSaleDays": 14,
+  "enabled": true,
+  "maxFootwearIntentsPerRun": 25,
+  "maxIntentsPerRun": 75,
+  "maxUnitsPerIntent": 20,
+  "recheckCooldownMinutes": 1440,
+  "rejectStreakLimit": 4,
+  "ruleBasedTargets": true,
+  "scanIntervalMinutes": 15,
+  "staleIntentHours": 168,
+  "updatedAt": 1787655744135,
+  "updatedBy": "hub1-availability-arming-20260825"
+ },
+ "taxonomy": {
+  "active": true,
+  "flags": {
+   "displayChecks": "unset",
+   "oneSize": "unset",
+   "refillManaged": "unset"
+  },
+  "key": "paper-bags",
+  "label": "Paper Bags",
+  "legacy": {
+   "category": "Accessories",
+   "productType": "clothing",
+   "subcategory": "Bags"
+  },
+  "order": 36,
+  "sizeMode": "one",
+  "sizes": [
+   "_"
+  ],
+  "top": "clothing"
+ },
+ "catalogueSize": 5382,
+ "keyedPaperBags": [
+  {
+   "pid": "p1782726941853",
+   "name": "Giorgio armani paperbag",
+   "inRollback": true
+  },
+  {
+   "pid": "p1782726989989",
+   "name": "Armani paperbag ",
+   "inRollback": true
+  },
+  {
+   "pid": "p1782727067661",
+   "name": "Diesel paperbag ",
+   "inRollback": true
+  },
+  {
+   "pid": "p1782727110237",
+   "name": "Timberland paperbag",
+   "inRollback": true
+  },
+  {
+   "pid": "p1782727152355",
+   "name": "Jordan paperbag",
+   "inRollback": true
+  },
+  {
+   "pid": "p1782727193104",
+   "name": "Nike paperbag",
+   "inRollback": true
+  },
+  {
+   "pid": "p1782727235670",
+   "name": "Karl paper bag ",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791882788043",
+   "name": "Karl lagerfeld paperbag (medium size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791882981980",
+   "name": "Karl lagerfeld paperbag (small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791883316473",
+   "name": "Valentino paperbag (medium size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791883502646",
+   "name": "Gucci paperbag green (medium size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791883636340",
+   "name": "Givenchy paperbag",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791884019159",
+   "name": "Dior paperbag (big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791884222521",
+   "name": "Christian louboutin paperbag",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791884333181",
+   "name": "Bottega veneta paperbag",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791884531085",
+   "name": "Gucci paperbag maroon (small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791884636653",
+   "name": "Gucci paperbag maroon (big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791884764527",
+   "name": "Gucci paperbag green ( big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791885011582",
+   "name": "Armani exchange paper bag (big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791885266632",
+   "name": "Louis Vuitton paperbag (big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791885522695",
+   "name": "Phillip plain paperbag (big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791885721460",
+   "name": "Burberry paperbag (big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791885927781",
+   "name": "Diesel paperbag (big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791886012494",
+   "name": "Versace paperbag (big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791886113857",
+   "name": "Boss paperbag (big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791886235808",
+   "name": "D&G paperbag ( big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791886497941",
+   "name": "Giuseppe zanotti paperbag",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791887047151",
+   "name": "Philip plein paperbag black (small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791887150502",
+   "name": "Gucci paperbag green (small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791887272674",
+   "name": "Louis Vuitton paperbag (small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791887358177",
+   "name": "Hermes paperbag",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791888294603",
+   "name": "Brunello cucinelli paperbag ( small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791888468984",
+   "name": "Prada paperbag ( small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791888755311",
+   "name": "Balenciaga paperbag ( small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791889079314",
+   "name": "Amiri paperbag",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791889951053",
+   "name": "Boss paperbag  ( small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791890124685",
+   "name": "Versace paperbag ( small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791890345915",
+   "name": "Dior paperbag (small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791891084499",
+   "name": "Prada paperbag ( medium size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791891317996",
+   "name": "Lacoste paperbag ( small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791891476692",
+   "name": "Dior paperbag",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791896283311",
+   "name": "Nike paperbag white",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791971463851",
+   "name": "Alexander McQueen paperbag (small size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1791973701920",
+   "name": "Dior paperbag ( big size)",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792151052119",
+   "name": "Paper bag Karl white large",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792151189805",
+   "name": "Paper bag white boss large",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792151476022",
+   "name": "Paper bag black Dolce GABBANA small",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792151678286",
+   "name": "Paper bag Gucci green M",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792151841872",
+   "name": "Paper bag Gucci green large",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792152075007",
+   "name": "Paper bag DSQUARED2 black  small",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792152223010",
+   "name": "Paper bag DIOR white medium",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792152599905",
+   "name": "Paper bag Loro piana brown",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792153215900",
+   "name": "Paper bag boss white medium",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792153442416",
+   "name": "Paper bag TAGHEUER BLACK Small",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792153513242",
+   "name": "Paper bag omega red small",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792153720360",
+   "name": "Paper bag LOUIS VUITTON orange large",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792153817693",
+   "name": "Paper bag DIOR white large",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792154053817",
+   "name": "Paper bag MICHAEL KORS large yellow",
+   "inRollback": true
+  },
+  {
+   "pid": "p1792154137342",
+   "name": "Paper bag MICHAEL KORS small yellow",
+   "inRollback": true
+  }
+ ],
+ "nameMatchNotIn59": [],
+ "products": {
+  "p1791971463851": {
+   "name": "Alexander McQueen paperbag (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791889079314": {
+   "name": "Amiri paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791885011582": {
+   "name": "Armani exchange paper bag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1782726989989": {
+   "name": "Armani paperbag ",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  "p1791888755311": {
+   "name": "Balenciaga paperbag ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791889951053": {
+   "name": "Boss paperbag  ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791886113857": {
+   "name": "Boss paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791884333181": {
+   "name": "Bottega veneta paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791888294603": {
+   "name": "Brunello cucinelli paperbag ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791885721460": {
+   "name": "Burberry paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791884222521": {
+   "name": "Christian louboutin paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791886235808": {
+   "name": "D&G paperbag ( big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1782727067661": {
+   "name": "Diesel paperbag ",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  "p1791885927781": {
+   "name": "Diesel paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791891476692": {
+   "name": "Dior paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791973701920": {
+   "name": "Dior paperbag ( big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791884019159": {
+   "name": "Dior paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791890345915": {
+   "name": "Dior paperbag (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1782726941853": {
+   "name": "Giorgio armani paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  "p1791886497941": {
+   "name": "Giuseppe zanotti paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791883636340": {
+   "name": "Givenchy paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791884764527": {
+   "name": "Gucci paperbag green ( big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791883502646": {
+   "name": "Gucci paperbag green (medium size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791887150502": {
+   "name": "Gucci paperbag green (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791884636653": {
+   "name": "Gucci paperbag maroon (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791884531085": {
+   "name": "Gucci paperbag maroon (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791887358177": {
+   "name": "Hermes paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1782727152355": {
+   "name": "Jordan paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  "p1791882788043": {
+   "name": "Karl lagerfeld paperbag (medium size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791882981980": {
+   "name": "Karl lagerfeld paperbag (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1782727235670": {
+   "name": "Karl paper bag ",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "3"
+   ]
+  },
+  "p1791891317996": {
+   "name": "Lacoste paperbag ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791885266632": {
+   "name": "Louis Vuitton paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791887272674": {
+   "name": "Louis Vuitton paperbag (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1782727193104": {
+   "name": "Nike paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  "p1791896283311": {
+   "name": "Nike paperbag white",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792151476022": {
+   "name": "Paper bag black Dolce GABBANA small",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792153215900": {
+   "name": "Paper bag boss white medium",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792153817693": {
+   "name": "Paper bag DIOR white large",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792152223010": {
+   "name": "Paper bag DIOR white medium",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792152075007": {
+   "name": "Paper bag DSQUARED2 black  small",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792151841872": {
+   "name": "Paper bag Gucci green large",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792151678286": {
+   "name": "Paper bag Gucci green M",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792151052119": {
+   "name": "Paper bag Karl white large",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792152599905": {
+   "name": "Paper bag Loro piana brown",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792153720360": {
+   "name": "Paper bag LOUIS VUITTON orange large",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792154053817": {
+   "name": "Paper bag MICHAEL KORS large yellow",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792154137342": {
+   "name": "Paper bag MICHAEL KORS small yellow",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792153513242": {
+   "name": "Paper bag omega red small",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792153442416": {
+   "name": "Paper bag TAGHEUER BLACK Small",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1792151189805": {
+   "name": "Paper bag white boss large",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791887047151": {
+   "name": "Philip plein paperbag black (small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791885522695": {
+   "name": "Phillip plain paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791891084499": {
+   "name": "Prada paperbag ( medium size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791888468984": {
+   "name": "Prada paperbag ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1782727110237": {
+   "name": "Timberland paperbag",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "L"
+   ]
+  },
+  "p1791883316473": {
+   "name": "Valentino paperbag (medium size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791890124685": {
+   "name": "Versace paperbag ( small size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  "p1791886012494": {
+   "name": "Versace paperbag (big size)",
+   "categoryKey": "paper-bags",
+   "sizes": [
+    "_"
+   ]
+  }
+ },
+ "rowLocs": [
+  "hub2",
+  "marathon-pe",
+  "trophy"
+ ],
+ "stock": {
+  "central": {
+   "p1791971463851": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P435fgSH6LBA6s4ZNTn",
+     "qty": 17,
+     "updatedAt": "2026-10-16T09:46:05.365Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1791885011582": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P3tqo6Y4FDH-d-I_X5X",
+     "qty": 347,
+     "updatedAt": "2026-10-16T09:26:45.962Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791889951053": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P43BScbCYYvGF80g5Lt",
+     "qty": 409,
+     "state": "live",
+     "updatedAt": "2026-10-16T10:11:20.730Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 3
+    }
+   },
+   "p1791884333181": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P43938xkxWd-Frdn5CA",
+     "qty": 24,
+     "updatedAt": "2026-10-16T10:00:52.000Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1791888294603": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvFfOsD66oa_UNW9",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:08:18.506Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791884222521": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsIHO9oH2I8dp0SY",
+     "qty": 34,
+     "updatedAt": "2026-10-16T14:38:31.700Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791886235808": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P43FV7CGnAMsQnqNsrf",
+     "qty": 165,
+     "updatedAt": "2026-10-16T10:29:00.136Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791885927781": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsIeouAb1rUWQeNu",
+     "qty": 13,
+     "updatedAt": "2026-10-16T14:48:11.198Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791891476692": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P438xjYNlYDuctmBcGa",
+     "qty": 62,
+     "updatedAt": "2026-10-16T14:40:14.555Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791884019159": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P438xj01FEk5MNT4eQK",
+     "qty": 17,
+     "updatedAt": "2026-10-16T14:43:50.107Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791890345915": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsIlP6889QQg-w5i",
+     "qty": 4,
+     "updatedAt": "2026-10-16T14:36:51.680Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 2
+    }
+   },
+   "p1782726941853": {
+    "L": {
+     "lastType": "received",
+     "mv": "-P4338Kpz2kKXVHxSzTz",
+     "qty": 114,
+     "updatedAt": "2026-10-16T09:35:00.449Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 3
+    }
+   },
+   "p1791886497941": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P438xjEMHNC3KyVubsX",
+     "qty": 0,
+     "updatedAt": "2026-10-16T14:39:22.528Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791883636340": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsI9xpGyjUi_3KLV",
+     "qty": 7,
+     "updatedAt": "2026-10-16T14:44:46.208Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 2
+    }
+   },
+   "p1791883502646": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P438xitfs7EBihC26OG",
+     "qty": 0,
+     "updatedAt": "2026-10-16T14:35:05.940Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791887150502": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P438xjOAVtjLDKHKs5r",
+     "qty": 38,
+     "updatedAt": "2026-10-16T14:46:57.342Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791884636653": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsIWzOua7gm-fqeo",
+     "qty": 0,
+     "updatedAt": "2026-10-16T14:41:00.636Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791884531085": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsIONl6ukkUx9Oun",
+     "qty": 47,
+     "updatedAt": "2026-10-16T14:41:32.197Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1782727152355": {
+    "L": {
+     "lastType": "received",
+     "mv": "-P43FyJs6aFIZbbToL5f",
+     "qty": 233,
+     "updatedAt": "2026-10-16T10:31:03.523Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791882788043": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P43AeazlhLIMhDq687r",
+     "qty": 906,
+     "state": "live",
+     "updatedAt": "2026-10-16T10:07:51.735Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 2
+    }
+   },
+   "p1791882981980": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvFF7DCph5yhFi7G",
+     "qty": 10,
+     "updatedAt": "2026-10-17T13:04:51.761Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 2
+    }
+   },
+   "p1791891317996": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvG-RIsTp2S3ANHg",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:12:22.052Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791887272674": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsJ1x6Lt0soRfAjj",
+     "qty": 0,
+     "updatedAt": "2026-10-16T14:45:37.140Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1782727193104": {
+    "L": {
+     "lastType": "received",
+     "mv": "-P3twuuC16kyFAsQa0-w",
+     "qty": 271,
+     "updatedAt": "2026-10-14T10:27:14.091Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1791896283311": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P43CQZbILc_UNjOewGk",
+     "qty": 201,
+     "updatedAt": "2026-10-16T10:15:34.467Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792151476022": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGWcPNiHh5XDGQI",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:22:52.388Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792153215900": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHPqBoR_cKzYV0K",
+     "qty": 79,
+     "updatedAt": "2026-10-17T13:16:26.596Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792153817693": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvJuFp6Pt_xUrj0J",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:10:30.468Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792152223010": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHAiVdUjsDGUzID",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:11:41.508Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792152075007": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGy_yc1g7Wxhx00",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:18:12.638Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792151841872": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGl_MeQDQRsu6XD",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:21:32.244Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792151678286": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGcNFR3mq0MpvOX",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:18:37.318Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792151052119": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGEHhCl9kzLBufG",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:12:46.937Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792152599905": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHHI5qwF7xHEzmh",
+     "qty": 103,
+     "updatedAt": "2026-10-17T13:17:33.107Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792153720360": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHp0AUQE0K1ucDc",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:14:19.474Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792154053817": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvK0Y1wGWdpiHyRX",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:08:40.828Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792154137342": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvKAFq_gI2oP2jII",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:08:29.403Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792153513242": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHgwxBIIkjHAS9j",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:14:45.680Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792153442416": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHYa9A3KkHb7trh",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:14:30.804Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1792151189805": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGNUlQdTjbpPpUj",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:14:02.514Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791887047151": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvFW1LHCB1e5IkCh",
+     "qty": 147,
+     "updatedAt": "2026-10-17T13:07:08.168Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 4
+    }
+   },
+   "p1791888468984": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvFpN6ER3ClOwlY4",
+     "qty": 0,
+     "updatedAt": "2026-10-17T13:08:07.354Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 2
+    }
+   },
+   "p1782727110237": {
+    "L": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P484vK5G1vmqn7ZwWVJ",
+     "qty": 184,
+     "updatedAt": "2026-10-17T13:01:28.746Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791883316473": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvFO5p4PvoCSvsdC",
+     "qty": 54,
+     "updatedAt": "2026-10-17T13:05:55.727Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 3
+    }
+   },
+   "p1791890124685": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsJHlTQpYUjqgAPZ",
+     "qty": 0,
+     "updatedAt": "2026-10-16T14:50:03.570Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   }
+  },
+  "hub2": {
+   "p1791971463851": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R010-3_2026-10-15T14_00_22_424Z_g0",
+     "qty": 22,
+     "updatedAt": "2026-10-16T12:26:41.944Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 2
+    }
+   },
+   "p1791889079314": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R008-12_2026-10-14T11_00_47_541Z_g0",
+     "qty": 0,
+     "updatedAt": "2026-10-14T14:29:16.577Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 1
+    }
+   },
+   "p1791885011582": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P3tqo6Y4FDH-d-I_X5X",
+     "qty": 20,
+     "updatedAt": "2026-10-16T09:26:45.962Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1791889951053": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P3uHIIPHe59WIs918Mb",
+     "qty": 23,
+     "updatedAt": "2026-10-16T09:27:46.743Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791884333181": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R006-2_2026-10-14T10_00_32_663Z_g0",
+     "qty": 13,
+     "updatedAt": "2026-10-14T14:29:16.347Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 2
+    }
+   },
+   "p1791888294603": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvFfOsD66oa_UNW9",
+     "qty": 6,
+     "updatedAt": "2026-10-17T13:08:18.506Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791884222521": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsIHO9oH2I8dp0SY",
+     "qty": 20,
+     "updatedAt": "2026-10-16T14:38:31.700Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1791886235808": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P3tmLLyxvVzmdC4z0Lg",
+     "qty": 26,
+     "updatedAt": "2026-10-14T09:41:03.172Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 3
+    }
+   },
+   "p1791885927781": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsIeouAb1rUWQeNu",
+     "qty": 20,
+     "updatedAt": "2026-10-16T14:48:11.198Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1791891476692": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P438xjYNlYDuctmBcGa",
+     "qty": 20,
+     "updatedAt": "2026-10-16T14:40:14.555Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 2
+    }
+   },
+   "p1791973701920": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P3txD7yRgAC6RU3GZAb",
+     "qty": 4,
+     "updatedAt": "2026-10-14T10:28:33.272Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791884019159": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P438xj01FEk5MNT4eQK",
+     "qty": 21,
+     "updatedAt": "2026-10-16T14:43:50.107Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791890345915": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsIlP6889QQg-w5i",
+     "qty": 21,
+     "updatedAt": "2026-10-16T14:36:51.680Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1782726941853": {
+    "L": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P3u3ag7Y8day2FK2HPp",
+     "qty": 22,
+     "updatedAt": "2026-10-16T09:25:47.295Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 2
+    }
+   },
+   "p1791886497941": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P438xjEMHNC3KyVubsX",
+     "qty": 13,
+     "updatedAt": "2026-10-16T14:39:22.528Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 2
+    }
+   },
+   "p1791883636340": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsI9xpGyjUi_3KLV",
+     "qty": 21,
+     "updatedAt": "2026-10-16T14:44:46.208Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791883502646": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P438xitfs7EBihC26OG",
+     "qty": 5,
+     "updatedAt": "2026-10-16T14:35:05.940Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1791887150502": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P438xjOAVtjLDKHKs5r",
+     "qty": 20,
+     "updatedAt": "2026-10-16T14:46:57.342Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1791884636653": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsIWzOua7gm-fqeo",
+     "qty": 1,
+     "updatedAt": "2026-10-16T14:41:00.636Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 2
+    }
+   },
+   "p1791884531085": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsIONl6ukkUx9Oun",
+     "qty": 20,
+     "updatedAt": "2026-10-16T14:41:32.197Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1791887358177": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P3pkHLfYkiI_mKGorCA",
+     "qty": 1,
+     "updatedAt": "2026-10-13T14:53:33.516Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1782727152355": {
+    "L": {
+     "lastType": "transfer_out",
+     "mv": "cr_R001-3_2026-10-17T05_00_34_255Z_g0",
+     "qty": 598,
+     "updatedAt": "2026-10-17T08:27:02.140Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 4
+    }
+   },
+   "p1791882788043": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P3u6o3GqzE9jJo1MAd_",
+     "qty": 46,
+     "updatedAt": "2026-10-14T11:14:49.770Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 2
+    }
+   },
+   "p1791882981980": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvFF7DCph5yhFi7G",
+     "qty": 50,
+     "updatedAt": "2026-10-17T13:04:51.761Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791891317996": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvG-RIsTp2S3ANHg",
+     "qty": 5,
+     "updatedAt": "2026-10-17T13:12:22.052Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791887272674": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsJ1x6Lt0soRfAjj",
+     "qty": 1,
+     "updatedAt": "2026-10-16T14:45:37.140Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1782727193104": {
+    "L": {
+     "lastType": "transfer_out",
+     "mv": "cr_R001-4_2026-10-17T05_00_34_255Z_g0",
+     "qty": 227,
+     "updatedAt": "2026-10-17T08:29:59.641Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 6
+    }
+   },
+   "p1791896283311": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R001-24_2026-10-17T05_00_34_255Z_g0",
+     "qty": 365,
+     "updatedAt": "2026-10-17T08:32:37.982Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 1
+    }
+   },
+   "p1792151476022": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGWcPNiHh5XDGQI",
+     "qty": 9,
+     "updatedAt": "2026-10-17T13:22:52.388Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792153215900": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHPqBoR_cKzYV0K",
+     "qty": 50,
+     "updatedAt": "2026-10-17T13:16:26.596Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792153817693": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvJuFp6Pt_xUrj0J",
+     "qty": 2,
+     "updatedAt": "2026-10-17T13:10:30.468Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792152223010": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHAiVdUjsDGUzID",
+     "qty": 35,
+     "updatedAt": "2026-10-17T13:11:41.508Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792152075007": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGy_yc1g7Wxhx00",
+     "qty": 16,
+     "updatedAt": "2026-10-17T13:18:12.638Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792151841872": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGl_MeQDQRsu6XD",
+     "qty": 42,
+     "updatedAt": "2026-10-17T13:21:32.244Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792151678286": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGcNFR3mq0MpvOX",
+     "qty": 10,
+     "updatedAt": "2026-10-17T13:18:37.318Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792151052119": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGEHhCl9kzLBufG",
+     "qty": 2,
+     "updatedAt": "2026-10-17T13:12:46.937Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792152599905": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHHI5qwF7xHEzmh",
+     "qty": 50,
+     "updatedAt": "2026-10-17T13:17:33.107Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792153720360": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHp0AUQE0K1ucDc",
+     "qty": 3,
+     "updatedAt": "2026-10-17T13:14:19.474Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792154053817": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvK0Y1wGWdpiHyRX",
+     "qty": 1,
+     "updatedAt": "2026-10-17T13:08:40.828Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792154137342": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvKAFq_gI2oP2jII",
+     "qty": 1,
+     "updatedAt": "2026-10-17T13:08:29.403Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792153513242": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHgwxBIIkjHAS9j",
+     "qty": 3,
+     "updatedAt": "2026-10-17T13:14:45.680Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792153442416": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvHYa9A3KkHb7trh",
+     "qty": 10,
+     "updatedAt": "2026-10-17T13:14:30.804Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1792151189805": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvGNUlQdTjbpPpUj",
+     "qty": 9,
+     "updatedAt": "2026-10-17T13:14:02.514Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1791887047151": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvFW1LHCB1e5IkCh",
+     "qty": 50,
+     "updatedAt": "2026-10-17T13:07:08.168Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1791888468984": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvFpN6ER3ClOwlY4",
+     "qty": 15,
+     "updatedAt": "2026-10-17T13:08:07.354Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 1
+    }
+   },
+   "p1782727110237": {
+    "L": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P484vK5G1vmqn7ZwWVJ",
+     "qty": 50,
+     "updatedAt": "2026-10-17T13:01:28.746Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 4
+    }
+   },
+   "p1791883316473": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P47DvFO5p4PvoCSvsdC",
+     "qty": 50,
+     "updatedAt": "2026-10-17T13:05:55.727Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 2
+    }
+   },
+   "p1791890124685": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "rrf_-P43MsJHlTQpYUjqgAPZ",
+     "qty": 1,
+     "updatedAt": "2026-10-16T14:50:03.570Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   }
+  },
+  "marathon-pe": {
+   "p1791889079314": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R008-12_2026-10-14T11_00_47_541Z_g0",
+     "qty": 1,
+     "updatedAt": "2026-10-14T14:29:16.577Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791885011582": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791885011582:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:44.225Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1782726989989": {
+    "L": {
+     "lastType": "sold",
+     "mv": "sold:-P2r5Wyjh7M3cH3SCsmZ:marathon-pe:p1782726989989:L",
+     "qty": 0,
+     "updatedAt": "2026-10-01T10:54:40.389Z",
+     "updatedBy": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+     "v": 8
+    }
+   },
+   "p1791889951053": {
+    "_": {
+     "lastType": "adjustment",
+     "mv": "-P3u6-k4M3a_mbHH-HJU",
+     "qty": 16,
+     "state": "live",
+     "updatedAt": "2026-10-14T11:11:20.829Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 2
+    }
+   },
+   "p1791884333181": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P43DVdGoTK1SjCmVO-V:marathon-pe:p1791884333181:_",
+     "qty": 4,
+     "updatedAt": "2026-10-16T10:19:48.132Z",
+     "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+     "v": 1
+    }
+   },
+   "p1791888294603": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791888294603:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:48.333Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791884222521": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791884222521:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:51.936Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791886235808": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R001-2_2026-10-14T05_00_27_028Z_g0",
+     "qty": 5,
+     "updatedAt": "2026-10-14T09:27:53.304Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1782727067661": {
+    "L": {
+     "lastType": "sold",
+     "mv": "sold:-P3pMf0gTPtUkFStx2uC:marathon-pe:p1782727067661:L",
+     "qty": 0,
+     "updatedAt": "2026-10-13T13:05:30.886Z",
+     "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+     "v": 23
+    }
+   },
+   "p1791891476692": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R008-13_2026-10-14T11_00_47_541Z_g0",
+     "qty": 3,
+     "updatedAt": "2026-10-14T14:29:16.577Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791884019159": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791884019159:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:52.914Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791890345915": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791890345915:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:41.336Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1782726941853": {
+    "L": {
+     "lastType": "sold",
+     "mv": "sold:-P3pMf0gTPtUkFStx2uC:marathon-pe:p1782726941853:L",
+     "qty": 3,
+     "updatedAt": "2026-10-13T13:05:27.658Z",
+     "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+     "v": 5
+    }
+   },
+   "p1791886497941": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R008-11_2026-10-14T11_00_47_541Z_g0",
+     "qty": 2,
+     "updatedAt": "2026-10-14T14:29:16.576Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791883636340": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791883636340:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:35.526Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791884764527": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791884764527:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:36.475Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791883502646": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P48YwY1W0zSSrIDHBx2:marathon-pe:p1791883502646:_",
+     "qty": 3,
+     "updatedAt": "2026-10-17T11:12:04.753Z",
+     "updatedBy": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+     "v": 1
+    }
+   },
+   "p1791884636653": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R008-10_2026-10-14T11_00_47_541Z_g0",
+     "qty": 1,
+     "updatedAt": "2026-10-14T14:29:16.570Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791884531085": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3pMf0gTPtUkFStx2uC:marathon-pe:p1791884531085:_",
+     "qty": 4,
+     "updatedAt": "2026-10-13T13:05:31.560Z",
+     "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+     "v": 1
+    }
+   },
+   "p1791887358177": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791887358177:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:47.450Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1782727152355": {
+    "L": {
+     "lastType": "sold",
+     "mv": "sold:-P48U9w89SXnc88vI5dv:marathon-pe:p1782727152355:L",
+     "qty": 48,
+     "updatedAt": "2026-10-17T10:51:12.962Z",
+     "updatedBy": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+     "v": 28
+    }
+   },
+   "p1791882788043": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791882788043:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:37.435Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1782727235670": {
+    "3": {
+     "lastType": "sold",
+     "mv": "sold:-P48YwY1W0zSSrIDHBx2:marathon-pe:p1782727235670:3",
+     "qty": 0,
+     "updatedAt": "2026-10-17T11:12:04.026Z",
+     "updatedBy": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+     "v": 7
+    }
+   },
+   "p1791891317996": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3pMf0gTPtUkFStx2uC:marathon-pe:p1791891317996:_",
+     "qty": 4,
+     "updatedAt": "2026-10-13T13:05:34.895Z",
+     "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+     "v": 1
+    }
+   },
+   "p1791885266632": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3ud18rbc_jYR8rB1yC:marathon-pe:p1791885266632:_",
+     "qty": 3,
+     "updatedAt": "2026-10-14T13:39:27.697Z",
+     "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+     "v": 2
+    }
+   },
+   "p1782727193104": {
+    "L": {
+     "lastType": "sold",
+     "mv": "sold:-P48ebEKeyLDnyOmqkgE:marathon-pe:p1782727193104:L",
+     "qty": 46,
+     "updatedAt": "2026-10-17T11:41:11.904Z",
+     "updatedBy": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+     "v": 94
+    }
+   },
+   "p1791896283311": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R001-24_2026-10-17T05_00_34_255Z_g0",
+     "qty": 50,
+     "updatedAt": "2026-10-17T08:32:37.982Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 7
+    }
+   },
+   "p1791891084499": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791891084499:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:42.336Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791888468984": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791888468984:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:49.202Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1782727110237": {
+    "L": {
+     "lastType": "transfer_out",
+     "mv": "cr_R001-2_2026-10-17T05_00_34_255Z_g0",
+     "qty": 45,
+     "updatedAt": "2026-10-17T08:35:14.056Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 6
+    }
+   },
+   "p1791883316473": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791883316473:_",
+     "qty": 5,
+     "updatedAt": "2026-10-13T12:03:43.256Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791890124685": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3pMf0gTPtUkFStx2uC:marathon-pe:p1791890124685:_",
+     "qty": 4,
+     "updatedAt": "2026-10-13T13:05:33.914Z",
+     "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+     "v": 1
+    }
+   }
+  },
+  "trophy": {
+   "p1791971463851": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R010-3_2026-10-15T14_00_22_424Z_g0",
+     "qty": 2,
+     "updatedAt": "2026-10-16T12:26:41.944Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791889079314": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P485de_6B0Z7WCwvqxQ:trophy:p1791889079314:_",
+     "qty": 3,
+     "updatedAt": "2026-10-17T09:04:14.729Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 2
+    }
+   },
+   "p1791885011582": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P48K8terZivNtvMbG-N:trophy:p1791885011582:_",
+     "qty": 4,
+     "state": "live",
+     "updatedAt": "2026-10-17T10:07:26.971Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 6
+    }
+   },
+   "p1782726989989": {
+    "L": {
+     "lastType": "sold",
+     "mv": "sold:-P42oYEBWjPLdYnjm6_s:trophy:p1782726989989:L",
+     "qty": 0,
+     "updatedAt": "2026-10-16T08:26:52.123Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 28
+    }
+   },
+   "p1791888755311": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P43xzfaDm8lnKKqGl5D:trophy:p1791888755311:_",
+     "qty": 3,
+     "updatedAt": "2026-10-16T13:47:50.068Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 1
+    }
+   },
+   "p1791889951053": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P48UJbYlUcVvcP5ddI2:trophy:p1791889951053:_",
+     "qty": 13,
+     "updatedAt": "2026-10-17T10:51:56.478Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 11
+    }
+   },
+   "p1791886113857": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P48a-mklDAq_k0kyHME:trophy:p1791886113857:_",
+     "qty": 0,
+     "updatedAt": "2026-10-17T11:21:20.502Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 4
+    }
+   },
+   "p1791884333181": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3zCn_N07-gkzJarWL8:trophy:p1791884333181:_",
+     "qty": 4,
+     "updatedAt": "2026-10-15T10:59:09.589Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 1
+    }
+   },
+   "p1791888294603": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791888294603:_",
+     "qty": 20,
+     "updatedAt": "2026-10-13T12:03:48.333Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 1
+    }
+   },
+   "p1791885721460": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P3oha2B2cCe9hBdf9mV",
+     "qty": 1,
+     "updatedAt": "2026-10-13T10:02:10.613Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791884222521": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P43QdsKWNGhRujP1OVt:trophy:p1791884222521:_",
+     "qty": 21,
+     "updatedAt": "2026-10-16T11:17:47.097Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 6
+    }
+   },
+   "p1791886235808": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "cr_R002-1_2026-10-14T05_00_27_081Z_g0",
+     "qty": 10,
+     "updatedAt": "2026-10-14T08:57:11.999Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 1
+    }
+   },
+   "p1782727067661": {
+    "L": {
+     "lastType": "sold",
+     "mv": "sold:-P3oAZQcUuiny3y_Sq6X:trophy:p1782727067661:L",
+     "qty": 0,
+     "updatedAt": "2026-10-13T07:33:38.611Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 42
+    }
+   },
+   "p1791885927781": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3zIFR7AP9OLbtE3R35:trophy:p1791885927781:_",
+     "qty": 0,
+     "updatedAt": "2026-10-15T11:23:01.670Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 2
+    }
+   },
+   "p1791891476692": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P3p2avfdYNuQDo1RZ-0",
+     "qty": 4,
+     "updatedAt": "2026-10-13T11:38:27.548Z",
+     "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+     "v": 0
+    }
+   },
+   "p1791884019159": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P43juKtb6-0TJhtC2fi:trophy:p1791884019159:_",
+     "qty": 13,
+     "updatedAt": "2026-10-16T12:46:18.107Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 2
+    }
+   },
+   "p1791890345915": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3tvocMcoyzq9NrLymo:trophy:p1791890345915:_",
+     "qty": 7,
+     "updatedAt": "2026-10-14T10:22:26.627Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 2
+    }
+   },
+   "p1782726941853": {
+    "L": {
+     "lastType": "sold",
+     "mv": "sold:-P3u96q0Hcr3BVIzJbb1:trophy:p1782726941853:L",
+     "qty": 27,
+     "updatedAt": "2026-10-14T11:24:56.428Z",
+     "updatedBy": "MRiyMH8KsIg2iKYTTtaHdvTeVJ62",
+     "v": 41
+    }
+   },
+   "p1791886497941": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P3okYBejVGmJ0n8AWog",
+     "qty": 1,
+     "updatedAt": "2026-10-13T10:15:05.466Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791883636340": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P48763S5yZT_sL85WYd:trophy:p1791883636340:_",
+     "qty": 23,
+     "updatedAt": "2026-10-17T09:10:37.430Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 4
+    }
+   },
+   "p1791884764527": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3trqIYDg6DpGwZCpf9:trophy:p1791884764527:_",
+     "qty": 27,
+     "updatedAt": "2026-10-14T10:05:07.391Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 3
+    }
+   },
+   "p1791883502646": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P42oYEBWjPLdYnjm6_s:trophy:p1791883502646:_",
+     "qty": 1,
+     "updatedAt": "2026-10-16T08:26:53.315Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 4
+    }
+   },
+   "p1791887150502": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3pMf0gTPtUkFStx2uC:trophy:p1791887150502:_",
+     "qty": 0,
+     "updatedAt": "2026-10-13T13:05:36.431Z",
+     "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+     "v": 1
+    }
+   },
+   "p1791884636653": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3pOEixisSBN0A7Y8Rw:trophy:p1791884636653:_",
+     "qty": 0,
+     "updatedAt": "2026-10-13T13:12:57.487Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 1
+    }
+   },
+   "p1791884531085": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3u96q0Hcr3BVIzJbb1:trophy:p1791884531085:_",
+     "qty": 4,
+     "updatedAt": "2026-10-14T11:25:03.013Z",
+     "updatedBy": "MRiyMH8KsIg2iKYTTtaHdvTeVJ62",
+     "v": 2
+    }
+   },
+   "p1791887358177": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P491CGeNhLGrnoGQfxL:trophy:p1791887358177:_",
+     "qty": 6,
+     "updatedAt": "2026-10-17T13:24:19.138Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 4
+    }
+   },
+   "p1791882788043": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P437tvn4zElrqlIOHpx:trophy:p1791882788043:_",
+     "qty": 20,
+     "updatedAt": "2026-10-16T09:56:09.303Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 4
+    }
+   },
+   "p1791882981980": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P48-fmwXjeO0PPRDTG1:trophy:p1791882981980:_",
+     "qty": 6,
+     "updatedAt": "2026-10-17T08:37:59.402Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 2
+    }
+   },
+   "p1782727235670": {
+    "3": {
+     "lastType": "sold",
+     "mv": "sold:-P3kNliDNh5cVuJ0HgPj:trophy:p1782727235670:3",
+     "qty": 0,
+     "updatedAt": "2026-10-12T13:52:45.784Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 112
+    }
+   },
+   "p1791891317996": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P48gDFCQZ8jPTXcS5zk:trophy:p1791891317996:_",
+     "qty": 19,
+     "updatedAt": "2026-10-17T11:48:14.854Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 6
+    }
+   },
+   "p1791885266632": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P42r-5N01tVV9YZSy9O:trophy:p1791885266632:_",
+     "qty": 3,
+     "updatedAt": "2026-10-16T08:37:36.770Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 2
+    }
+   },
+   "p1791887272674": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3u96q0Hcr3BVIzJbb1:trophy:p1791887272674:_",
+     "qty": 6,
+     "updatedAt": "2026-10-14T11:25:03.623Z",
+     "updatedBy": "MRiyMH8KsIg2iKYTTtaHdvTeVJ62",
+     "v": 2
+    }
+   },
+   "p1782727193104": {
+    "L": {
+     "lastType": "adjustment",
+     "mv": "negzero_20260825_trophy_p1782727193104_L",
+     "qty": 0,
+     "updatedAt": "2026-08-25T10:12:32.980Z",
+     "updatedBy": "script:zero-negative-cells",
+     "v": 1
+    }
+   },
+   "p1792153215900": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P485de_6B0Z7WCwvqxQ:trophy:p1792153215900:_",
+     "qty": 0,
+     "updatedAt": "2026-10-17T09:04:15.387Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 0
+    }
+   },
+   "p1791887047151": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P3omcqsHYACPK6BkJ96",
+     "qty": 1,
+     "updatedAt": "2026-10-13T10:24:12.945Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791885522695": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P3ogoq0GASgN99TAyF4",
+     "qty": 3,
+     "updatedAt": "2026-10-13T09:58:49.146Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   },
+   "p1791891084499": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3pOEixisSBN0A7Y8Rw:trophy:p1791891084499:_",
+     "qty": 25,
+     "updatedAt": "2026-10-13T13:13:00.459Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 2
+    }
+   },
+   "p1791888468984": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791888468984:_",
+     "qty": 9,
+     "updatedAt": "2026-10-13T12:03:49.202Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 1
+    }
+   },
+   "p1782727110237": {
+    "L": {
+     "lastType": "sold",
+     "mv": "sold:-P3oAZQcUuiny3y_Sq6X:trophy:p1782727110237:L",
+     "qty": 0,
+     "updatedAt": "2026-10-13T07:33:39.212Z",
+     "updatedBy": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+     "v": 4
+    }
+   },
+   "p1791883316473": {
+    "_": {
+     "lastType": "transfer_out",
+     "mv": "-P3p8NWE9GY_lCeUjvGc:p1791883316473:_",
+     "qty": 9,
+     "updatedAt": "2026-10-13T12:03:43.256Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 1
+    }
+   },
+   "p1791890124685": {
+    "_": {
+     "lastType": "sold",
+     "mv": "sold:-P3u96q0Hcr3BVIzJbb1:trophy:p1791890124685:_",
+     "qty": 4,
+     "updatedAt": "2026-10-14T11:25:04.221Z",
+     "updatedBy": "MRiyMH8KsIg2iKYTTtaHdvTeVJ62",
+     "v": 2
+    }
+   },
+   "p1791886012494": {
+    "_": {
+     "lastType": "received",
+     "mv": "-P3oigB6N9siWd700g6U",
+     "qty": 2,
+     "updatedAt": "2026-10-13T10:06:57.935Z",
+     "updatedBy": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+     "v": 0
+    }
+   }
+  }
+ },
+ "targets": {
+  "hub2": {
+   "p1782726989989": {
+    "L": {
+     "approvedAt": "2026-07-12T18:40:08.247Z",
+     "approvedBy": "seed-script",
+     "batchId": "targets-2026-07-12",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-07-12T18:40:08.247Z",
+      "approvedBy": "seed-script",
+      "batchId": "targets-2026-07-12",
+      "minQty": 2,
+      "source": "standard_policy_v2",
+      "target": 3
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:09:00.625Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782727067661": {
+    "L": {
+     "approvedAt": "2026-07-12T18:40:08.244Z",
+     "approvedBy": "seed-script",
+     "batchId": "targets-2026-07-12",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-07-12T18:40:08.244Z",
+      "approvedBy": "seed-script",
+      "batchId": "targets-2026-07-12",
+      "minQty": 2,
+      "source": "standard_policy_v2",
+      "target": 3
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-13T19:07:25.272Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782726941853": {
+    "L": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-09-29T14:19:22.672Z",
+      "approvedBy": "introduce-existing",
+      "batchId": "introduce-existing-2026-09-29",
+      "minQty": 2,
+      "source": "standard_policy_migration",
+      "target": 3
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-13T19:17:11.056Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782727152355": {
+    "L": {
+     "approvedAt": "2026-07-12T18:40:08.246Z",
+     "approvedBy": "seed-script",
+     "batchId": "targets-2026-07-12",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-07-12T18:40:08.246Z",
+      "approvedBy": "seed-script",
+      "batchId": "targets-2026-07-12",
+      "minQty": 2,
+      "source": "standard_policy_v2",
+      "target": 3
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:11:16.715Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782727235670": {
+    "3": {
+     "minQty": 25,
+     "prevAbsent": true,
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:11:20.499Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782727193104": {
+    "L": {
+     "approvedAt": "2026-07-12T18:40:08.241Z",
+     "approvedBy": "seed-script",
+     "batchId": "targets-2026-07-12",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-07-12T18:40:08.241Z",
+      "approvedBy": "seed-script",
+      "batchId": "targets-2026-07-12",
+      "minQty": 2,
+      "source": "standard_policy_v2",
+      "target": 3
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-13T19:25:51.485Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782727110237": {
+    "L": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-09-29T14:19:22.672Z",
+      "approvedBy": "introduce-existing",
+      "batchId": "introduce-existing-2026-09-29",
+      "minQty": 2,
+      "source": "standard_policy_migration",
+      "target": 3
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-13T19:29:58.764Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 50
+    }
+   }
+  },
+  "marathon-pe": {
+   "p1782726989989": {
+    "L": {
+     "minQty": 25,
+     "prevAbsent": true,
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:09:02.459Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782727067661": {
+    "L": {
+     "approvedAt": "2026-07-12T18:40:08.244Z",
+     "approvedBy": "seed-script",
+     "batchId": "retarget-2026-07-13",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-07-12T18:40:08.244Z",
+      "approvedBy": "seed-script",
+      "batchId": "retarget-2026-07-13",
+      "minQty": 1,
+      "source": "standard_policy_v3",
+      "target": 2,
+      "updatedAt": "2026-07-13T18:42:29.259Z",
+      "updatedBy": "retarget-script"
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:09:55.881Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50,
+     "updatedAt": "2026-07-13T18:42:29.259Z",
+     "updatedBy": "retarget-script"
+    }
+   },
+   "p1782726941853": {
+    "L": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-09-29T14:19:22.672Z",
+      "approvedBy": "introduce-existing",
+      "batchId": "introduce-existing-2026-09-29",
+      "minQty": 1,
+      "source": "standard_policy_migration",
+      "target": 2
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:10:25.090Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782727152355": {
+    "L": {
+     "approvedAt": "2026-07-12T18:40:08.246Z",
+     "approvedBy": "seed-script",
+     "batchId": "retarget-2026-07-13",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-07-12T18:40:08.246Z",
+      "approvedBy": "seed-script",
+      "batchId": "retarget-2026-07-13",
+      "minQty": 1,
+      "source": "standard_policy_v3",
+      "target": 2,
+      "updatedAt": "2026-07-13T18:42:29.259Z",
+      "updatedBy": "retarget-script"
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:11:18.589Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50,
+     "updatedAt": "2026-07-13T18:42:29.259Z",
+     "updatedBy": "retarget-script"
+    }
+   },
+   "p1782727235670": {
+    "3": {
+     "minQty": 25,
+     "prevAbsent": true,
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:11:22.872Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782727193104": {
+    "L": {
+     "approvedAt": "2026-07-12T18:40:08.241Z",
+     "approvedBy": "seed-script",
+     "batchId": "retarget-2026-07-13",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-07-12T18:40:08.241Z",
+      "approvedBy": "seed-script",
+      "batchId": "retarget-2026-07-13",
+      "minQty": 1,
+      "source": "standard_policy_v3",
+      "target": 2,
+      "updatedAt": "2026-07-13T18:42:29.259Z",
+      "updatedBy": "retarget-script"
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:11:26.798Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50,
+     "updatedAt": "2026-07-13T18:42:29.259Z",
+     "updatedBy": "retarget-script"
+    }
+   },
+   "p1782727110237": {
+    "L": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-09-29T14:19:22.672Z",
+      "approvedBy": "introduce-existing",
+      "batchId": "introduce-existing-2026-09-29",
+      "minQty": 1,
+      "source": "standard_policy_migration",
+      "target": 2
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:11:32.672Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50
+    }
+   }
+  },
+  "trophy": {
+   "p1782726989989": {
+    "L": {
+     "approvedAt": "2026-07-12T18:40:08.247Z",
+     "approvedBy": "seed-script",
+     "batchId": "retarget-2026-07-13",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-07-12T18:40:08.247Z",
+      "approvedBy": "seed-script",
+      "batchId": "retarget-2026-07-13",
+      "minQty": 1,
+      "source": "standard_policy_v3",
+      "target": 2,
+      "updatedAt": "2026-07-13T18:42:29.259Z",
+      "updatedBy": "retarget-script"
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:09:04.364Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50,
+     "updatedAt": "2026-07-13T18:42:29.259Z",
+     "updatedBy": "retarget-script"
+    }
+   },
+   "p1782727067661": {
+    "L": {
+     "minQty": 25,
+     "prevAbsent": true,
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:09:57.916Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782726941853": {
+    "L": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 25,
+     "prevRow": {
+      "approvedAt": "2026-09-29T14:19:22.672Z",
+      "approvedBy": "introduce-existing",
+      "batchId": "introduce-existing-2026-09-29",
+      "minQty": 1,
+      "source": "standard_policy_migration",
+      "target": 2
+     },
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:10:27.102Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782727235670": {
+    "3": {
+     "minQty": 25,
+     "prevAbsent": true,
+     "reorderPoint": 10,
+     "setAt": "2026-10-16T17:11:24.958Z",
+     "setBy": "paper-bag-policy-runner",
+     "source": "policy_target",
+     "target": 50
+    }
+   },
+   "p1782727193104": {
+    "L": {
+     "minQty": 0,
+     "prevAbsent": true,
+     "setAt": "2026-10-13T19:27:12.789Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 0
+    }
+   },
+   "p1791896283311": {
+    "_": {
+     "minQty": 0,
+     "prevAbsent": true,
+     "setAt": "2026-10-13T19:29:16.617Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 0
+    }
+   },
+   "p1782727110237": {
+    "L": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 0,
+     "prevRow": {
+      "approvedAt": "2026-09-29T14:19:22.672Z",
+      "approvedBy": "introduce-existing",
+      "batchId": "introduce-existing-2026-09-29",
+      "minQty": 1,
+      "source": "standard_policy_migration",
+      "target": 2
+     },
+     "setAt": "2026-10-13T19:30:23.558Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 0
+    }
+   }
+  }
+ },
+ "locks": {
+  "hub2": {
+   "p1792151841872": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "qty": 8,
+     "refillId": "-P47DvGl_MeQDQRsu6XD",
+     "runId": "2026-10-17T05-00",
+     "source": "central"
+    }
+   },
+   "p1792153720360": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "qty": 47,
+     "refillId": "-P47DvHp0AUQE0K1ucDc",
+     "runId": "2026-10-17T05-00",
+     "source": "central"
+    }
+   },
+   "p1791888468984": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "qty": 35,
+     "refillId": "-P47DvFpN6ER3ClOwlY4",
+     "runId": "2026-10-17T05-00",
+     "source": "central"
+    }
+   }
+  },
+  "marathon-pe": {
+   "p1791885011582": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-14",
+     "qty": 45,
+     "refillId": "-P47DvBkQo80hRPDHfKC",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791884333181": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-11",
+     "qty": 46,
+     "refillId": "-P47DvB73Cv_tDwBG8Oq",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791888294603": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-18",
+     "qty": 45,
+     "refillId": "-P47DvCTgoofBq999A6q",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791884222521": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-10",
+     "qty": 45,
+     "refillId": "-P47DvARgr0bv6-AzvfN",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791886235808": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-15",
+     "qty": 45,
+     "refillId": "-P47DvBsB1ocEuLOp2B2",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791891476692": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-23",
+     "qty": 47,
+     "refillId": "-P47DvDWKEeGQhH6eHdY",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791884019159": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-9",
+     "qty": 45,
+     "refillId": "-P47DvA8G15d_ZWOv9xU",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791890345915": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-21",
+     "qty": 45,
+     "refillId": "-P47DvD4MIptzKXzcn5u",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1782726941853": {
+    "L": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-1",
+     "qty": 47,
+     "refillId": "-P47Dv8F3WSzuWTTdSDg",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791886497941": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-16",
+     "qty": 48,
+     "refillId": "-P47DvC1hpT84aG4yh9d",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791883636340": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-8",
+     "qty": 45,
+     "refillId": "-P47Dv9wcn6w3doqUlkT",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791883502646": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-7",
+     "qty": 47,
+     "refillId": "-P47Dv9hZnZBPGxgjZVT",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791884636653": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-13",
+     "qty": 49,
+     "refillId": "-P47DvBXdPaVIBLBXclL",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791884531085": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-12",
+     "qty": 46,
+     "refillId": "-P47DvBKcA_u9BmHgTHz",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791887358177": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-17",
+     "qty": 45,
+     "refillId": "-P47DvCEAzcHg8j2yIRT",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791882788043": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-5",
+     "qty": 45,
+     "refillId": "-P47Dv9HTSVEh2hbQ-iE",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791891317996": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-22",
+     "qty": 46,
+     "refillId": "-P47DvDIcqfnk7Bu0Sla",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791888468984": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-19",
+     "qty": 45,
+     "refillId": "-P47DvCcW08Z2NgS9Ukt",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1782727110237": {
+    "L": {
+     "createdAt": "2026-10-17T09:00:41.824Z",
+     "orderCreatedAt": "2026-10-17T09:00:51.952Z",
+     "orderId": "R006-5",
+     "qty": 5,
+     "refillId": "-P484vI8v-HYEaGzjtRv",
+     "runId": "2026-10-17T09-00",
+     "source": "hub2"
+    }
+   },
+   "p1791883316473": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-6",
+     "qty": 45,
+     "refillId": "-P47Dv9SeOdPFULBImtj",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791890124685": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.255Z",
+     "orderId": "R001-20",
+     "qty": 46,
+     "refillId": "-P47DvCrx_UKC8Vv1JBE",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   }
+  },
+  "trophy": {
+   "p1791971463851": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.620Z",
+     "orderId": "R002-6",
+     "qty": 48,
+     "refillId": "-P47DvF216kqb5xA-Le6",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791885927781": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.620Z",
+     "orderId": "R002-2",
+     "qty": 50,
+     "refillId": "-P47DvEGnyl5w-uO1jn5",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791887150502": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.620Z",
+     "orderId": "R002-4",
+     "qty": 50,
+     "refillId": "-P47DvEfTthqowSsqerU",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791882981980": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.620Z",
+     "orderId": "R002-1",
+     "qty": 44,
+     "refillId": "-P47DvDuboNwuQVCFySI",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791887272674": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.620Z",
+     "orderId": "R002-5",
+     "qty": 44,
+     "refillId": "-P47DvEqxJiN5PpIySqK",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1792153215900": {
+    "_": {
+     "createdAt": "2026-10-17T14:00:11.256Z",
+     "orderCreatedAt": "2026-10-17T14:00:25.338Z",
+     "orderId": "R017-11",
+     "qty": 50,
+     "refillId": "-P499U8eG-loSIxPYbjL",
+     "runId": "2026-10-17T14-00",
+     "source": "hub2"
+    }
+   },
+   "p1791887047151": {
+    "_": {
+     "createdAt": "2026-10-17T05:00:23.646Z",
+     "orderCreatedAt": "2026-10-17T05:00:34.620Z",
+     "orderId": "R002-3",
+     "qty": 49,
+     "refillId": "-P47DvEU0lw_PUxzf7fi",
+     "runId": "2026-10-17T05-00",
+     "source": "hub2"
+    }
+   },
+   "p1791883316473": {
+    "_": {
+     "createdAt": "2026-10-17T14:00:11.256Z",
+     "orderCreatedAt": "2026-10-17T14:00:25.338Z",
+     "orderId": "R017-10",
+     "qty": 41,
+     "refillId": "-P499U8TugS2So8068Q3",
+     "runId": "2026-10-17T14-00",
+     "source": "hub2"
+    }
+   }
+  }
+ },
+ "requestsSinceTotal": 232,
+ "requests": [
+  {
+   "id": "-P47Dv8F3WSzuWTTdSDg",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1782726941853",
+   "qty": 47,
+   "requestingLocation": "marathon-pe",
+   "size": "L",
+   "status": "open",
+   "name": "Giorgio armani paperbag"
+  },
+  {
+   "id": "-P47Dv8cLdusEkM4ABiD",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1782727110237",
+   "qty": 41,
+   "requestingLocation": "marathon-pe",
+   "resolvedAt": "2026-10-17T09:00:41.824Z",
+   "size": "L",
+   "status": "fulfilled",
+   "name": "Timberland paperbag"
+  },
+  {
+   "id": "-P47Dv8wEk7gJ7YkOWPu",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1782727152355",
+   "qty": 48,
+   "requestingLocation": "marathon-pe",
+   "resolvedAt": "2026-10-17T09:00:41.824Z",
+   "size": "L",
+   "status": "fulfilled",
+   "name": "Jordan paperbag"
+  },
+  {
+   "id": "-P47Dv97uD5c_tj3-BOb",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1782727193104",
+   "qty": 43,
+   "requestingLocation": "marathon-pe",
+   "resolvedAt": "2026-10-17T09:00:41.824Z",
+   "size": "L",
+   "status": "fulfilled",
+   "name": "Nike paperbag"
+  },
+  {
+   "id": "-P47Dv9HTSVEh2hbQ-iE",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791882788043",
+   "qty": 45,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Karl lagerfeld paperbag (medium size)"
+  },
+  {
+   "id": "-P47Dv9SeOdPFULBImtj",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791883316473",
+   "qty": 45,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Valentino paperbag (medium size)"
+  },
+  {
+   "id": "-P47Dv9hZnZBPGxgjZVT",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791883502646",
+   "qty": 47,
+   "requestingLocation": "marathon-pe",
+   "resizedAt": "2026-10-17T12:00:38.072Z",
+   "resizedFrom": 45,
+   "size": "_",
+   "status": "open",
+   "name": "Gucci paperbag green (medium size)"
+  },
+  {
+   "id": "-P47Dv9wcn6w3doqUlkT",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791883636340",
+   "qty": 45,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Givenchy paperbag"
+  },
+  {
+   "id": "-P47DvA8G15d_ZWOv9xU",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791884019159",
+   "qty": 45,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Dior paperbag (big size)"
+  },
+  {
+   "id": "-P47DvARgr0bv6-AzvfN",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791884222521",
+   "qty": 45,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Christian louboutin paperbag"
+  },
+  {
+   "id": "-P47DvB73Cv_tDwBG8Oq",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791884333181",
+   "qty": 46,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Bottega veneta paperbag"
+  },
+  {
+   "id": "-P47DvBKcA_u9BmHgTHz",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791884531085",
+   "qty": 46,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Gucci paperbag maroon (small size)"
+  },
+  {
+   "id": "-P47DvBXdPaVIBLBXclL",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791884636653",
+   "qty": 49,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Gucci paperbag maroon (big size)"
+  },
+  {
+   "id": "-P47DvBkQo80hRPDHfKC",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791885011582",
+   "qty": 45,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Armani exchange paper bag (big size)"
+  },
+  {
+   "id": "-P47DvBsB1ocEuLOp2B2",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791886235808",
+   "qty": 45,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "D&G paperbag ( big size)"
+  },
+  {
+   "id": "-P47DvC1hpT84aG4yh9d",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791886497941",
+   "qty": 48,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Giuseppe zanotti paperbag"
+  },
+  {
+   "id": "-P47DvCEAzcHg8j2yIRT",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791887358177",
+   "qty": 45,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Hermes paperbag"
+  },
+  {
+   "id": "-P47DvCTgoofBq999A6q",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791888294603",
+   "qty": 45,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Brunello cucinelli paperbag ( small size)"
+  },
+  {
+   "id": "-P47DvCcW08Z2NgS9Ukt",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791888468984",
+   "qty": 45,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Prada paperbag ( small size)"
+  },
+  {
+   "id": "-P47DvCrx_UKC8Vv1JBE",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791890124685",
+   "qty": 46,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Versace paperbag ( small size)"
+  },
+  {
+   "id": "-P47DvD4MIptzKXzcn5u",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791890345915",
+   "qty": 45,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Dior paperbag (small size)"
+  },
+  {
+   "id": "-P47DvDIcqfnk7Bu0Sla",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791891317996",
+   "qty": 46,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Lacoste paperbag ( small size)"
+  },
+  {
+   "id": "-P47DvDWKEeGQhH6eHdY",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791891476692",
+   "qty": 47,
+   "requestingLocation": "marathon-pe",
+   "size": "_",
+   "status": "open",
+   "name": "Dior paperbag"
+  },
+  {
+   "id": "-P47DvDjwUyJlRXg6d5k",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791896283311",
+   "qty": 50,
+   "requestingLocation": "marathon-pe",
+   "resolvedAt": "2026-10-17T09:00:41.824Z",
+   "size": "_",
+   "status": "fulfilled",
+   "name": "Nike paperbag white"
+  },
+  {
+   "id": "-P47DvDuboNwuQVCFySI",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791882981980",
+   "qty": 44,
+   "requestingLocation": "trophy",
+   "resizedAt": "2026-10-17T09:00:41.824Z",
+   "resizedFrom": 43,
+   "size": "_",
+   "status": "open",
+   "name": "Karl lagerfeld paperbag (small size)"
+  },
+  {
+   "id": "-P47DvEGnyl5w-uO1jn5",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791885927781",
+   "qty": 50,
+   "requestingLocation": "trophy",
+   "size": "_",
+   "status": "open",
+   "name": "Diesel paperbag (big size)"
+  },
+  {
+   "id": "-P47DvEU0lw_PUxzf7fi",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791887047151",
+   "qty": 49,
+   "requestingLocation": "trophy",
+   "size": "_",
+   "status": "open",
+   "name": "Philip plein paperbag black (small size)"
+  },
+  {
+   "id": "-P47DvEfTthqowSsqerU",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791887150502",
+   "qty": 50,
+   "requestingLocation": "trophy",
+   "size": "_",
+   "status": "open",
+   "name": "Gucci paperbag green (small size)"
+  },
+  {
+   "id": "-P47DvEqxJiN5PpIySqK",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791887272674",
+   "qty": 44,
+   "requestingLocation": "trophy",
+   "size": "_",
+   "status": "open",
+   "name": "Louis Vuitton paperbag (small size)"
+  },
+  {
+   "id": "-P47DvF216kqb5xA-Le6",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "hub2"
+   },
+   "productId": "p1791971463851",
+   "qty": 48,
+   "requestingLocation": "trophy",
+   "size": "_",
+   "status": "open",
+   "name": "Alexander McQueen paperbag (small size)"
+  },
+  {
+   "id": "-P47DvFF7DCph5yhFi7G",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "fulfilledBy": {
+    "movementId": "rrf_-P47DvFF7DCph5yhFi7G",
+    "qty": 46
+   },
+   "productId": "p1791882981980",
+   "qty": 46,
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:04:52.263Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "size": "_",
+   "stamps": {
+    "1792242292263_57070bab": {
+     "action": "fulfil",
+     "atMs": 1792242292263,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "fulfilled",
+   "name": "Karl lagerfeld paperbag (small size)"
+  },
+  {
+   "id": "-P47DvFO5p4PvoCSvsdC",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "fulfilledBy": {
+    "movementId": "rrf_-P47DvFO5p4PvoCSvsdC",
+    "qty": 46
+   },
+   "productId": "p1791883316473",
+   "qty": 46,
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:05:56.197Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "size": "_",
+   "stamps": {
+    "1792242356197_57070bab": {
+     "action": "fulfil",
+     "atMs": 1792242356197,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "fulfilled",
+   "name": "Valentino paperbag (medium size)"
+  },
+  {
+   "id": "-P47DvFW1LHCB1e5IkCh",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "fulfilledBy": {
+    "movementId": "rrf_-P47DvFW1LHCB1e5IkCh",
+    "qty": 46
+   },
+   "productId": "p1791887047151",
+   "qty": 46,
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:07:08.633Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "size": "_",
+   "stamps": {
+    "1792242428633_57070bab": {
+     "action": "fulfil",
+     "atMs": 1792242428633,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "fulfilled",
+   "name": "Philip plein paperbag black (small size)"
+  },
+  {
+   "id": "-P47DvFfOsD66oa_UNW9",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1791888294603",
+   "qty": 44,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:23:19.045Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792243399045,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 1,
+   "size": "_",
+   "stamps": {
+    "1792242499705_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242499705,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792243399577_57070bab": {
+     "action": "reject",
+     "atMs": 1792243399577,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Brunello cucinelli paperbag ( small size)"
+  },
+  {
+   "id": "-P47DvFpN6ER3ClOwlY4",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1791888468984",
+   "qty": 35,
+   "requestingLocation": "hub2",
+   "resizedAt": "2026-10-17T14:00:11.256Z",
+   "resizedFrom": 35,
+   "sentQty": 11,
+   "size": "_",
+   "stamps": {
+    "1792242488109_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242488109,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "open",
+   "name": "Prada paperbag ( small size)"
+  },
+  {
+   "id": "-P47DvG-RIsTp2S3ANHg",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1791891317996",
+   "qty": 45,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:23:20.906Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792243400906,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 3,
+   "size": "_",
+   "stamps": {
+    "1792242742483_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242742483,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792243401426_57070bab": {
+     "action": "reject",
+     "atMs": 1792243401426,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Lacoste paperbag ( small size)"
+  },
+  {
+   "id": "-P47DvGEHhCl9kzLBufG",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792151052119",
+   "qty": 48,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:23:22.056Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792243402056,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 2,
+   "size": "_",
+   "stamps": {
+    "1792242767436_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242767436,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792243402765_57070bab": {
+     "action": "reject",
+     "atMs": 1792243402765,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Paper bag Karl white large"
+  },
+  {
+   "id": "-P47DvGNUlQdTjbpPpUj",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792151189805",
+   "qty": 41,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:23:23.720Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792243403720,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 9,
+   "size": "_",
+   "stamps": {
+    "1792242843221_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242843221,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792243404290_57070bab": {
+     "action": "reject",
+     "atMs": 1792243404290,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Paper bag white boss large"
+  },
+  {
+   "id": "-P47DvGWcPNiHh5XDGQI",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792151476022",
+   "qty": 41,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:23:24.739Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792243404739,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 9,
+   "size": "_",
+   "stamps": {
+    "1792243372860_57070bab": {
+     "action": "send-part",
+     "atMs": 1792243372860,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792243405291_57070bab": {
+     "action": "reject",
+     "atMs": 1792243405291,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Paper bag black Dolce GABBANA small"
+  },
+  {
+   "id": "-P47DvGcNFR3mq0MpvOX",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792151678286",
+   "qty": 40,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:23:26.370Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792243406370,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 10,
+   "size": "_",
+   "stamps": {
+    "1792243117940_57070bab": {
+     "action": "send-part",
+     "atMs": 1792243117940,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792243406904_57070bab": {
+     "action": "reject",
+     "atMs": 1792243406904,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Paper bag Gucci green M"
+  },
+  {
+   "id": "-P47DvGl_MeQDQRsu6XD",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792151841872",
+   "qty": 8,
+   "requestingLocation": "hub2",
+   "resizedAt": "2026-10-17T14:00:11.256Z",
+   "resizedFrom": 8,
+   "sentQty": 42,
+   "size": "_",
+   "stamps": {
+    "1792243292729_57070bab": {
+     "action": "send-part",
+     "atMs": 1792243292729,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "open",
+   "name": "Paper bag Gucci green large"
+  },
+  {
+   "id": "-P47DvGy_yc1g7Wxhx00",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792152075007",
+   "qty": 34,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:21:47.349Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792243307349,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 16,
+   "size": "_",
+   "stamps": {
+    "1792243093175_57070bab": {
+     "action": "send-part",
+     "atMs": 1792243093175,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792243307962_57070bab": {
+     "action": "reject",
+     "atMs": 1792243307962,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Paper bag DSQUARED2 black  small"
+  },
+  {
+   "id": "-P47DvHAiVdUjsDGUzID",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792152223010",
+   "qty": 15,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:17:46.350Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792243066350,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 35,
+   "size": "_",
+   "stamps": {
+    "1792242702244_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242702244,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792243066873_57070bab": {
+     "action": "reject",
+     "atMs": 1792243066873,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Paper bag DIOR white medium"
+  },
+  {
+   "id": "-P47DvHHI5qwF7xHEzmh",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "fulfilledBy": {
+    "movementId": "rrf_-P47DvHHI5qwF7xHEzmh",
+    "qty": 50
+   },
+   "productId": "p1792152599905",
+   "qty": 50,
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:17:33.548Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "size": "_",
+   "stamps": {
+    "1792243053548_57070bab": {
+     "action": "fulfil",
+     "atMs": 1792243053548,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "fulfilled",
+   "name": "Paper bag Loro piana brown"
+  },
+  {
+   "id": "-P47DvHPqBoR_cKzYV0K",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "fulfilledBy": {
+    "movementId": "rrf_-P47DvHPqBoR_cKzYV0K",
+    "qty": 50
+   },
+   "productId": "p1792153215900",
+   "qty": 50,
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:16:27.096Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "size": "_",
+   "stamps": {
+    "1792242987096_57070bab": {
+     "action": "fulfil",
+     "atMs": 1792242987096,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "fulfilled",
+   "name": "Paper bag boss white medium"
+  },
+  {
+   "id": "-P47DvHYa9A3KkHb7trh",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792153442416",
+   "qty": 40,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:21:51.602Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792243311602,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 10,
+   "size": "_",
+   "stamps": {
+    "1792242871181_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242871181,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792243312248_57070bab": {
+     "action": "reject",
+     "atMs": 1792243312248,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Paper bag TAGHEUER BLACK Small"
+  },
+  {
+   "id": "-P47DvHgwxBIIkjHAS9j",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792153513242",
+   "qty": 47,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:23:29.394Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792243409394,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 3,
+   "size": "_",
+   "stamps": {
+    "1792242886160_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242886160,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792243410179_57070bab": {
+     "action": "reject",
+     "atMs": 1792243410179,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Paper bag omega red small"
+  },
+  {
+   "id": "-P47DvHp0AUQE0K1ucDc",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792153720360",
+   "qty": 47,
+   "requestingLocation": "hub2",
+   "resizedAt": "2026-10-17T14:00:11.256Z",
+   "resizedFrom": 47,
+   "sentQty": 3,
+   "size": "_",
+   "stamps": {
+    "1792242860022_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242860022,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "open",
+   "name": "Paper bag LOUIS VUITTON orange large"
+  },
+  {
+   "id": "-P47DvJuFp6Pt_xUrj0J",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792153817693",
+   "qty": 48,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:15:09.823Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792242909823,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 2,
+   "size": "_",
+   "stamps": {
+    "1792242631304_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242631304,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792242910332_57070bab": {
+     "action": "reject",
+     "atMs": 1792242910332,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Paper bag DIOR white large"
+  },
+  {
+   "id": "-P47DvK0Y1wGWdpiHyRX",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792154053817",
+   "qty": 49,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:15:00.512Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792242900512,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 1,
+   "size": "_",
+   "stamps": {
+    "1792242521581_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242521581,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792242901079_57070bab": {
+     "action": "reject",
+     "atMs": 1792242901079,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Paper bag MICHAEL KORS large yellow"
+  },
+  {
+   "id": "-P47DvKAFq_gI2oP2jII",
+   "createdAt": "2026-10-17T05:00:23.646Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T05-00",
+    "source": "central"
+   },
+   "productId": "p1792154137342",
+   "qty": 49,
+   "rejectedBy": "admin",
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:14:59.201Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "resolvedDeviceAtMs": 1792242899201,
+   "resolvedDeviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+   "sentQty": 1,
+   "size": "_",
+   "stamps": {
+    "1792242510094_57070bab": {
+     "action": "send-part",
+     "atMs": 1792242510094,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    },
+    "1792242899869_57070bab": {
+     "action": "reject",
+     "atMs": 1792242899869,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "cancelled",
+   "name": "Paper bag MICHAEL KORS small yellow"
+  },
+  {
+   "id": "-P484vI8v-HYEaGzjtRv",
+   "createdAt": "2026-10-17T09:00:41.824Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T09-00",
+    "source": "hub2"
+   },
+   "productId": "p1782727110237",
+   "qty": 5,
+   "requestingLocation": "marathon-pe",
+   "size": "L",
+   "status": "open",
+   "name": "Timberland paperbag"
+  },
+  {
+   "id": "-P484vK5G1vmqn7ZwWVJ",
+   "createdAt": "2026-10-17T09:00:41.824Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T09-00",
+    "source": "central"
+   },
+   "fulfilledBy": {
+    "movementId": "rrf_-P484vK5G1vmqn7ZwWVJ",
+    "qty": 50
+   },
+   "productId": "p1782727110237",
+   "qty": 50,
+   "requestingLocation": "hub2",
+   "resolvedAt": "2026-10-17T13:01:29.393Z",
+   "resolvedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "size": "L",
+   "stamps": {
+    "1792242089393_57070bab": {
+     "action": "fulfil",
+     "atMs": 1792242089393,
+     "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+     "personName": "Mike"
+    }
+   },
+   "status": "fulfilled",
+   "name": "Timberland paperbag"
+  },
+  {
+   "id": "-P499U8TugS2So8068Q3",
+   "createdAt": "2026-10-17T14:00:11.256Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T14-00",
+    "source": "hub2"
+   },
+   "productId": "p1791883316473",
+   "qty": 41,
+   "requestingLocation": "trophy",
+   "size": "_",
+   "status": "open",
+   "name": "Valentino paperbag (medium size)"
+  },
+  {
+   "id": "-P499U8eG-loSIxPYbjL",
+   "createdAt": "2026-10-17T14:00:11.256Z",
+   "createdFrom": {
+    "engine": true,
+    "runId": "2026-10-17T14-00",
+    "source": "hub2"
+   },
+   "productId": "p1792153215900",
+   "qty": 50,
+   "requestingLocation": "trophy",
+   "size": "_",
+   "status": "open",
+   "name": "Paper bag boss white medium"
+  }
+ ],
+ "movementsSinceTotal": 664,
+ "movements": [
+  {
+   "id": "cr_R001-24_2026-10-17T05_00_34_255Z_g0",
+   "actor": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+   "actorRole": "admin",
+   "after": {
+    "hub2": 365,
+    "marathon-pe": 50
+   },
+   "appliedAt": "2026-10-17T08:32:37.982Z",
+   "before": {
+    "hub2": 415,
+    "marathon-pe": 0
+   },
+   "by": {
+    "atMs": 1792225957982,
+    "deviceId": "dca2c759-317b-4d38-8c04-e08d7ff96142",
+    "personName": "MC"
+   },
+   "from": "hub2",
+   "link": {
+    "deviceId": "dca2c759-317b-4d38-8c04-e08d7ff96142",
+    "orderId": "R001-24",
+    "refillId": "cr_marathon-pe_p1791896283311"
+   },
+   "productId": "p1791896283311",
+   "qty": 50,
+   "reason": "clothing_cr",
+   "size": "_",
+   "to": "marathon-pe",
+   "ts": "2026-10-17T08:32:37.982Z",
+   "type": "transfer_out",
+   "name": "Nike paperbag white"
+  },
+  {
+   "id": "cr_R001-2_2026-10-17T05_00_34_255Z_g0",
+   "actor": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+   "actorRole": "admin",
+   "after": {
+    "hub2": 0,
+    "marathon-pe": 45
+   },
+   "appliedAt": "2026-10-17T08:35:14.056Z",
+   "before": {
+    "hub2": 36,
+    "marathon-pe": 9
+   },
+   "by": {
+    "atMs": 1792226114056,
+    "deviceId": "dca2c759-317b-4d38-8c04-e08d7ff96142",
+    "personName": "MC"
+   },
+   "from": "hub2",
+   "link": {
+    "deviceId": "dca2c759-317b-4d38-8c04-e08d7ff96142",
+    "orderId": "R001-2",
+    "refillId": "cr_marathon-pe_p1782727110237"
+   },
+   "productId": "p1782727110237",
+   "qty": 36,
+   "reason": "clothing_cr",
+   "size": "L",
+   "to": "marathon-pe",
+   "ts": "2026-10-17T08:35:14.056Z",
+   "type": "transfer_out",
+   "name": "Timberland paperbag"
+  },
+  {
+   "id": "cr_R001-3_2026-10-17T05_00_34_255Z_g0",
+   "actor": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+   "actorRole": "admin",
+   "after": {
+    "hub2": 598,
+    "marathon-pe": 50
+   },
+   "appliedAt": "2026-10-17T08:27:02.140Z",
+   "before": {
+    "hub2": 646,
+    "marathon-pe": 2
+   },
+   "by": {
+    "atMs": 1792225622140,
+    "deviceId": "dca2c759-317b-4d38-8c04-e08d7ff96142",
+    "personName": "MC"
+   },
+   "from": "hub2",
+   "link": {
+    "deviceId": "dca2c759-317b-4d38-8c04-e08d7ff96142",
+    "orderId": "R001-3",
+    "refillId": "cr_marathon-pe_p1782727152355"
+   },
+   "productId": "p1782727152355",
+   "qty": 48,
+   "reason": "clothing_cr",
+   "size": "L",
+   "to": "marathon-pe",
+   "ts": "2026-10-17T08:27:02.140Z",
+   "type": "transfer_out",
+   "name": "Jordan paperbag"
+  },
+  {
+   "id": "cr_R001-4_2026-10-17T05_00_34_255Z_g0",
+   "actor": "oBvHU5gjelRbnyFW2KnNLP9Rofy2",
+   "actorRole": "admin",
+   "after": {
+    "hub2": 227,
+    "marathon-pe": 50
+   },
+   "appliedAt": "2026-10-17T08:29:59.641Z",
+   "before": {
+    "hub2": 270,
+    "marathon-pe": 7
+   },
+   "by": {
+    "atMs": 1792225799641,
+    "deviceId": "dca2c759-317b-4d38-8c04-e08d7ff96142",
+    "personName": "MC"
+   },
+   "from": "hub2",
+   "link": {
+    "deviceId": "dca2c759-317b-4d38-8c04-e08d7ff96142",
+    "orderId": "R001-4",
+    "refillId": "cr_marathon-pe_p1782727193104"
+   },
+   "productId": "p1782727193104",
+   "qty": 43,
+   "reason": "clothing_cr",
+   "size": "L",
+   "to": "marathon-pe",
+   "ts": "2026-10-17T08:29:59.641Z",
+   "type": "transfer_out",
+   "name": "Nike paperbag"
+  },
+  {
+   "id": "rrf_-P47DvFF7DCph5yhFi7G",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 10,
+    "hub2": 50
+   },
+   "appliedAt": "2026-10-17T13:04:51.761Z",
+   "before": {
+    "central": 56,
+    "hub2": 4
+   },
+   "by": {
+    "atMs": 1792242291761,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvFF7DCph5yhFi7G"
+   },
+   "productId": "p1791882981980",
+   "qty": 46,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:04:51.761Z",
+   "type": "transfer_out",
+   "name": "Karl lagerfeld paperbag (small size)"
+  },
+  {
+   "id": "rrf_-P47DvFO5p4PvoCSvsdC",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 54,
+    "hub2": 50
+   },
+   "appliedAt": "2026-10-17T13:05:55.727Z",
+   "before": {
+    "central": 100,
+    "hub2": 4
+   },
+   "by": {
+    "atMs": 1792242355727,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvFO5p4PvoCSvsdC"
+   },
+   "productId": "p1791883316473",
+   "qty": 46,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:05:55.727Z",
+   "type": "transfer_out",
+   "name": "Valentino paperbag (medium size)"
+  },
+  {
+   "id": "rrf_-P47DvFW1LHCB1e5IkCh",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 147,
+    "hub2": 50
+   },
+   "appliedAt": "2026-10-17T13:07:08.168Z",
+   "before": {
+    "central": 193,
+    "hub2": 4
+   },
+   "by": {
+    "atMs": 1792242428168,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvFW1LHCB1e5IkCh"
+   },
+   "productId": "p1791887047151",
+   "qty": 46,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:07:08.168Z",
+   "type": "transfer_out",
+   "name": "Philip plein paperbag black (small size)"
+  },
+  {
+   "id": "rrf_-P47DvFfOsD66oa_UNW9",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 6
+   },
+   "appliedAt": "2026-10-17T13:08:18.506Z",
+   "before": {
+    "central": 1,
+    "hub2": 5
+   },
+   "by": {
+    "atMs": 1792242498506,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvFfOsD66oa_UNW9"
+   },
+   "productId": "p1791888294603",
+   "qty": 1,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:08:18.506Z",
+   "type": "transfer_out",
+   "name": "Brunello cucinelli paperbag ( small size)"
+  },
+  {
+   "id": "rrf_-P47DvFpN6ER3ClOwlY4",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 15
+   },
+   "appliedAt": "2026-10-17T13:08:07.354Z",
+   "before": {
+    "central": 11,
+    "hub2": 4
+   },
+   "by": {
+    "atMs": 1792242487354,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvFpN6ER3ClOwlY4"
+   },
+   "productId": "p1791888468984",
+   "qty": 11,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:08:07.354Z",
+   "type": "transfer_out",
+   "name": "Prada paperbag ( small size)"
+  },
+  {
+   "id": "rrf_-P47DvG-RIsTp2S3ANHg",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 5
+   },
+   "appliedAt": "2026-10-17T13:12:22.052Z",
+   "before": {
+    "central": 3,
+    "hub2": 2
+   },
+   "by": {
+    "atMs": 1792242742052,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvG-RIsTp2S3ANHg"
+   },
+   "productId": "p1791891317996",
+   "qty": 3,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:12:22.052Z",
+   "type": "transfer_out",
+   "name": "Lacoste paperbag ( small size)"
+  },
+  {
+   "id": "rrf_-P47DvGEHhCl9kzLBufG",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 2
+   },
+   "appliedAt": "2026-10-17T13:12:46.937Z",
+   "before": {
+    "central": 2,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792242766937,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvGEHhCl9kzLBufG"
+   },
+   "productId": "p1792151052119",
+   "qty": 2,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:12:46.937Z",
+   "type": "transfer_out",
+   "name": "Paper bag Karl white large"
+  },
+  {
+   "id": "rrf_-P47DvGNUlQdTjbpPpUj",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 9
+   },
+   "appliedAt": "2026-10-17T13:14:02.514Z",
+   "before": {
+    "central": 9,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792242842514,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvGNUlQdTjbpPpUj"
+   },
+   "productId": "p1792151189805",
+   "qty": 9,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:14:02.514Z",
+   "type": "transfer_out",
+   "name": "Paper bag white boss large"
+  },
+  {
+   "id": "rrf_-P47DvGWcPNiHh5XDGQI",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 9
+   },
+   "appliedAt": "2026-10-17T13:22:52.388Z",
+   "before": {
+    "central": 9,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792243372388,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvGWcPNiHh5XDGQI"
+   },
+   "productId": "p1792151476022",
+   "qty": 9,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:22:52.388Z",
+   "type": "transfer_out",
+   "name": "Paper bag black Dolce GABBANA small"
+  },
+  {
+   "id": "rrf_-P47DvGcNFR3mq0MpvOX",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 10
+   },
+   "appliedAt": "2026-10-17T13:18:37.318Z",
+   "before": {
+    "central": 10,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792243117318,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvGcNFR3mq0MpvOX"
+   },
+   "productId": "p1792151678286",
+   "qty": 10,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:18:37.318Z",
+   "type": "transfer_out",
+   "name": "Paper bag Gucci green M"
+  },
+  {
+   "id": "rrf_-P47DvGl_MeQDQRsu6XD",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 42
+   },
+   "appliedAt": "2026-10-17T13:21:32.244Z",
+   "before": {
+    "central": 42,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792243292244,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvGl_MeQDQRsu6XD"
+   },
+   "productId": "p1792151841872",
+   "qty": 42,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:21:32.244Z",
+   "type": "transfer_out",
+   "name": "Paper bag Gucci green large"
+  },
+  {
+   "id": "rrf_-P47DvGy_yc1g7Wxhx00",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 16
+   },
+   "appliedAt": "2026-10-17T13:18:12.638Z",
+   "before": {
+    "central": 16,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792243092638,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvGy_yc1g7Wxhx00"
+   },
+   "productId": "p1792152075007",
+   "qty": 16,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:18:12.638Z",
+   "type": "transfer_out",
+   "name": "Paper bag DSQUARED2 black  small"
+  },
+  {
+   "id": "rrf_-P47DvHAiVdUjsDGUzID",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 35
+   },
+   "appliedAt": "2026-10-17T13:11:41.508Z",
+   "before": {
+    "central": 35,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792242701508,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvHAiVdUjsDGUzID"
+   },
+   "productId": "p1792152223010",
+   "qty": 35,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:11:41.508Z",
+   "type": "transfer_out",
+   "name": "Paper bag DIOR white medium"
+  },
+  {
+   "id": "rrf_-P47DvHHI5qwF7xHEzmh",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 103,
+    "hub2": 50
+   },
+   "appliedAt": "2026-10-17T13:17:33.107Z",
+   "before": {
+    "central": 153,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792243053107,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvHHI5qwF7xHEzmh"
+   },
+   "productId": "p1792152599905",
+   "qty": 50,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:17:33.107Z",
+   "type": "transfer_out",
+   "name": "Paper bag Loro piana brown"
+  },
+  {
+   "id": "rrf_-P47DvHPqBoR_cKzYV0K",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 79,
+    "hub2": 50
+   },
+   "appliedAt": "2026-10-17T13:16:26.596Z",
+   "before": {
+    "central": 129,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792242986596,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvHPqBoR_cKzYV0K"
+   },
+   "productId": "p1792153215900",
+   "qty": 50,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:16:26.596Z",
+   "type": "transfer_out",
+   "name": "Paper bag boss white medium"
+  },
+  {
+   "id": "rrf_-P47DvHYa9A3KkHb7trh",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 10
+   },
+   "appliedAt": "2026-10-17T13:14:30.804Z",
+   "before": {
+    "central": 10,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792242870804,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvHYa9A3KkHb7trh"
+   },
+   "productId": "p1792153442416",
+   "qty": 10,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:14:30.804Z",
+   "type": "transfer_out",
+   "name": "Paper bag TAGHEUER BLACK Small"
+  },
+  {
+   "id": "rrf_-P47DvHgwxBIIkjHAS9j",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 3
+   },
+   "appliedAt": "2026-10-17T13:14:45.680Z",
+   "before": {
+    "central": 3,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792242885680,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvHgwxBIIkjHAS9j"
+   },
+   "productId": "p1792153513242",
+   "qty": 3,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:14:45.680Z",
+   "type": "transfer_out",
+   "name": "Paper bag omega red small"
+  },
+  {
+   "id": "rrf_-P47DvHp0AUQE0K1ucDc",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 3
+   },
+   "appliedAt": "2026-10-17T13:14:19.474Z",
+   "before": {
+    "central": 3,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792242859474,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvHp0AUQE0K1ucDc"
+   },
+   "productId": "p1792153720360",
+   "qty": 3,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:14:19.474Z",
+   "type": "transfer_out",
+   "name": "Paper bag LOUIS VUITTON orange large"
+  },
+  {
+   "id": "rrf_-P47DvJuFp6Pt_xUrj0J",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 2
+   },
+   "appliedAt": "2026-10-17T13:10:30.468Z",
+   "before": {
+    "central": 2,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792242630468,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvJuFp6Pt_xUrj0J"
+   },
+   "productId": "p1792153817693",
+   "qty": 2,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:10:30.468Z",
+   "type": "transfer_out",
+   "name": "Paper bag DIOR white large"
+  },
+  {
+   "id": "rrf_-P47DvK0Y1wGWdpiHyRX",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 1
+   },
+   "appliedAt": "2026-10-17T13:08:40.828Z",
+   "before": {
+    "central": 1,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792242520828,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvK0Y1wGWdpiHyRX"
+   },
+   "productId": "p1792154053817",
+   "qty": 1,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:08:40.828Z",
+   "type": "transfer_out",
+   "name": "Paper bag MICHAEL KORS large yellow"
+  },
+  {
+   "id": "rrf_-P47DvKAFq_gI2oP2jII",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 0,
+    "hub2": 1
+   },
+   "appliedAt": "2026-10-17T13:08:29.403Z",
+   "before": {
+    "central": 1,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792242509403,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P47DvKAFq_gI2oP2jII"
+   },
+   "productId": "p1792154137342",
+   "qty": 1,
+   "reason": "hub2_auto_refill",
+   "size": "_",
+   "to": "hub2",
+   "ts": "2026-10-17T13:08:29.403Z",
+   "type": "transfer_out",
+   "name": "Paper bag MICHAEL KORS small yellow"
+  },
+  {
+   "id": "rrf_-P484vK5G1vmqn7ZwWVJ",
+   "actor": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+   "actorRole": "admin",
+   "after": {
+    "central": 184,
+    "hub2": 50
+   },
+   "appliedAt": "2026-10-17T13:01:28.746Z",
+   "before": {
+    "central": 234,
+    "hub2": 0
+   },
+   "by": {
+    "atMs": 1792242088746,
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "personName": "Mike"
+   },
+   "from": "central",
+   "link": {
+    "deviceId": "57070bab-8813-4164-9165-2f16fd7f9244",
+    "refillId": "-P484vK5G1vmqn7ZwWVJ"
+   },
+   "productId": "p1782727110237",
+   "qty": 50,
+   "reason": "hub2_auto_refill",
+   "size": "L",
+   "to": "hub2",
+   "ts": "2026-10-17T13:01:28.746Z",
+   "type": "transfer_out",
+   "name": "Timberland paperbag"
+  },
+  {
+   "id": "sold:-P48-fmwXjeO0PPRDTG1:trophy:p1791882981980:_",
+   "actor": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+   "after": {
+    "trophy": 6
+   },
+   "appliedAt": "2026-10-17T08:37:59.402Z",
+   "before": {
+    "trophy": 7
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P48-fmwXjeO0PPRDTG1"
+   },
+   "productId": "p1791882981980",
+   "qty": 1,
+   "size": "_",
+   "ts": "2026-10-17T08:37:58.099Z",
+   "type": "sold",
+   "name": "Karl lagerfeld paperbag (small size)"
+  },
+  {
+   "id": "sold:-P485de_6B0Z7WCwvqxQ:trophy:p1791889079314:_",
+   "actor": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+   "after": {
+    "trophy": 3
+   },
+   "appliedAt": "2026-10-17T09:04:14.729Z",
+   "before": {
+    "trophy": 4
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P485de_6B0Z7WCwvqxQ"
+   },
+   "productId": "p1791889079314",
+   "qty": 1,
+   "size": "_",
+   "ts": "2026-10-17T09:04:03.716Z",
+   "type": "sold",
+   "name": "Amiri paperbag"
+  },
+  {
+   "id": "sold:-P485de_6B0Z7WCwvqxQ:trophy:p1792153215900:_",
+   "actor": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+   "after": {
+    "trophy": 0
+   },
+   "appliedAt": "2026-10-17T09:04:15.387Z",
+   "before": {
+    "trophy": 0
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P485de_6B0Z7WCwvqxQ"
+   },
+   "productId": "p1792153215900",
+   "qty": 1,
+   "shortfall": 1,
+   "size": "_",
+   "ts": "2026-10-17T09:04:03.716Z",
+   "type": "sold",
+   "name": "Paper bag boss white medium"
+  },
+  {
+   "id": "sold:-P486LfwrAVVXbG60TxS:trophy:p1791886113857:_",
+   "actor": "MRiyMH8KsIg2iKYTTtaHdvTeVJ62",
+   "after": {
+    "trophy": 0
+   },
+   "appliedAt": "2026-10-17T09:07:07.977Z",
+   "before": {
+    "trophy": 0
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P486LfwrAVVXbG60TxS"
+   },
+   "productId": "p1791886113857",
+   "qty": 1,
+   "shortfall": 1,
+   "size": "_",
+   "ts": "2026-10-17T09:07:06.612Z",
+   "type": "sold",
+   "name": "Boss paperbag (big size)"
+  },
+  {
+   "id": "sold:-P48763S5yZT_sL85WYd:trophy:p1791883636340:_",
+   "actor": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+   "after": {
+    "trophy": 23
+   },
+   "appliedAt": "2026-10-17T09:10:37.430Z",
+   "before": {
+    "trophy": 24
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P48763S5yZT_sL85WYd"
+   },
+   "productId": "p1791883636340",
+   "qty": 1,
+   "size": "_",
+   "ts": "2026-10-17T09:10:26.026Z",
+   "type": "sold",
+   "name": "Givenchy paperbag"
+  },
+  {
+   "id": "sold:-P48K8terZivNtvMbG-N:trophy:p1791885011582:_",
+   "actor": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+   "after": {
+    "trophy": 4
+   },
+   "appliedAt": "2026-10-17T10:07:26.971Z",
+   "before": {
+    "trophy": 5
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P48K8terZivNtvMbG-N"
+   },
+   "productId": "p1791885011582",
+   "qty": 1,
+   "size": "_",
+   "ts": "2026-10-17T10:07:25.387Z",
+   "type": "sold",
+   "name": "Armani exchange paper bag (big size)"
+  },
+  {
+   "id": "sold:-P48KOWzZx7YIXUB6a0g:marathon-pe:p1782727193104:L",
+   "actor": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+   "after": {
+    "marathon-pe": 49
+   },
+   "appliedAt": "2026-10-17T10:08:29.616Z",
+   "before": {
+    "marathon-pe": 50
+   },
+   "from": "marathon-pe",
+   "link": {
+    "saleId": "-P48KOWzZx7YIXUB6a0g"
+   },
+   "productId": "p1782727193104",
+   "qty": 1,
+   "size": "L",
+   "ts": "2026-10-17T10:08:29.082Z",
+   "type": "sold",
+   "name": "Nike paperbag"
+  },
+  {
+   "id": "sold:-P48LWIjCCZZrDSWBD2P:marathon-pe:p1782727152355:L",
+   "actor": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+   "after": {
+    "marathon-pe": 49
+   },
+   "appliedAt": "2026-10-17T10:13:46.349Z",
+   "before": {
+    "marathon-pe": 50
+   },
+   "from": "marathon-pe",
+   "link": {
+    "saleId": "-P48LWIjCCZZrDSWBD2P"
+   },
+   "productId": "p1782727152355",
+   "qty": 1,
+   "size": "L",
+   "ts": "2026-10-17T10:13:24.102Z",
+   "type": "sold",
+   "name": "Jordan paperbag"
+  },
+  {
+   "id": "sold:-P48LxclGakQ-NmJtO7t:trophy:p1791891317996:_",
+   "actor": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+   "after": {
+    "trophy": 20
+   },
+   "appliedAt": "2026-10-17T10:15:26.422Z",
+   "before": {
+    "trophy": 21
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P48LxclGakQ-NmJtO7t"
+   },
+   "productId": "p1791891317996",
+   "qty": 1,
+   "size": "_",
+   "ts": "2026-10-17T10:15:20.256Z",
+   "type": "sold",
+   "name": "Lacoste paperbag ( small size)"
+  },
+  {
+   "id": "sold:-P48MP6w0_nmsGKIVGcO:marathon-pe:p1782727193104:L",
+   "actor": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+   "after": {
+    "marathon-pe": 48
+   },
+   "appliedAt": "2026-10-17T10:17:17.795Z",
+   "before": {
+    "marathon-pe": 49
+   },
+   "from": "marathon-pe",
+   "link": {
+    "saleId": "-P48MP6w0_nmsGKIVGcO"
+   },
+   "productId": "p1782727193104",
+   "qty": 1,
+   "size": "L",
+   "ts": "2026-10-17T10:17:16.636Z",
+   "type": "sold",
+   "name": "Nike paperbag"
+  },
+  {
+   "id": "sold:-P48U9w89SXnc88vI5dv:marathon-pe:p1782727152355:L",
+   "actor": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+   "after": {
+    "marathon-pe": 48
+   },
+   "appliedAt": "2026-10-17T10:51:12.962Z",
+   "before": {
+    "marathon-pe": 49
+   },
+   "from": "marathon-pe",
+   "link": {
+    "saleId": "-P48U9w89SXnc88vI5dv"
+   },
+   "productId": "p1782727152355",
+   "qty": 1,
+   "size": "L",
+   "ts": "2026-10-17T10:51:11.604Z",
+   "type": "sold",
+   "name": "Jordan paperbag"
+  },
+  {
+   "id": "sold:-P48UJbYlUcVvcP5ddI2:trophy:p1791889951053:_",
+   "actor": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+   "after": {
+    "trophy": 13
+   },
+   "appliedAt": "2026-10-17T10:51:56.478Z",
+   "before": {
+    "trophy": 16
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P48UJbYlUcVvcP5ddI2"
+   },
+   "productId": "p1791889951053",
+   "qty": 3,
+   "size": "_",
+   "ts": "2026-10-17T10:51:51.630Z",
+   "type": "sold",
+   "name": "Boss paperbag  ( small size)"
+  },
+  {
+   "id": "sold:-P48W5lI8xXQ37L4Mt00:marathon-pe:p1782727193104:L",
+   "actor": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+   "after": {
+    "marathon-pe": 47
+   },
+   "appliedAt": "2026-10-17T10:59:42.044Z",
+   "before": {
+    "marathon-pe": 48
+   },
+   "from": "marathon-pe",
+   "link": {
+    "saleId": "-P48W5lI8xXQ37L4Mt00"
+   },
+   "productId": "p1782727193104",
+   "qty": 1,
+   "size": "L",
+   "ts": "2026-10-17T10:59:38.183Z",
+   "type": "sold",
+   "name": "Nike paperbag"
+  },
+  {
+   "id": "sold:-P48YwY1W0zSSrIDHBx2:marathon-pe:p1782727235670:3",
+   "actor": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+   "after": {
+    "marathon-pe": 0
+   },
+   "appliedAt": "2026-10-17T11:12:04.026Z",
+   "before": {
+    "marathon-pe": 0
+   },
+   "from": "marathon-pe",
+   "link": {
+    "saleId": "-P48YwY1W0zSSrIDHBx2"
+   },
+   "productId": "p1782727235670",
+   "qty": 2,
+   "shortfall": 2,
+   "size": "3",
+   "ts": "2026-10-17T11:12:02.880Z",
+   "type": "sold",
+   "name": "Karl paper bag "
+  },
+  {
+   "id": "sold:-P48YwY1W0zSSrIDHBx2:marathon-pe:p1791883502646:_",
+   "actor": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+   "after": {
+    "marathon-pe": 3
+   },
+   "appliedAt": "2026-10-17T11:12:04.753Z",
+   "before": {
+    "marathon-pe": 5
+   },
+   "from": "marathon-pe",
+   "link": {
+    "saleId": "-P48YwY1W0zSSrIDHBx2"
+   },
+   "productId": "p1791883502646",
+   "qty": 2,
+   "size": "_",
+   "ts": "2026-10-17T11:12:02.880Z",
+   "type": "sold",
+   "name": "Gucci paperbag green (medium size)"
+  },
+  {
+   "id": "sold:-P48_M_as4rgmI0hcceN:trophy:p1791886113857:_",
+   "actor": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+   "after": {
+    "trophy": 0
+   },
+   "appliedAt": "2026-10-17T11:18:19.381Z",
+   "before": {
+    "trophy": 0
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P48_M_as4rgmI0hcceN"
+   },
+   "productId": "p1791886113857",
+   "qty": 1,
+   "shortfall": 1,
+   "size": "_",
+   "ts": "2026-10-17T11:18:15.789Z",
+   "type": "sold",
+   "name": "Boss paperbag (big size)"
+  },
+  {
+   "id": "sold:-P48a-mklDAq_k0kyHME:trophy:p1791886113857:_",
+   "actor": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+   "after": {
+    "trophy": 0
+   },
+   "appliedAt": "2026-10-17T11:21:20.502Z",
+   "before": {
+    "trophy": 0
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P48a-mklDAq_k0kyHME"
+   },
+   "productId": "p1791886113857",
+   "qty": 1,
+   "shortfall": 1,
+   "size": "_",
+   "ts": "2026-10-17T11:21:04.367Z",
+   "type": "sold",
+   "name": "Boss paperbag (big size)"
+  },
+  {
+   "id": "sold:-P48ebEKeyLDnyOmqkgE:marathon-pe:p1782727193104:L",
+   "actor": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+   "after": {
+    "marathon-pe": 46
+   },
+   "appliedAt": "2026-10-17T11:41:11.904Z",
+   "before": {
+    "marathon-pe": 47
+   },
+   "from": "marathon-pe",
+   "link": {
+    "saleId": "-P48ebEKeyLDnyOmqkgE"
+   },
+   "productId": "p1782727193104",
+   "qty": 1,
+   "size": "L",
+   "ts": "2026-10-17T11:41:10.548Z",
+   "type": "sold",
+   "name": "Nike paperbag"
+  },
+  {
+   "id": "sold:-P48gDFCQZ8jPTXcS5zk:trophy:p1791891317996:_",
+   "actor": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+   "after": {
+    "trophy": 19
+   },
+   "appliedAt": "2026-10-17T11:48:14.854Z",
+   "before": {
+    "trophy": 20
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P48gDFCQZ8jPTXcS5zk"
+   },
+   "productId": "p1791891317996",
+   "qty": 1,
+   "size": "_",
+   "ts": "2026-10-17T11:48:12.705Z",
+   "type": "sold",
+   "name": "Lacoste paperbag ( small size)"
+  },
+  {
+   "id": "sold:-P491CGeNhLGrnoGQfxL:trophy:p1791887358177:_",
+   "actor": "Cd0KdHoCsNXXEToQGdKLNg3DzFI2",
+   "after": {
+    "trophy": 6
+   },
+   "appliedAt": "2026-10-17T13:24:19.138Z",
+   "before": {
+    "trophy": 7
+   },
+   "from": "trophy",
+   "link": {
+    "saleId": "-P491CGeNhLGrnoGQfxL"
+   },
+   "productId": "p1791887358177",
+   "qty": 1,
+   "size": "_",
+   "ts": "2026-10-17T13:24:15.697Z",
+   "type": "sold",
+   "name": "Hermes paperbag"
+  }
+ ],
+ "movementSampleKeys": [
+  "actor",
+  "after",
+  "appliedAt",
+  "before",
+  "by",
+  "link",
+  "productId",
+  "qty",
+  "size",
+  "to",
+  "ts",
+  "type"
+ ],
+ "runs": {
+  "2026-10-16T13-00": {
+   "startedAt": "2026-10-16T13:00:43.576Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 4,
+    "footwearIntentsPlanned": 4,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 39,
+    "intentsPlanned": 39,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-16T14-01": {
+   "startedAt": "2026-10-16T14:01:02.583Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 5,
+    "footwearIntentsPlanned": 5,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 37,
+    "intentsPlanned": 37,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-16T15-00": {
+   "startedAt": "2026-10-16T15:00:08.040Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 8,
+    "footwearIntentsPlanned": 8,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 22,
+    "intentsPlanned": 22,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-16T16-00": {
+   "startedAt": "2026-10-16T16:00:51.412Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 0,
+    "footwearIntentsPlanned": 0,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 11,
+    "intentsPlanned": 11,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-16T17-00": {
+   "startedAt": "2026-10-16T17:00:21.145Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 0,
+    "footwearIntentsPlanned": 0,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 0,
+    "intentsPlanned": 0,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-17T05-00": {
+   "startedAt": "2026-10-17T05:00:23.646Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 0,
+    "footwearIntentsPlanned": 0,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 51,
+    "intentsPlanned": 51,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "paperBagIntentsComputed": 51,
+    "paperBagIntentsPlanned": 51,
+    "paperBagThrottled": false,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-17T06-00": {
+   "startedAt": "2026-10-17T06:00:51.088Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 0,
+    "footwearIntentsPlanned": 0,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 0,
+    "intentsPlanned": 0,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-17T07-00": {
+   "startedAt": "2026-10-17T07:00:39.548Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 0,
+    "footwearIntentsPlanned": 0,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 1,
+    "intentsPlanned": 1,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-17T08-00": {
+   "startedAt": "2026-10-17T08:00:09.606Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 3,
+    "footwearIntentsPlanned": 3,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 6,
+    "intentsPlanned": 6,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-17T09-00": {
+   "startedAt": "2026-10-17T09:00:41.824Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 8,
+    "footwearIntentsPlanned": 8,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 16,
+    "intentsPlanned": 16,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "paperBagIntentsComputed": 2,
+    "paperBagIntentsPlanned": 2,
+    "paperBagThrottled": false,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-17T10-00": {
+   "startedAt": "2026-10-17T10:00:10.363Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 4,
+    "footwearIntentsPlanned": 4,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 14,
+    "intentsPlanned": 14,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-17T11-00": {
+   "startedAt": "2026-10-17T11:00:09.879Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 14,
+    "footwearIntentsPlanned": 14,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 52,
+    "intentsPlanned": 52,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-17T12-00": {
+   "startedAt": "2026-10-17T12:00:38.072Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 9,
+    "footwearIntentsPlanned": 9,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 25,
+    "intentsPlanned": 25,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-17T13-00": {
+   "startedAt": "2026-10-17T13:00:11.109Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 10,
+    "footwearIntentsPlanned": 10,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 21,
+    "intentsPlanned": 21,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  },
+  "2026-10-17T14-00": {
+   "startedAt": "2026-10-17T14:00:11.256Z",
+   "intents": null,
+   "keys": [
+    "counts",
+    "finishedAt",
+    "mode",
+    "policy",
+    "startedAt"
+   ],
+   "policy": {
+    "footwearIntentsComputed": 12,
+    "footwearIntentsPlanned": 12,
+    "footwearTargets": {
+     "concrete": false,
+     "hub1": false,
+     "hub2": false,
+     "hub3": false,
+     "marathon-pe": false,
+     "marathon-pine": false,
+     "trophy": false
+    },
+    "footwearThrottled": false,
+    "intentsComputed": 44,
+    "intentsPlanned": 44,
+    "maxFootwearIntentsPerRun": 25,
+    "maxIntentsPerRun": 75,
+    "paperBagIntentsComputed": 2,
+    "paperBagIntentsPlanned": 2,
+    "paperBagThrottled": false,
+    "ruleBasedTargets": {
+     "concrete": true,
+     "hub1": true,
+     "hub2": true,
+     "hub3": true,
+     "marathon-pe": true,
+     "marathon-pine": true,
+     "trophy": true
+    },
+    "throttled": false
+   },
+   "errors": null
+  }
+ },
+ "history": [
+  {
+   "id": "-P44fvJieYCNoZJvP7Hs",
+   "kind": "category",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170483925,
+   "status": "applied",
+   "categoryKey": "paper-bags",
+   "changes": 15
+  },
+  {
+   "id": "-P44g-NVGScNkyOb5wrG",
+   "kind": "category",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170507049,
+   "status": "applied",
+   "categoryKey": "paper-bags",
+   "changes": 1
+  },
+  {
+   "id": "-P44g-z2AzfjerVTOfvD",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170527833,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791889079314",
+   "changes": 1
+  },
+  {
+   "id": "-P44g0b1rNgi2kiqMRwp",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170529882,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791889079314",
+   "changes": 1
+  },
+  {
+   "id": "-P44g14nr-xKUfau1lBC",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170532532,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791889079314",
+   "changes": 1
+  },
+  {
+   "id": "-P44g1Zeh1w15_P1Odkn",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170534396,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791885011582",
+   "changes": 1
+  },
+  {
+   "id": "-P44g244Cvls_xa_zXKk",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170536524,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791885011582",
+   "changes": 1
+  },
+  {
+   "id": "-P44g2c2qmC1fUysXR1Z",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170538581,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791885011582",
+   "changes": 1
+  },
+  {
+   "id": "-P44g33-CF8y3xdUHC29",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170540625,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1782726989989",
+   "changes": 3
+  },
+  {
+   "id": "-P44g3WHkg1TzN3DwDkc",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170542459,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1782726989989",
+   "changes": 3
+  },
+  {
+   "id": "-P44g3z1xCan8AXZYYDA",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170544364,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1782726989989",
+   "changes": 3
+  },
+  {
+   "id": "-P44g4SPLhvCqVMR5qH_",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170546330,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791888755311",
+   "changes": 1
+  },
+  {
+   "id": "-P44g4y06OlqlUA4T3Yc",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170548281,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791888755311",
+   "changes": 1
+  },
+  {
+   "id": "-P44g5Tze1-R2d82bvL0",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170550477,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791888755311",
+   "changes": 1
+  },
+  {
+   "id": "-P44g5xSc6QFlNVPMMwa",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170552474,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791889951053",
+   "changes": 1
+  },
+  {
+   "id": "-P44g6QTlqnqqLY1w3jo",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170554343,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791889951053",
+   "changes": 1
+  },
+  {
+   "id": "-P44g6u-ImUkiIJZ4aCC",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170556292,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791889951053",
+   "changes": 1
+  },
+  {
+   "id": "-P44g7NQs8DJqDSV5_yY",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170558263,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791886113857",
+   "changes": 1
+  },
+  {
+   "id": "-P44g7pGkUBknCOKo-mJ",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170560110,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791886113857",
+   "changes": 1
+  },
+  {
+   "id": "-P44g8KbkNSUHq86JrUv",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170562122,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791886113857",
+   "changes": 1
+  },
+  {
+   "id": "-P44g8nPhcKxzLt1Vl7z",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170564131,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791884333181",
+   "changes": 1
+  },
+  {
+   "id": "-P44g9QqVJ5-dJXB3adc",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170566424,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791884333181",
+   "changes": 1
+  },
+  {
+   "id": "-P44g9utrs9Kgc4vNo5Y",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170568678,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791884333181",
+   "changes": 1
+  },
+  {
+   "id": "-P44gANau6ZgQzXQle_Q",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170570584,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791888294603",
+   "changes": 1
+  },
+  {
+   "id": "-P44gAx1rjGBZFmKu2X7",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170572583,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791888294603",
+   "changes": 1
+  },
+  {
+   "id": "-P44gBQ1eMQxAtPU2yuc",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170574863,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791888294603",
+   "changes": 1
+  },
+  {
+   "id": "-P44gBuyLXLIYZDYyUj_",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170576790,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791885721460",
+   "changes": 1
+  },
+  {
+   "id": "-P44gCS3CnXmsRGLTUPf",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170579045,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791885721460",
+   "changes": 1
+  },
+  {
+   "id": "-P44gCu1bYbg26d3HVS-",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170580890,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791885721460",
+   "changes": 1
+  },
+  {
+   "id": "-P44gDWLUH5zdVoiAecs",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170583349,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791884222521",
+   "changes": 1
+  },
+  {
+   "id": "-P44gE69iouoaLBEpUBS",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170585762,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791884222521",
+   "changes": 1
+  },
+  {
+   "id": "-P44gEZuWoTSvWSzrWK0",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170587788,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791884222521",
+   "changes": 1
+  },
+  {
+   "id": "-P44gF5_wKzP65TLgeH5",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170589679,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791886235808",
+   "changes": 1
+  },
+  {
+   "id": "-P44gFYcdUQWdeanG9Pi",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170591765,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791886235808",
+   "changes": 1
+  },
+  {
+   "id": "-P44gG37CNej9L6kaU0J",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170593838,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791886235808",
+   "changes": 1
+  },
+  {
+   "id": "-P44gG_17LwDj0hA7CjW",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170595881,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1782727067661",
+   "changes": 3
+  },
+  {
+   "id": "-P44gH2aeRLOxZhYR5pE",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170597916,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1782727067661",
+   "changes": 3
+  },
+  {
+   "id": "-P44gHVOnB3JNP2soZVD",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170599760,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791885927781",
+   "changes": 1
+  },
+  {
+   "id": "-P44gHyu2GlFW38eal4o",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170601697,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791885927781",
+   "changes": 1
+  },
+  {
+   "id": "-P44gIdnRJxHHTZ6NwJU",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170603563,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791885927781",
+   "changes": 1
+  },
+  {
+   "id": "-P44gJ5PDBQZXuGxRzxw",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170606317,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791891476692",
+   "changes": 1
+  },
+  {
+   "id": "-P44gJdXZZG1xVa6CdwB",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170608493,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791891476692",
+   "changes": 1
+  },
+  {
+   "id": "-P44gKCEqt2Lrv4L_JZV",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170610753,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791891476692",
+   "changes": 1
+  },
+  {
+   "id": "-P44gKf1k7CycsF1GoLs",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170612729,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791884019159",
+   "changes": 1
+  },
+  {
+   "id": "-P44gL7tfqzvuiKjMbe3",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170614632,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791884019159",
+   "changes": 1
+  },
+  {
+   "id": "-P44gLd_zM0KPauYzIHo",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170616710,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791884019159",
+   "changes": 1
+  },
+  {
+   "id": "-P44gM7BdUxFXAZnTk8B",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170618690,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791890345915",
+   "changes": 1
+  },
+  {
+   "id": "-P44gMdAV8ixSl6zO6e-",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170620796,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791890345915",
+   "changes": 1
+  },
+  {
+   "id": "-P44gN5vJSCX4toNOUGA",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170622694,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791890345915",
+   "changes": 1
+  },
+  {
+   "id": "-P44gNh6ORb0C9p9pBsa",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170625090,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1782726941853",
+   "changes": 3
+  },
+  {
+   "id": "-P44gOACVq-UpkT6hOg7",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170627102,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1782726941853",
+   "changes": 3
+  },
+  {
+   "id": "-P44gOcUhV2nr1n6_b6e",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170628979,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791886497941",
+   "changes": 1
+  },
+  {
+   "id": "-P44gPDy7LlPCfb4pELm",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170631436,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791886497941",
+   "changes": 1
+  },
+  {
+   "id": "-P44gPhleeNhH5nE7wWR",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170633382,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791886497941",
+   "changes": 1
+  },
+  {
+   "id": "-P44gQAMZCQXml9ID35s",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170635293,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791883636340",
+   "changes": 1
+  },
+  {
+   "id": "-P44gQiPwoCz_eafhiyT",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170637544,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791883636340",
+   "changes": 1
+  },
+  {
+   "id": "-P44gRKF03h-j4SQwRbu",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170639817,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791883636340",
+   "changes": 1
+  },
+  {
+   "id": "-P44gRnrcayCi07wQn50",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170641981,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791884764527",
+   "changes": 1
+  },
+  {
+   "id": "-P44gSFluF3Fqit1FZdk",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170643822,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791884764527",
+   "changes": 1
+  },
+  {
+   "id": "-P44gSjFdPWyIzWdbIxk",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170645764,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791884764527",
+   "changes": 1
+  },
+  {
+   "id": "-P44gTPi_hluEaGTos-w",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170648345,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791883502646",
+   "changes": 1
+  },
+  {
+   "id": "-P44gTxW-L3E_mS9W6eu",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170650551,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791883502646",
+   "changes": 1
+  },
+  {
+   "id": "-P44gUPwhv208g8VELmq",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170652619,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791883502646",
+   "changes": 1
+  },
+  {
+   "id": "-P44gUrO3xytJqgUM4FV",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170654496,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791887150502",
+   "changes": 1
+  },
+  {
+   "id": "-P44gVNY0ErWp_fmXhMG",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170656546,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791887150502",
+   "changes": 1
+  },
+  {
+   "id": "-P44gVr8OpK7AnMYw2UP",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170658553,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791887150502",
+   "changes": 1
+  },
+  {
+   "id": "-P44gWLiog7AlbUFB1jW",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170660502,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791884636653",
+   "changes": 1
+  },
+  {
+   "id": "-P44gWw9niW0IKM3392K",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170662787,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791884636653",
+   "changes": 1
+  },
+  {
+   "id": "-P44gXQAJz_c4VeRXMto",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170664841,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791884636653",
+   "changes": 1
+  },
+  {
+   "id": "-P44gXu2DSLMUgEj3z4Q",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170666886,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791884531085",
+   "changes": 1
+  },
+  {
+   "id": "-P44gYOqRIdJiz6AxHtc",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170668827,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791884531085",
+   "changes": 1
+  },
+  {
+   "id": "-P44gYuX_GW4nSluSTjf",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170671026,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791884531085",
+   "changes": 1
+  },
+  {
+   "id": "-P44gZNQ7yIdkdz6KXLC",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170672988,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791887358177",
+   "changes": 1
+  },
+  {
+   "id": "-P44gZpHgIGx3drmpSau",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170674847,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1791887358177",
+   "changes": 1
+  },
+  {
+   "id": "-P44g_Hw7epZs9POyS--",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170676715,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1782727152355",
+   "changes": 3
+  },
+  {
+   "id": "-P44g_kZs0QiQv7vcDPy",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170678589,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1782727152355",
+   "changes": 3
+  },
+  {
+   "id": "-P44gaD7p5Sgnfs9PrI_",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170680499,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1782727235670",
+   "changes": 3
+  },
+  {
+   "id": "-P44gapPArcibI1yBLmp",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170682872,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1782727235670",
+   "changes": 3
+  },
+  {
+   "id": "-P44gbIabop2e9ZsIyZ_",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170684958,
+   "status": "applied",
+   "loc": "trophy",
+   "pid": "p1782727235670",
+   "changes": 3
+  },
+  {
+   "id": "-P44gbkLQFnM06AeMnHc",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170686798,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1782727193104",
+   "changes": 3
+  },
+  {
+   "id": "-P44gcGVbNy6sZz0-A2g",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170688814,
+   "status": "applied",
+   "loc": "hub2",
+   "pid": "p1791896283311",
+   "changes": 1
+  },
+  {
+   "id": "-P44gcjB0cY4YNdOOKIs",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170690842,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1791896283311",
+   "changes": 1
+  },
+  {
+   "id": "-P44gdAeQko4GMsliqiA",
+   "kind": "targets",
+   "by": "paper-bag-policy-runner",
+   "at": 1792170692672,
+   "status": "applied",
+   "loc": "marathon-pe",
+   "pid": "p1782727110237",
+   "changes": 3
+  }
+ ],
+ "historyTotalScanned": 83
+}

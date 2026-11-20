@@ -1,0 +1,85 @@
+════════════════════════════════════════════════════════════════════════════════════════
+PAPER BAGS — DRY RUN (nothing is written) — 2026-10-16T17:12:34.405Z
+════════════════════════════════════════════════════════════════════════════════════════
+
+59 paper bags in a catalogue of 5383.
+
+ROUTING — every store's paper-bag back stock stays where Bags/Packaging resolved it
+
+A. TAXONOMY — paper-bags already exists, nothing to do
+
+B. RE-KEY — 0 of 59 to "paper-bags"
+
+C. POLICY — before {"hub2":{"minQty":25,"reorderPoint":10,"target":50},"marathon-pe":{"carriedOnly":true,"minQty":25,"reorderPoint":10,"target":50},"trophy":{"carriedOnly":true,"minQty":25,"reorderPoint":10,"target":50}}
+   after  {"hub2":{"target":50,"minQty":25,"reorderPoint":10},"marathon-pe":{"target":50,"minQty":25,"reorderPoint":10,"carriedOnly":true},"trophy":{"target":50,"minQty":25,"reorderPoint":10,"carriedOnly":true}}   (already live — nothing to do)
+
+D. PRODUCT ROWS — 0 product × location edits (0 rows cleared, 0 set to 50/ask 10)
+   keep  trophy      L  0 ("not at this shop")              Nike paperbag
+   keep  trophy      _  0 ("not at this shop")              Nike paperbag white
+   keep  trophy      L  0 ("not at this shop")              Timberland paperbag
+
+E. CANCEL — 0 open engine paper-bag requests (0 left alone)
+
+F. MODEL — the next scan (engine's computeRefillPlan on paper bags only; rejection cooldowns not modelled):
+   51 requests, 2408 units
+   Alexander McQueen paperbag (small size)      C=17     H2=22    PE=–    T=2    → trophy ← hub2 x48
+   Amiri paperbag                               C=–      H2=0     PE=1    T=4    → nothing
+   Armani exchange paper bag (big size)         C=347    H2=20    PE=5    T=5    → marathon-pe ← hub2 x45
+   Armani paperbag                              C=–      H2=–     PE=L:0  T=L:0  → nothing
+   Balenciaga paperbag ( small size)            C=–      H2=–     PE=–    T=3    → nothing
+   Boss paperbag  ( small size)                 C=409    H2=23    PE=16   T=16   → nothing
+   Boss paperbag (big size)                     C=–      H2=–     PE=–    T=0    → nothing
+   Bottega veneta paperbag                      C=24     H2=13    PE=4    T=4    → marathon-pe ← hub2 x46
+   Brunello cucinelli paperbag ( small size)    C=1      H2=5     PE=5    T=20   → marathon-pe ← hub2 x45; hub2 ← central x45
+   Burberry paperbag (big size)                 C=–      H2=–     PE=–    T=1    → nothing
+   Christian louboutin paperbag                 C=34     H2=20    PE=5    T=21   → marathon-pe ← hub2 x45
+   D&G paperbag ( big size)                     C=165    H2=26    PE=5    T=10   → marathon-pe ← hub2 x45
+   Diesel paperbag                              C=–      H2=–     PE=L:0  T=L:0  → nothing
+   Diesel paperbag (big size)                   C=13     H2=20    PE=–    T=0    → trophy ← hub2 x50
+   Dior paperbag                                C=62     H2=20    PE=3    T=4    → marathon-pe ← hub2 x47
+   Dior paperbag ( big size)                    C=–      H2=4     PE=–    T=–    → nothing
+   Dior paperbag (big size)                     C=17     H2=21    PE=5    T=13   → marathon-pe ← hub2 x45
+   Dior paperbag (small size)                   C=4      H2=21    PE=5    T=7    → marathon-pe ← hub2 x45
+   Giorgio armani paperbag                      C=L:114  H2=L:22  PE=L:3  T=L:27 → marathon-pe ← hub2 x47
+   Giuseppe zanotti paperbag                    C=0      H2=13    PE=2    T=1    → marathon-pe ← hub2 x48
+   Givenchy paperbag                            C=7      H2=21    PE=5    T=24   → marathon-pe ← hub2 x45
+   Gucci paperbag green ( big size)             C=–      H2=–     PE=5    T=27   → nothing
+   Gucci paperbag green (medium size)           C=0      H2=5     PE=5    T=1    → marathon-pe ← hub2 x45
+   Gucci paperbag green (small size)            C=38     H2=20    PE=–    T=0    → trophy ← hub2 x50
+   Gucci paperbag maroon (big size)             C=0      H2=1     PE=1    T=0    → marathon-pe ← hub2 x49
+   Gucci paperbag maroon (small size)           C=47     H2=20    PE=4    T=4    → marathon-pe ← hub2 x46
+   Hermes paperbag                              C=–      H2=1     PE=5    T=7    → marathon-pe ← hub2 x45
+   Jordan paperbag                              C=L:233  H2=L:646 PE=L:2  T=–    → marathon-pe ← hub2 x48
+   Karl lagerfeld paperbag (medium size)        C=906    H2=46    PE=5    T=20   → marathon-pe ← hub2 x45
+   Karl lagerfeld paperbag (small size)         C=56     H2=4     PE=–    T=7    → trophy ← hub2 x43; hub2 ← central x46
+   Karl paper bag                               C=–      H2=–     PE=3:0  T=3:0  → nothing
+   Lacoste paperbag ( small size)               C=3      H2=2     PE=4    T=21   → marathon-pe ← hub2 x46; hub2 ← central x48
+   Louis Vuitton paperbag (big size)            C=–      H2=–     PE=3    T=3    → nothing
+   Louis Vuitton paperbag (small size)          C=0      H2=1     PE=–    T=6    → trophy ← hub2 x44
+   Nike paperbag                                C=L:271  H2=L:270 PE=L:7  T=L:0  → marathon-pe ← hub2 x43
+   Nike paperbag white                          C=201    H2=415   PE=0    T=–    → marathon-pe ← hub2 x50
+   Paper bag black Dolce GABBANA small          C=9      H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag boss white medium                  C=129    H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag DIOR white large                   C=2      H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag DIOR white medium                  C=35     H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag DSQUARED2 black  small             C=16     H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag Gucci green large                  C=42     H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag Gucci green M                      C=10     H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag Karl white large                   C=2      H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag Loro piana brown                   C=153    H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag LOUIS VUITTON orange large         C=3      H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag MICHAEL KORS large yellow          C=1      H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag MICHAEL KORS small yellow          C=1      H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag omega red small                    C=3      H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag TAGHEUER BLACK Small               C=10     H2=–     PE=–    T=–    → hub2 ← central x50
+   Paper bag white boss large                   C=9      H2=–     PE=–    T=–    → hub2 ← central x50
+   Philip plein paperbag black (small size)     C=193    H2=4     PE=–    T=1    → trophy ← hub2 x49; hub2 ← central x46
+   Phillip plain paperbag (big size)            C=–      H2=–     PE=–    T=3    → nothing
+   Prada paperbag ( medium size)                C=–      H2=–     PE=5    T=25   → nothing
+   Prada paperbag ( small size)                 C=11     H2=4     PE=5    T=9    → marathon-pe ← hub2 x45; hub2 ← central x46
+   Timberland paperbag                          C=L:234  H2=L:36  PE=L:9  T=L:0  → marathon-pe ← hub2 x41
+   Valentino paperbag (medium size)             C=100    H2=4     PE=5    T=9    → marathon-pe ← hub2 x45; hub2 ← central x46
+   Versace paperbag ( small size)               C=0      H2=1     PE=4    T=4    → marathon-pe ← hub2 x46
+   Versace paperbag (big size)                  C=–      H2=–     PE=–    T=2    → nothing
+
+Report: paper-bag-policy-dry-run-2026-10-16T17-12-34-386Z.json

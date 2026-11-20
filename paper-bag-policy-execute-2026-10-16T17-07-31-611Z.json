@@ -1,0 +1,3650 @@
+{
+ "mode": "execute",
+ "at": "2026-10-16T17:07:31.631Z",
+ "steps": {
+  "routing": [],
+  "taxonomy": {
+   "create": {
+    "key": "paper-bags",
+    "label": "Paper Bags",
+    "top": "clothing",
+    "order": 36,
+    "sizeMode": "one",
+    "sizes": [
+     "_"
+    ],
+    "legacy": {
+     "category": "Accessories",
+     "subcategory": "Bags",
+     "productType": "clothing"
+    },
+    "flags": {
+     "displayChecks": "unset",
+     "oneSize": "unset",
+     "refillManaged": "unset"
+    },
+    "active": true
+   }
+  },
+  "rekey": [
+   {
+    "pid": "p1791971463851",
+    "name": "Alexander McQueen paperbag (small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791889079314",
+    "name": "Amiri paperbag",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791885011582",
+    "name": "Armani exchange paper bag (big size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1782726989989",
+    "name": "Armani paperbag ",
+    "from": "packaging"
+   },
+   {
+    "pid": "p1791888755311",
+    "name": "Balenciaga paperbag ( small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791889951053",
+    "name": "Boss paperbag  ( small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791886113857",
+    "name": "Boss paperbag (big size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791884333181",
+    "name": "Bottega veneta paperbag",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791888294603",
+    "name": "Brunello cucinelli paperbag ( small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791885721460",
+    "name": "Burberry paperbag (big size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791884222521",
+    "name": "Christian louboutin paperbag",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791886235808",
+    "name": "D&G paperbag ( big size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1782727067661",
+    "name": "Diesel paperbag ",
+    "from": "packaging"
+   },
+   {
+    "pid": "p1791885927781",
+    "name": "Diesel paperbag (big size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791891476692",
+    "name": "Dior paperbag",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791973701920",
+    "name": "Dior paperbag ( big size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791884019159",
+    "name": "Dior paperbag (big size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791890345915",
+    "name": "Dior paperbag (small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1782726941853",
+    "name": "Giorgio armani paperbag",
+    "from": "packaging"
+   },
+   {
+    "pid": "p1791886497941",
+    "name": "Giuseppe zanotti paperbag",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791883636340",
+    "name": "Givenchy paperbag",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791884764527",
+    "name": "Gucci paperbag green ( big size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791883502646",
+    "name": "Gucci paperbag green (medium size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791887150502",
+    "name": "Gucci paperbag green (small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791884636653",
+    "name": "Gucci paperbag maroon (big size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791884531085",
+    "name": "Gucci paperbag maroon (small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791887358177",
+    "name": "Hermes paperbag",
+    "from": "bags"
+   },
+   {
+    "pid": "p1782727152355",
+    "name": "Jordan paperbag",
+    "from": "packaging"
+   },
+   {
+    "pid": "p1791882788043",
+    "name": "Karl lagerfeld paperbag (medium size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791882981980",
+    "name": "Karl lagerfeld paperbag (small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1782727235670",
+    "name": "Karl paper bag ",
+    "from": "packaging"
+   },
+   {
+    "pid": "p1791891317996",
+    "name": "Lacoste paperbag ( small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791885266632",
+    "name": "Louis Vuitton paperbag (big size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791887272674",
+    "name": "Louis Vuitton paperbag (small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1782727193104",
+    "name": "Nike paperbag",
+    "from": "packaging"
+   },
+   {
+    "pid": "p1791896283311",
+    "name": "Nike paperbag white",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792151476022",
+    "name": "Paper bag black Dolce GABBANA small",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792153215900",
+    "name": "Paper bag boss white medium",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792153817693",
+    "name": "Paper bag DIOR white large",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792152223010",
+    "name": "Paper bag DIOR white medium",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792152075007",
+    "name": "Paper bag DSQUARED2 black  small",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792151841872",
+    "name": "Paper bag Gucci green large",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792151678286",
+    "name": "Paper bag Gucci green M",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792151052119",
+    "name": "Paper bag Karl white large",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792152599905",
+    "name": "Paper bag Loro piana brown",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792153720360",
+    "name": "Paper bag LOUIS VUITTON orange large",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792154053817",
+    "name": "Paper bag MICHAEL KORS large yellow",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792154137342",
+    "name": "Paper bag MICHAEL KORS small yellow",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792153513242",
+    "name": "Paper bag omega red small",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792153442416",
+    "name": "Paper bag TAGHEUER BLACK Small",
+    "from": "bags"
+   },
+   {
+    "pid": "p1792151189805",
+    "name": "Paper bag white boss large",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791887047151",
+    "name": "Philip plein paperbag black (small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791885522695",
+    "name": "Phillip plain paperbag (big size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791891084499",
+    "name": "Prada paperbag ( medium size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791888468984",
+    "name": "Prada paperbag ( small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1782727110237",
+    "name": "Timberland paperbag",
+    "from": "packaging"
+   },
+   {
+    "pid": "p1791883316473",
+    "name": "Valentino paperbag (medium size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791890124685",
+    "name": "Versace paperbag ( small size)",
+    "from": "bags"
+   },
+   {
+    "pid": "p1791886012494",
+    "name": "Versace paperbag (big size)",
+    "from": "bags"
+   }
+  ],
+  "policy": {
+   "before": null,
+   "after": {
+    "hub2": {
+     "target": 50,
+     "minQty": 25,
+     "reorderPoint": 10
+    },
+    "marathon-pe": {
+     "target": 50,
+     "minQty": 25,
+     "reorderPoint": 10,
+     "carriedOnly": true
+    },
+    "trophy": {
+     "target": 50,
+     "minQty": 25,
+     "reorderPoint": 10,
+     "carriedOnly": true
+    }
+   },
+   "noChange": false,
+   "history1": "-P44fvJieYCNoZJvP7Hs",
+   "history2": "-P44g-NVGScNkyOb5wrG"
+  },
+  "keptSwitchOffs": [
+   {
+    "pid": "p1782727193104",
+    "name": "Nike paperbag",
+    "loc": "trophy",
+    "sizeKey": "L",
+    "row": {
+     "minQty": 0,
+     "prevAbsent": true,
+     "setAt": "2026-10-13T19:27:12.789Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 0
+    }
+   },
+   {
+    "pid": "p1791896283311",
+    "name": "Nike paperbag white",
+    "loc": "trophy",
+    "sizeKey": "_",
+    "row": {
+     "minQty": 0,
+     "prevAbsent": true,
+     "setAt": "2026-10-13T19:29:16.617Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 0
+    }
+   },
+   {
+    "pid": "p1782727110237",
+    "name": "Timberland paperbag",
+    "loc": "trophy",
+    "sizeKey": "L",
+    "row": {
+     "approvedAt": "2026-09-29T14:19:22.672Z",
+     "approvedBy": "introduce-existing",
+     "batchId": "introduce-existing-2026-09-29",
+     "minQty": 0,
+     "prevRow": {
+      "approvedAt": "2026-09-29T14:19:22.672Z",
+      "approvedBy": "introduce-existing",
+      "batchId": "introduce-existing-2026-09-29",
+      "minQty": 1,
+      "source": "standard_policy_migration",
+      "target": 2
+     },
+     "setAt": "2026-10-13T19:30:23.558Z",
+     "setBy": "mc@marathon.internal",
+     "source": "policy_target",
+     "target": 0
+    }
+   }
+  ],
+  "rows": [
+   {
+    "pid": "p1791889079314",
+    "name": "Amiri paperbag",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T18:55:44.490Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791889079314",
+    "name": "Amiri paperbag",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T18:56:22.870Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791889079314",
+    "name": "Amiri paperbag",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T18:56:47.397Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791885011582",
+    "name": "Armani exchange paper bag (big size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T18:52:54.261Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791885011582",
+    "name": "Armani exchange paper bag (big size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T18:54:00.094Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791885011582",
+    "name": "Armani exchange paper bag (big size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T18:55:03.419Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1782726989989",
+    "name": "Armani paperbag ",
+    "loc": "hub2",
+    "rows": [
+     {
+      "sizeKey": "L",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "L": {
+      "approvedAt": "2026-07-12T18:40:08.247Z",
+      "approvedBy": "seed-script",
+      "batchId": "targets-2026-07-12",
+      "minQty": 2,
+      "source": "standard_policy_v2",
+      "target": 3
+     }
+    }
+   },
+   {
+    "pid": "p1782726989989",
+    "name": "Armani paperbag ",
+    "loc": "marathon-pe",
+    "rows": [
+     {
+      "sizeKey": "L",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "L": null
+    }
+   },
+   {
+    "pid": "p1782726989989",
+    "name": "Armani paperbag ",
+    "loc": "trophy",
+    "rows": [
+     {
+      "sizeKey": "L",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "L": {
+      "approvedAt": "2026-07-12T18:40:08.247Z",
+      "approvedBy": "seed-script",
+      "batchId": "retarget-2026-07-13",
+      "minQty": 1,
+      "source": "standard_policy_v3",
+      "target": 2,
+      "updatedAt": "2026-07-13T18:42:29.259Z",
+      "updatedBy": "retarget-script"
+     }
+    }
+   },
+   {
+    "pid": "p1791888755311",
+    "name": "Balenciaga paperbag ( small size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T18:57:51.572Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791888755311",
+    "name": "Balenciaga paperbag ( small size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T18:58:02.229Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791888755311",
+    "name": "Balenciaga paperbag ( small size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T18:58:15.459Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791889951053",
+    "name": "Boss paperbag  ( small size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T18:58:41.766Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791889951053",
+    "name": "Boss paperbag  ( small size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T18:59:01.979Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791889951053",
+    "name": "Boss paperbag  ( small size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T18:59:20.121Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791886113857",
+    "name": "Boss paperbag (big size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:00:13.951Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791886113857",
+    "name": "Boss paperbag (big size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:01:19.446Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791886113857",
+    "name": "Boss paperbag (big size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:01:33.226Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791884333181",
+    "name": "Bottega veneta paperbag",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:01:58.121Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791884333181",
+    "name": "Bottega veneta paperbag",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:02:16.439Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791884333181",
+    "name": "Bottega veneta paperbag",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:02:28.458Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791888294603",
+    "name": "Brunello cucinelli paperbag ( small size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:02:55.738Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791888294603",
+    "name": "Brunello cucinelli paperbag ( small size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:03:06.239Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791888294603",
+    "name": "Brunello cucinelli paperbag ( small size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:03:23.078Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791885721460",
+    "name": "Burberry paperbag (big size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:03:55.442Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791885721460",
+    "name": "Burberry paperbag (big size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:04:06.238Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791885721460",
+    "name": "Burberry paperbag (big size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:04:16.821Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791884222521",
+    "name": "Christian louboutin paperbag",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:05:09.544Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791884222521",
+    "name": "Christian louboutin paperbag",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:05:24.282Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791884222521",
+    "name": "Christian louboutin paperbag",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:05:34.373Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791886235808",
+    "name": "D&G paperbag ( big size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:06:05.174Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791886235808",
+    "name": "D&G paperbag ( big size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:06:16.186Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791886235808",
+    "name": "D&G paperbag ( big size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:06:28.708Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1782727067661",
+    "name": "Diesel paperbag ",
+    "loc": "marathon-pe",
+    "rows": [
+     {
+      "sizeKey": "L",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "L": {
+      "approvedAt": "2026-07-12T18:40:08.244Z",
+      "approvedBy": "seed-script",
+      "batchId": "retarget-2026-07-13",
+      "minQty": 3,
+      "prevRow": {
+       "approvedAt": "2026-07-12T18:40:08.244Z",
+       "approvedBy": "seed-script",
+       "batchId": "retarget-2026-07-13",
+       "minQty": 1,
+       "source": "standard_policy_v3",
+       "target": 2,
+       "updatedAt": "2026-07-13T18:42:29.259Z",
+       "updatedBy": "retarget-script"
+      },
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:07:37.866Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5,
+      "updatedAt": "2026-07-13T18:42:29.259Z",
+      "updatedBy": "retarget-script"
+     }
+    }
+   },
+   {
+    "pid": "p1782727067661",
+    "name": "Diesel paperbag ",
+    "loc": "trophy",
+    "rows": [
+     {
+      "sizeKey": "L",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "L": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:08:15.876Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791885927781",
+    "name": "Diesel paperbag (big size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:08:49.762Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791885927781",
+    "name": "Diesel paperbag (big size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:09:11.401Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791885927781",
+    "name": "Diesel paperbag (big size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:09:24.303Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791891476692",
+    "name": "Dior paperbag",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:09:59.793Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791891476692",
+    "name": "Dior paperbag",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:10:13.662Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791891476692",
+    "name": "Dior paperbag",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:10:31.208Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791884019159",
+    "name": "Dior paperbag (big size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:11:01.016Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791884019159",
+    "name": "Dior paperbag (big size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:11:16.668Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791884019159",
+    "name": "Dior paperbag (big size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:11:31.210Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791890345915",
+    "name": "Dior paperbag (small size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:12:06.174Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791890345915",
+    "name": "Dior paperbag (small size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:12:17.449Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791890345915",
+    "name": "Dior paperbag (small size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:12:34.403Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1782726941853",
+    "name": "Giorgio armani paperbag",
+    "loc": "marathon-pe",
+    "rows": [
+     {
+      "sizeKey": "L",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "L": {
+      "approvedAt": "2026-09-29T14:19:22.672Z",
+      "approvedBy": "introduce-existing",
+      "batchId": "introduce-existing-2026-09-29",
+      "minQty": 3,
+      "prevRow": {
+       "approvedAt": "2026-09-29T14:19:22.672Z",
+       "approvedBy": "introduce-existing",
+       "batchId": "introduce-existing-2026-09-29",
+       "minQty": 1,
+       "source": "standard_policy_migration",
+       "target": 2
+      },
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:17:38.580Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1782726941853",
+    "name": "Giorgio armani paperbag",
+    "loc": "trophy",
+    "rows": [
+     {
+      "sizeKey": "L",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "L": {
+      "approvedAt": "2026-09-29T14:19:22.672Z",
+      "approvedBy": "introduce-existing",
+      "batchId": "introduce-existing-2026-09-29",
+      "minQty": 5,
+      "prevRow": {
+       "approvedAt": "2026-09-29T14:19:22.672Z",
+       "approvedBy": "introduce-existing",
+       "batchId": "introduce-existing-2026-09-29",
+       "minQty": 1,
+       "source": "standard_policy_migration",
+       "target": 2
+      },
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:17:56.519Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791886497941",
+    "name": "Giuseppe zanotti paperbag",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:18:31.367Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791886497941",
+    "name": "Giuseppe zanotti paperbag",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:18:42.038Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791886497941",
+    "name": "Giuseppe zanotti paperbag",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:18:53.918Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791883636340",
+    "name": "Givenchy paperbag",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:19:22.716Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791883636340",
+    "name": "Givenchy paperbag",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:19:31.798Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791883636340",
+    "name": "Givenchy paperbag",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:19:44.662Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791884764527",
+    "name": "Gucci paperbag green ( big size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:20:26.768Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791884764527",
+    "name": "Gucci paperbag green ( big size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:20:39.296Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791884764527",
+    "name": "Gucci paperbag green ( big size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:20:52.318Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791883502646",
+    "name": "Gucci paperbag green (medium size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:21:23.015Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791883502646",
+    "name": "Gucci paperbag green (medium size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:21:34.385Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791883502646",
+    "name": "Gucci paperbag green (medium size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:21:47.508Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791887150502",
+    "name": "Gucci paperbag green (small size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:22:14.157Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791887150502",
+    "name": "Gucci paperbag green (small size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:22:23.317Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791887150502",
+    "name": "Gucci paperbag green (small size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:22:37.208Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791884636653",
+    "name": "Gucci paperbag maroon (big size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:23:03.851Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791884636653",
+    "name": "Gucci paperbag maroon (big size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:23:12.467Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791884636653",
+    "name": "Gucci paperbag maroon (big size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:23:23.172Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791884531085",
+    "name": "Gucci paperbag maroon (small size)",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:23:44.549Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791884531085",
+    "name": "Gucci paperbag maroon (small size)",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 3,
+      "prevAbsent": true,
+      "reorderPoint": 2,
+      "setAt": "2026-10-13T19:23:59.920Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 5
+     }
+    }
+   },
+   {
+    "pid": "p1791884531085",
+    "name": "Gucci paperbag maroon (small size)",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:24:11.010Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1791887358177",
+    "name": "Hermes paperbag",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:24:31.855Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791887358177",
+    "name": "Hermes paperbag",
+    "loc": "trophy",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:24:51.397Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1782727152355",
+    "name": "Jordan paperbag",
+    "loc": "hub2",
+    "rows": [
+     {
+      "sizeKey": "L",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "L": {
+      "approvedAt": "2026-07-12T18:40:08.246Z",
+      "approvedBy": "seed-script",
+      "batchId": "targets-2026-07-12",
+      "minQty": 2,
+      "source": "standard_policy_v2",
+      "target": 3
+     }
+    }
+   },
+   {
+    "pid": "p1782727152355",
+    "name": "Jordan paperbag",
+    "loc": "marathon-pe",
+    "rows": [
+     {
+      "sizeKey": "L",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "L": {
+      "approvedAt": "2026-07-12T18:40:08.246Z",
+      "approvedBy": "seed-script",
+      "batchId": "retarget-2026-07-13",
+      "minQty": 1,
+      "source": "standard_policy_v3",
+      "target": 2,
+      "updatedAt": "2026-07-13T18:42:29.259Z",
+      "updatedBy": "retarget-script"
+     }
+    }
+   },
+   {
+    "pid": "p1782727235670",
+    "name": "Karl paper bag ",
+    "loc": "hub2",
+    "rows": [
+     {
+      "sizeKey": "3",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "3": null
+    }
+   },
+   {
+    "pid": "p1782727235670",
+    "name": "Karl paper bag ",
+    "loc": "marathon-pe",
+    "rows": [
+     {
+      "sizeKey": "3",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "3": null
+    }
+   },
+   {
+    "pid": "p1782727235670",
+    "name": "Karl paper bag ",
+    "loc": "trophy",
+    "rows": [
+     {
+      "sizeKey": "3",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "3": null
+    }
+   },
+   {
+    "pid": "p1782727193104",
+    "name": "Nike paperbag",
+    "loc": "marathon-pe",
+    "rows": [
+     {
+      "sizeKey": "L",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "L": {
+      "approvedAt": "2026-07-12T18:40:08.241Z",
+      "approvedBy": "seed-script",
+      "batchId": "retarget-2026-07-13",
+      "minQty": 5,
+      "prevRow": {
+       "approvedAt": "2026-07-12T18:40:08.241Z",
+       "approvedBy": "seed-script",
+       "batchId": "retarget-2026-07-13",
+       "minQty": 1,
+       "source": "standard_policy_v3",
+       "target": 2,
+       "updatedAt": "2026-07-13T18:42:29.259Z",
+       "updatedBy": "retarget-script"
+      },
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:26:58.601Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10,
+      "updatedAt": "2026-07-13T18:42:29.259Z",
+      "updatedBy": "retarget-script"
+     }
+    }
+   },
+   {
+    "pid": "p1791896283311",
+    "name": "Nike paperbag white",
+    "loc": "hub2",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 25,
+      "prevAbsent": true,
+      "reorderPoint": 10,
+      "setAt": "2026-10-13T19:28:26.128Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 50
+     }
+    }
+   },
+   {
+    "pid": "p1791896283311",
+    "name": "Nike paperbag white",
+    "loc": "marathon-pe",
+    "rows": [],
+    "remove": [
+     "_"
+    ],
+    "before": {
+     "_": {
+      "minQty": 5,
+      "prevAbsent": true,
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:28:39.857Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   },
+   {
+    "pid": "p1782727110237",
+    "name": "Timberland paperbag",
+    "loc": "marathon-pe",
+    "rows": [
+     {
+      "sizeKey": "L",
+      "target": 50,
+      "minQty": 25,
+      "reorderPoint": 10
+     }
+    ],
+    "remove": [],
+    "before": {
+     "L": {
+      "approvedAt": "2026-09-29T14:19:22.672Z",
+      "approvedBy": "introduce-existing",
+      "batchId": "introduce-existing-2026-09-29",
+      "minQty": 5,
+      "prevRow": {
+       "approvedAt": "2026-09-29T14:19:22.672Z",
+       "approvedBy": "introduce-existing",
+       "batchId": "introduce-existing-2026-09-29",
+       "minQty": 1,
+       "source": "standard_policy_migration",
+       "target": 2
+      },
+      "reorderPoint": 5,
+      "setAt": "2026-10-13T19:30:17.313Z",
+      "setBy": "mc@marathon.internal",
+      "source": "policy_target",
+      "target": 10
+     }
+    }
+   }
+  ],
+  "cancel": {
+   "cancelled": [
+    {
+     "dest": "hub2",
+     "pid": "p1791888294603",
+     "sizeKey": "_",
+     "name": "Brunello cucinelli paperbag ( small size)",
+     "refillId": "-P43nIVgO-zS16CttQif",
+     "orderId": null,
+     "source": "central",
+     "qty": 1,
+     "createdAt": "2026-10-16T13:00:43.576Z",
+     "onHand": 5,
+     "newRule": "45 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792151476022",
+     "sizeKey": "_",
+     "name": "Paper bag black Dolce GABBANA small",
+     "refillId": "-P43_bX7GMOLj02R3sAT",
+     "orderId": null,
+     "source": "central",
+     "qty": 4,
+     "createdAt": "2026-10-16T12:00:54.313Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792153215900",
+     "sizeKey": "_",
+     "name": "Paper bag boss white medium",
+     "refillId": "-P43nIX3abLqISvkaARd",
+     "orderId": null,
+     "source": "central",
+     "qty": 4,
+     "createdAt": "2026-10-16T13:00:43.576Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792153817693",
+     "sizeKey": "_",
+     "name": "Paper bag DIOR white large",
+     "refillId": "-P43nIXc0Ov8mggIIXZB",
+     "orderId": null,
+     "source": "central",
+     "qty": 2,
+     "createdAt": "2026-10-16T13:00:43.576Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792152223010",
+     "sizeKey": "_",
+     "name": "Paper bag DIOR white medium",
+     "refillId": "-P43nIWlbrf785uxUITE",
+     "orderId": null,
+     "source": "central",
+     "qty": 4,
+     "createdAt": "2026-10-16T13:00:43.576Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792152075007",
+     "sizeKey": "_",
+     "name": "Paper bag DSQUARED2 black  small",
+     "refillId": "-P43nIWblMy3jGMgZfYg",
+     "orderId": null,
+     "source": "central",
+     "qty": 4,
+     "createdAt": "2026-10-16T13:00:43.576Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792151841872",
+     "sizeKey": "_",
+     "name": "Paper bag Gucci green large",
+     "refillId": "-P43_bXWawMgdj0G9rOZ",
+     "orderId": null,
+     "source": "central",
+     "qty": 4,
+     "createdAt": "2026-10-16T12:00:54.313Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792151678286",
+     "sizeKey": "_",
+     "name": "Paper bag Gucci green M",
+     "refillId": "-P43_bXJJ9AknAu-Rm5G",
+     "orderId": null,
+     "source": "central",
+     "qty": 4,
+     "createdAt": "2026-10-16T12:00:54.313Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792151052119",
+     "sizeKey": "_",
+     "name": "Paper bag Karl white large",
+     "refillId": "-P43_bWmIjUfphKcb8-Q",
+     "orderId": null,
+     "source": "central",
+     "qty": 2,
+     "createdAt": "2026-10-16T12:00:54.313Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792152599905",
+     "sizeKey": "_",
+     "name": "Paper bag Loro piana brown",
+     "refillId": "-P43nIWvXaPqcN6qOPSN",
+     "orderId": null,
+     "source": "central",
+     "qty": 4,
+     "createdAt": "2026-10-16T13:00:43.576Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792153720360",
+     "sizeKey": "_",
+     "name": "Paper bag LOUIS VUITTON orange large",
+     "refillId": "-P43nIXUgozpyt0Q5EIa",
+     "orderId": null,
+     "source": "central",
+     "qty": 3,
+     "createdAt": "2026-10-16T13:00:43.576Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792154053817",
+     "sizeKey": "_",
+     "name": "Paper bag MICHAEL KORS large yellow",
+     "refillId": "-P43nIXj2RHV4bNeHmyM",
+     "orderId": null,
+     "source": "central",
+     "qty": 1,
+     "createdAt": "2026-10-16T13:00:43.576Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792154137342",
+     "sizeKey": "_",
+     "name": "Paper bag MICHAEL KORS small yellow",
+     "refillId": "-P43nIXrTp1Z4vr9vuyu",
+     "orderId": null,
+     "source": "central",
+     "qty": 1,
+     "createdAt": "2026-10-16T13:00:43.576Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792153513242",
+     "sizeKey": "_",
+     "name": "Paper bag omega red small",
+     "refillId": "-P43nIXLVCDov3rpwvNG",
+     "orderId": null,
+     "source": "central",
+     "qty": 3,
+     "createdAt": "2026-10-16T13:00:43.576Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792153442416",
+     "sizeKey": "_",
+     "name": "Paper bag TAGHEUER BLACK Small",
+     "refillId": "-P43nIXDxnXK4wy10FRm",
+     "orderId": null,
+     "source": "central",
+     "qty": 4,
+     "createdAt": "2026-10-16T13:00:43.576Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "hub2",
+     "pid": "p1792151189805",
+     "sizeKey": "_",
+     "name": "Paper bag white boss large",
+     "refillId": "-P43_bWwu1bALDkGKzQR",
+     "orderId": null,
+     "source": "central",
+     "qty": 4,
+     "createdAt": "2026-10-16T12:00:54.313Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "marathon-pe",
+     "pid": "p1791885927781",
+     "sizeKey": "_",
+     "name": "Diesel paperbag (big size)",
+     "refillId": "-P44DdaHC7QbefBdiTfy",
+     "orderId": "R017-5",
+     "source": "hub2",
+     "qty": 5,
+     "createdAt": "2026-10-16T15:00:08.040Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "marathon-pe",
+     "pid": "p1791886497941",
+     "sizeKey": "_",
+     "name": "Giuseppe zanotti paperbag",
+     "refillId": "-P44DdaRnsB7vFgmXNTt",
+     "orderId": "R017-6",
+     "source": "hub2",
+     "qty": 3,
+     "createdAt": "2026-10-16T15:00:08.040Z",
+     "onHand": 2,
+     "newRule": "48 (full top-up)"
+    },
+    {
+     "dest": "marathon-pe",
+     "pid": "p1791887150502",
+     "sizeKey": "_",
+     "name": "Gucci paperbag green (small size)",
+     "refillId": "-P44Ddaep_a8PgwNeYLc",
+     "orderId": "R017-7",
+     "source": "hub2",
+     "qty": 5,
+     "createdAt": "2026-10-16T15:00:08.040Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "marathon-pe",
+     "pid": "p1791884636653",
+     "sizeKey": "_",
+     "name": "Gucci paperbag maroon (big size)",
+     "refillId": "-P44Dda5s15fTiOhnmTd",
+     "orderId": "R017-4",
+     "source": "hub2",
+     "qty": 1,
+     "createdAt": "2026-10-16T15:00:08.040Z",
+     "onHand": 1,
+     "newRule": "49 (full top-up)"
+    },
+    {
+     "dest": "marathon-pe",
+     "pid": "p1791896283311",
+     "sizeKey": "_",
+     "name": "Nike paperbag white",
+     "refillId": "-P3uHIEZc7xbFhC6MmdG",
+     "orderId": "R010-11",
+     "source": "hub2",
+     "qty": 10,
+     "createdAt": "2026-10-14T12:00:10.930Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "trophy",
+     "pid": "p1791885011582",
+     "sizeKey": "_",
+     "name": "Armani exchange paper bag (big size)",
+     "refillId": "-P438xiB13xKElWvyL_K",
+     "orderId": "R008-3",
+     "source": "hub2",
+     "qty": 5,
+     "createdAt": "2026-10-16T10:00:10.726Z",
+     "onHand": 5,
+     "newRule": "45 (full top-up)"
+    },
+    {
+     "dest": "trophy",
+     "pid": "p1791884333181",
+     "sizeKey": "_",
+     "name": "Bottega veneta paperbag",
+     "refillId": "-P3zrHuaDuak_PKLLDwp",
+     "orderId": "R010-2",
+     "source": "hub2",
+     "qty": 6,
+     "createdAt": "2026-10-15T14:00:09.238Z",
+     "onHand": 4,
+     "newRule": "46 (full top-up)"
+    },
+    {
+     "dest": "trophy",
+     "pid": "p1791885927781",
+     "sizeKey": "_",
+     "name": "Diesel paperbag (big size)",
+     "refillId": "-P44DdbXQX0eqMfQKUXC",
+     "orderId": "R018-3",
+     "source": "hub2",
+     "qty": 10,
+     "createdAt": "2026-10-16T15:00:08.040Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "trophy",
+     "pid": "p1791891476692",
+     "sizeKey": "_",
+     "name": "Dior paperbag",
+     "refillId": "-P44Ddc1quCSbKMb__9u",
+     "orderId": "R018-6",
+     "source": "hub2",
+     "qty": 6,
+     "createdAt": "2026-10-16T15:00:08.040Z",
+     "onHand": 4,
+     "newRule": "46 (full top-up)"
+    },
+    {
+     "dest": "trophy",
+     "pid": "p1791973701920",
+     "sizeKey": "_",
+     "name": "Dior paperbag ( big size)",
+     "refillId": "-P4-4AItL0F5udj9cRqg",
+     "orderId": "R012-5",
+     "source": "hub2",
+     "qty": 2,
+     "createdAt": "2026-10-15T15:00:51.389Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "trophy",
+     "pid": "p1791886497941",
+     "sizeKey": "_",
+     "name": "Giuseppe zanotti paperbag",
+     "refillId": "-P44Ddbh86-v2OJLHTbN",
+     "orderId": "R018-4",
+     "source": "hub2",
+     "qty": 9,
+     "createdAt": "2026-10-16T15:00:08.040Z",
+     "onHand": 1,
+     "newRule": "49 (full top-up)"
+    },
+    {
+     "dest": "trophy",
+     "pid": "p1791883502646",
+     "sizeKey": "_",
+     "name": "Gucci paperbag green (medium size)",
+     "refillId": "-P44Ddb0JGGM9vWiRaEX",
+     "orderId": "R018-1",
+     "source": "hub2",
+     "qty": 5,
+     "createdAt": "2026-10-16T15:00:08.040Z",
+     "onHand": 1,
+     "newRule": "49 (full top-up)"
+    },
+    {
+     "dest": "trophy",
+     "pid": "p1791887150502",
+     "sizeKey": "_",
+     "name": "Gucci paperbag green (small size)",
+     "refillId": "-P44Ddbs7VtiaNm823qs",
+     "orderId": "R018-5",
+     "source": "hub2",
+     "qty": 10,
+     "createdAt": "2026-10-16T15:00:08.040Z",
+     "onHand": 0,
+     "newRule": "50 (full top-up)"
+    },
+    {
+     "dest": "trophy",
+     "pid": "p1791884531085",
+     "sizeKey": "_",
+     "name": "Gucci paperbag maroon (small size)",
+     "refillId": "-P44DdbKGExWTJjv9fCH",
+     "orderId": "R018-2",
+     "source": "hub2",
+     "qty": 6,
+     "createdAt": "2026-10-16T15:00:08.040Z",
+     "onHand": 4,
+     "newRule": "46 (full top-up)"
+    }
+   ],
+   "leftAlone": []
+  },
+  "model": [
+   {
+    "pid": "p1791971463851",
+    "name": "Alexander McQueen paperbag (small size)",
+    "central": "17",
+    "hub2": "22",
+    "pe": "–",
+    "trophy": "2",
+    "next": [
+     "trophy ← hub2 x48"
+    ]
+   },
+   {
+    "pid": "p1791889079314",
+    "name": "Amiri paperbag",
+    "central": "–",
+    "hub2": "0",
+    "pe": "1",
+    "trophy": "4",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791885011582",
+    "name": "Armani exchange paper bag (big size)",
+    "central": "347",
+    "hub2": "20",
+    "pe": "5",
+    "trophy": "5",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1782726989989",
+    "name": "Armani paperbag ",
+    "central": "–",
+    "hub2": "–",
+    "pe": "L:0",
+    "trophy": "L:0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791888755311",
+    "name": "Balenciaga paperbag ( small size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "3",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791889951053",
+    "name": "Boss paperbag  ( small size)",
+    "central": "409",
+    "hub2": "23",
+    "pe": "16",
+    "trophy": "16",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791886113857",
+    "name": "Boss paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791884333181",
+    "name": "Bottega veneta paperbag",
+    "central": "24",
+    "hub2": "13",
+    "pe": "4",
+    "trophy": "4",
+    "next": [
+     "marathon-pe ← hub2 x46"
+    ]
+   },
+   {
+    "pid": "p1791888294603",
+    "name": "Brunello cucinelli paperbag ( small size)",
+    "central": "1",
+    "hub2": "5",
+    "pe": "5",
+    "trophy": "20",
+    "next": [
+     "marathon-pe ← hub2 x45",
+     "hub2 ← central x45"
+    ]
+   },
+   {
+    "pid": "p1791885721460",
+    "name": "Burberry paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "1",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791884222521",
+    "name": "Christian louboutin paperbag",
+    "central": "34",
+    "hub2": "20",
+    "pe": "5",
+    "trophy": "21",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1791886235808",
+    "name": "D&G paperbag ( big size)",
+    "central": "165",
+    "hub2": "26",
+    "pe": "5",
+    "trophy": "10",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1782727067661",
+    "name": "Diesel paperbag ",
+    "central": "–",
+    "hub2": "–",
+    "pe": "L:0",
+    "trophy": "L:0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791885927781",
+    "name": "Diesel paperbag (big size)",
+    "central": "13",
+    "hub2": "20",
+    "pe": "–",
+    "trophy": "0",
+    "next": [
+     "trophy ← hub2 x50"
+    ]
+   },
+   {
+    "pid": "p1791891476692",
+    "name": "Dior paperbag",
+    "central": "62",
+    "hub2": "20",
+    "pe": "3",
+    "trophy": "4",
+    "next": [
+     "marathon-pe ← hub2 x47"
+    ]
+   },
+   {
+    "pid": "p1791973701920",
+    "name": "Dior paperbag ( big size)",
+    "central": "–",
+    "hub2": "4",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791884019159",
+    "name": "Dior paperbag (big size)",
+    "central": "17",
+    "hub2": "21",
+    "pe": "5",
+    "trophy": "13",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1791890345915",
+    "name": "Dior paperbag (small size)",
+    "central": "4",
+    "hub2": "21",
+    "pe": "5",
+    "trophy": "7",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1782726941853",
+    "name": "Giorgio armani paperbag",
+    "central": "L:114",
+    "hub2": "L:22",
+    "pe": "L:3",
+    "trophy": "L:27",
+    "next": [
+     "marathon-pe ← hub2 x47"
+    ]
+   },
+   {
+    "pid": "p1791886497941",
+    "name": "Giuseppe zanotti paperbag",
+    "central": "0",
+    "hub2": "13",
+    "pe": "2",
+    "trophy": "1",
+    "next": [
+     "marathon-pe ← hub2 x48"
+    ]
+   },
+   {
+    "pid": "p1791883636340",
+    "name": "Givenchy paperbag",
+    "central": "7",
+    "hub2": "21",
+    "pe": "5",
+    "trophy": "24",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1791884764527",
+    "name": "Gucci paperbag green ( big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "5",
+    "trophy": "27",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791883502646",
+    "name": "Gucci paperbag green (medium size)",
+    "central": "0",
+    "hub2": "5",
+    "pe": "5",
+    "trophy": "1",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1791887150502",
+    "name": "Gucci paperbag green (small size)",
+    "central": "38",
+    "hub2": "20",
+    "pe": "–",
+    "trophy": "0",
+    "next": [
+     "trophy ← hub2 x50"
+    ]
+   },
+   {
+    "pid": "p1791884636653",
+    "name": "Gucci paperbag maroon (big size)",
+    "central": "0",
+    "hub2": "1",
+    "pe": "1",
+    "trophy": "0",
+    "next": [
+     "marathon-pe ← hub2 x49"
+    ]
+   },
+   {
+    "pid": "p1791884531085",
+    "name": "Gucci paperbag maroon (small size)",
+    "central": "47",
+    "hub2": "20",
+    "pe": "4",
+    "trophy": "4",
+    "next": [
+     "marathon-pe ← hub2 x46"
+    ]
+   },
+   {
+    "pid": "p1791887358177",
+    "name": "Hermes paperbag",
+    "central": "–",
+    "hub2": "1",
+    "pe": "5",
+    "trophy": "7",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1782727152355",
+    "name": "Jordan paperbag",
+    "central": "L:233",
+    "hub2": "L:646",
+    "pe": "L:2",
+    "trophy": "–",
+    "next": [
+     "marathon-pe ← hub2 x48"
+    ]
+   },
+   {
+    "pid": "p1791882788043",
+    "name": "Karl lagerfeld paperbag (medium size)",
+    "central": "906",
+    "hub2": "46",
+    "pe": "5",
+    "trophy": "20",
+    "next": [
+     "marathon-pe ← hub2 x45"
+    ]
+   },
+   {
+    "pid": "p1791882981980",
+    "name": "Karl lagerfeld paperbag (small size)",
+    "central": "56",
+    "hub2": "4",
+    "pe": "–",
+    "trophy": "7",
+    "next": [
+     "trophy ← hub2 x43",
+     "hub2 ← central x46"
+    ]
+   },
+   {
+    "pid": "p1782727235670",
+    "name": "Karl paper bag ",
+    "central": "–",
+    "hub2": "–",
+    "pe": "3:0",
+    "trophy": "3:0",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791891317996",
+    "name": "Lacoste paperbag ( small size)",
+    "central": "3",
+    "hub2": "2",
+    "pe": "4",
+    "trophy": "21",
+    "next": [
+     "marathon-pe ← hub2 x46",
+     "hub2 ← central x48"
+    ]
+   },
+   {
+    "pid": "p1791885266632",
+    "name": "Louis Vuitton paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "3",
+    "trophy": "3",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791887272674",
+    "name": "Louis Vuitton paperbag (small size)",
+    "central": "0",
+    "hub2": "1",
+    "pe": "–",
+    "trophy": "6",
+    "next": [
+     "trophy ← hub2 x44"
+    ]
+   },
+   {
+    "pid": "p1782727193104",
+    "name": "Nike paperbag",
+    "central": "L:271",
+    "hub2": "L:270",
+    "pe": "L:7",
+    "trophy": "L:0",
+    "next": [
+     "marathon-pe ← hub2 x43"
+    ]
+   },
+   {
+    "pid": "p1791896283311",
+    "name": "Nike paperbag white",
+    "central": "201",
+    "hub2": "415",
+    "pe": "0",
+    "trophy": "–",
+    "next": [
+     "marathon-pe ← hub2 x50"
+    ]
+   },
+   {
+    "pid": "p1792151476022",
+    "name": "Paper bag black Dolce GABBANA small",
+    "central": "9",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792153215900",
+    "name": "Paper bag boss white medium",
+    "central": "129",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792153817693",
+    "name": "Paper bag DIOR white large",
+    "central": "2",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792152223010",
+    "name": "Paper bag DIOR white medium",
+    "central": "35",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792152075007",
+    "name": "Paper bag DSQUARED2 black  small",
+    "central": "16",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792151841872",
+    "name": "Paper bag Gucci green large",
+    "central": "42",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792151678286",
+    "name": "Paper bag Gucci green M",
+    "central": "10",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792151052119",
+    "name": "Paper bag Karl white large",
+    "central": "2",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792152599905",
+    "name": "Paper bag Loro piana brown",
+    "central": "153",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792153720360",
+    "name": "Paper bag LOUIS VUITTON orange large",
+    "central": "3",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792154053817",
+    "name": "Paper bag MICHAEL KORS large yellow",
+    "central": "1",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792154137342",
+    "name": "Paper bag MICHAEL KORS small yellow",
+    "central": "1",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792153513242",
+    "name": "Paper bag omega red small",
+    "central": "3",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792153442416",
+    "name": "Paper bag TAGHEUER BLACK Small",
+    "central": "10",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1792151189805",
+    "name": "Paper bag white boss large",
+    "central": "9",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "–",
+    "next": [
+     "hub2 ← central x50"
+    ]
+   },
+   {
+    "pid": "p1791887047151",
+    "name": "Philip plein paperbag black (small size)",
+    "central": "193",
+    "hub2": "4",
+    "pe": "–",
+    "trophy": "1",
+    "next": [
+     "trophy ← hub2 x49",
+     "hub2 ← central x46"
+    ]
+   },
+   {
+    "pid": "p1791885522695",
+    "name": "Phillip plain paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "3",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791891084499",
+    "name": "Prada paperbag ( medium size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "5",
+    "trophy": "25",
+    "next": [
+     "nothing"
+    ]
+   },
+   {
+    "pid": "p1791888468984",
+    "name": "Prada paperbag ( small size)",
+    "central": "11",
+    "hub2": "4",
+    "pe": "5",
+    "trophy": "9",
+    "next": [
+     "marathon-pe ← hub2 x45",
+     "hub2 ← central x46"
+    ]
+   },
+   {
+    "pid": "p1782727110237",
+    "name": "Timberland paperbag",
+    "central": "L:234",
+    "hub2": "L:36",
+    "pe": "L:9",
+    "trophy": "L:0",
+    "next": [
+     "marathon-pe ← hub2 x41"
+    ]
+   },
+   {
+    "pid": "p1791883316473",
+    "name": "Valentino paperbag (medium size)",
+    "central": "100",
+    "hub2": "4",
+    "pe": "5",
+    "trophy": "9",
+    "next": [
+     "marathon-pe ← hub2 x45",
+     "hub2 ← central x46"
+    ]
+   },
+   {
+    "pid": "p1791890124685",
+    "name": "Versace paperbag ( small size)",
+    "central": "0",
+    "hub2": "1",
+    "pe": "4",
+    "trophy": "4",
+    "next": [
+     "marathon-pe ← hub2 x46"
+    ]
+   },
+   {
+    "pid": "p1791886012494",
+    "name": "Versace paperbag (big size)",
+    "central": "–",
+    "hub2": "–",
+    "pe": "–",
+    "trophy": "2",
+    "next": [
+     "nothing"
+    ]
+   }
+  ]
+ },
+ "paperBags": [
+  {
+   "pid": "p1791971463851",
+   "name": "Alexander McQueen paperbag (small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791889079314",
+   "name": "Amiri paperbag",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791885011582",
+   "name": "Armani exchange paper bag (big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782726989989",
+   "name": "Armani paperbag ",
+   "categoryKey": "packaging",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791888755311",
+   "name": "Balenciaga paperbag ( small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791889951053",
+   "name": "Boss paperbag  ( small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791886113857",
+   "name": "Boss paperbag (big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884333181",
+   "name": "Bottega veneta paperbag",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791888294603",
+   "name": "Brunello cucinelli paperbag ( small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791885721460",
+   "name": "Burberry paperbag (big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884222521",
+   "name": "Christian louboutin paperbag",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791886235808",
+   "name": "D&G paperbag ( big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782727067661",
+   "name": "Diesel paperbag ",
+   "categoryKey": "packaging",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791885927781",
+   "name": "Diesel paperbag (big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791891476692",
+   "name": "Dior paperbag",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791973701920",
+   "name": "Dior paperbag ( big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884019159",
+   "name": "Dior paperbag (big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791890345915",
+   "name": "Dior paperbag (small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782726941853",
+   "name": "Giorgio armani paperbag",
+   "categoryKey": "packaging",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791886497941",
+   "name": "Giuseppe zanotti paperbag",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791883636340",
+   "name": "Givenchy paperbag",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884764527",
+   "name": "Gucci paperbag green ( big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791883502646",
+   "name": "Gucci paperbag green (medium size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791887150502",
+   "name": "Gucci paperbag green (small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884636653",
+   "name": "Gucci paperbag maroon (big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791884531085",
+   "name": "Gucci paperbag maroon (small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791887358177",
+   "name": "Hermes paperbag",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782727152355",
+   "name": "Jordan paperbag",
+   "categoryKey": "packaging",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791882788043",
+   "name": "Karl lagerfeld paperbag (medium size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791882981980",
+   "name": "Karl lagerfeld paperbag (small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782727235670",
+   "name": "Karl paper bag ",
+   "categoryKey": "packaging",
+   "sizes": [
+    "3"
+   ]
+  },
+  {
+   "pid": "p1791891317996",
+   "name": "Lacoste paperbag ( small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791885266632",
+   "name": "Louis Vuitton paperbag (big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791887272674",
+   "name": "Louis Vuitton paperbag (small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782727193104",
+   "name": "Nike paperbag",
+   "categoryKey": "packaging",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791896283311",
+   "name": "Nike paperbag white",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792151476022",
+   "name": "Paper bag black Dolce GABBANA small",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792153215900",
+   "name": "Paper bag boss white medium",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792153817693",
+   "name": "Paper bag DIOR white large",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792152223010",
+   "name": "Paper bag DIOR white medium",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792152075007",
+   "name": "Paper bag DSQUARED2 black  small",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792151841872",
+   "name": "Paper bag Gucci green large",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792151678286",
+   "name": "Paper bag Gucci green M",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792151052119",
+   "name": "Paper bag Karl white large",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792152599905",
+   "name": "Paper bag Loro piana brown",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792153720360",
+   "name": "Paper bag LOUIS VUITTON orange large",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792154053817",
+   "name": "Paper bag MICHAEL KORS large yellow",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792154137342",
+   "name": "Paper bag MICHAEL KORS small yellow",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792153513242",
+   "name": "Paper bag omega red small",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792153442416",
+   "name": "Paper bag TAGHEUER BLACK Small",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1792151189805",
+   "name": "Paper bag white boss large",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791887047151",
+   "name": "Philip plein paperbag black (small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791885522695",
+   "name": "Phillip plain paperbag (big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791891084499",
+   "name": "Prada paperbag ( medium size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791888468984",
+   "name": "Prada paperbag ( small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1782727110237",
+   "name": "Timberland paperbag",
+   "categoryKey": "packaging",
+   "sizes": [
+    "L"
+   ]
+  },
+  {
+   "pid": "p1791883316473",
+   "name": "Valentino paperbag (medium size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791890124685",
+   "name": "Versace paperbag ( small size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  },
+  {
+   "pid": "p1791886012494",
+   "name": "Versace paperbag (big size)",
+   "categoryKey": "bags",
+   "sizes": [
+    "_"
+   ]
+  }
+ ]
+}
