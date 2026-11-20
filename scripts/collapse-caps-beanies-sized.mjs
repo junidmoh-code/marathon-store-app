@@ -43,7 +43,17 @@ import {
   assertDrained, orderBlocks, transferBlocks, movementRecency,
   isRetiredSize, isRetiredSizeKey,
 } from "./lib/headwearCollapseCore.mjs";
-import { readMapPaged, shallowKeys } from "./lib/rtdbPaged.mjs";
+import { readMapPaged, shallowKeys as shallowKeysOnce } from "./lib/rtdbPaged.mjs";
+// The shallow listing is a REST call; a transient network timeout is retried
+// (it is read-only) rather than crashing a run mid-way.
+async function shallowKeys(appRef, path) {
+  for (let i = 1; ; i++) {
+    try { return await shallowKeysOnce(appRef, path); } catch (e) {
+      if (i >= 5) throw e;
+      await new Promise((r) => setTimeout(r, 2000 * i));
+    }
+  }
+}
 import { normalHeadwearKind } from "../src/utils/headwearCategory.js";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
