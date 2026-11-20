@@ -4,14 +4,17 @@
 // a cashier mid-shift). Fixed bottom-center so it never covers the header
 // actions or the cart totals.
 import { useEffect, useState } from "react";
-import { onUpdateAvailable, applyUpdate, isTvScreen } from "./updateChecker.js";
+import { onUpdateAvailable, applyUpdate, isTvScreen, isUpdateBannerHosted, onUpdateBannerHosted } from "./updateChecker.js";
 
 export default function UpdateBanner() {
   const [show, setShow] = useState(false);
+  const [hosted, setHosted] = useState(isUpdateBannerHosted);
   useEffect(() => onUpdateAvailable(setShow), []);
+  // A screen with its own banner (the Black Friday card) is open: that one is shown instead.
+  useEffect(() => onUpdateBannerHosted(setHosted), []);
   // Never on the customer-facing TV board: nobody there can tap it, and the
   // board is not reloaded while the store is open (updateChecker.isTvScreen).
-  if (!show || isTvScreen()) return null;
+  if (!show || hosted || isTvScreen()) return null;
   return (
     <button
       type="button"

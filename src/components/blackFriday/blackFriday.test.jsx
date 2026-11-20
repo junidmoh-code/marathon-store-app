@@ -1,6 +1,6 @@
 // Black Friday card v3 — one row per product, two tabs, reject persists,
 // Approve all 30+, under-13 switch, the posting brain's plan on the Approved tab.
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import BlackFridayScreen, { rowActions, shownId } from "./BlackFridayScreen";
@@ -42,6 +42,8 @@ function fakeApi(over = {}) {
     ...over,
   };
 }
+// The card keeps its place on the device (cardState.js): every test starts from a fresh device.
+beforeEach(() => { try { globalThis.localStorage && globalThis.localStorage.clear(); globalThis.sessionStorage && globalThis.sessionStorage.clear(); } catch { /* none */ } });
 async function mount(api) { let r; await act(async () => { r = TestRenderer.create(<BlackFridayScreen api={api} onExit={() => {}} />); }); await flush(); return r; }
 
 describe("Black Friday card v3", () => {
@@ -78,8 +80,11 @@ describe("Black Friday card v3", () => {
     expect(api.approve).toHaveBeenCalledWith("a", "main", "current");
     await act(async () => { byId(r, "reject-b").props.onClick(); });
     expect(api.reject).toHaveBeenCalledWith("b", "main");
-    await act(async () => { byId(r, "approve-big").props.onClick(); });
-    expect(api.approveBig).toHaveBeenCalledWith({ a: "current", b: "current" });
+    // The rows moved in place (no reload after a tap): a fresh card for Approve all 30+.
+    const r3 = await mount(fakeApi());
+    const api3 = r3.root.findByType(BlackFridayScreen).props.api;
+    await act(async () => { byId(r3, "approve-big").props.onClick(); });
+    expect(api3.approveBig).toHaveBeenCalledWith({ a: "current", b: "current" });
   });
 
   it("Rejected (n) is a small link at the bottom with undo", async () => {
@@ -275,6 +280,9 @@ describe("Black Friday card: the selection is never lost", () => {
     expect(byId(r2, "sel-b").props["aria-checked"]).toBe(true);
     expect(isUpdateBusy(), "no auto-reload onto a new deploy while anything is ticked").toBe(true);
     await act(async () => { byId(r2, "bulk-clear").props.onClick(); });
+    // Since 21 Nov the card is never reloaded under Junid while it is open, ticks or not (an "Update ready" banner instead).
+    expect(isUpdateBusy(), "the open card itself holds off any reload").toBe(true);
+    await act(async () => { r2.unmount(); });
     expect(isUpdateBusy()).toBe(false);
   });
 
@@ -341,13 +349,17 @@ describe("Black Friday card: New Arrivals tab, Approved split, Repost (Junid, 20
     expect(has(r, "toast-undo")).toBe(true);
     await act(async () => { byId(r, "approve-n3").props.onClick(); });
     expect(a.approve).toHaveBeenCalledWith("n3", "main", "g1795100000000");
-    await act(async () => { byId(r, "generate-n1").props.onClick(); });
+    // Approved rows moved in place (no reload after a tap): Generate on a fresh card.
+    await act(async () => { r.unmount(); });
+    const g = api();
+    const r2 = await mount(g);
+    await act(async () => { byId(r2, "generate-n1").props.onClick(); });
     await flush();
-    expect(a.generateNa).toHaveBeenCalledWith("n1", expect.anything());
-    expect(a.generate).not.toHaveBeenCalled();
-    await act(async () => { byId(r, "generate-n2").props.onClick(); });
+    expect(g.generateNa).toHaveBeenCalledWith("n1", expect.anything());
+    expect(g.generate).not.toHaveBeenCalled();
+    await act(async () => { byId(r2, "generate-n2").props.onClick(); });
     await flush();
-    expect(a.generate).toHaveBeenCalledWith("n2", "main", expect.anything());
+    expect(g.generate).toHaveBeenCalledWith("n2", "main", expect.anything());
     expect(rowActions(naRow("x"))).toMatchObject({ approve: true, useCurrent: true, useCurrentPrimary: true, backToReview: false });
   });
 
@@ -466,5 +478,75 @@ describe("Black Friday card: Junid's own photo, Find online, R0 guard (Junid, 20
     expect(shownId(withSrc())).toBe(SRC);
     expect(shownId(row("n", 1, { tab: "newArrivals", generatedUrl: "u" }))).toBe("na");
     expect(shownId(row("n", 1, { tab: "newArrivals", bfPhoto: true, use: "generated", sig: SRC }))).toBe(SRC);
+  });
+});
+
+describe("Black Friday card stays alive on Junid's iPhone (21 Nov)", () => {
+  // A device storage for these tests (the card keeps its place in it).
+  const mem = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k), clear: () => m.clear() }; };
+  const withStorage = () => { globalThis.localStorage = mem(); globalThis.sessionStorage = mem(); };
+
+  it("the open card holds off every auto-reload (even with nothing ticked), and lets go when closed", async () => {
+    const r = await mount(fakeApi());
+    expect(isUpdateBusy()).toBe(true);
+    await act(async () => { r.unmount(); });
+    expect(isUpdateBusy()).toBe(false);
+  });
+
+  it("a tap moves the row in place and does NOT re-read the list at once (one quiet re-read a moment later)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const api = fakeApi();
+      const r = await mount(api);
+      const before = api.list.mock.calls.length;
+      await act(async () => { byId(r, "approve-a").props.onClick(); });
+      await flush();
+      expect(api.list.mock.calls.length).toBe(before);
+      await act(async () => { vi.advanceTimersByTime(4100); });
+      await flush();
+      expect(api.list.mock.calls.length).toBe(before + 1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("the list shows small thumbnails (api.thumb); the photo itself is the fallback", async () => {
+    const api = fakeApi({ thumb: (u) => `${u}#thumb` });
+    const r = await mount(api);
+    const img = r.root.find((n) => n.type === "img" && n.props.alt === "Item a");
+    expect(img.props.src).toBe("https://x/a.jpg#thumb");
+    expect(img.props.loading).toBe("lazy");
+    const el = { src: "https://x/a.jpg#thumb" };
+    img.props.onError({ currentTarget: el });
+    expect(el.src).toBe("https://x/a.jpg");
+  });
+
+  it("if iOS closed the card: it comes back on the same tab, in Select mode with the ticks, with the photo he had open — drawn from the device before the server answers", async () => {
+    withStorage();
+    try {
+      const cached = view({ approved: [row("d", 15, { tab: "approved", gallery: [{ id: "app", url: "u0", label: "App photo" }, { id: "g1795100000000", url: "u1", label: "AI" }] })] });
+      globalThis.sessionStorage.setItem("bf.card.list", JSON.stringify(cached));
+      globalThis.localStorage.setItem("bf.card.ui", JSON.stringify({ at: Date.now(), tab: "approved", selectMode: true, scrollY: 0,
+        sel: { at: Date.now(), sigs: { d: "current" } }, viewer: { pid: "d", id: "g1795100000000" }, heights: { d: 180 } }));
+      const api = fakeApi({ list: vi.fn(() => new Promise(() => {})), selSave: vi.fn(async () => ({ ok: true })) }); // the server never answers
+      const r = await mount(api);
+      expect(byId(r, "tab-approved").props["aria-pressed"]).toBe(true);
+      expect(byId(r, "select-toggle").props["aria-pressed"]).toBe(true);
+      expect(byId(r, "sel-d").props["aria-checked"]).toBe(true);
+      expect(text(byId(r, "viewer-label"))).toContain("AI");
+    } finally { delete globalThis.localStorage; delete globalThis.sessionStorage; }
+  });
+
+  it("the device's ticks win when newer than the server's (a tick just before iOS closed the tab)", async () => {
+    const { pickSelection } = await import("./cardState");
+    expect(pickSelection({ at: 5, sigs: { a: "current" } }, { at: 9, sigs: { a: "current", b: "current" } }).sigs).toEqual({ a: "current", b: "current" });
+    expect(pickSelection({ at: 9, sigs: { a: "current" } }, { at: 5, sigs: {} }).sigs).toEqual({ a: "current" });
+    expect(pickSelection(null, { at: 1, sigs: {} })).toBe(null);
+  });
+
+  it("only the rows near the screen are drawn", async () => {
+    const { visibleRange } = await import("./BlackFridayScreen");
+    const offs = Array.from({ length: 1001 }, (_, i) => i * 150); // 1000 rows of 150 px
+    expect(visibleRange(offs, 1000, -1000, 1844)).toEqual([0, 13]);
+    const [s, e] = visibleRange(offs, 1000, 60000 - 1000, 60000 + 1844);
+    expect([s, e]).toEqual([393, 413]);
   });
 });
