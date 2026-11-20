@@ -29,7 +29,7 @@ export const UNIT_SPLIT_VERSION = 1;
 const REQUEST_MAPS = ["agentRepicks", "orderNowRequests", "unavailableRequests", "swapRequests"];
 const SETTLED_REQUEST = new Set(["ordered", "refused", "committed", "done", "not_in_stock", "cancelled", "failed", "applied"]);
 // Per-line maps on the order, keyed by line index.
-const LINE_MAPS = ["basket", "packedLines", "leftOut"];
+const LINE_MAPS = ["basket", "basketBy", "packedLines", "leftOut"];
 
 const qtyOf = (l) => Math.max(1, Math.floor(Number(l?.qty) || 1));
 const clone = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
@@ -51,6 +51,12 @@ export function splitBlocker(order, line, i) {
   if (line?.escalation) return `escalation in progress (${line.escalation.phase || "?"})`;
   if (line?.awaitingCustomer) return `the customer is being asked (${line.awaitingCustomer.what || "a choice"})`;
   if (line?.orderNow) return "an Order-it-now is recorded on the line";
+  // Money given back or moving on the line is keyed by its index (refund idempotency keys, the ledger's settled sums):
+  // a copy on another index could pay twice or cap wrongly. A person splits it.
+  const r = line?.resolution || {};
+  if (r.money || r.moneySettled || r.moneyVoided) return "money was given back or is moving on the line";
+  if (r.conversation) return "the customer agent is talking about the line";
+  if (line?.source?.status === LINE_STATUS.PICK && !(Array.isArray(line.source.orderKeys) && line.source.orderKeys.length)) return "its hub orders are being made (the next poll tick)";
   if (line?.source?.status === LINE_STATUS.REROUTE) return "a re-route is pending (the poller splits it itself)";
   if (line?.source?.status === LINE_STATUS.RESOLVING) return "the line is climbing the escalation chain";
   // Jamie keys his offers by line index: a new unavailable line would start a second conversation.
@@ -91,6 +97,14 @@ export function planUnitSplit(order, { nowMs = 0 } = {}) {
 
   const next = clone(order);
   const nextLines = lines;
+  // `unit`/`units` count the Shopify item's units over EVERY line carrying it (routing may already have put some on
+  // another line, #2261), in line order; the split units come after the item's existing lines.
+  const lidOf = (l) => String(l?.shopifyLineItemId ?? "");
+  const lidTotal = new Map();
+  for (const l of lines) if (l && lidOf(l)) lidTotal.set(lidOf(l), (lidTotal.get(lidOf(l)) || 0) + qtyOf(l));
+  const lidNext = new Map();
+  const nextUnit = (l) => { const k = lidOf(l); const n = (lidNext.get(k) || 0) + 1; lidNext.set(k, n); return n; };
+  const unitsOfLid = (l, n) => (lidOf(l) ? lidTotal.get(lidOf(l)) : n);
   const appended = [];
   const hubRepoints = [];
   const stripEntries = [];
@@ -113,8 +127,8 @@ export function planUnitSplit(order, { nowMs = 0 } = {}) {
     const unitLine = (u) => {
       const l = clone(line);
       l.qty = 1;
-      l.unit = u + 1;
-      l.units = n;
+      l.unit = lidOf(line) ? nextUnit(line) : u + 1;
+      l.units = unitsOfLid(line, n);
       if (ledgers) l.ledger = ledgers[u];
       if (outcomes) l.resolution.outcome = outcomes[u];
       for (const [k, parts] of moneyIn) l.resolution.moneyIn[k] = { ...parts[u], splitOfCents: line.resolution.moneyIn[k].amountCents };
@@ -147,6 +161,22 @@ export function planUnitSplit(order, { nowMs = 0 } = {}) {
       if (jimmy && at(jimmy, i) != null) put(jimmy, index, { ...clone(at(jimmy, i)), ...(at(jimmy, i).line != null ? { line: index } : {}) });
     }
   }
+  // The item's other lines (qty 1 already, e.g. a unit routed elsewhere) take the remaining unit numbers.
+  const splitLids = new Set(many.map((i) => lidOf(lines[i])).filter(Boolean));
+  nextLines.forEach((l, k) => {
+    if (!l || l.unit != null || !splitLids.has(lidOf(l))) return;
+    nextLines[k] = { ...l, unit: nextUnit(l), units: lidTotal.get(lidOf(l)) };
+  });
+  // A unit whose hub codes are all confirmed at the till is in the basket (the POS ticks basket/{i} only when ALL of a
+  // line's codes are in, so a half-confirmed ×2 line would otherwise never tick once split).
+  const codesIn = order.codesIn || {};
+  if (Object.keys(codesIn).length) {
+    if (!maps.basket) maps.basket = Array.isArray(order.lines) ? [] : {};
+    nextLines.forEach((l, k) => {
+      const ks = l?.source?.orderKeys;
+      if ((l?.splitFrom != null || many.includes(k)) && Array.isArray(ks) && ks.length && ks.every((c) => codesIn[c] === true)) put(maps.basket, k, true);
+    });
+  }
   next.lines = nextLines;
   for (const m of LINE_MAPS) if (maps[m]) next[m] = maps[m];
   if (jimmy) next.jimmyStatus = jimmy;
@@ -175,7 +205,7 @@ export function describePlan(id, order, plan) {
     out.push(`  line ${from + 1} ${what(l)} ×${l.qty} [${l.source?.status}${l.source?.locationId ? ` @ ${l.source.locationId}` : ""}] → unit 1 stays line ${from + 1} (qty 1, R${(u1.unitPriceCents / 100).toFixed(2)}${u1.source?.orderKeys ? `, hub ${u1.source.orderKeys.join(",")}` : ""}${u1.ledger ? `, ledger paid ${u1.ledger.paidCents}` : ""})`);
     for (const a of list) {
       const nl = plan.next.lines[a.index];
-      out.push(`    + line ${a.index + 1} = unit ${a.unit}/${a.units}: ${nl.source?.status}${nl.source?.locationId ? ` @ ${nl.source.locationId}` : ""}${nl.source?.orderKeys ? `, hub ${nl.source.orderKeys.join(",")}` : ""}${nl.source?.entryKey ? "" : nl.source?.status === LINE_STATUS.DISPLAY ? ", strip entry made by the next poll" : ""}${nl.ledger ? `, ledger paid ${nl.ledger.paidCents}` : ""}${nl.swappedFrom?.hubOrders ? `, swapped-from hub ${nl.swappedFrom.hubOrders.join(",")}` : ""}`);
+      out.push(`    + line ${a.index + 1} = unit ${nl.unit}/${nl.units} of the Shopify item: ${nl.source?.status}${nl.source?.locationId ? ` @ ${nl.source.locationId}` : ""}${nl.source?.orderKeys ? `, hub ${nl.source.orderKeys.join(",")}` : ""}${nl.source?.entryKey ? "" : nl.source?.status === LINE_STATUS.DISPLAY ? ", strip entry made by the next poll" : ""}${nl.ledger ? `, ledger paid ${nl.ledger.paidCents}` : ""}${nl.swappedFrom?.hubOrders ? `, swapped-from hub ${nl.swappedFrom.hubOrders.join(",")}` : ""}`);
     }
   }
   for (const r of plan.hubRepoints) out.push(`  orders/${r.key}: onlineLineIndex ${r.from} → ${r.index}, onlineUnit ${r.unit} → 0`);
@@ -212,14 +242,18 @@ export async function migrateOrderUnits(db, id, order, { nowMs, apply = false, s
     strips = landed.stripEntries;
     say(`  ✓ order written`);
   } else if (plan.status === "done") {
-    // Finish what an interrupted run left: every split unit's hub order points at its line.
+    // Finish what an interrupted run left: every split unit's hub order points at its line, and unit 1's open strip
+    // entry is at qty 1 (both transactions are no-ops once done).
     repoints = [];
     const L = linesOf(order);
+    const seen = new Set();
+    strips = [];
     for (const a of order.unitSplit.appended || []) {
       const k = L[a.index]?.source?.orderKeys?.[0];
       if (k) repoints.push({ key: k, from: a.from, index: a.index, unit: a.unit - 1 });
+      const e = L[a.from]?.source?.entryKey;
+      if (!seen.has(a.from) && typeof e === "string" && e.startsWith("displayChecks_active/") && L[a.from]?.source?.status === LINE_STATUS.DISPLAY) { strips.push(e); seen.add(a.from); }
     }
-    strips = [];
   } else if (plan.status !== "split") {
     return { status: plan.status, blocked: plan.blocked };
   }

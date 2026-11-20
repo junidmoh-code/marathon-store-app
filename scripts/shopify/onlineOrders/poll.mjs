@@ -655,7 +655,9 @@ async function maintainOrder(ctx, id, order) {
       // The POS "Order it now" record (who tapped, when) stays on the line, and
       // so does escalationGen: the line's next escalation must raise NEW
       // request keys, never adopt a request an earlier chain left behind.
-      const keep = { ...(old.orderNow ? { orderNow: old.orderNow } : {}), ...(Number(old.escalationGen) > 0 ? { escalationGen: Number(old.escalationGen) } : {}) };
+      const keep = { ...(old.orderNow ? { orderNow: old.orderNow } : {}), ...(Number(old.escalationGen) > 0 ? { escalationGen: Number(old.escalationGen) } : {}),
+        // Which unit of its Shopify item the line is, and the line it was split from, stay with it.
+        ...(old.units > 1 ? { unit: old.unit, units: old.units } : {}), ...(old.splitFrom != null ? { splitFrom: old.splitFrom } : {}) };
       if (!r.pid) { changed.set(i, { ...buildLine({ index: i, item, resolved: r }), lineId: old.lineId, routeGen: gen, ...keep }); return; }
       // One line per unit: a line still carrying qty > 1 (an order from before
       // 20 Nov 2026) comes back as qty-1 lines, the extra units appended.

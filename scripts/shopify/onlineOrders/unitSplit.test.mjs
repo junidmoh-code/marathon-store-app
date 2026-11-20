@@ -135,3 +135,42 @@ describe("migrateOrderUnits against the fake RTDB", () => {
     expect(f.read("orders/ZCQ")).toMatchObject({ onlineLineIndex: 2, onlineUnit: 0 });
   });
 });
+
+describe("architect review fixes", () => {
+  it("refuses a line with money given back or moving, a customer conversation, or a hub line whose codes are not made yet", () => {
+    for (const [over, why] of [
+      [{ resolution: { money: { kind: "refund", state: "claimed", amountCents: 1 } } }, /money/],
+      [{ resolution: { moneySettled: { a: { amountCents: 1 } } } }, /money/],
+      [{ resolution: { conversation: { state: "offering" } } }, /customer agent/],
+      [{ source: { status: "pick", locationId: "hub1" } }, /hub orders are being made/],
+    ]) {
+      const p = planUnitSplit(order([{ ...sneaker(), ...over }]));
+      expect(p.status).toBe("blocked");
+      expect(p.blocked[0].why).toMatch(why);
+    }
+  });
+
+  it("units count over every line of the Shopify item (#2261: ×3 at PE + 1 at Hub 2 = 4 units)", () => {
+    const pe = tee({ qty: 3, shopifyLineItemId: `${LI}9`, source: { status: "handed", locationId: "marathon-pe", entryKey: "displayChecks_active/marathon-pe/online__9__0" } });
+    const hub = tee({ lineId: "l1", shopifyLineItemId: `${LI}9`, source: { status: "handed", locationId: "hub2", orderKeys: ["BWU"], entryKey: "orders/BWU" } });
+    const L = planUnitSplit(order([pe, hub])).next.lines;
+    expect(L.map((l) => [l.unit, l.units, l.source.locationId])).toEqual([[1, 4, "marathon-pe"], [4, 4, "hub2"], [2, 4, "marathon-pe"], [3, 4, "marathon-pe"]]);
+  });
+
+  it("a half-confirmed ×2 hub line: the unit whose code is in goes into the basket", () => {
+    const o = order([{ ...sneaker(), source: { status: "pick", locationId: "hub1", orderKeys: ["AYT", "ZCQ"], entryKey: "orders/AYT" } }], { codesIn: { ZCQ: true } });
+    const p = planUnitSplit(o);
+    expect(p.next.basket[1]).toBe(true);
+    expect(p.next.basket[0] ?? null).toBeNull();
+  });
+
+  it("a re-run after an interrupted apply still sets unit 1's open strip entry to qty 1", async () => {
+    const f = fakeDb({
+      online_orders: { 9: order([tee({ qty: 2 })], { status: "picking" }) },
+      displayChecks_active: { "marathon-pe": { online__9__0: { status: "open", qty: 2, saleCount: 2 } } },
+    });
+    await f.db.ref("online_orders/9").set(planUnitSplit(f.read("online_orders/9"), { nowMs: 5 }).next); // order landed, entry not
+    await migrateOrderUnits(f.db, "9", f.read("online_orders/9"), { nowMs: 6, apply: true });
+    expect(f.read("displayChecks_active/marathon-pe/online__9__0")).toMatchObject({ qty: 1, saleCount: 1 });
+  });
+});
