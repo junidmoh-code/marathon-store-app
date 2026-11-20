@@ -290,6 +290,8 @@ describe("drain — the queue and the card's status", () => {
     const again = await drain(d, { pids: [PID], force: true });
     expect(again.results).toHaveLength(0);
     expect(again.queued).toBe(0);
+    // The album gate looks at every product it is given, queued or not.
+    expect((await drain(d, { pids: [PID], force: true, ensure: true })).results.map((r) => r.outcome)).toEqual(["live"]);
   });
 
   it("approved, but the photo shown moved off the approved one: kept queued for later, not dropped", async () => {

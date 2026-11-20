@@ -312,14 +312,16 @@ export async function recordWeb(db, pid, r, { prev, approvedAt, now }) {
  * One pass over the queue. deps as publishOne, plus suggestNames(pids) (optional: the runner's namer).
  * → { off, queued, results: [{ pid, outcome, why }], published, named }
  */
-export async function drain(deps, { max = MAX_PUBLISH_PER_RUN, maxAttempts = MAX_ATTEMPTS_PER_RUN, pids = null, force = false } = {}) {
+export async function drain(deps, { max = MAX_PUBLISH_PER_RUN, maxAttempts = MAX_ATTEMPTS_PER_RUN, pids = null, force = false, ensure = false } = {}) {
   const { db, log = () => {} } = deps;
   const out = { off: false, queued: 0, results: [], published: 0, named: 0 };
   if ((await val(db, SWITCH_OFF)) === true) { out.off = true; return out; }
   // Given pids: only those still queued — a product already settled (live / out of stock / gone) left
   // the queue and is not looked at again, so it never takes an attempt slot from one still waiting.
+  // ensure: every one given is looked at, queued or not (the album gate: Shopify says it is not live).
   const queue = pids
-    ? Object.fromEntries((await Promise.all(pids.map(async (pid) => [pid, await val(db, `${QUEUE}/${pid}`)]))).filter(([, q]) => q))
+    ? Object.fromEntries((await Promise.all(pids.map(async (pid) => [pid, await val(db, `${QUEUE}/${pid}`)])))
+      .filter(([, q]) => q || ensure).map(([pid, q]) => [pid, q || {}]))
     : ((await val(db, QUEUE)) || {});
   out.queued = Object.keys(queue).length;
   if (!out.queued) return out;
