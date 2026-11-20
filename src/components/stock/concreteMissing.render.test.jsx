@@ -163,7 +163,6 @@ describe("the Solved tab", () => {
     expect(textOf(tree)).toMatch(/Junid/);
     await act(async () => { await buttonExactly(tree, "Undo").props.onClick(); });
     expect(markMock).toHaveBeenCalledWith("tee1", false);
-    expect(restoreMock).toHaveBeenCalledWith("tee1");
     expect(state().session[0].status).toBe("undone");
     expect(buttonExactly(tree, "Undo")).toBeUndefined();
     expect(textOf(tree)).toMatch(/Undone/);
@@ -200,7 +199,7 @@ describe("fast Solve — the row resolves on the tap, the write follows", () => 
 });
 
 describe("a card still missing somewhere after its write comes back (Sonnet review B1)", () => {
-  it("hidden on the tap, back after the hold when the live list still carries it", async () => {
+  it("hidden on the tap; still hidden at 8 s while the list is unchanged; back at the backstop", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const { tree, state } = render({ products: [TEE] });
     await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
@@ -209,6 +208,8 @@ describe("a card still missing somewhere after its write comes back (Sonnet revi
     expect(buttonExactly(tree, "Solve")).toBeUndefined();
     try {
       await act(async () => { vi.advanceTimersByTime(8100); });
+      expect(buttonExactly(tree, "Solve")).toBeUndefined();   // a slow echo must not show Solve again
+      await act(async () => { vi.advanceTimersByTime(82000); });
     } finally { vi.useRealTimers(); }
     // STOCK never changed in this test, so the card is still live: it returns.
     expect(state().resolving.tee1).toBeUndefined();

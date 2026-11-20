@@ -28,7 +28,7 @@ import { effectiveCategoryKey, labelForKey, TAXONOMY_SEED } from "../../utils/pr
 import { productIsFootwear } from "../../utils/footwearLine";
 import { isConcreteProduct, needsBrandCheck } from "../../utils/concreteListing";
 import { inFootwearGroup, isPerfume } from "../stock/missingProductsCore";
-import { markConcreteProduct, confirmBrand, restoreMarathonListing } from "./concreteStore";
+import { markConcreteProduct, confirmBrand } from "./concreteStore";
 import { ConcreteSwitch } from "./AllProductsList";
 
 export const CARD_PAGE = 50;
@@ -129,11 +129,10 @@ export default function ConcreteProductsCard({ products = [], ProductPhoto = nul
       setErr(`${p.name || p.id}: not saved — ${r.message}`);
       return;
     }
+    if (r.warning) setErr(`${p.name || p.id}: ${r.warning}`);
     clearTimeout(toastTimer.current);
     if (fromUndo) {
       setToast(null);
-      // Undoing a mark: put back a Marathon listing the mark already took off.
-      if (!next) { const back = await restoreMarathonListing(p.id); if (!back.ok) setErr(`${p.name || p.id}: back on Marathon, but its Marathon listing was not switched back on (${back.message}).`); }
       return;
     }
     setToast({ pid: p.id, name: p.name || p.id, on: next, product: p });

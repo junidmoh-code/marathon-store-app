@@ -149,8 +149,19 @@ async function main() {
     // concreteProduct value — a decision someone made after the snapshot
     // (true or false) wins, and then nothing else for this product is
     // written: no index, no Marathon change (CodeRabbit, PR #952).
+    // The INDEX entry goes first: it is only a pointer (the enforcer re-reads
+    // the product), so a stale one is harmless — but a flag without its entry
+    // would hide a live Marathon listing from the enforcer for good, and a
+    // rerun would skip it (substitute Sonnet review, PR #952).
+    await db.ref(`${CONCRETE_INDEX_PATH}/${e.pid}`).set(true);
     const cas = await db.ref(`products/${e.pid}/concreteProduct`).transaction((cur) => (cur === null || cur === undefined ? true : undefined));
-    if (!cas.committed) { console.log(`  drift: ${e.pid} got a concreteProduct value after the snapshot — left exactly as it is`); continue; }
+    if (!cas.committed) {
+      // Someone decided after the snapshot: their value stands. The index
+      // entry stays only if that decision was Concrete-only.
+      if (cas.snapshot?.val() !== true) await db.ref(`${CONCRETE_INDEX_PATH}/${e.pid}`).remove();
+      console.log(`  drift: ${e.pid} got a concreteProduct value after the snapshot — left exactly as it is`);
+      continue;
+    }
     delete u[`products/${e.pid}/concreteProduct`];
     if (e.marathonOff) {
       // The Marathon off as its own transaction on the live node, so a

@@ -491,8 +491,8 @@ describe("the undo strip after a first-batch Solve", () => {
     expect(stripText(tree)).toMatch(/Solved — Essentials Tee Olive: 4 units requested from Central for Marathon PE/);
     // Live rows: req1 still open and untouched; req2 open too — but Central
     // wins the race on req2 (its cancel CAS aborts).
-    gets["refill_requests/req1"] = { status: "open", size: "S", qty: 2 };
-    gets["refill_requests/req2"] = { status: "open", size: "M", qty: 2 };
+    gets["refill_requests/req1"] = { productId: TEE, requestingLocation: "marathon-pe", status: "open", size: "S", qty: 2 };
+    gets["refill_requests/req2"] = { productId: TEE, requestingLocation: "marathon-pe", status: "open", size: "M", qty: 2 };
     abortPaths.add("refill_requests/req2");
     await act(async () => { await undoButton(tree).props.onClick(); });
     const text = stripText(tree);
@@ -502,8 +502,8 @@ describe("the undo strip after a first-batch Solve", () => {
   it("a RETRY after a partial undo: its own landed cancel is done — no CAS on it, no blocker, and the seeds are removed", async () => {
     const tree = render({ products: onlyProduct(TEE) });
     await solve(tree);
-    gets["refill_requests/req1"] = { status: "cancelled", cancelReason: "solve_undone", size: "S", qty: 2 };
-    gets["refill_requests/req2"] = { status: "open", size: "M", qty: 2 };
+    gets["refill_requests/req1"] = { productId: TEE, requestingLocation: "marathon-pe", status: "cancelled", cancelReason: "solve_undone", size: "S", qty: 2 };
+    gets["refill_requests/req2"] = { productId: TEE, requestingLocation: "marathon-pe", status: "open", size: "M", qty: 2 };
     txnPaths.length = 0;
     await act(async () => { await undoButton(tree).props.onClick(); });
     expect(txnPaths.filter((p) => p.startsWith("refill_requests/"))).toEqual(["refill_requests/req2"]);
@@ -514,10 +514,23 @@ describe("the undo strip after a first-batch Solve", () => {
     const tree = render({ products: onlyProduct(TEE) });
     await solve(tree);
     updateMock.mockClear();
-    gets["refill_requests/req1"] = { status: "fulfilled", size: "S", qty: 2 };
-    gets["refill_requests/req2"] = { status: "open", size: "M", qty: 2 };
+    gets["refill_requests/req1"] = { productId: TEE, requestingLocation: "marathon-pe", status: "fulfilled", size: "S", qty: 2 };
+    gets["refill_requests/req2"] = { productId: TEE, requestingLocation: "marathon-pe", status: "open", size: "M", qty: 2 };
     await act(async () => { await undoButton(tree).props.onClick(); });
     expect(stripText(tree)).toMatch(/Central has already sent the S request for Marathon PE — this solve can no longer be undone/);
     expect(updateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("undo refuses a history row naming another product's request (substitute Sonnet review, PR #952)", () => {
+  it("nothing is cancelled and nothing is deleted", async () => {
+    const tree = render({ products: onlyProduct(TEE) });
+    await solve(tree);
+    gets["refill_requests/req1"] = { productId: "SOMEONE_ELSE", requestingLocation: "marathon-pe", status: "open", size: "S", qty: 2 };
+    gets["refill_requests/req2"] = { productId: TEE, requestingLocation: "marathon-pe", status: "open", size: "M", qty: 2 };
+    txnPaths.length = 0;
+    await act(async () => { await buttonExactly(tree, "Undo").props.onClick(); });
+    expect(txnPaths).toEqual([]);
+    expect(textOf(tree)).toMatch(/names a request that is not this solve's/);
   });
 });

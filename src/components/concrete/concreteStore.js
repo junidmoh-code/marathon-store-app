@@ -6,7 +6,8 @@
 // is told about the write the same way productSave.js tells it (notePendingUpdate),
 // so the list re-renders at once instead of waiting for the next mirror pull.
 import { useEffect, useState } from "react";
-import { ref, update, get, query, orderByChild, equalTo } from "firebase/database";
+import { ref, update, get, query, orderByChild, equalTo, runTransaction } from "firebase/database";
+import { desiredStateMutator } from "../shopify/publishMutators";
 import { database, auth } from "../../firebase";
 import { notePendingUpdate } from "../../offline/pendingWrites";
 import { serverNowMs } from "../../utils/serverTime";
@@ -40,6 +41,8 @@ export async function markProducts(productIds, on, { verify = false, liveOnConcr
     const chunk = productIds.slice(i, i + BULK_CHUNK);
     const r = await setConcreteProduct(applyRootUpdate, { productIds: chunk, on, uid, nowMs: serverNowMs(), verify, liveOnConcrete });
     if (!r.ok) return { ok: false, count: done, message: r.message };
+    // A bulk return to Marathon puts back listings the mark took off.
+    if (!on) for (const pid of chunk) await restoreMarathonListing(pid);
     done += r.count;
     onProgress?.(done);
   }
@@ -68,27 +71,39 @@ export async function markConcreteProduct(productId, on, { liveOnConcrete = null
     } catch { /* see above */ }
   }
   const r = await setConcreteProduct(applyRootUpdate, { productIds: [productId], on, uid, nowMs: serverNowMs(), verify: true, liveOnConcrete: live });
-  return r.ok ? { ok: true } : { ok: false, message: r.message || "Couldn't save — nothing changed." };
+  if (!r.ok) return { ok: false, message: r.message || "Couldn't save — nothing changed." };
+  if (!on) {
+    // Back to Marathon means back on marathonclub.co.za if the mark took it off.
+    const back = await restoreMarathonListing(productId);
+    if (!back.ok) return { ok: true, warning: `Back on Marathon, but its Marathon listing was not switched back on (${back.message}) — switch it on from the Marathon publishing tab.` };
+  }
+  return { ok: true };
 }
 
 /**
- * Undoing a Concrete mark: if the Marathon reconciler already switched the
- * Marathon listing off BECAUSE of that mark (lastOff.reasonCode
- * "concrete_only"), put its intent back to "on". Any other off — a person's,
- * a refusal — is left alone. Returns { ok, restored, message? }.
+ * Returning a product to Marathon (any unmark — the switch, a bulk remove, an
+ * Undo): if the Marathon reconciler already switched its Marathon listing off
+ * BECAUSE of the Concrete mark (lastOff.reasonCode "concrete_only"), turn the
+ * intent back on. Any other off — a person's, a refusal — is left alone.
+ * A TRANSACTION through the publishing page's own mutator, so an off that
+ * lands meanwhile is never overwritten (substitute Sonnet review, PR #952).
+ * Always /shopify_publish (Marathon), whatever the Publishing tab points at.
+ * Returns { ok, restored, message? }.
  */
 export async function restoreMarathonListing(productId) {
   const uid = auth.currentUser?.uid;
   if (!uid) return { ok: false, restored: false, message: "Not signed in." };
   try {
-    const node = (await get(ref(database, `shopify_publish/${productId}`))).val();
-    if (!node || node.desiredState !== "off" || node.lastOff?.reasonCode !== "concrete_only") return { ok: true, restored: false };
-    await applyRootUpdate({
-      [`shopify_publish/${productId}/desiredState`]: "on",
-      [`shopify_publish/${productId}/updatedAt`]: serverNowMs(),
-      [`shopify_publish/${productId}/updatedBy`]: uid,
+    let refusal = null;
+    const r = await runTransaction(ref(database, `shopify_publish/${productId}`), (cur) => {
+      if (!cur) return cur;   // cold cache: retried with the server value; a missing node stays missing
+      if (cur.desiredState !== "off" || cur.lastOff?.reasonCode !== "concrete_only") return undefined;
+      const out = desiredStateMutator(cur, { want: "on" }, { now: serverNowMs(), uid });
+      if (out.refusal) { refusal = out.refusal; return undefined; }
+      return out.next;
     });
-    return { ok: true, restored: true };
+    if (refusal) return { ok: false, restored: false, message: refusal };
+    return { ok: true, restored: !!(r?.committed && r.snapshot?.val()?.desiredState === "on") };
   } catch (err) {
     return { ok: false, restored: false, message: String(err?.message || err) };
   }

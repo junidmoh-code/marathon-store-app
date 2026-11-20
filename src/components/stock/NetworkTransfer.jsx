@@ -53,7 +53,7 @@ import { setUpdateBusy } from "../../update/updateChecker";
 import { stampRecord, stampTxn } from "../../device/deviceStamp";
 // CONCRETE-ONLY + THE SOLVED TAB (Junid, 20 Nov 2026).
 import { isConcreteProduct } from "../../utils/concreteListing";
-import { markConcreteProduct, restoreMarathonListing } from "../concrete/concreteStore";
+import { markConcreteProduct } from "../concrete/concreteStore";
 import { concreteSection } from "./missingProductsCore";
 import { buildSolveLogEntry, buildConcreteLogEntry, mergeSolved, standing, normalizeSolvedEntry, newSolvedKey, undoRecordProblem } from "./solvedLog";
 import { useSolvedLog, saveSolvedRows, markSolvedUndone } from "./solvedLogStore";
@@ -64,9 +64,9 @@ import { PrimaryPhoto } from "../shared/PrimaryPhoto";
 // default) — the other section's list is one tap away for a viewer who may
 // see it.
 const HOME_SECTION = 2;
-// How long a just-solved card stays hidden after its write landed while the
-// live list still carries it (the offline mirror's echo measured 1.2–1.5 s).
-const DONE_HOLD_MS = 8000;
+// The BACKSTOP for a just-solved card the live list still carries unchanged:
+// the mirror's echo is 1.2–1.5 s, but its fallback cadence is a minute.
+const DONE_HOLD_MS = 90000;
 // The Source tab a shop's first-batch request lands on (App.jsx SOURCE_SHOP_TABS).
 // A shop not named here is listed under its own name.
 const SOURCE_TAB_LABEL = { "marathon-pe": "Marathon", trophy: "Trophy" };
@@ -237,6 +237,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const hit = l.some((x) => x.key === u.key);
       return hit ? l.map((x) => (x.key === u.key ? { ...x, status: "undone" } : x)) : [...l, { ...u, status: "undone" }];
     });
+    clearTimeout(doneTimers.current[u.pid]); delete doneTimers.current[u.pid]; delete doneSnap.current[u.pid];
     setResolving((m) => { const n = { ...m }; delete n[u.pid]; return n; });
     setSolved((d) => { const n = { ...d }; delete n[u.pid]; return n; });
     if (u.saved !== false) {
@@ -274,6 +275,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         await Promise.all(u.firstBatch.requestIds.map(async (id) => {
           liveFb[id] = (await get(ref(database, `refill_requests/${id}`))).val();
         }));
+        // Every request this row names must be THIS product's, raised for
+        // THIS store — a history row is staff-writable, and the cancel below
+        // must never reach another product's request (substitute Sonnet
+        // review, PR #952).
+        const foreign = Object.entries(liveFb).find(([, r]) => r && (r.productId !== u.pid || r.requestingLocation !== u.firstBatch.store));
+        if (foreign) { setRow(u.key, { busy: false, err: "This row names a request that is not this solve's — nothing was changed." }); return; }
         const fbBlockers = firstBatchUndoBlockers({ liveRequests: liveFb, storeLabel: LOC_LABEL[u.store] });
         if (fbBlockers.length) {
           setRow(u.key, { busy: false, err: fbBlockers[0] });
@@ -332,9 +339,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       undoInFlight.current.delete(u.key);
     }
   };
-  // Undo a Concrete mark: the product returns to Marathon (and to Marathon's
-  // list). It does NOT republish it on marathonclub.co.za — that stays a
-  // person's call on the Marathon publishing tab.
+  // Undo a Concrete mark: the product returns to Marathon's list, and a
+  // Marathon listing the mark itself switched off is switched back on.
   const undoConcrete = async (u) => {
     if (!canMarkConcrete || undoInFlight.current.has(u.key)) return;
     undoInFlight.current.add(u.key);
@@ -342,10 +348,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     try {
       const r = await markConcreteProduct(u.pid, false);
       if (!r.ok) { setRow(u.key, { busy: false, err: `Couldn't undo — ${r.message}` }); return; }
-      // If the mark already took it off Marathon, put the Marathon intent back
-      // (only an off the Concrete mark itself caused — Sonnet review, PR #952 S1).
-      const back = await restoreMarathonListing(u.pid);
-      setRow(u.key, { busy: false, err: back.ok ? null : `Back on Marathon's list, but its Marathon listing was not switched back on (${back.message}) — switch it on from the Marathon publishing tab.` });
+      // markConcreteProduct(…, false) also puts back a Marathon listing the
+      // mark itself switched off (concreteStore.restoreMarathonListing).
+      setRow(u.key, { busy: false, err: r.warning || null });
       await finishUndo(u);
     } finally {
       undoInFlight.current.delete(u.key);
@@ -373,6 +378,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // brings the row back and says why in red.
   const markConcrete = async (card) => {
     if (!canMarkConcrete || resolving[card.pid]) return;
+    doneSnap.current[card.pid] = (card.missing || []).join("|");
     setResolving((m) => ({ ...m, [card.pid]: "pending" }));
     setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; });
     const r = await markConcreteProduct(card.pid, true);
@@ -480,21 +486,32 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // whatever happens, so a card that is STILL missing somewhere (one store of
   // several solved) comes back with what is left (Sonnet review, PR #952 B1).
   const cards = useMemo(() => cardsLive.filter((c) => !resolving[c.pid]), [cardsLive, resolving]);
-  useEffect(() => {
-    const live = new Set(allLive.map((c) => c.pid));
-    const gone = Object.keys(resolving).filter((pid) => resolving[pid] === "done" && !live.has(pid));
-    if (gone.length) setResolving((m) => { const n = { ...m }; for (const pid of gone) if (n[pid] === "done") delete n[pid]; return n; });
-  }, [allLive, resolving]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // What the card was missing when its action was tapped: a live card whose
+  // missing set has CHANGED has caught up with the write (one store of
+  // several solved) and comes back with what is left. A card unchanged stays
+  // hidden until it goes, or until the backstop (substitute Sonnet review,
+  // PR #952: a fixed 8 s could show Solve again before a slow echo).
+  const doneSnap = useRef({});
   const doneTimers = useRef({});
+  const releaseDone = (pids) => {
+    for (const pid of pids) { clearTimeout(doneTimers.current[pid]); delete doneTimers.current[pid]; delete doneSnap.current[pid]; }
+    setResolving((m) => { const n = { ...m }; let ch = false; for (const pid of pids) if (n[pid] === "done") { delete n[pid]; ch = true; } return ch ? n : m; });
+  };
   useEffect(() => {
+    const live = new Map(allLive.map((c) => [c.pid, c]));
+    const release = Object.keys(resolving).filter((pid) => {
+      if (resolving[pid] !== "done") return false;
+      const c = live.get(pid);
+      if (!c) return true;
+      const snap = doneSnap.current[pid];
+      return snap != null && snap !== (c.missing || []).join("|");
+    });
+    if (release.length) releaseDone(release);
     for (const [pid, st] of Object.entries(resolving)) {
       if (st !== "done" || doneTimers.current[pid]) continue;
-      doneTimers.current[pid] = setTimeout(() => {
-        delete doneTimers.current[pid];
-        setResolving((m) => { if (m[pid] !== "done") return m; const n = { ...m }; delete n[pid]; return n; });
-      }, DONE_HOLD_MS);
+      doneTimers.current[pid] = setTimeout(() => releaseDone([pid]), DONE_HOLD_MS);
     }
-  }, [resolving]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [allLive, resolving]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { for (const t of Object.values(doneTimers.current)) clearTimeout(t); }, []);
 
   // Typed quantities on a card still in the list, or a move going through,
@@ -950,6 +967,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // What is written is byte-for-byte what was written before: the same
     // reads feed the same builders in the same order.
     setSolving((m) => ({ ...m, [card.pid]: true }));
+    doneSnap.current[card.pid] = (card.missing || []).join("|");
     setResolving((m) => ({ ...m, [card.pid]: "pending" }));
     setSolvePid((cur) => (cur === card.pid ? null : cur));
     setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; });
@@ -1074,9 +1092,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
             return { ...normalizeSolvedEntry(e.key, log), batch: baseSolveId, log };
           });
           await recordSolved(solvedRows);
-        } catch (e) {
-          setSolved((d) => ({ ...d, [card.pid]: { ok: true, store: ticks[0], sizes: [], msg: `Solved — but it could not be added to the Solved history (${e?.message || "error"}). Do NOT solve it again.` } }));
-        }
+        } catch { /* recordSolved already keeps the row for this visit and flags it unsaved */ }
       } else {
         // Nothing to write (a central-fed store Central cannot serve): the
         // row comes back and says so.
@@ -1100,7 +1116,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // division's stores. A location with its switches off can be sent to by hand.
   const destOptions = (card) => {
     const p = byId.get(card.pid);
-    if (!isCentral(card.source, network)) return storeIds(network, { section: sectionOfStore(card.source) });
+    // A hub's own division's shops — and only for a viewer of that division
+    // (a Concrete-list card can sit in a Marathon hub; substitute Sonnet review, PR #952).
+    if (!isCentral(card.source, network)) return mySections.includes(sectionOfStore(card.source)) ? storeIds(network, { section: sectionOfStore(card.source) }) : [];
     const home = divisionOf(card);
     return mySections.includes(home) ? [...solveHubsOfSection(network, home, p, card.pid), ...storeIds(network, { section: home })] : [];
   };

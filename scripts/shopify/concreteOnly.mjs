@@ -76,6 +76,9 @@ export async function enforceConcreteOnlyOnMarathon(db, { nowMs, actor, commit =
       if (!isConcreteProduct(product)) { out.skipped.push({ pid, why: "index says Concrete-only but the product record does not" }); continue; }
       if (!needsMarathonOff(node)) continue;
       if (commit) {
+        // Re-read the product right before the off: an unmark that landed
+        // since the batch read must win (substitute Sonnet review, PR #952).
+        if (!isConcreteProduct((await db.ref(`products/${pid}`).get()).val())) continue;
         const at = await nowMs();
         // A TRANSACTION on the node: the off record is merged into the log as
         // it stands at commit time, so a concurrent off record is never lost
@@ -85,7 +88,7 @@ export async function enforceConcreteOnlyOnMarathon(db, { nowMs, actor, commit =
           if (!needsMarathonOff(cur)) return;    // abort — nothing to do any more
           return { ...cur, ...concreteOnlyOffFields(cur, { at, actor }) };
         });
-        if (!r?.committed) continue;
+        if (!r?.committed || r.snapshot?.val() == null) continue;
         log(`  marathon: ${pid} is Concrete-only — switching its Marathon listing off`);
       }
       out.turnedOff.push(pid);

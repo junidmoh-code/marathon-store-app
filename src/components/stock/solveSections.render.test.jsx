@@ -403,7 +403,9 @@ describe("undo: two shops of one confirm share their hub's seeds", () => {
     expect(undoButtons()).toHaveLength(2);
     expect(textOf(tree)).toMatch(/6 units requested from Central for Marathon PE \(Hub 2's batch follows\)/);
     // every request row is still open and untouched
-    for (let i = 1; i <= 6; i++) gets[`refill_requests/req${i}`] = { status: "open", size: "M" };
+    // (each live row carries the product and store the solve wrote on it —
+    // undo refuses a row naming another product's request)
+    for (const [k, v] of Object.entries(written())) if (k.startsWith("refill_requests/")) gets[k] = { ...v, status: "open", size: "M" };
     await act(async () => { await undoButtons()[0].props.onClick(); });
     const first = txnPaths.filter((p) => p.startsWith("stock/"));
     expect(first.some((p) => p.startsWith("stock/hub2/"))).toBe(false);

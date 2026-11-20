@@ -31,17 +31,22 @@ Helper: `src/utils/concreteListing.js` (`isConcreteProduct`, `buildConcreteUpdat
 `/products` and `/settings` are writable by every signed-in staff account on
 the live rules, so the app works without these. But marking a product
 Concrete-only now takes it OFF marathonclub.co.za, so these `.validate` rules
-let only Junid, Jafer or a stockRole admin CHANGE the mark (a `.write` granted
-at `/products` cannot be narrowed below it; `.validate` can refuse the change).
-Admin SDK scripts bypass rules.
+let only Junid, Jafer or a stockRole admin SET or CHANGE the mark (a `.write`
+granted at `/products` cannot be narrowed below it; `.validate` can refuse a
+change). LIMIT: RTDB does not run `.validate` on a DELETE, so a staff account
+could still delete the field (the product returns to Marathon's lists; nothing
+goes live by itself) or an index entry (the Marathon reconciler would then not
+see that product; its own refusal still stops a NEW Marathon publish). Closing
+that needs `/products`'s write grant restructured — a bigger change, not made
+here. Admin SDK scripts bypass rules.
 
 Inside `"products" → "$pid"`, next to `styleCode…`:
 
 ```json
-"concreteProduct":      { ".validate": "newData.isBoolean() && (newData.val() === data.val() || auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" },
+"concreteProduct":      { ".validate": "newData.isBoolean() && (newData.val() === data.val() || (auth.token.email_verified === true && (auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com')) || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" },
 "concreteProductSetBy": { ".validate": "newData.isString() && newData.val() === auth.uid" },
 "concreteProductSetAt": { ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000" },
-"listOnConcrete":       { ".validate": "newData.isBoolean() && (newData.val() === data.val() || auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" }
+"listOnConcrete":       { ".validate": "newData.isBoolean() && (newData.val() === data.val() || (auth.token.email_verified === true && (auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com')) || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" }
 ```
 
 (If you already pasted #911's `listOnConcrete` line from block 1 below, replace
@@ -51,7 +56,7 @@ Inside `"settings"`:
 
 ```json
 "concreteOnlyIndex": {
-  "$pid": { ".validate": "newData.val() === true && (auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" }
+  "$pid": { ".validate": "newData.val() === true && ((auth.token.email_verified === true && (auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com')) || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" }
 },
 "missingProductsSolved": {
   "$id": { ".validate": "(newData.hasChildren(['kind', 'pid', 'at', 'by']) || (data.exists() && newData.hasChildren(['status']))) && (!newData.child('at').exists() || (newData.child('at').isNumber() && newData.child('at').val() <= now + 86400000))" }
