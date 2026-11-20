@@ -27,6 +27,14 @@
 // (timeout/5xx) leaves the claim as "unknown" — check the portal before
 // retrying, because TCG may have booked it (the client never retries a create).
 //
+// DOOR-TO-LOCKER (Junid, 20 Nov 2026). Unless /config/shipping/deliveryMode is
+// "door", every booking is collected from our door and delivered to the
+// Courier Guy locker nearest the customer (lockerDelivery.mjs): one shoe-sized
+// parcel per shipment, N shipments to the same locker when the order needs N.
+// The locker is written to shipping/deliveryLocker, every waybill to
+// shipping/waybills (the first stays shipping/waybill), the door-to-door price
+// to shipping/doorQuote. No locker near the address → refused, never door.
+//
 // No waybill printing: waybills stay handwritten. `waybill` is returned for
 // that, and a later label-print step can open TCG's label PDF
 // (GET /shipments/label?id=) with window.print — never WebUSB.
@@ -37,6 +45,7 @@ import { orderLines, deliveryAddress, deliveryContact, orderRef, orderKey as key
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { quoteParcel, tcgParcels, lockerCollection } from "./quote.mjs";
 import { fileLogger } from "./courier-client.mjs";
+import { planLockerDelivery } from "./lockerDelivery.mjs";
 
 export const LIVE_PATH = "config/shipping/live";
 
@@ -114,7 +123,7 @@ async function productsFor(db, order) {
 }
 
 /** Everything up to (not including) the shipment call. Pure apart from rates. */
-export async function planShipment(order, { db, client, products = null }) {
+export async function planShipment(order, { db, client, products = null, geocoder }) {
   // The config and the products are read together (fast booking, 20 Nov 2026).
   const [rawCfg, productMap] = await Promise.all([db.ref("config/shipping").get(), products ?? productsFor(db, order)]);
   const cfg = mergeShippingConfig(rawCfg.val());
@@ -131,10 +140,15 @@ export async function planShipment(order, { db, client, products = null }) {
   // Our own side only has to be complete to BOOK: a dry run still shows the
   // whole payload, with the gap named, so the card/log is useful before
   // Junid has filled the collection contact in.
+  // Door-to-locker declares one shoe whatever the goods are: size never stops that booking.
+  const toLocker = cfg.deliveryMode !== "door";
   const liveBlockers = [
     ...(!collectionContact.mobile_number && !collectionContact.email ? ["collection_contact"] : []),
-    ...(!parcel.fits ? ["no standard box fits"] : []),
+    ...(!toLocker && !parcel.fits ? ["no standard box fits"] : []),
   ];
+  if (toLocker) {
+    return planLockerDelivery({ order, key: keyOf(order), cfg, client, estimate: parcel, address, contact, ref, liveBlockers, ...(geocoder ? { geocoder } : {}) });
+  }
 
   // The locker is only asked when the drop box is ON (door-to-door otherwise).
   const dropBox = cfg.dropBox?.enabled
@@ -225,7 +239,7 @@ export function ceilingLine(ref, plan) {
  * @param {object} [deps]  { db, client, products, log, now } — injected by tests
  */
 export async function bookShipment(order, deps = {}) {
-  const { db, client, products, log, now } = await defaultDeps(deps);
+  const { db, client, products, log, now, geocoder } = await defaultDeps(deps);
   const key = orderKey(order);
 
   // An order that already carries a booking is never booked again.
@@ -233,11 +247,20 @@ export async function bookShipment(order, deps = {}) {
     return { skipped: true, reason: "already booked", shipping: order.shipping };
   }
 
-  const plan = await planShipment(order, { db, client, products });
+  // A split whose later parcel failed: the parcels already booked are kept on
+  // shipping/partial, and the retry books only the rest, to the SAME locker.
+  const partial = partialOf(order);
+  const planOrder = partial?.locker?.id
+    ? { ...order, shipping: { ...order.shipping, lockerChoice: { id: partial.locker.id, by: "partial" }, lockerParcels: partial.count } }
+    : order;
+  const plan = await planShipment(planOrder, { db, client, products, geocoder });
   if (!plan.ok) {
     log(`bookShipment ${key} REFUSED ${plan.reason}`);
-    return { skipped: true, reason: plan.reason, parcel: plan.parcel ?? null };
+    // No locker for this address: the reason goes on the order, and (live only) one line to Junid.
+    const line = plan.attention && plan.junidLine && (await readLive(db).catch(() => false)) ? plan.junidLine : null;
+    return { skipped: true, reason: plan.reason, parcel: plan.parcel ?? null, ...(plan.attention ? { noLocker: true } : {}), ...(line ? { junidLine: line } : {}) };
   }
+  const payloads = plan.payloads ?? [plan.payload];
 
   // The live switch and the order's existence are asked together (fast booking,
   // 20 Nov 2026); the existence answer is only used on the live path below.
@@ -254,6 +277,7 @@ export async function bookShipment(order, deps = {}) {
       skipped: true, dryRun: plan.payload, parcel: plan.parcel, liveBlockers: plan.liveBlockers,
       quote: { mode: plan.chosen.mode, code: plan.chosen.rate.code, rate: plan.chosen.rate.rate },
       quotes: plan.quotes,
+      ...(plan.locker ? { deliveryLocker: plain(plan.locker), doorQuote: plan.doorQuote ?? null, shipments: payloads.length, ...(payloads.length > 1 ? { dryRuns: payloads } : {}) } : {}),
     };
   }
 
@@ -285,49 +309,91 @@ export async function bookShipment(order, deps = {}) {
     return { skipped: true, dryRun: plan.payload, parcel: plan.parcel };
   }
 
-  let res;
-  try {
-    res = await client.createShipment(plan.payload);
-  } catch (err) {
-    // 408 means the request may still have run — as ambiguous as a 5xx.
-    const ambiguous = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;
-    await claimRef.set({ state: ambiguous ? "unknown" : "failed", at: now(), error: String(err?.message || err).slice(0, 300) });
-    log(`bookShipment ${key} CREATE ${ambiguous ? "UNKNOWN" : "FAILED"} ${err?.message || err}`);
-    throw err;
+  // ONE create per parcel (door-to-door: always one; door-to-locker: one per one-shoe parcel, same locker).
+  const made = partial ? [...partial.shipments] : [];
+  const keepPartial = async () => {
+    if (!made.length) return;
+    await db.ref(`online_orders/${key}/shipping/partial`).set(plain({ count: payloads.length, locker: plan.locker ?? null, shipments: made, at: now() })).catch(() => {});
+  };
+  for (let i = made.length; i < payloads.length; i++) {
+    const nth = payloads.length > 1 ? ` (parcel ${i + 1} of ${payloads.length})` : "";
+    let res;
+    try {
+      res = await client.createShipment(payloads[i]);
+    } catch (err) {
+      // 408 means the request may still have run — as ambiguous as a 5xx.
+      const ambiguous = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;
+      await keepPartial();
+      await claimRef.set({ state: ambiguous ? "unknown" : "failed", at: now(), error: `${String(err?.message || err).slice(0, 300)}${nth}`, ...(made.length ? { booked: made.map((m) => m.waybill) } : {}) });
+      log(`bookShipment ${key} CREATE ${ambiguous ? "UNKNOWN" : "FAILED"}${nth} ${err?.message || err}`);
+      throw err;
+    }
+    // A 2xx that names no shipment is not a confirmed booking: hold the claim
+    // as "unknown" (nothing re-books it) and let a person check the portal.
+    if (!res || typeof res !== "object" || (res.id == null && !res.short_tracking_reference && !res.custom_tracking_reference)) {
+      await keepPartial();
+      await claimRef.set({ state: "unknown", at: now(), error: `create returned no shipment id or tracking reference${nth}`, ...(made.length ? { booked: made.map((m) => m.waybill) } : {}) });
+      log(`bookShipment ${key} CREATE UNCONFIRMED${nth} — response named no shipment: ${JSON.stringify(res)?.slice(0, 300)}`);
+      throw new Error("bookShipment: Courier Guy's create response named no shipment — check the portal before retrying");
+    }
+    made.push({
+      shipmentId: finiteOrNull(res?.id),
+      waybill: res?.custom_tracking_reference || res?.short_tracking_reference || null,
+      trackingReference: res?.short_tracking_reference ?? null,
+      service: res?.service_level_code ?? plan.chosen.rate.code,
+      cost: finiteOrNull(res?.charged_amount ?? res?.rate ?? plan.chosen.rate.rate),
+      quoted: finiteOrNull(plan.chosen.rate.rate),
+    });
   }
-  // A 2xx that names no shipment is not a confirmed booking: hold the claim
-  // as "unknown" (nothing re-books it) and let a person check the portal.
-  if (!res || typeof res !== "object" || (res.id == null && !res.short_tracking_reference && !res.custom_tracking_reference)) {
-    await claimRef.set({ state: "unknown", at: now(), error: "create returned no shipment id or tracking reference" });
-    log(`bookShipment ${key} CREATE UNCONFIRMED — response named no shipment: ${JSON.stringify(res)?.slice(0, 300)}`);
-    throw new Error("bookShipment: Courier Guy's create response named no shipment — check the portal before retrying");
-  }
+  const first = made[0];
+  const costs = made.map((m) => m.cost);
   const shipping = {
     provider: "courier_guy",
-    shipmentId: finiteOrNull(res?.id),
-    waybill: res?.custom_tracking_reference || res?.short_tracking_reference || null,
-    trackingReference: res?.short_tracking_reference ?? null,
-    service: res?.service_level_code ?? plan.chosen.rate.code,
+    shipmentId: first.shipmentId,
+    waybill: first.waybill,
+    trackingReference: first.trackingReference,
+    service: first.service,
     // The rule the parcel was declared under: the reconciliation loop learns
-    // only from parcels declared by the current rule (reconcile.mjs).
-    parcel: plain({ ...plan.parcel, ruleVersion: ESTIMATE_RULE_VERSION }),
-    cost: finiteOrNull(res?.charged_amount ?? res?.rate ?? plan.chosen.rate.rate),
+    // only from parcels declared by the current rule (reconcile.mjs). A
+    // door-to-locker parcel is a FIXED declaration (one shoe), not an
+    // estimate: it carries no rule version, so it never teaches the table.
+    parcel: plain(plan.locker ? plan.parcel : { ...plan.parcel, ruleVersion: ESTIMATE_RULE_VERSION }),
+    // Every shipment's charge added up (one shipment: its own charge).
+    cost: made.length > 1 && costs.every((c) => c !== null) ? Math.round(costs.reduce((t, c) => t + c, 0) * 100) / 100 : first.cost,
     // The quote's make-up (base, surcharges, weights) — what the >R250 email explains.
-    priced: plain({ quoted: plan.chosen.rate.rate, mode: plan.chosen.mode, ...(plan.chosen.rate.breakdown || {}) }),
+    priced: plain({ quoted: made.length > 1 ? Math.round(plan.chosen.rate.rate * made.length * 100) / 100 : plan.chosen.rate.rate, mode: plan.chosen.mode, ...(plan.chosen.rate.breakdown || {}) }),
     // Every service quoted for this parcel, cheapest first (the one booked is the cheapest usable).
     quotes: plain(plan.quotes),
+    ...(plan.locker ? {
+      // Where the customer collects it — what Jamie tells them. No code yet: see collectionCodeNote.
+      deliveryLocker: plain(plan.locker),
+      deliveryMode: "locker",
+      // EVERY waybill (a split has several); shipping.waybill above is the first.
+      waybills: made.map((m) => m.waybill).filter(Boolean),
+      shipments: plain(made),
+      // What door-to-door would have cost for the parcel the old rule declared.
+      doorQuote: plain(plan.doorQuote ?? null),
+    } : {}),
     bookedAt: now(),
   };
-  log(`bookShipment ${key} BOOKED ${shipping.waybill} ${shipping.service} R${shipping.cost}`);
+  log(`bookShipment ${key} BOOKED ${plan.locker ? (shipping.waybills.join("+") || shipping.waybill) : shipping.waybill} ${shipping.service} R${shipping.cost}${plan.locker ? ` to locker ${plan.locker.id} (${plan.locker.name}, ${plan.locker.km} km)` : ""}`);
   try {
-    await db.ref(`online_orders/${key}/shipping`).update({ ...shipping, courierBooking: { state: "booked", at: shipping.bookedAt } });
+    await db.ref(`online_orders/${key}/shipping`).update({ ...shipping, ...(partial || made.length > 1 ? { partial: null } : {}), courierBooking: { state: "booked", at: shipping.bookedAt } });
   } catch (err) {
     // The waybill exists and is paid for. Keep at least the claim's record of
     // it, so nothing books it again and a person can find it.
     log(`bookShipment ${key} BOOKED BUT NOT RECORDED ${shipping.waybill}: ${err?.message || err}`);
-    await claimRef.set({ state: "booked", at: shipping.bookedAt, shipmentId: shipping.shipmentId, waybill: shipping.waybill }).catch(() => {});
+    await claimRef.set({ state: "booked", at: shipping.bookedAt, shipmentId: shipping.shipmentId, waybill: shipping.waybill, ...(made.length > 1 ? { waybills: made.map((m) => m.waybill) } : {}) }).catch(() => {});
   }
   return shipping;
+}
+
+// The parcels of a split already booked by an earlier, interrupted attempt. → { count, locker, shipments[] } | null
+function partialOf(order) {
+  const p = order?.shipping?.partial;
+  const shipments = (Array.isArray(p?.shipments) ? p.shipments : Object.values(p?.shipments ?? {})).filter((m) => m && (m.waybill || m.shipmentId != null));
+  if (!shipments.length || !p?.locker?.id) return null;
+  return { count: Math.max(Number(p.count) || 0, shipments.length), locker: p.locker, shipments };
 }
 
 /** Mirrors bookShipment: dry run unless live; cancels by tracking reference. */
@@ -341,21 +407,25 @@ export async function cancelShipment(order, deps = {}) {
   }
   if (s.cancelledAt) return { skipped: true, reason: "already cancelled", shipping: s };
 
-  const payload = { tracking_reference: trackingReference };
+  // A split has several shipments: every one is cancelled (the first is shipping.waybill).
+  const all = (Array.isArray(s.shipments) ? s.shipments : Object.values(s.shipments ?? {})).map((m) => m?.trackingReference || m?.waybill).filter(Boolean);
+  const refs = all.length > 1 ? [...new Set(all)] : [trackingReference];
+  const payload = refs.length > 1 ? { tracking_references: refs } : { tracking_reference: trackingReference };
   const live = await readLive(db);
   if (!live) {
     log(`cancelShipment ${key} DRY RUN (live is off) would POST /shipments/cancel ${JSON.stringify(payload)}`);
     return { skipped: true, dryRun: payload };
   }
 
+  const cancelled = [];
   try {
-    await client.cancelShipment(trackingReference);
+    for (const r of refs) { await client.cancelShipment(r); cancelled.push(r); }
   } catch (err) {
     // A 4xx means TCG refused (e.g. already collected); anything else may have
     // cancelled it. Either way the order says so; a retry re-sends the cancel,
     // which TCG treats idempotently.
     const refused = err?.status >= 400 && err?.status < 500 && err?.status !== 408;
-    await db.ref(`online_orders/${key}/shipping/cancel`).set({ state: refused ? "refused" : "unknown", at: now(), error: String(err?.message || err).slice(0, 300) });
+    await db.ref(`online_orders/${key}/shipping/cancel`).set({ state: refused ? "refused" : "unknown", at: now(), error: String(err?.message || err).slice(0, 300), ...(refs.length > 1 ? { cancelled } : {}) });
     log(`cancelShipment ${key} ${refused ? "REFUSED" : "UNKNOWN"} ${err?.message || err}`);
     throw err;
   }
@@ -363,7 +433,7 @@ export async function cancelShipment(order, deps = {}) {
   // throws on anything else); the doc gives no body to check further.
   const patch = { cancelledAt: now(), cancel: { state: "cancelled", at: now() }, courierBooking: { state: "cancelled", at: now() } };
   await db.ref(`online_orders/${key}/shipping`).update(patch);
-  log(`cancelShipment ${key} CANCELLED ${trackingReference}`);
+  log(`cancelShipment ${key} CANCELLED ${refs.join("+")}`);
   return { ...s, ...patch };
 }
 

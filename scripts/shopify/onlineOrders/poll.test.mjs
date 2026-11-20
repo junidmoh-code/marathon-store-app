@@ -51,7 +51,7 @@ const P = (n) => `gid://shopify/Product/${n}`;
 function world(over = {}) {
   return {
     online_orders_meta: { goLiveAtMs: GO_LIVE },
-    config: { onlineOrders: { enabled: false } },
+    config: { onlineOrders: { enabled: false }, shipping: { deliveryMode: "door" } },
     products: {
       SNK: { name: "Air Runner", categoryKey: "sneakers", category: "Footwear", sizes: ["8", "9"], photoUrl: "https://x/snk.jpg" },
       TEE: { name: "Club Tee", categoryKey: "tees", category: "Clothing", productType: "clothing", sizes: ["M", "L"], barcodes: { M: "6001", L: "6002" }, photoUrl: "https://x/tee.jpg" },
@@ -535,7 +535,7 @@ describe("Shopify fulfilment after the pack", () => {
         customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" },
         shipping: { address: { name: "Thandi M", address1: "5 Esplanade Road", address2: "Century City", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" } },
       });
-      w.config.shipping = { live: false };
+      w.config.shipping = { deliveryMode: "door", live: false };
       const f = fakeDb(w);
       const courier = fakeCourier();
       const out = await runOrdersPoll(deps(f, shopify({ fos }), { courier }).deps);
@@ -559,7 +559,7 @@ describe("Shopify fulfilment after the pack", () => {
       customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" },
       shipping: { address: { address1: "5 Esplanade Road", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" } },
     });
-    w.config.shipping = { live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" } };
+    w.config.shipping = { deliveryMode: "door", live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" } };
     const f = fakeDb(w);
     const courier = { ...fakeCourier(), createShipment: async () => ({ id: 7, short_tracking_reference: "ABC123", charged_amount: 100 }) };
     const sh = shopify({ fos });
@@ -575,7 +575,7 @@ describe("Shopify fulfilment after the pack", () => {
         customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" },
         shipping: { address: { address1: "5 Esplanade Road", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" } },
       });
-      w.config.shipping = { live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" } };
+      w.config.shipping = { deliveryMode: "door", live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" } };
       return w;
     };
     const booked = (amount) => ({ ...fakeCourier(), createShipment: async () => ({ id: 7, short_tracking_reference: "ABC123", charged_amount: amount }) });
@@ -651,7 +651,7 @@ describe("Shopify fulfilment after the pack", () => {
         customer: { name: "Thandi M", phone: "+27820000000", email: "buyer@example.com" },
         shipping: { address: { address1: "5 Esplanade Road", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" } },
       });
-      w.config.shipping = { live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" }, ...cfg };
+      w.config.shipping = { deliveryMode: "door", live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" }, ...cfg };
       return w;
     };
     const failing = (err) => ({ ...fakeCourier(), createShipment: async () => { throw err; } });
@@ -676,6 +676,43 @@ describe("Shopify fulfilment after the pack", () => {
       expect(order(f).fulfilState).toBe("courier_failed");
       expect(order(f).courierError).toMatch(/ceiling/);
       expect(sh.calls.some((c) => c.query.includes("fulfillmentCreate"))).toBe(false);
+    });
+
+    // DOOR-TO-LOCKER (Junid, 20 Nov 2026): the code's default when /config/shipping/deliveryMode is not "door".
+    const lockerPoint = (lat, lng) => ({ pickup_point_id: "RVM01240", pickup_point_provider: "tcg-locker", name: "Astron Energy", type: "locker", lat, lng, address: { street_address: "1 Van Riebeeck St", city: "Cape Town" }, trading_hours: "All day", description: "Opposite KFC", available_compartment_sizes: ["V4-M"], is_hidden: false, status: "online" });
+    const lockerCourier = (point, creates = []) => ({
+      ...fakeCourier(),
+      getRates: async (body) => (body.delivery_pickup_point_id ? { rates: [{ rate: 130.31, service_level: { code: "D2LM - ECO" } }] } : doorRates),
+      getPickupPoints: async () => ({ pickup_points: [point] }),
+      createShipment: async (body) => { creates.push(body); return { id: 70 + creates.length, short_tracking_reference: `D2L${creates.length}`, rate: 130.31 }; },
+    });
+    const geocoder = async () => ({ lat: -33.89, lng: 18.51, from: "5 Esplanade Road, Cape Town, 7441" });
+
+    it("door-to-locker: booked to the nearest locker, the locker on the order for Jamie, Shopify fulfilled with the waybill", async () => {
+      const f = fakeDb(liveOrder({ deliveryMode: "locker" }));
+      const sh = shopify({ fos });
+      const creates = [];
+      await runOrdersPoll(deps(f, sh, { courier: lockerCourier(lockerPoint(-33.9, 18.52), creates), geocoder }).deps);
+      expect(creates).toHaveLength(1);
+      expect(creates[0]).toMatchObject({ delivery_pickup_point_id: "RVM01240", service_level_code: "D2LM - ECO", parcels: [{ submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 13, submitted_weight_kg: 1.5 }] });
+      expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "D2L1", company: "The Courier Guy" });
+      expect(order(f)).toMatchObject({ fulfilState: "done", shipping: { waybill: "D2L1", waybills: ["D2L1"], deliveryLocker: { id: "RVM01240", name: "Astron Energy", hasCollectionCode: false }, doorQuote: { code: expect.any(String) } } });
+      expect(order(f).shipping.deliveryLocker.collectionCodeNote).toMatch(/SMSes the PIN/);
+    });
+
+    it("door-to-locker with no locker near: held as courier not booked with the reason, one line queued for Junid, never door-to-door", async () => {
+      const f = fakeDb(liveOrder({ deliveryMode: "locker" }));
+      const sh = shopify({ fos });
+      const creates = [];
+      const d = deps(f, sh, { courier: lockerCourier(lockerPoint(-33.0, 18.52), creates), geocoder }); // ~99 km away
+      await runOrdersPoll(d.deps);
+      expect(creates).toEqual([]);
+      expect(sh.calls.some((c) => c.query.includes("fulfillmentCreate"))).toBe(false);
+      expect(order(f)).toMatchObject({ fulfilState: "courier_failed", attentionOpen: true, attention: { kind: "courier_failed" } });
+      expect(order(f).attention.reason).toMatch(/Packed, but Courier Guy was not booked: no Courier Guy locker within 30 km of Cape Town/);
+      expect(order(f).shipping.waybill).toBeUndefined();
+      expect(f.root.shipping_recon.junidLines["9001"].text).toMatch(/no Courier Guy locker within 30 km of Cape Town.*Not booked \(door-to-locker only\)/);
+      expect(d.mails).toHaveLength(1);
     });
 
     it("Retry (back to pending) re-runs the booking only, then fulfils with the waybill and clears the attention", async () => {
@@ -781,7 +818,7 @@ describe("Shopify fulfilment after the pack", () => {
 describe("an online exchange ships through the normal pack/courier flow", () => {
   const EX = "exchange-1789-1761800000000";
   const exchangeWorld = (cfg = {}, over = {}) => world({
-    config: { onlineOrders: { enabled: false }, shipping: { collectionContact: { name: "The Marathon", mobile_number: "0310000000" }, ...cfg } },
+    config: { onlineOrders: { enabled: false }, shipping: { deliveryMode: "door", collectionContact: { name: "The Marathon", mobile_number: "0310000000" }, ...cfg } },
     online_orders: {
       [EX]: {
         orderNumber: "1789-EX", shopifyName: "#1789-EX",
@@ -907,7 +944,7 @@ describe("a second parcel (items the first parcel was short) — Junid, 12 Nov 2
   const RID = "9001r1";
   const SOLD = { saleId: "-SALE1", receiptNumber: "S-50548", fromOrder: "9001" };
   const reshipWorld = (cfg = {}, over = {}) => world({
-    config: { onlineOrders: { enabled: true }, shipping: { collectionContact: { name: "The Marathon", mobile_number: "0310000000" }, ...cfg } },
+    config: { onlineOrders: { enabled: true }, shipping: { deliveryMode: "door", collectionContact: { name: "The Marathon", mobile_number: "0310000000" }, ...cfg } },
     online_orders: {
       9001: { orderNumber: 1801, shopifyGid: "gid://shopify/Order/9001", status: "packed", fulfilState: "done", fulfil: { state: "done" }, shipping: { waybill: "39PPFL" }, lines: [{ pid: "TEE", sizeKey: "M", qty: 3, source: { status: "handed", locationId: "marathon-pe" } }] },
       [RID]: {

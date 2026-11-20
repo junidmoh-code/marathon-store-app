@@ -76,7 +76,7 @@ describe("TCG200369959T — the over-declared five pairs", () => {
   });
 
   it("the quote lands within 5% of the R249.60 TCG invoiced, on ECO", async () => {
-    const d = fakeDb({ config: { shipping: { live: true, collectionContact: CONTACT, maxChargeRand: 300 } } });
+    const d = fakeDb({ config: { shipping: { deliveryMode: "door", live: true, collectionContact: CONTACT, maxChargeRand: 300 } } });
     const plan = await planShipment(ORDER_1942, { db: d, client: laneClient(), products: {} });
     expect(plan.ok).toBe(true);
     expect(plan.chosen.rate.code).toBe("ECO");
@@ -87,7 +87,7 @@ describe("TCG200369959T — the over-declared five pairs", () => {
   });
 
   it("every service quoted is on the plan, cheapest first, SDX included but never chosen", async () => {
-    const d = fakeDb({ config: { shipping: { collectionContact: CONTACT } } });
+    const d = fakeDb({ config: { shipping: { deliveryMode: "door", collectionContact: CONTACT } } });
     const plan = await planShipment(ORDER_1942, { db: d, client: laneClient(), products: {} });
     expect(plan.quotes.map((q) => q.code)).toEqual(["ECO", "SDX"]);
     expect(plan.chosen.rate.code).toBe("ECO");
@@ -99,7 +99,7 @@ describe("THE R300 CEILING — one line to Junid with the cheaper option", () =>
   const SEVEN = { ...ORDER_1942, lines: ["8", "8", "8", "8", "8", "8", "8"].map(pair) };
 
   it("over the ceiling → not booked, and the line names the quote, the parcel and the cheaper option", async () => {
-    const d = fakeDb({ config: { shipping: { live: true, collectionContact: CONTACT, maxChargeRand: 300 } }, online_orders: { [SEVEN.key]: { shopifyGid: SEVEN.shopifyGid } } });
+    const d = fakeDb({ config: { shipping: { deliveryMode: "door", live: true, collectionContact: CONTACT, maxChargeRand: 300 } }, online_orders: { [SEVEN.key]: { shopifyGid: SEVEN.shopifyGid } } });
     const client = laneClient();
     const res = await bookShipment(SEVEN, { db: d, client, log: () => {}, now: () => 1 });
     expect(res.skipped).toBe(true);
@@ -110,13 +110,13 @@ describe("THE R300 CEILING — one line to Junid with the cheaper option", () =>
   });
 
   it("a parcel that fits a locker gets the locker price as the cheaper option, even with the drop box off", async () => {
-    const d = fakeDb({ config: { shipping: { live: true, collectionContact: CONTACT, maxChargeRand: 200 } }, online_orders: { [ORDER_1942.key]: { shopifyGid: ORDER_1942.shopifyGid } } });
+    const d = fakeDb({ config: { shipping: { deliveryMode: "door", live: true, collectionContact: CONTACT, maxChargeRand: 200 } }, online_orders: { [ORDER_1942.key]: { shopifyGid: ORDER_1942.shopifyGid } } });
     const res = await bookShipment(ORDER_1942, { db: d, client: laneClient(), log: () => {}, now: () => 1 });
     expect(res.junidLine).toBe("#1942: Courier Guy quotes R247.52 (ECO, 34×46×32.5 cm, 13 kg), over the R200 ceiling, not booked. Cheaper: locker drop-off L2DL - ECO R193.60. Book it in the portal.");
   });
 
   it("ceiling 0 = off: books nothing extra, no line", async () => {
-    const d = fakeDb({ config: { shipping: { collectionContact: CONTACT, maxChargeRand: 0 } } });
+    const d = fakeDb({ config: { shipping: { deliveryMode: "door", collectionContact: CONTACT, maxChargeRand: 0 } } });
     const plan = await planShipment({ ...ORDER_1942, lines: ["8", "8", "8", "8", "8", "8", "8"].map(pair) }, { db: d, client: laneClient(), products: {} });
     expect(plan.overCeiling).toBe(null);
     expect(ceilingLine("#1", plan)).toBe(null);

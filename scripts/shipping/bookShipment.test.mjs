@@ -35,7 +35,7 @@ const ORDER = (over = {}) => ({
 const DOOR_ORDER = () => ORDER({ lines: [{ category: "Footwear", subcategory: "Sneakers", name: "Runner", size: "10", qty: 10 }] });
 
 const db = (live, extra = {}) => fakeDb({
-  config: { shipping: { ...(live === undefined ? {} : { live }), collectionContact: CONTACT } },
+  config: { shipping: { deliveryMode: "door", ...(live === undefined ? {} : { live }), collectionContact: CONTACT } },
   online_orders: { 1001: ORDER() },
   ...extra,
 });
@@ -87,14 +87,14 @@ describe("bookShipment — dry run (live off)", () => {
 
   it("with the drop box switched ON, a one-parcel order may go from a locker", async () => {
     const client = fakeClient();
-    const d = fakeDb({ config: { shipping: { live: false, collectionContact: CONTACT, dropBox: { enabled: true } } }, online_orders: { 1001: { shopifyGid: "gid://shopify/Order/1001" } } });
+    const d = fakeDb({ config: { shipping: { deliveryMode: "door", live: false, collectionContact: CONTACT, dropBox: { enabled: true } } }, online_orders: { 1001: { shopifyGid: "gid://shopify/Order/1001" } } });
     const res = await bookShipment(ORDER(), deps(d, client));
     expect(client.calls.map((c) => c[0])).toEqual(["getRates", "getRates"]);
     expect(res.dryRun).toMatchObject({ collection_pickup_point_id: "CG0000", service_level_code: "L2DM - ECO" });
   });
 
   it("an empty collection contact still dry-runs, naming what would stop a live booking", async () => {
-    const d = fakeDb({ config: { shipping: {} }, online_orders: {} });
+    const d = fakeDb({ config: { shipping: { deliveryMode: "door" } }, online_orders: {} });
     const res = await bookShipment(ORDER(), deps(d, fakeClient()));
     expect(res.dryRun).toBeTruthy();
     expect(res.liveBlockers).toEqual(["collection_contact"]);
@@ -231,7 +231,7 @@ describe("bookShipment — live", () => {
   });
 
   it("refuses live without a collection contact, and when no box fits", async () => {
-    const d = fakeDb({ config: { shipping: { live: true } }, online_orders: { 1001: { shopifyGid: "gid://shopify/Order/1001" } } });
+    const d = fakeDb({ config: { shipping: { deliveryMode: "door", live: true } }, online_orders: { 1001: { shopifyGid: "gid://shopify/Order/1001" } } });
     const client = fakeClient();
     expect((await bookShipment(ORDER(), deps(d, client))).reason).toBe("collection_contact");
     const res = await bookShipment(ORDER({ lines: [{ category: "Accessories", subcategory: "Bags", qty: 30 }] }), deps(db(true), client));
@@ -283,7 +283,7 @@ describe("the website-order ingester's real shape (feat/online-orders orderModel
 
   it("keys by the Shopify id, references by the Shopify order number, classifies from /products/{pid}", async () => {
     const d = fakeDb({
-      config: { shipping: { live: true, collectionContact: CONTACT } },
+      config: { shipping: { deliveryMode: "door", live: true, collectionContact: CONTACT } },
       products: { p_x: { name: "Item 7", category: "Clothing", subcategory: "Jeans & Denim" } },
       online_orders: { 5551234: { orderNumber: 1042, shopifyGid: "gid://shopify/Order/5551234" } },
     });
@@ -315,7 +315,7 @@ describe("review hardening (Sonnet architect review, PR #774)", () => {
   });
 
   it("no order at the key → refused, nothing minted, no shipment call", async () => {
-    const d = fakeDb({ config: { shipping: { live: true, collectionContact: CONTACT } } });
+    const d = fakeDb({ config: { shipping: { deliveryMode: "door", live: true, collectionContact: CONTACT } } });
     const client = fakeClient();
     expect((await bookShipment(ORDER({ key: "999" }), deps(d, client))).reason).toBe("no order at /online_orders/999");
     expect(client.shipmentCalls()).toEqual([]);
@@ -340,7 +340,7 @@ describe("review hardening (Sonnet architect review, PR #774)", () => {
 
   it("a quote over the spend ceiling is refused live, named in a dry run", async () => {
     const client = fakeClient();
-    const low = (live) => fakeDb({ config: { shipping: { live, collectionContact: CONTACT, maxChargeRand: 50 } }, online_orders: { 1001: { shopifyGid: "gid://shopify/Order/1001" } } });
+    const low = (live) => fakeDb({ config: { shipping: { deliveryMode: "door", live, collectionContact: CONTACT, maxChargeRand: 50 } }, online_orders: { 1001: { shopifyGid: "gid://shopify/Order/1001" } } });
     expect((await bookShipment(ORDER(), deps(low(true), client))).reason).toMatch(/over the R50 ceiling/);
     expect((await bookShipment(ORDER(), deps(low(false), client))).liveBlockers).toEqual(["quote R100.00 is over the R50 ceiling"]);
     expect(client.shipmentCalls()).toEqual([]);
@@ -399,7 +399,7 @@ describe("CodeRabbit review (PR #774)", () => {
 describe("an order pulled in after 2026-10-21 has no ref", () => {
   it("is still booked live — the existence gate reads shopifyGid, never ref (Fable review, PR #779)", async () => {
     const d = fakeDb({
-      config: { shipping: { live: true, collectionContact: CONTACT } },
+      config: { shipping: { deliveryMode: "door", live: true, collectionContact: CONTACT } },
       products: { p_x: { name: "Item 7", category: "Clothing", subcategory: "Jeans & Denim" } },
       online_orders: { 5551234: { orderNumber: 1042, shopifyGid: "gid://shopify/Order/5551234" } },
     });
@@ -426,7 +426,7 @@ describe("an online exchange record (exchange-<n>-<ms>)", () => {
     ...over,
   });
   const exDb = (live, rec = EXCHANGE()) => fakeDb({
-    config: { shipping: { live, collectionContact: CONTACT } },
+    config: { shipping: { deliveryMode: "door", live, collectionContact: CONTACT } },
     online_orders: { [EX]: (({ key, ...r }) => r)(rec) },
   });
 
@@ -463,7 +463,7 @@ describe("an online exchange record (exchange-<n>-<ms>)", () => {
   });
 
   it("an exchange key with no paid record behind it is refused live, nothing minted", async () => {
-    const d = fakeDb({ config: { shipping: { live: true, collectionContact: CONTACT } } });
+    const d = fakeDb({ config: { shipping: { deliveryMode: "door", live: true, collectionContact: CONTACT } } });
     const client = fakeClient();
     expect((await bookShipment(EXCHANGE(), deps(d, client))).reason).toBe(`no order at /online_orders/${EX}`);
     expect(client.shipmentCalls()).toEqual([]);

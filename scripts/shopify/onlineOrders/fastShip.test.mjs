@@ -19,7 +19,7 @@ const fos = [{ id: "gid://shopify/FulfillmentOrder/7", status: "OPEN", lineItems
 function world({ order = {}, live = true } = {}) {
   return {
     online_orders_meta: { goLiveAtMs: GO_LIVE, cursorMs: NOW },
-    config: { onlineOrders: { enabled: false }, shipping: { live, collectionContact: { name: "The Marathon", mobile_number: "0310000000" } } },
+    config: { onlineOrders: { enabled: false }, shipping: { deliveryMode: "door", live, collectionContact: { name: "The Marathon", mobile_number: "0310000000" } } },
     products: { TEE: { name: "Club Tee", categoryKey: "tees", category: "Clothing", productType: "clothing", sizes: ["M"] } },
     online_orders: {
       9001: {
