@@ -507,6 +507,8 @@ export default function BlackFridayScreen({ api, onExit }) {
       newArrivals.sort((x, y) => (y.uploadedAt || 0) - (x.uploadedAt || 0));
       return { ...d, newArrivals, review: order(review), approved: order(approved) };
     };
+    // A list read already on its way predates this tap: it must not bring the row back (review, PR #945).
+    ticket.current++; underTicket.current++;
     setMain(fix); setUnder(fix);
   };
   const run = async (fn, { reload = false, undo = null } = {}) => {
@@ -592,9 +594,10 @@ export default function BlackFridayScreen({ api, onExit }) {
     // With "Show under 13" open the page is only full height once that list is here.
     if (placeBack.current || !main || !savedUi.current || (su.showUnder && !under)) return;
     placeBack.current = true;
-    const all = [...(main.newArrivals || []), ...(main.review || []), ...(main.approved || [])];
-    if (su.viewer) { const r = all.find((x) => x.pid === su.viewer.pid); if (r) setViewer({ ...r, section: "main", startId: su.viewer.id }); }
-    if (su.findPid) { const r = all.find((x) => x.pid === su.findPid); const res = loadFind(su.findPid); if (r && res) setFind({ r: { ...r, section: "main" }, result: res }); }
+    const all = [...(main.newArrivals || []), ...(main.review || []), ...(main.approved || [])].map((r) => ({ ...r, section: "main" }))
+      .concat(((under && under.review) || []).map((r) => ({ ...r, section: "under" })));
+    if (su.viewer) { const r = all.find((x) => x.pid === su.viewer.pid); if (r) setViewer({ ...r, startId: su.viewer.id }); }
+    if (su.findPid) { const r = all.find((x) => x.pid === su.findPid); const res = loadFind(su.findPid); if (r && res) setFind({ r, result: res }); }
     if (typeof window === "undefined" || typeof requestAnimationFrame === "undefined") { placeApplied.current = true; return; }
     if (su.scrollY) window.scrollTo(0, su.scrollY);
     // The anchored row is drawn once the list has laid out: try for a few frames, then saving resumes.
