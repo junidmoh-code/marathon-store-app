@@ -28,8 +28,8 @@ describe("solve → undo wiring", () => {
     const block = NETWORK.slice(start, NETWORK.indexOf("setSolved", start));
     // The records are added only AFTER the one merged write landed, and the
     // history write is a separate, later call (a refused log never fails a Solve).
-    expect(block).toMatch(/if \(Object\.keys\(updates\)\.length\) \{\s+await update\(ref\(database\), updates\);[\s\S]*await recordSolved\(rows\);\s+\}/);
-    expect(block.indexOf("await update(ref(database), updates)")).toBeLessThan(block.indexOf("await recordSolved(rows)"));
+    expect(block).toMatch(/if \(Object\.keys\(updates\)\.length\) \{\s+await update\(ref\(database\), updates\);[\s\S]*await recordSolved\(solvedRows\);/);
+    expect(block.indexOf("await update(ref(database), updates)")).toBeLessThan(block.indexOf("await recordSolved(solvedRows)"));
   });
   it("the prior-lock snapshot is read BEFORE the seed write — identity, never clocks", () => {
     // A lock's createdAt is its scan's START time, so clock comparison
@@ -39,7 +39,9 @@ describe("solve → undo wiring", () => {
     // pre-write snapshot: the first-batch path takes it from the LIVE lock
     // read it already makes for Central's reservations (openNow), the old
     // path from its own per-location read. Both must precede their write.
-    const fbReadAt = NETWORK.indexOf("if (onPath) { try { openNow = await readOpenLocks(card.pid); } catch { openNow = null; } }");
+    // (Fast Solve, 20 Nov 2026: the live lock read, the /stock rows and the
+    // old path's snapshots are read IN PARALLEL — still all before the write.)
+    const fbReadAt = NETWORK.indexOf("onPath ? readOpenLocks(card.pid).then((v) => { openNow = v; }, () => { openNow = null; }) : null,");
     const fbSnapAt = NETWORK.indexOf("priorOpen[loc] = openNow[loc] ?? null;");
     // (Sections, 2026-10: both paths are now per-store parts of ONE write —
     // there is a single update in the solve, and BOTH snapshots precede it.)
@@ -50,9 +52,16 @@ describe("solve → undo wiring", () => {
     expect(fbReadAt).toBeGreaterThan(-1);
     expect(fbSnapAt).toBeGreaterThan(fbReadAt);
     expect(fbSnapAt).toBeLessThan(writeAt);
-    const readAt = NETWORK.indexOf("priorOpen[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val()");
+    const readAt = NETWORK.indexOf("priorRaw[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val();");
+    const snapAt = NETWORK.indexOf("priorOpen[loc] = priorRaw[loc] ?? null;");
     expect(readAt).toBeGreaterThan(fbReadAt);
     expect(readAt).toBeLessThan(writeAt);
+    expect(snapAt).toBeGreaterThan(readAt);
+    expect(snapAt).toBeLessThan(writeAt);
+    // …and every read is awaited (one Promise.all) before the plan is built.
+    const allAt = NETWORK.indexOf("await Promise.all([", solveStart);
+    expect(allAt).toBeLessThan(fbReadAt);
+    expect(NETWORK.indexOf("const plan = planFor(card, ticks, openNow || {}", solveStart)).toBeGreaterThan(readAt);
     // And the guard core carries no timestamp inputs at all.
     // (ownRunId, first batch 2026-09-17: the solve's OWN server-claimed lock is
     // exempted by runId — an identity, still never a clock.)

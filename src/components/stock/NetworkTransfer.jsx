@@ -57,6 +57,8 @@ import { markConcreteProduct } from "../concrete/concreteStore";
 import { concreteSection } from "./missingProductsCore";
 import { buildSolveLogEntry, buildConcreteLogEntry, mergeSolved, standing, normalizeSolvedEntry, newSolvedKey } from "./solvedLog";
 import { useSolvedLog, saveSolvedRows, markSolvedUndone } from "./solvedLogStore";
+import { notePendingUpdate } from "../../offline/pendingWrites";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto";
 
 // The section whose list HealthView hands this screen (computeMissingProducts'
 // default) — the other section's list is one tap away for a viewer who may
@@ -191,7 +193,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // Solve (engine-managed) — separate from the manual transfer above.
   const [solvePid, setSolvePid] = useState(null);   // which row's Solve panel is open
   const [solveTicks, setSolveTicks] = useState({}); // pid → the stores ticked, IN THE ORDER TICKED (absent = the default tick)
-  const [solveBusy, setSolveBusy] = useState(null);
+  // Solves still writing, by pid. Several may be in flight at once (each card
+  // resolves the moment it is tapped — Junid, 20 Nov 2026); one pid never twice.
+  const [solving, setSolving] = useState({});
+  const solveBusy = Object.keys(solving)[0] ?? null;   // "a solve is writing" — for setUpdateBusy
   const [solved, setSolved] = useState({});         // pid → {store, sizes, msg, ok}
 
   // ── SOLVED — every solve and Concrete mark, each reversible while safe ─────
@@ -480,7 +485,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const undoBusy = Object.values(undoUi).some((x) => x?.busy);
     setUpdateBusy("network-transfer", typed || busyPid != null || solveBusy != null || undoBusy || !!bulkBusy || hideBusy != null);
     return () => setUpdateBusy("network-transfer", false);
-  }, [cards, edits, busyPid, done, solveBusy, undoUi, bulkBusy, hideBusy]);
+  }, [cards, edits, busyPid, done, solving, undoUi, bulkBusy, hideBusy]);
   // Selection reconciled against the RENDERED list (`cards`, not the allCards
   // prop): a selected card that resolves out mid-select — or that the
   // standalone-fallback path computed locally, where allCards is null — must
@@ -868,7 +873,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
 
   const solve = async (card) => {
     const ticks = ticksFor(card);
-    if (solveBusy || !canAct || !ticks.length) return;
+    if (solving[card.pid] || resolving[card.pid] || !canAct || !ticks.length) return;
     // ONE DIVISION PER SOLVE — the list's own. A tick from the other division
     // (or a hub across the wall) is refused here, whatever the panel offered.
     const division = divisionOf(card);
@@ -901,7 +906,28 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // old path unchanged. Everything else (hub-stranded, a shop not routed via
     // its hub) is byte-for-byte the old Solve: qty-0 seeds, nothing more.
     const onPath = ticks.some((st) => eligibleAt(card, st, openLocks[card.pid]));
-    setSolveBusy(card.pid);
+    // ── FAST SOLVE (Junid, 20 Nov 2026) ──────────────────────────────────────
+    // MEASURED before (scripts/diag + solveLatency.harness.test.jsx, live
+    // RTTs ~180 ms): the row waited on FOUR sequential read waves and the
+    // write (~0.9 s), then on the offline mirror's change feed bringing the
+    // seeds back to /stock (~1.2–1.6 s more; up to a minute if the live signal
+    // is missed) before it left the list. Now:
+    //   1. OPTIMISTIC — the row resolves the moment Junid taps (resolving
+    //      "pending"); the panel closes. Nothing below blocks the screen.
+    //   2. TWO read waves, not four — the live lock table, every /stock row
+    //      and every prior-lock snapshot this confirm needs are read IN
+    //      PARALLEL (they never depended on each other); only the lock
+    //      table's own request lookups follow.
+    //   3. The ONE atomic multi-path update, unchanged — then echoed into the
+    //      mirror (notePendingUpdate) so the live list drops the card too.
+    //   4. A failure brings the row back with the reason in red; nothing was
+    //      written (atomic).
+    // What is written is byte-for-byte what was written before: the same
+    // reads feed the same builders in the same order.
+    setSolving((m) => ({ ...m, [card.pid]: true }));
+    setResolving((m) => ({ ...m, [card.pid]: "pending" }));
+    setSolvePid((cur) => (cur === card.pid ? null : cur));
+    setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; });
     const uid = auth.currentUser?.uid || null;
     const now = serverNowIso();
     // A Solve seed is TRUSTED from the start (stockTrust.js): Solve is the act
@@ -910,23 +936,33 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const seedCell = (loc) => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: now, updatedBy: uid, ...(trustedCellsOnly(network, loc) ? trustStamp("solve", now) : {}) });
     const many = ticks.length > 1;
     try {
-      // LIVE lock table first (one scoped read per routed location): the
-      // split is sized from Central's free at the moment of the write, never
-      // from the panel's earlier read. A size the reservations leave nothing
-      // of takes the normal path — and if that is every size, the whole
-      // Solve does (the seed-only branch below), exactly as when Central had
-      // none. An unreadable lock table is an UNKNOWN hub presence: the guard
-      // fails closed and this Solve is the old one (hub + shop seeded).
+      // Every location this confirm can touch: each ticked store and the hub
+      // behind it (a central-fed store has none).
+      const touchLocs = [...new Set(ticks.flatMap((st) => (cfAt(card, st) ? [st] : [hubOf(card, st), st])).filter(Boolean))];
+      // /stock rows and the solve-time lock snapshots, in parallel with the
+      // LIVE lock table (one scoped read per routed location): the split is
+      // sized from Central's free at the moment of the write, never from the
+      // panel's earlier read. A size the reservations leave nothing of takes
+      // the normal path — and if that is every size, the whole Solve does
+      // (the seed-only branch below), exactly as when Central had none. An
+      // unreadable lock table is an UNKNOWN hub presence: the guard fails
+      // closed and this Solve is the old one (hub + shop seeded).
+      const rows = {};
+      const priorRaw = {};
       let openNow = null;
-      if (onPath) { try { openNow = await readOpenLocks(card.pid); } catch { openNow = null; } }
+      await Promise.all([
+        onPath ? readOpenLocks(card.pid).then((v) => { openNow = v; }, () => { openNow = null; }) : null,
+        ...touchLocs.map(async (loc) => { rows[loc] = (await get(ref(database, `stock/${loc}/${card.pid}`))).val() || {}; }),
+        // The engine locks that exist BEFORE this solve, snapshotted into the
+        // undo record. Undo blocks on any lock NOT in this snapshot — identity
+        // comparison, never clocks: a lock's createdAt is its scan's START
+        // time, so a scan spanning the solve would timestamp-classify as
+        // "before" while being causally after (substitute pair, PR #361).
+        ...touchLocs.map(async (loc) => { priorRaw[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val(); }),
+      ]);
+      const rowOf = (loc) => rows[loc] || {};
       const plan = planFor(card, ticks, openNow || {}, { firstBatchOk: onPath && !!openNow });
       const baseSolveId = solveIdFor(card.pid, serverNowMs());
-      // /stock rows already read in this confirm (two shops share their hub).
-      const rows = {};
-      const rowOf = async (loc) => {
-        if (!(loc in rows)) rows[loc] = (await get(ref(database, `stock/${loc}/${card.pid}`))).val() || {};
-        return rows[loc];
-      };
       const parts = [];      // each store's part of the ONE update
       const entries = [];    // each store's undo record
       const msgs = [];
@@ -947,7 +983,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           const existing = {};
           const priorOpen = {};
           for (const loc of locs) {
-            existing[loc] = await rowOf(loc);
+            existing[loc] = rowOf(loc);
             priorOpen[loc] = openNow[loc] ?? null;
           }
           // One solve id per store: the server stamps it on that shop's lock
@@ -975,22 +1011,17 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         }
         const locs = seedLocations(card.source, store, hub);
         const updates = {};
-        // The engine locks that exist BEFORE this solve, snapshotted into the
-        // undo record. Undo blocks on any lock NOT in this snapshot — identity
-        // comparison, never clocks: a lock's createdAt is its scan's START
-        // time, so a scan spanning the solve would timestamp-classify as
-        // "before" while being causally after (substitute pair, PR #361).
         const priorOpen = {};
         for (const loc of locs) {
-          const existing = await rowOf(loc);
-          priorOpen[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val();
+          const existing = rowOf(loc);
+          priorOpen[loc] = priorRaw[loc] ?? null;
           for (const sz of sizes) {
             if (existing[stockSizeKey(sz)] === undefined) updates[stockCellPath(loc, card.pid, sz)] = seedCell(loc);
           }
         }
         parts.push(updates);
         const existingRows = {};
-        for (const loc of locs) existingRows[loc] = await rowOf(loc);
+        for (const loc of locs) existingRows[loc] = rowOf(loc);
         parts.push(trustExistingEmptyUpdates({ pid: card.pid, locs, sizes, existing: existingRows, nowIso: now, uid, isSolvedLoc: (l) => trustedCellsOnly(network, l), cellTrusted }));
         // Reversible while safe — recorded with the EXACT paths written, so
         // undo can never touch a cell the solve did not create (a cell that
@@ -1000,28 +1031,36 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       }
       // ONE atomic update for the whole confirm: every store's seeds and
       // requests land together or not at all (the old Solve's contract — a
-      // failure leaves NOTHING written and the row stays for a clean retry).
+      // failure leaves NOTHING written and the row comes back for a clean retry).
       const updates = mergeSolveUpdates(parts);
       if (Object.keys(updates).length) {
         await update(ref(database), updates);
+        // The offline mirror shows this device its own write at once.
+        try { notePendingUpdate(updates); } catch { /* the echo is a courtesy */ }
         // Into the Solved history — AFTER the write landed (solvedLog.js).
         const at = serverNowMs();
         const msg = msgs.join(" ");
-        const rows = entries.map((e) => {
+        const solvedRows = entries.map((e) => {
           const log = buildSolveLogEntry(e, { at, by: uid, byName: actorName, photo: card.photo, msg, division });
           return { ...normalizeSolvedEntry(e.key, log), batch: baseSolveId, log };
         });
-        await recordSolved(rows);
+        setResolving((m) => ({ ...m, [card.pid]: "done" }));
+        await recordSolved(solvedRows);
+      } else {
+        // Nothing to write (a central-fed store Central cannot serve): the
+        // row comes back and says so.
+        setResolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
       }
       setSolved((d) => ({ ...d, [card.pid]: { ok: true, store: ticks[0], sizes: plan.lines[0]?.sizes || [], msg: msgs.join(" ") } }));
     } catch (e) {
-      // Nothing was written (atomic). Collapse the panel and surface the error on
-      // the row so its Solve button reads "Solve" again — one click re-opens the
+      // Nothing was written (atomic). The row comes back with the error on it
+      // so its Solve button reads "Solve" again — one click re-opens the
       // confirm (which clears this) for a clean retry.
+      setResolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
       setSolvePid((cur) => (cur === card.pid ? null : cur));
-      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: ticks[0], sizes: [], msg: `Couldn't seed — nothing changed, retry. (${e?.message || "error"})` } }));
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: ticks[0], sizes: [], msg: `Couldn't solve ${card.name} — nothing changed, retry. (${e?.message || "error"})` } }));
     }
-    setSolveBusy(null);
+    setSolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
   };
 
   // MOVE MANUALLY — by hand, inside the wall. From Central: the hubs and
@@ -1095,7 +1134,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {!compact && (
             <div style={{ width: 44, height: 44, borderRadius: 9, overflow: "hidden", flexShrink: 0, background: "rgba(60,110,255,.1)" }}>
-              {(p?.photoUrl || u.photo) && <img src={p?.photoUrl || u.photo} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+              {(p || u.photo) && <PrimaryPhoto product={p || { id: u.pid, photoUrl: u.photo }} productId={u.pid} snapshot={u.photo || null} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
             </div>
           )}
           <span style={{ flex: 1, minWidth: 0, color: "rgba(255,255,255,.75)" }}>
@@ -1109,6 +1148,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
             </button>
           )}
         </div>
+        {/* The solve's own sentence — what Central does next, what the engine
+            will refill (it used to sit on the row, which now leaves at once). */}
+        {u.msg && u.kind !== "concrete" && <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginTop: 6 }}>{u.msg}</div>}
         {ui.err && <div style={{ fontSize: 11.5, color: RED, lineHeight: 1.4, marginTop: 6 }}>{ui.err}</div>}
         {u.saved === false && <div style={{ fontSize: 11, color: AMBER, lineHeight: 1.4, marginTop: 6 }}>Not saved to the Solved history ({u.saveErr || "write refused"}) — Undo works until you leave Inventory Health.</div>}
       </div>
@@ -1263,8 +1305,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // path, the confirm waits for the lock read so the estimate shown IS
         // the request written (never a false "2" over a promised 1).
         const confirmBlocked = sOpen ? (
-          (ticks.length ? null : (solveConfirmReason({ canAct, busy: solveBusy === card.pid, sizesInPlan: 1 }) || "Tick at least one store."))
-          || sPlan.lines.map((l) => solveConfirmReason({ canAct, busy: solveBusy === card.pid, sizesInPlan: l.sizes.length, storeLabel: LOC_LABEL[l.store] })).find(Boolean)
+          (ticks.length ? null : (solveConfirmReason({ canAct, busy: !!solving[card.pid], sizesInPlan: 1 }) || "Tick at least one store."))
+          || sPlan.lines.map((l) => solveConfirmReason({ canAct, busy: !!solving[card.pid], sizesInPlan: l.sizes.length, storeLabel: LOC_LABEL[l.store] })).find(Boolean)
           || (sPlan.lines.some((l) => l.split) && !locksReadyFor(card.pid) ? "One moment — checking what Central has already promised…" : null)
         ) : null;
         const anyFirstBatch = !!sPlan && sPlan.lines.some((l) => l.firstBatch);
@@ -1511,7 +1553,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 <button onClick={() => solve(card)} disabled={!!confirmBlocked}
                         title={confirmBlocked || undefined}
                         style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked ? 0.5 : 1 }}>
-                  {solveBusy === card.pid ? (anyFirstBatch ? "Requesting…" : "Seeding…")
+                  {solving[card.pid] ? (anyFirstBatch ? "Requesting…" : "Seeding…")
                     : sPlan.lines.length === 1
                       ? (sPlan.lines[0].firstBatch ? `Solve — send ${sPlan.lines[0].units} to ${LOC_LABEL[sPlan.lines[0].store]} first` : `Solve — carry at ${LOC_LABEL[sPlan.lines[0].store]}`)
                       : `Solve — ${sPlan.lines.length ? `${sPlan.lines.length} stores` : "tick a store"}`}

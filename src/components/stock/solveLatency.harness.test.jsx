@@ -11,6 +11,8 @@
 // measured latency injected per call), the moment the card leaves the screen,
 // and the moment the write is acknowledged.
 //   MP_SNAPSHOT=… MP_READ_MS=… MP_WRITE_MS=… MP_ECHO_MS=… npx vitest run src/components/stock/solveLatency.harness.test.jsx
+// MP_DUMP=file writes the confirm's multi-path update to that file, so two
+// versions of NetworkTransfer can be diffed write-for-write.
 import { describe, it, expect, vi } from "vitest";
 import React from "react";
 import { readFileSync } from "node:fs";
@@ -130,5 +132,6 @@ describe.skipIf(!data)("Solve latency (harness)", () => {
       injected: { READ_MS, WRITE_MS, ECHO_MS },
     };
     console.log("SOLVE_LATENCY " + JSON.stringify(result));
+    if (process.env.MP_DUMP && upd) (await import("node:fs")).writeFileSync(process.env.MP_DUMP, JSON.stringify(upd.u, null, 1));
   }, 120000);
 });

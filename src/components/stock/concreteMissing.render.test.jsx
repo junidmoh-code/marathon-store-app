@@ -167,3 +167,32 @@ describe("the Solved tab", () => {
     expect(textOf(tree)).toMatch(/Undone/);
   });
 });
+
+describe("fast Solve — the row resolves on the tap, the write follows", () => {
+  const solveTee = async (tree) => {
+    await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Solve — ").props.onClick(); });
+  };
+  it("the card leaves before the write is acknowledged; the Solved row appears once it is", async () => {
+    let ack;
+    updateMock.mockImplementationOnce(() => new Promise((r) => { ack = r; }));
+    const { tree, state } = render({ products: [TEE] });
+    await solveTee(tree);
+    expect(buttonExactly(tree, "Solve")).toBeUndefined();          // gone on the tap
+    expect(state().resolving.tee1).toBe("pending");
+    expect(updateMock).toHaveBeenCalledTimes(1);                    // ONE multi-path update
+    await act(async () => { ack(); });
+    expect(state().resolving.tee1).toBe("done");
+    expect(state().session[0]).toMatchObject({ kind: "solve", pid: "tee1" });
+    expect(textOf(tree)).toMatch(/Solved — Essentials Tee Olive/);
+  });
+  it("a refused write brings the card back with the reason in red", async () => {
+    updateMock.mockImplementationOnce(() => Promise.reject(new Error("PERMISSION_DENIED")));
+    const { tree, state } = render({ products: [TEE] });
+    await solveTee(tree);
+    expect(state().resolving.tee1).toBeUndefined();
+    expect(buttonExactly(tree, "Solve")).toBeTruthy();
+    expect(textOf(tree)).toMatch(/Couldn't solve Essentials Tee Olive — nothing changed, retry\. \(PERMISSION_DENIED\)/);
+    expect(saveRows).not.toHaveBeenCalled();
+  });
+});
