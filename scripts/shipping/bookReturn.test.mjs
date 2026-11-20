@@ -1,13 +1,15 @@
 // bookReturn — an online exchange's return leg, locker-to-door from the locker nearest the customer. Recorded fixtures
 // and fakes only, never the network.
 import { describe, it, expect } from "vitest";
-import { bookReturn, planReturn, nearestLocker, geocode } from "./bookReturn.mjs";
+import { bookReturn, planReturn, nearestLocker, geocode, shopReturnContact } from "./bookReturn.mjs";
+import { mergeShippingConfig } from "../../src/shipping/shippingConfig.js";
 import { fakeDb } from "./fakeDb.testutil.mjs";
 import lockerCpt from "./fixtures/rates-locker-capetown.json";
 import shipmentLocker from "./fixtures/shipment-locker.json";
 
 const KEY = "exchange-1793-1793333411004";
 const SHOP_CONTACT = { name: "Junid Atugar", mobile_number: "0310000000", email: "shop@example.com" };
+const RETURN_CONTACT = { name: "Yusuf", mobile_number: "+27600000001", email: "" };
 const POINTS = {
   pickup_points: [
     { pickup_point_id: "CG999", pickup_point_provider: "tcg-locker", name: "Far Mall", type: "locker", lat: -32.95, lng: 27.5, status: "online", available_compartment_sizes: ["V4-L"], address: { street_address: "1 Far Rd", city: "Qonce" } },
@@ -24,8 +26,8 @@ const EXCHANGE = (over = {}) => ({
   shipping: { address: { address1: "519 ilitha township Qonce", city: "Qonce", province: "Eastern Cape", zip: "5600", name: "Thanduxolo Tyebi", phone: "0600000000" } },
   ...over,
 });
-const db = ({ live = true, exchange = EXCHANGE(), extra = {} } = {}) => fakeDb({
-  config: { shipping: { live, collectionContact: SHOP_CONTACT } },
+const db = ({ live = true, exchange = EXCHANGE(), extra = {}, returnContact = RETURN_CONTACT } = {}) => fakeDb({
+  config: { shipping: { live, collectionContact: SHOP_CONTACT, ...(returnContact ? { returnContact } : {}) } },
   online_orders: { [KEY]: exchange, ...extra },
 });
 const geocoder = async () => ({ lat: -32.8802, lng: 27.3937 });
@@ -73,11 +75,31 @@ describe("planReturn", () => {
       collection_pickup_point_provider: "tcg-locker",
       collection_contact: { name: "Thanduxolo Tyebi", mobile_number: "27600000000", email: "t@example.com" },
       collection_address: { city: "Qonce", code: "5600" },
-      delivery_contact: SHOP_CONTACT,
+      delivery_contact: RETURN_CONTACT,
       service_level_code: "L2DM - ECO",
       customer_reference: "1793-EX return",
     });
     expect(plan.payload.delivery_address.company).toBeTruthy(); // the shop
+  });
+  it("our side of a return is the return contact (Yusuf), never the outbound collection contact (Junid, 20 Nov 2026)", async () => {
+    const plan = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db(), client: fakeClient(), geocoder, key: KEY, products: {} });
+    expect(plan.payload.delivery_contact).toEqual(RETURN_CONTACT);
+    expect(JSON.stringify(plan.payload)).not.toContain(SHOP_CONTACT.mobile_number);
+    expect(JSON.stringify(plan.payload)).not.toContain(SHOP_CONTACT.email);
+  });
+  it("the code default is Yusuf, and without his mobile a return refuses rather than fall back to the shop contact", async () => {
+    expect(mergeShippingConfig({}).returnContact.name).toBe("Yusuf");
+    expect(shopReturnContact(mergeShippingConfig({ returnContact: { mobile_number: " +27000000002 " } }))).toEqual({ name: "Yusuf", mobile_number: "+27000000002", email: "" });
+    const client = fakeClient();
+    const plan = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db({ returnContact: null }), client, geocoder, key: KEY, products: {} });
+    expect(plan.ok).toBe(false);
+    expect(plan.reason).toMatch(/return contact's name and SA mobile/);
+    expect(plan.transient).toBe(true); // retried once the config is fixed, never stuck as refused
+    const typo = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db({ returnContact: { name: "Yusuf", mobile_number: "069888222" } }), client, geocoder, key: KEY, products: {} });
+    expect(typo.ok).toBe(false);
+    const emailOnly = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db({ returnContact: { name: "Yusuf", mobile_number: "", email: "y@example.com" } }), client, geocoder, key: KEY, products: {} });
+    expect(emailOnly.ok).toBe(false);
+    expect(client.calls).toHaveLength(0); // refused before any quote
   });
   it("never falls back to a door collection", async () => {
     const plan = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db(), client: fakeClient({ rates: { rates: null } }), geocoder, key: KEY, products: {} });
