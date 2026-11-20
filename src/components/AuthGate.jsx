@@ -41,6 +41,8 @@ import {
 } from "../device/enrolment";
 import { serverNowMs } from "../utils/serverTime";
 import { adoptDeviceId, getDeviceId } from "../device/deviceId";
+import ActiveStoreLayer from "./ActiveStoreLayer";
+import { bindActiveStore, resetActiveStore, setActiveStoreLogger } from "../utils/activeStore";
 
 // The two calls the code screen makes. Module-level so the screen's props are
 // stable across renders.
@@ -59,6 +61,11 @@ const signInWithDeviceToken = async (token) => {
   await signInWithCustomToken(auth, token);
   try { window.location.reload(); } catch { /* no reload (tests) — AuthGate still opens the app */ }
 };
+
+// Every store switch is written to /store_switch_log by the server (who, from,
+// to, device, server time) — the client never writes the audit path itself.
+const logStoreSwitchCall = httpsCallable(functions, "logStoreSwitch");
+setActiveStoreLogger((entry) => logStoreSwitchCall(entry));
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 
@@ -184,6 +191,20 @@ export default function AuthGate({ children, renderTv }) {
     return () => off();
   }, [user]);
 
+  // The active shop (src/utils/activeStore.js): home = /users/{uid}/destShop.
+  // Bound only once the record has loaded, so a pinned user never starts
+  // "away" for a frame. A different sign-in (lastSignInTime) starts at home.
+  const realUid = user && !user.isAnonymous ? user.uid : null;
+  const homeShop = permRecord?.destShop || null;
+  const switchName = permRecord?.displayName || permRecord?.username || user?.email?.split("@")[0] || null;
+  const signInStamp = user?.metadata?.lastSignInTime || null;
+  useEffect(() => {
+    if (!authReady) return;                      // never wipe the saved choice before auth settles
+    if (!realUid) { resetActiveStore(); return; }
+    if (!permLoaded || permReadError) return;
+    bindActiveStore({ uid: realUid, homeShop, name: switchName, signIn: signInStamp, deviceId: getDeviceId() });
+  }, [authReady, realUid, homeShop, switchName, signInStamp, permLoaded, permReadError]);
+
   // TV bypass: hand off entirely to the caller's renderTv — but only once
   // tvAuthReady is true, so the TV's data hooks always see a valid auth.
   if (isTv) {
@@ -243,14 +264,14 @@ export default function AuthGate({ children, renderTv }) {
   const doSignOut     = () =>
     revokeBeforeSignOut(user && !user.isAnonymous ? user.uid : null)
       .catch(() => {})
-      .then(() => signOut(auth))
+      .then(() => { resetActiveStore(); return signOut(auth); })
       .catch((err) => console.warn("signOut failed:", err));
 
   return (
     <PermissionsContext.Provider
       value={{ user, permRecord, isSuperAdmin, permissions, storeIds, hasPermission, signOut: doSignOut,
                deviceIdentity: identityFrom({ claims, permRecord, user }) }}>
-      {children}
+      <ActiveStoreLayer>{children}</ActiveStoreLayer>
     </PermissionsContext.Provider>
   );
 }
