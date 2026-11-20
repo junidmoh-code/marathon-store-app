@@ -191,7 +191,7 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
       if (Number.isFinite(zar) && zar > 0) await db.ref(`${core.ROOT}/stats`).update({ failedZar: admin.database.ServerValue.increment(zar) }).catch(() => {});
     } else if (err.paid || err.usage) {
       const fx = await fxAt(now());
-      const lost = err.paid ? record.generationCost({ model, usage: err.usage, prices: e.prices, fx }) : null;
+      const lost = err.paid ? record.generationCost({ model, usage: err.usage, prices: e.prices, fx, imageSize: e.generation.imageSize }) : null;
       const zar = lost ? lost.zar : record.failedCallZar({ model, usage: err.usage, prices: e.prices, fx });
       if (Number.isFinite(zar) && zar > 0) await db.ref(`${core.ROOT}/stats`).update({ spentZar: admin.database.ServerValue.increment(zar) }).catch(() => {});
     }
@@ -199,7 +199,7 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
   }
 
   const at = now();
-  const cost = record.generationCost({ model, usage: res.usage, prices: e.prices, fx: await fxAt(at) });
+  const cost = record.generationCost({ model, usage: res.usage, prices: e.prices, fx: await fxAt(at), imageSize: e.generation.imageSize });
   const gen = {
     url: res.generated.url, path: res.generated.path || null, at, model, imageSize: e.generation.imageSize, kind,
     pipeline: "shared", finish: studio.SHARED_FINISH, ...(res.look ? { look: res.look } : {}),

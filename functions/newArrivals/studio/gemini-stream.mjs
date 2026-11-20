@@ -10,7 +10,8 @@
 // field (no image made, nothing billed): the same request goes once more
 // without it.
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-export const IMAGE_TIMEOUT_MS = 300_000;
+// 480 s (was 300 s): a 4K photo (20 Nov 2026) takes longer; the callables allow 540 s.
+export const IMAGE_TIMEOUT_MS = 480_000;
 export const THINKING_CONFIG = Object.freeze({ includeThoughts: true });
 
 export const imagePart = (buffer, mime = "image/jpeg") => ({ inline_data: { mime_type: mime, data: Buffer.from(buffer).toString("base64") } });
