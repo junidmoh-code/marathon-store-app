@@ -32,7 +32,9 @@ import { shipmentsOf } from "./reconcile.mjs";
 
 // Courier Guy's statuses BEFORE the driver has the parcel (a create answers "collection-assigned").
 export const UNCOLLECTED = /^(submitted|collection-(assigned|unassigned|rejected|exception|failed-attempt))$/;
-const BOOKING_FIELDS = ["shipmentId", "waybill", "trackingReference", "waybills", "shipments", "service", "cost", "priced", "quotes", "parcel", "deliveryLocker", "doorQuote", "bookedAt", "cancelledAt", "cancel", "courierBooking", "booking", "partial", "invoiced", "adjustment", "costAlert"];
+// One rebook at a time per order (two at once could each clear the other's new booking and book a second one).
+export const REBOOK_LOCK_MS = 10 * 60_000;
+const BOOKING_FIELDS = ["shipmentId", "waybill", "trackingReference", "waybills", "shipments", "service", "cost", "priced", "quotes", "parcel", "deliveryLocker", "doorQuote", "bookedAt", "cancelledAt", "cancel", "courierBooking", "booking", "partial", "invoiced", "adjustment", "costAlert", "provider", "deliveryMode"];
 
 /**
  * @param {string} key   the /online_orders key
@@ -44,6 +46,24 @@ export async function rebookLocker(key, { db, client, lockerId = null, parcels =
   const at = `online_orders/${key}`;
   const order = { ...((await db.ref(at).get()).val() ?? {}), key };
   const s = order.shipping ?? {};
+  // A REBOOK LEFT HALF DONE: the old booking was cancelled and cleared, and the new one was not made (Courier Guy
+  // refused it, the machine stopped). Only the booking is left to do; run again to do it.
+  const last = Object.values(s.rebooks ?? {}).sort((a, b) => (b?.cancelledAt ?? 0) - (a?.cancelledAt ?? 0))[0];
+  if (last && !(s.trackingReference || s.waybill) && s.shipmentId == null) {
+    const again = { ...order, shipping: { ...s, ...(lockerId ? { lockerChoice: { id: String(lockerId), by: "rebook" }, lockerAvoid: null } : {}), ...(Number.isInteger(parcels) && parcels >= 1 ? { lockerParcels: parcels } : {}) } };
+    const plan = await planShipment(again, { db, client, ...(geocoder ? { geocoder } : {}) });
+    if (!plan.ok || !plan.locker) return { ok: false, reason: `the new locker cannot be booked: ${plan.reason ?? "deliveryMode is door"}` };
+    const from = { id: last.deliveryLocker?.id ?? null, name: last.deliveryLocker?.name ?? "?", waybills: last.waybills ?? [] };
+    const to = { id: plan.locker.id, name: plan.locker.name, address: plan.locker.address, km: plan.locker.km };
+    if (!book || !(await readLive(db))) return { ok: true, dryRun: true, resume: true, from, to, quote: { code: plan.chosen.rate.code, rate: plan.chosen.rate.rate }, shipments: plan.payloads.length };
+    let booked;
+    try { booked = await bookShipment(again, { db, client, log, now, ...(geocoder ? { geocoder } : {}) }); }
+    catch (err) { return { ok: false, cancelled: true, reason: `the old booking is CANCELLED and the new one failed again (${String(err?.message || err).slice(0, 200)}). Check the portal before another try.` }; }
+    if (booked?.skipped) return { ok: false, cancelled: true, reason: `the old booking is CANCELLED and the new one was still not made: ${booked.reason ?? "dry run"}` };
+    await db.ref(`shipping_recon/open/${key}`).set(now()).catch(() => {});
+    log(`rebook-locker ${key} REBOOKED (resumed) → ${(booked.waybills ?? [booked.waybill]).join("+")} (${to.name})`);
+    return { ok: true, booked, from, to, resumed: true };
+  }
   if (s.provider !== "courier_guy" || !(s.trackingReference || s.waybill)) return { ok: false, reason: "no Courier Guy booking on this order" };
   if (!s.deliveryLocker?.id) return { ok: false, reason: "this booking is not door-to-locker (no shipping/deliveryLocker)" };
 
@@ -79,6 +99,19 @@ export async function rebookLocker(key, { db, client, lockerId = null, parcels =
     return { ok: true, dryRun: true, from, to, quote, shipments: plan.payloads.length };
   }
 
+  // The lock, then the booking read AGAIN under it: a rebook that finished meanwhile is not undone.
+  const lockRef = db.ref(`${at}/shipping/rebooking`);
+  const lock = await lockRef.transaction((cur) => (cur && now() - Number(cur.at) < REBOOK_LOCK_MS ? undefined : { at: now() }));
+  if (!lock.committed) return { ok: false, reason: "another rebook of this order is running (shipping/rebooking); wait for it to finish" };
+  try {
+    return await rebookUnderLock();
+  } finally {
+    await lockRef.remove().catch(() => {});
+  }
+
+  async function rebookUnderLock() {
+  const seen = (await db.ref(`${at}/shipping/waybill`).get()).val() ?? null;
+  if (seen !== (s.waybill ?? null)) return { ok: false, reason: "the booking changed while this was being planned; run it again" };
   // 3. Cancel (cancelShipment re-reads live itself; a refusal from Courier Guy throws and nothing below runs).
   if (!s.cancelledAt) {
     const c = await cancelShipment(order, { db, client, log, now });
@@ -89,15 +122,19 @@ export async function rebookLocker(key, { db, client, lockerId = null, parcels =
   await db.ref(`${at}/shipping`).update({
     [`rebooks/${stamp}`]: JSON.parse(JSON.stringify({ waybills: from.waybills, shipments: s.shipments ?? null, shipmentId: s.shipmentId ?? null, deliveryLocker: s.deliveryLocker, service: s.service ?? null, cost: s.cost ?? null, bookedAt: s.bookedAt ?? null, cancelledAt: stamp })),
     ...Object.fromEntries(BOOKING_FIELDS.map((k) => [k, null])),
-    ...choice, lockerParcels: count,
+    // PINNED to the locker that was just priced: if it cannot be booked now, nothing else is chosen silently.
+    lockerChoice: { id: plan.locker.id, by: "rebook" }, lockerAvoid: choice.lockerAvoid, lockerParcels: count,
   });
   // 5. Book again: the same claim, ceiling and live rules as any booking.
   const fresh = { ...((await db.ref(at).get()).val() ?? {}), key };
-  const booked = await bookShipment(fresh, { db, client, log, now, ...(geocoder ? { geocoder } : {}) });
+  let booked;
+  try { booked = await bookShipment(fresh, { db, client, log, now, ...(geocoder ? { geocoder } : {}) }); }
+  catch (err) { return { ok: false, cancelled: true, reason: `the old booking is CANCELLED but the new one failed (${String(err?.message || err).slice(0, 200)}). Run this again with --book, or book it in the portal.` }; }
   if (booked?.skipped) return { ok: false, cancelled: true, reason: `the old booking is CANCELLED but the new one was not made: ${booked.reason ?? "dry run"}. Run this again, or book it in the portal.` };
   await db.ref(`shipping_recon/open/${key}`).set(stamp).catch(() => {});
   log(`rebook-locker ${key} REBOOKED ${from.waybills.join("+")} (${from.name}) → ${(booked.waybills ?? [booked.waybill]).join("+")} (${to.name})`);
   return { ok: true, booked, from, to };
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

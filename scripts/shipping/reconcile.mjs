@@ -13,7 +13,7 @@
 // THE ADJUSTMENT (Junid, 20 Nov 2026: every parcel is declared as one shoe;
 // "Courier Guy measures at collection and adjusts the bill; record any
 // adjustment per order so I can see it"). Every reconciled order gets
-//   /online_orders/{id}/shipping/adjustment = { booked, billed, diff, pct,
+//   /online_orders/{id}/shipping/adjustment = { booked (charged at booking), billed, diff, pct,
 //       declared [l,w,h,kg], measured [l,w,h,kg] | null, chargedKg, waybills, at }
 // (diff = billed − booked, rand; a split order's shipments added up, each in
 // `parts`), and every adjustment that is not zero is also listed at
@@ -108,9 +108,13 @@ export function reconcileOrder(orderId, order, shipment, now) {
   const sample = current && dv && mv && cls
     ? { orderId, waybill, class: cls, ratio: round2(mv / dv), implied: round2((mv / dv) * (num(declaredP.calibrationFactor) ?? 1)), at }
     : null;
-  // Billed against booked, always (not only beyond 5%): what Courier Guy's own measuring changed.
-  const adjustment = quoted !== null && rand !== null
-    ? { booked: quoted, billed: rand, diff: round2(rand - quoted), pct: quoted ? Math.round(share * 1000) / 10 : null, declared, measured, chargedKg: invoiced.chargedKg, waybills: [waybill].filter(Boolean), at: now }
+  // Billed against booked, always (not only beyond 5%): what Courier Guy's own measuring changed. "Booked" is what
+  // Courier Guy CHARGED when the shipment was made (shipping.cost); only a booking with no recorded charge falls
+  // back to the quote, and says so (bookedFrom).
+  const charged = num(s.cost);
+  const booked = charged ?? quoted;
+  const adjustment = booked !== null && rand !== null
+    ? { booked, bookedFrom: charged !== null ? "charge" : "quote", billed: rand, diff: round2(rand - booked), pct: booked ? Math.round(((rand - booked) / booked) * 1000) / 10 : null, declared, measured, chargedKg: invoiced.chargedKg, waybills: [waybill].filter(Boolean), at: now }
     : null;
   return { invoiced, diff, sample, adjustment };
 }
@@ -129,10 +133,11 @@ export function combineParts(parts, now) {
   const sum = (f) => round2(parts.reduce((t, p) => t + (f(p) ?? 0), 0));
   const rand = sum((p) => p.invoiced.rand);
   const quoted = sum((p) => p.invoiced.quoted);
-  const rows = parts.map((p) => ({ waybill: p.waybill, booked: p.invoiced.quoted, billed: p.invoiced.rand, diff: p.adjustment?.diff ?? null, measured: p.invoiced.measured, chargedKg: p.invoiced.chargedKg }));
+  const booked = sum((p) => p.adjustment?.booked ?? p.invoiced.quoted);
+  const rows = parts.map((p) => ({ waybill: p.waybill, booked: p.adjustment?.booked ?? p.invoiced.quoted, billed: p.invoiced.rand, diff: p.adjustment?.diff ?? null, measured: p.invoiced.measured, chargedKg: p.invoiced.chargedKg }));
   return {
     invoiced: { rand, quoted, service: parts[0].invoiced.service, parts: rows, at: now },
-    adjustment: { booked: quoted, billed: rand, diff: round2(rand - quoted), pct: quoted ? Math.round(((rand - quoted) / quoted) * 1000) / 10 : null, waybills: parts.map((p) => p.waybill), parts: rows, at: now },
+    adjustment: { booked, bookedFrom: parts.every((p) => p.adjustment?.bookedFrom === "charge") ? "charge" : "quote", billed: rand, diff: round2(rand - booked), pct: booked ? Math.round(((rand - booked) / booked) * 1000) / 10 : null, waybills: parts.map((p) => p.waybill), parts: rows, at: now },
   };
 }
 

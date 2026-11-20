@@ -261,6 +261,13 @@ export async function bookShipment(order, deps = {}) {
     return { skipped: true, reason: plan.reason, parcel: plan.parcel ?? null, ...(plan.attention ? { noLocker: true } : {}), ...(line ? { junidLine: line } : {}) };
   }
   const payloads = plan.payloads ?? [plan.payload];
+  // A half-booked split is only ever finished as what it was: the same locker, at least as many parcels. A plan
+  // that no longer matches (the mode switched to "door", the locker gone) books nothing and keeps the checkpoint.
+  if (partial && (plan.locker?.id !== partial.locker.id || payloads.length < partial.shipments.length)) {
+    const reason = `a split is half booked (${partial.shipments.map((m) => m.waybill).join(", ")} to locker ${partial.locker.id}) and can no longer be finished as planned — book the rest in the portal`;
+    log(`bookShipment ${key} REFUSED ${reason}`);
+    return { skipped: true, reason };
+  }
 
   // The live switch and the order's existence are asked together (fast booking,
   // 20 Nov 2026); the existence answer is only used on the live path below.
@@ -311,9 +318,12 @@ export async function bookShipment(order, deps = {}) {
 
   // ONE create per parcel (door-to-door: always one; door-to-locker: one per one-shoe parcel, same locker).
   const made = partial ? [...partial.shipments] : [];
+  // → false when parcels were booked and their record could NOT be kept: the claim must then stay held
+  // ("unknown"), or a retry would find no checkpoint and book parcel 1 a second time.
   const keepPartial = async () => {
-    if (!made.length) return;
-    await db.ref(`online_orders/${key}/shipping/partial`).set(plain({ count: payloads.length, locker: plan.locker ?? null, shipments: made, at: now() })).catch(() => {});
+    if (!made.length) return true;
+    try { await db.ref(`online_orders/${key}/shipping/partial`).set(plain({ count: payloads.length, locker: plan.locker ?? null, shipments: made, at: now() })); return true; }
+    catch (e) { log(`bookShipment ${key} PARTIAL NOT RECORDED (${made.map((m) => m.waybill).join(", ")}): ${e?.message || e}`); return false; }
   };
   for (let i = made.length; i < payloads.length; i++) {
     const nth = payloads.length > 1 ? ` (parcel ${i + 1} of ${payloads.length})` : "";
@@ -323,8 +333,8 @@ export async function bookShipment(order, deps = {}) {
     } catch (err) {
       // 408 means the request may still have run — as ambiguous as a 5xx.
       const ambiguous = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;
-      await keepPartial();
-      await claimRef.set({ state: ambiguous ? "unknown" : "failed", at: now(), error: `${String(err?.message || err).slice(0, 300)}${nth}`, ...(made.length ? { booked: made.map((m) => m.waybill) } : {}) });
+      const kept = await keepPartial();
+      await claimRef.set({ state: ambiguous || !kept ? "unknown" : "failed", at: now(), error: `${String(err?.message || err).slice(0, 300)}${nth}`, ...(made.length ? { booked: made.map((m) => m.waybill) } : {}) });
       log(`bookShipment ${key} CREATE ${ambiguous ? "UNKNOWN" : "FAILED"}${nth} ${err?.message || err}`);
       throw err;
     }

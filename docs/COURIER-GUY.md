@@ -253,6 +253,7 @@ card does not edit it; set it in the database.
 | How near | Within `locker/maxKm` (**30 km**) of the address; within `locker/maxTownKm` (**20 km**) when only the postal code or the town could be placed on the map (`deliveryLocker.placedBy` says which: "nearest" is then nearest to that point, not to the customer's door). Further, or an address that cannot be placed at all: **not booked**. |
 | The service | The cheapest service Courier Guy quotes for that locker (`D2LM - ECO` for a shoe), `excludeServiceCodes` left out. |
 | The ceiling | `/config/shipping/maxChargeRand` (R500), per shipment. |
+| The phone | A customer with no mobile number is not booked (the locker PIN goes by SMS): "Packed, courier not booked" with that reason. |
 | The request | The normal `/rates` and `/shipments` body with the customer's address kept as `delivery_address`, plus `delivery_pickup_point_id` and `delivery_pickup_point_provider`. |
 
 **No locker, no booking.** There is no silent fall-back to door-to-door. The
@@ -260,10 +261,10 @@ order shows "Packed, courier not booked" with the reason ("no Courier Guy
 locker within 30 km of Ventersdorp (the nearest, X, is 52 km away)"), Junid
 is emailed through the attention path and gets one WhatsApp line
 (`shipping_recon/junidLines`), exactly as for a quote over the ceiling. He
-then books it in the portal, names a locker
-(`rebook-locker.mjs <key> --locker <id>` works on a booked order; for an
-unbooked one set `shipping/lockerChoice/id` and press Retry on the POS), or
-raises `locker/maxKm`.
+then books it in the portal, names a locker (set
+`shipping/lockerChoice/id` on the order and press Retry on the POS;
+`rebook-locker.mjs` is for an order that is already booked), or raises
+`locker/maxKm`.
 
 **What is written on the order** (`/online_orders/<key>/shipping`):
 
@@ -297,7 +298,10 @@ node scripts/shipping/rebook-locker.mjs <orderKey> --locker <id> --book   # do i
 Checks at Courier Guy that every shipment is still uncollected, prices the new
 locker first (nothing is cancelled if it cannot be booked), cancels, keeps the
 old booking under `shipping/rebooks/<ms>`, and books again through
-`bookShipment`. `--parcels` is for a parcel Courier Guy refused as too big for
+`bookShipment`, pinned to the locker it priced. One rebook at a time per order
+(`shipping/rebooking`, a 10-minute lock). If the new booking fails after the
+cancel it says so; running it again with `--book` books only (nothing more is
+cancelled). `--parcels` is for a parcel Courier Guy refused as too big for
 one locker parcel. It does NOT change the tracking number on the Shopify
 order.
 
@@ -362,8 +366,9 @@ drop-off when the parcel fits one), queued at
 **The adjustment (20 Nov 2026).** Every parcel is declared as one shoe, so what
 Courier Guy bills after measuring can differ from what was booked. Once a
 waybill is delivered and invoiced the pass writes
-`/online_orders/<key>/shipping/adjustment = { booked, billed, diff, pct,
-declared [l,w,h,kg], measured [l,w,h,kg], chargedKg, waybills, at }` (diff =
+`/online_orders/<key>/shipping/adjustment = { booked, bookedFrom, billed, diff, pct,
+declared [l,w,h,kg], measured [l,w,h,kg], chargedKg, waybills, at }` (booked =
+what Courier Guy charged when the shipment was made, `shipping/cost`; diff =
 billed minus booked, rand; a split's shipments added up, each in `parts`), on
 EVERY reconciled order, and lists each one that is not zero at
 `/shipping_recon/adjustments/<key>`. To see them:

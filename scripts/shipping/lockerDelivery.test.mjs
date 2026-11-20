@@ -208,7 +208,7 @@ describe("no locker → refused with the reason, NEVER a silent door-to-door", (
     const res = await bookShipment(ORDER(), deps(d, client));
     expect(res).toMatchObject({ skipped: true, noLocker: true });
     expect(res.reason).toMatch(/^no Courier Guy locker within 30 km of Ventersdorp \(the nearest, Potchefstroom Mall, is 5\d(\.\d)? km away\)$/);
-    expect(res.junidLine).toMatch(/^#2257: no Courier Guy locker within 30 km of Ventersdorp .* Not booked \(door-to-locker only\)\. .*rebook-locker\.mjs 1001 --locker <id>\.$/);
+    expect(res.junidLine).toMatch(/^#2257: no Courier Guy locker within 30 km of Ventersdorp .* Not booked \(door-to-locker only\)\. Book it in the portal, or name a locker on the order \(online_orders\/1001\/shipping\/lockerChoice\/id\) and press Retry on the POS\.$/);
     expectNothingBooked(client, d);
     // no door-to-door booking was even priced as a fallback service
     expect(res.dryRun).toBeUndefined();
@@ -256,6 +256,27 @@ describe("no locker → refused with the reason, NEVER a silent door-to-door", (
     const res = await bookShipment(ORDER(), deps(d, client));
     expect(res.reason).toMatch(/Courier Guy quoted no door-to-locker service to the lockers near Ventersdorp/);
     expectNothingBooked(client, d);
+  });
+
+  it("a rates lookup that FAILS on the town retry is a failed lookup (retry later), not \"no service\"", async () => {
+    let n = 0;
+    const client = fakeClient({ points: [NEAR], lockerRates: () => { if (++n === 1) return { rates: null }; throw Object.assign(new Error("HTTP 503"), { status: 503 }); } });
+    const res = await bookShipment(ORDER(), deps(db(true), client));
+    expect(res.reason).toMatch(/no door-to-locker rate \(HTTP 503\)/);
+    expect(res.noLocker).toBeUndefined();
+    expect(res.junidLine).toBeUndefined();
+    expect(client.shipmentCalls()).toEqual([]);
+  });
+
+  it("no customer mobile number: not booked live (the locker PIN is sent by SMS), named in a dry run", async () => {
+    const emailOnly = ORDER({ customer: { name: "A Customer", email: "a@example.com" } });
+    const client = fakeClient();
+    const d = db(true);
+    expect((await bookShipment(emailOnly, deps(d, client))).reason).toBe("no customer mobile number (the locker PIN is sent by SMS)");
+    expectNothingBooked(client, d);
+    expect((await bookShipment(emailOnly, deps(db(false), fakeClient()))).liveBlockers).toEqual(["no customer mobile number (the locker PIN is sent by SMS)"]);
+    // door-to-door never needed one
+    expect((await bookShipment(emailOnly, deps(db(true, { deliveryMode: "door" }), fakeClient()))).waybill).toBe("WB1");
   });
 
   it("with live off the refusal carries no line for Junid", async () => {
@@ -335,6 +356,32 @@ describe("a split: N one-shoe parcels, each its own shipment to the SAME locker"
     s = d.root.online_orders["1001"].shipping;
     expect(s.partial).toBeUndefined();
     expect(s.courierBooking.state).toBe("booked");
+  });
+
+  it("a half-booked split is never finished as a different plan: the mode switched to door books nothing and keeps the checkpoint", async () => {
+    const d = db(true);
+    const client = fakeClient({ createErrors: { 2: Object.assign(new Error("HTTP 400 invalid"), { status: 400 }) } });
+    await expect(bookShipment(PAIRS(3), deps(d, client))).rejects.toThrow(/400/);
+    d.root.config.shipping.deliveryMode = "door";
+    const client2 = fakeClient();
+    const res = await bookShipment({ ...PAIRS(3), shipping: { ...PAIRS(3).shipping, ...d.root.online_orders["1001"].shipping } }, deps(d, client2));
+    expect(res.skipped).toBe(true);
+    expect(res.reason).toMatch(/a split is half booked \(WB1 to locker RVM01240\) and can no longer be finished as planned/);
+    expect(client2.shipmentCalls()).toEqual([]);
+    const s = d.root.online_orders["1001"].shipping;
+    expect(s.partial).toMatchObject({ shipments: [{ waybill: "WB1" }] });
+    expect(s.waybill).toBeUndefined();
+  });
+
+  it("booked parcels whose checkpoint cannot be written hold the claim as unknown, even on a 4xx (no blind re-book of parcel 1)", async () => {
+    const d = db(true);
+    const failing = { ...d, ref: (p) => (String(p).endsWith("/shipping/partial") ? { ...d.ref(p), set: async () => { throw new Error("write denied"); } } : d.ref(p)) };
+    const client = fakeClient({ createErrors: { 2: Object.assign(new Error("HTTP 400 invalid"), { status: 400 }) } });
+    await expect(bookShipment(PAIRS(2), deps(failing, client))).rejects.toThrow(/400/);
+    expect(d.root.online_orders["1001"].shipping.courierBooking).toMatchObject({ state: "unknown", booked: ["WB1"] });
+    const again = await bookShipment({ ...PAIRS(2), shipping: { ...PAIRS(2).shipping, ...d.root.online_orders["1001"].shipping } }, deps(d, client));
+    expect(again.reason).toBe("booking already unknown");
+    expect(client.of("createShipment")).toHaveLength(2);
   });
 
   it("a lost response mid-split holds the claim as unknown (never re-booked blind)", async () => {
@@ -460,6 +507,25 @@ describe("rebook-locker: cancel the uncollected shipment and book the same parce
     expect(d.root.online_orders["1001"].shipping.waybills).toHaveLength(2);
   });
 
+  it("one rebook at a time: a second run while one holds the lock changes nothing; the lock is released after", async () => {
+    const d = await bookedWorld();
+    d.root.online_orders["1001"].shipping.rebooking = { at: NOW };
+    const client = fakeClient();
+    const out = await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW + 1000 });
+    expect(out.reason).toMatch(/another rebook of this order is running/);
+    expect(client.shipmentCalls()).toEqual([]);
+    // a stale lock (a run that died) is taken over, and a finished run leaves none behind
+    const done = await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW + 11 * 60_000 });
+    expect(done.ok).toBe(true);
+    expect(d.root.online_orders["1001"].shipping.rebooking).toBeUndefined();
+  });
+
+  it("the replacement is pinned to the locker that was priced: it is recorded as the order's chosen locker", async () => {
+    const d = await bookedWorld();
+    await rebookLocker("1001", { db: d, client: fakeClient(), book: true, geocoder: geo(), now: () => NOW + 5 });
+    expect(d.root.online_orders["1001"].shipping).toMatchObject({ lockerChoice: { id: "CG648", by: "rebook" }, deliveryLocker: { id: "CG648" } });
+  });
+
   it("already collected: refused, nothing cancelled", async () => {
     const d = await bookedWorld();
     const client = fakeClient({ statuses: { WB1: "collected" } });
@@ -477,6 +543,27 @@ describe("rebook-locker: cancel the uncollected shipment and book the same parce
     expect(out.ok).toBe(false);
     expect(out.reason).toMatch(/the new locker cannot be booked: no Courier Guy locker within 30 km/);
     expect(client.shipmentCalls()).toEqual([]);
+  });
+
+  it("the new booking fails after the cancel: said plainly, and running it again books only (nothing more is cancelled)", async () => {
+    const d = await bookedWorld();
+    const bad = Object.assign(new Error("HTTP 400 locker full"), { status: 400 });
+    const client = fakeClient({ createErrors: { 1: bad } });
+    const failed = await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW + 5 });
+    expect(failed).toMatchObject({ ok: false, cancelled: true });
+    expect(failed.reason).toMatch(/the old booking is CANCELLED but the new one failed \(HTTP 400 locker full/);
+    let s = d.root.online_orders["1001"].shipping;
+    expect(s.waybill).toBeUndefined();
+    expect(Object.values(s.rebooks)[0]).toMatchObject({ waybills: ["WB1"] });
+    // again: a dry run first, then for real
+    const client2 = fakeClient();
+    expect(await rebookLocker("1001", { db: d, client: client2, geocoder: geo(), now: () => NOW + 9 })).toMatchObject({ ok: true, dryRun: true, resume: true, to: { id: "CG648" } });
+    const out = await rebookLocker("1001", { db: d, client: client2, book: true, geocoder: geo(), now: () => NOW + 9 });
+    expect(out).toMatchObject({ ok: true, resumed: true, to: { id: "CG648" } });
+    expect(client2.of("cancelShipment")).toEqual([]);
+    expect(client2.of("createShipment")).toHaveLength(1);
+    s = d.root.online_orders["1001"].shipping;
+    expect(s).toMatchObject({ provider: "courier_guy", waybill: "WB1", deliveryLocker: { id: "CG648" }, courierBooking: { state: "booked" } });
   });
 
   it("--book with live off is still a dry run; an order with no locker booking is refused", async () => {
@@ -500,9 +587,13 @@ describe("the billed-vs-booked adjustment, on the order", () => {
 
   it("reconcileOrder: billed − booked with what was declared and what Courier Guy measured; a one-shoe declaration never teaches the parcel table", () => {
     const r = reconcileOrder("1001", { shipping: booked() }, delivered("WB1", 192.72), NOW);
-    expect(r.adjustment).toEqual({ booked: 130.31, billed: 192.72, diff: 62.41, pct: 47.9, declared: [34, 23, 13, 1.5], measured: [36, 30, 22, 2.4], chargedKg: 6, waybills: ["WB1"], at: NOW });
+    expect(r.adjustment).toEqual({ booked: 130.31, bookedFrom: "charge", billed: 192.72, diff: 62.41, pct: 47.9, declared: [34, 23, 13, 1.5], measured: [36, 30, 22, 2.4], chargedKg: 6, waybills: ["WB1"], at: NOW });
     expect(r.sample).toBe(null);
     expect(reconcileOrder("1001", { shipping: booked() }, delivered("WB1", 130.31), NOW).adjustment).toMatchObject({ diff: 0, pct: 0 });
+    // "booked" is what Courier Guy CHARGED at booking, not the quote: quoted 130.31, charged 150, billed 150 → no adjustment
+    expect(reconcileOrder("1001", { shipping: booked({ cost: 150 }) }, delivered("WB1", 150), NOW).adjustment).toMatchObject({ booked: 150, bookedFrom: "charge", diff: 0 });
+    // no recorded charge: the quote, and the record says so
+    expect(reconcileOrder("1001", { shipping: booked({ cost: null }) }, delivered("WB1", 150), NOW).adjustment).toMatchObject({ booked: 130.31, bookedFrom: "quote", diff: 19.69 });
   });
 
   it("runReconcile writes shipping/adjustment on the order and lists a non-zero one at /shipping_recon/adjustments/<order>", async () => {

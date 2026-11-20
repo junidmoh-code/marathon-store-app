@@ -119,7 +119,8 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
   const town = townOf(address);
   const refuse = (reason, extra = {}) => ({
     ok: false, reason, attention: true, parcel,
-    junidLine: `${ref}: ${reason}. Not booked (door-to-locker only). Book it in the portal, or name a locker: node scripts/shipping/rebook-locker.mjs ${key} --locker <id>.`,
+    // The order is not booked yet, so rebook-locker.mjs (which moves a BOOKED order) is not the way: a locker is named on the order itself.
+    junidLine: `${ref}: ${reason}. Not booked (door-to-locker only). Book it in the portal, or name a locker on the order (online_orders/${key}/shipping/lockerChoice/id) and press Retry on the POS.`,
     ...extra,
   });
 
@@ -181,6 +182,8 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
       const retry = { ...address, local_area: city };
       const again = await rates(client, body(locker, retry));
       if (again.rates.length) [q, used] = [again, retry];
+      // A retry that FAILED is a failed lookup (try again later), not "Courier Guy quotes nothing here".
+      else if (again.error) q = again;
     }
     const usable = q.rates.filter((r) => !exclude.has(r.code));
     if (usable.length) { found = { locker, rates: usable, used }; break; }
@@ -198,6 +201,8 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
 
   // THE SPEND CEILING, per shipment (each parcel is its own shipment at the same rate).
   const blockers = [...liveBlockers];
+  // The locker PIN goes by SMS: without a mobile number the customer could never open it (#1671).
+  if (!str(contact?.mobile_number)) blockers.push("no customer mobile number (the locker PIN is sent by SMS)");
   const ceiling = Number(cfg.maxChargeRand);
   let overCeiling = null;
   if (Number.isFinite(ceiling) && ceiling > 0 && rate.rate > ceiling) {
