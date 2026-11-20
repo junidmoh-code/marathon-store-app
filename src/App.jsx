@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue, useLayoutEffect } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, orderByKey, equalTo, startAt, endAt } from "firebase/database";
 import AiSpendTab from "./components/AiSpendTab";
+import { useActiveStore, requestSwitch as requestActiveStoreSwitch, activeStoreStamp } from "./utils/activeStore";
 import { ref as storageRef, uploadBytes, getDownloadURL, getBlob, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
@@ -3470,8 +3471,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // badge slot is intentionally omitted (wired to nothing yet — a later PR feeds
   // it the store's outstanding count).
   const dcVisible = displayChecksVisibleForViewer(
-    { email: homeUser?.email, permissions: homePerm?.permissions, destShop: homePerm?.destShop },
-    isSuperAdmin ? null : (homePerm?.destShop || null)
+    { email: homeUser?.email, permissions: homePerm?.permissions, destShop: homePerm?.destShop }
   );
 
   // TEMPORARY — Hub Sneaker Count card. Its own card rather than a role tile
@@ -9824,33 +9824,36 @@ function AssistantView({ products, onExit, orders = [] }) {
   // (isSuperAdmin/hasPermission no longer destructured here — their only
   // consumer, the "Shop stock · view only" card's canAccessStock gate, was
   // removed with the card. Owner decision 2026-07-16.)
-  const { user: assistantUser, storeIds: allowedStores, permRecord: stockPermRecord } = usePermissions();
+  const { user: assistantUser, permRecord: stockPermRecord } = usePermissions();
   // Desktop workspace kicks in at ≥1024px (laptop); phone + iPad keep tap→sheet.
   const isDesktop = !useIsNarrow(1024);
-  // Single-store assignment (destShop) locks the picker to exactly that shop — the
-  // user can only place/act on their store. Falls back to the older central/pine
-  // storeIds gating when no destShop is set (warehouse/admin/unassigned).
-  const myShop = stockPermRecord?.destShop || null;
-  // Sections: the viewer's sections narrow the picker too (a Section 1 account
-  // is never offered Marathon PE), and `sectionNet` is the registry every hub
-  // question below is asked of.
-  const { canSee: canSeeLoc, registry: sectionNet } = useMySections();
-  const availableShops = myShop
-    ? allShops.filter(s => s.id === myShop)
-    : allShops.filter(s => allowedStores.includes(shopUniverse(s.id, sectionNet)) && canSeeLoc(s.id));
+  // ALL-STORE ACCESS (Junid, 20 Nov 2026). Every account may order for every
+  // shop. The shop shown here is THE active shop (src/utils/activeStore.js),
+  // shared with every other screen: a destShop account starts at its HOME shop
+  // and leaves it only through the full-screen confirmation; an account with no
+  // home keeps its per-device choice (selectedShop) until it picks one here.
+  // Before: destShop locked the picker to that one shop, otherwise the storeIds
+  // universes and the viewer's sections narrowed it.
+  const homeShop = stockPermRecord?.destShop || null;
+  const activeStoreNow = useActiveStore();
+  const activeShopMine = activeStoreNow.uid === assistantUser?.uid ? activeStoreNow.activeShop : null;
+  const chosenShop = homeShop ? (activeShopMine || homeShop) : (activeShopMine || selectedShop);
+  // `sectionNet` is the registry every hub question below is asked of. Hubs
+  // stay behind the sections exactly as before; only the SHOP list is open.
+  const { registry: sectionNet } = useMySections();
+  const availableShops = allShops;
   const noStoreAccess = availableShops.length === 0;
   const singleShop    = availableShops.length === 1;
   useEffect(() => {
-    if (availableShops.length === 0) return;        // block screen handles this
+    if (availableShops.length === 0 || homeShop) return; // block screen / active store handle these
     if (!availableShops.some(s => s.id === selectedShop)) selectShop(availableShops[0].id);
-  }, [availableShops, selectedShop]);
+  }, [availableShops, selectedShop, homeShop]);
   // Clamp at RENDER too: the effect above persists the correction but only runs
   // after commit, so the first paint (and the product filtering / order routing it
-  // drives) must use this derived value — never a stale per-device shop the user
-  // isn't assigned to.
-  const effectiveShop = availableShops.some(s => s.id === selectedShop)
-    ? selectedShop
-    : (availableShops[0]?.id || selectedShop);
+  // drives) must use this derived value — never a stale per-device shop.
+  const effectiveShop = availableShops.some(s => s.id === chosenShop)
+    ? chosenShop
+    : (availableShops[0]?.id || chosenShop);
   // Routing universe derived from the chosen shop. THIS keeps every downstream
   // consumer keyed on central/pine unchanged.
   const effectiveStoreMode = shopUniverse(effectiveShop, sectionNet);
@@ -10199,15 +10202,23 @@ function AssistantView({ products, onExit, orders = [] }) {
   // and a hard, red confirm modal stands between the tap and the switch.
   // `pendingShopSwitch` holds the target shop id awaiting confirmation (null =
   // no prompt showing).
+  // A destShop account goes through the app-wide switch instead (its full-screen
+  // modal, banner and audit line — src/components/ActiveStoreLayer.jsx); this
+  // local modal stays for accounts with no home shop.
   const [pendingShopSwitch, setPendingShopSwitch] = useState(null);
   const requestShopSwitch = (next) => {
     if (!next || next === effectiveShop) return;   // tapping the current shop is a no-op
+    if (homeShop) { requestActiveStoreSwitch(next); return; }
     setPendingShopSwitch(next);
   };
   const confirmShopSwitch = () => {
     // An explicit, confirmed switch IS an affirmation of the destination, so the
     // placement guard below won't prompt again for the shop they just chose.
-    if (pendingShopSwitch) { selectShop(pendingShopSwitch); setAffirmedShop(pendingShopSwitch); }
+    if (pendingShopSwitch) {
+      selectShop(pendingShopSwitch);
+      setAffirmedShop(pendingShopSwitch);
+      requestActiveStoreSwitch(pendingShopSwitch); // no home: switches at once, logged
+    }
     setPendingShopSwitch(null);
   };
   // ── PLACEMENT DESTINATION GUARD ────────────────────────────────────────────
@@ -10221,7 +10232,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Single-shop-locked users can't mis-route, so they are never prompted.
   const [affirmedShop, setAffirmedShop] = useState(null);
   const [destConfirm,  setDestConfirm]  = useState(null);   // { run } — a placement awaiting affirmation
-  const needsDestConfirm = !singleShop && !noStoreAccess && affirmedShop !== effectiveShop;
+  // A destShop account confirmed any shop other than its own in the app-wide
+  // modal already, and its own shop needs no affirming — so it is never asked.
+  const needsDestConfirm = !homeShop && !singleShop && !noStoreAccess && affirmedShop !== effectiveShop;
   const runDestConfirm = () => {
     setAffirmedShop(effectiveShop);
     const pending = destConfirm;
@@ -11346,8 +11359,10 @@ function AssistantView({ products, onExit, orders = [] }) {
       // Here it cannot arise, for two reasons that are worth naming because
       // both are load-bearing and neither is local to this line:
       //
-      //   • `availableShops` is CLAMPED to `myShop` when there is one (8878),
-      //     so a scoped user's `effectiveShop` IS the feed's scope; an unscoped
+      //   • a scoped user's `effectiveShop` and the root feed's `myShop` are
+      //     BOTH the active shop (src/utils/activeStore.js — one singleton,
+      //     all-store access 20 Nov 2026), so `effectiveShop` IS the feed's
+      //     scope; an unscoped
       //     user (super-admin, warehouse) has myShop null and sees every order.
       //     Either way the feed covers the store this guard asks about.
       //   • the other branch — `displayPairStore`, a CROSS-store target — has
@@ -11457,6 +11472,9 @@ function AssistantView({ products, onExit, orders = [] }) {
           // The shop's section, stamped on NEW orders only. An order without
           // it is read as "derive from destShop" (utils/sectionRouting.js).
           section: sectionStamp(sectionNet, effectiveShop),
+          // All-store access: the shop this order counts for, the placer's own
+          // shop, and whether they were working away from it.
+          ...activeStoreStamp({ activeShop: effectiveShop, homeShop }),
           requestDisplay: item.requestDisplay || false,
           requestDisplayPartner: item.requestDisplayPartner || false,
           // Display-pair PULL (2026-08-26): the pair to send IS the display
@@ -11769,7 +11787,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         <AssistantDesktop
           products={browse} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
           deadForOrder={deadForOrder}
-          onSelectShop={selectShop} shopRegistry={shopRegistry}
+          onSelectShop={requestShopSwitch} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
           onViewPhoto={setFullPhoto} onSwitchView={onExit}
@@ -20927,8 +20945,7 @@ function AppInner() {
   // store-scoped display_checks grant). Used both to guard a stale persisted role
   // and to mount the view. Dark by default (master flag off).
   const displayChecksRouteOpen = displayChecksVisibleForViewer(
-    { email: authUser?.email, permissions: permRecord?.permissions, destShop: permRecord?.destShop },
-    isSuperAdmin ? null : (permRecord?.destShop || null)
+    { email: authUser?.email, permissions: permRecord?.permissions, destShop: permRecord?.destShop }
   );
   // Stock access is gated by stockRole, NOT an app permission, so warehouse seed
   // counters keep it. canMint = may create NEW barcodes (writes /barcodes — any
@@ -21083,7 +21100,13 @@ function AppInner() {
   // set — e.g. "trophy") reads ONLY their shop's orders, enforced by the /orders
   // rule (an unscoped read from them is rejected). Warehouse/admin/super-admin have
   // no destShop → full read. This is the single feed for every authenticated view.
-  const myShop = isSuperAdmin ? null : (permRecord?.destShop || null);
+  //
+  // ALL-STORE ACCESS (Junid, 20 Nov 2026): the feed follows the ACTIVE shop
+  // (src/utils/activeStore.js), which is the home destShop unless this person
+  // confirmed a switch. An account with no home keeps its full, unscoped read.
+  const activeStoreState = useActiveStore();
+  const activeShopForMe = activeStoreState.uid === authUser?.uid ? activeStoreState.activeShop : null;
+  const myShop = isSuperAdmin || !permRecord?.destShop ? null : (activeShopForMe || permRecord.destShop);
   const orders = useOrders(myShop);
   // Pine and Concrete share their orders: the sibling's feed joins the three
   // screens that show a customer's order (utils/sharedOrders.js). Everything
