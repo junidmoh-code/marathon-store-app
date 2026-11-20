@@ -2550,64 +2550,16 @@ const OAI_IMAGE_OUT_PER_MTOK = 40;
 // DEFAULT_WHITE_PROMPT is the composed one the adapters fall back to.
 const { PHOTO_PROMPT, DEFAULT_WHITE_PROMPT, buildPhotoPrompt } = require("./lib/photo-prompt.cjs");
 
-// DEFAULT house-style locked prompts — code fallbacks only. The live prompt is
-// read from /aiAssistant/styleKit/{template}/prompt (editable in the Style Kit
-// panel, no redeploy); these apply when no custom prompt is saved.
-// KEEP IN SYNC with STYLE_KIT_DEFAULT_PROMPTS in src/App.jsx (panel starting text).
-const HOUSE_PROMPT_CLOTHING = [
-  "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
-  "images show our exact studio scene — recreate that scene precisely: the same backdrop and wall,",
-  "the same hangers and display hardware, the same lighting direction, softness and colour grade,",
-  "the same camera height, distance, angle and framing, and the same layout and spacing. The output",
-  "must look like it was shot in the SAME session, in the SAME spot, with the SAME lighting rig as",
-  "the references.",
-  "CRITICAL — the references define ONLY the scene and styling. The garments shown in the references",
-  "are DIFFERENT products: none of their design, colour, fabric, branding or details may appear in",
-  "the output.",
-  "The PRODUCT image shows the actual item to photograph. Keep the product's design EXACTLY —",
-  "identical shape, proportions, colour, materials, patterns, logos and text. Never redesign,",
-  "restyle, recolour, or invent details the real product does not have. Render every brand wordmark",
-  "and logo crisply and correctly — properly letter-formed, correctly spelled, matching the real",
-  "brand's exact lettering; never garbled, warped or fake-looking.",
-  "Present the garments as a coordinated SET, displayed exactly the way the reference sets are",
-  "displayed — every piece visible in the product photo (e.g. hoodie and matching joggers) arranged",
-  "together in the same configuration, on the same hangers, with the same spacing as the references.",
-  "If the product photo shows a single piece, present just that piece in the identical scene and",
-  "position. Settle out the creases a garment picks up from packing, folding or a hanger — but anything",
-  "set into the cloth by WEAR stays. Natural drape, squared shoulders and straight hems; nothing cropped",
-  "or cut off.",
-  "Render the product's colours as the ITEM ACTUALLY IS — never washed out or over-exposed by the",
-  "rendering, and never freshened either: colour genuinely lost to fading or yellowing stays lost. Darks",
-  "must not be lifted or greyed by the exposure. Match the exposure and white balance of the reference",
-  "scene so the product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a",
-  "photorealistic result indistinguishable from a real photo of THIS item taken in our studio.",
-].join(" ");
-
-const HOUSE_PROMPT_SNEAKER = [
-  "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
-  "images show our exact studio scene — recreate it precisely: the same backdrop, surface, lighting",
-  "direction, softness and colour grade, the same camera height, angle and framing, and the same",
-  "shoe-and-box composition and spacing as the references. The output must look like it was shot in",
-  "the SAME session, in the SAME spot, with the SAME lighting rig.",
-  "CRITICAL — the references define ONLY the scene, layout and styling. The sneakers and boxes shown",
-  "in them are DIFFERENT products: none of their design, colourway or branding may appear in the",
-  "output.",
-  "The PRODUCT image shows the actual sneaker to photograph. Keep its design EXACTLY — identical",
-  "shape, proportions, colourway, materials, patterns, logos and text. Show the OUTER (lateral)",
-  "branded display side facing the camera, keeping the SAME side and SAME left/right facing as the",
-  "product photo — never flip, mirror or rotate to the plain inner side. Never redesign or invent",
-  "details.",
-  "Display the sneaker WITH its retail box, positioned exactly as the boxes are positioned in the",
-  "references. If a BOX image is provided, reproduce that exact box — its true colours, graphics,",
-  "logos and label text, correctly spelled and crisply rendered. If no box image is provided, show",
-  "this exact model's authentic retail box using your knowledge of the real product; keep all box",
-  "text and branding accurate and legible, and never invent box artwork that doesn't exist.",
-  "Colours as the ITEM ACTUALLY IS — darks not lifted or greyed by the exposure, and colour genuinely",
-  "lost to fading left lost; match the reference scene's exposure and white balance. Tack-sharp focus",
-  "and detail; a photorealistic result indistinguishable from a real photo of THIS item in our studio.",
-].join(" ");
-
-const HOUSE_DEFAULT_PROMPTS = { clothing: HOUSE_PROMPT_CLOTHING, sneaker: HOUSE_PROMPT_SNEAKER };
+// DEFAULT house-style locked prompts — code fallbacks only, and since the
+// Style Kit Catalogue (20 Nov 2026) ONE copy, in lib/style-kit-catalogue.mjs
+// (HOUSE_PROMPT_SNEAKER / HOUSE_PROMPT_CLOTHING / HOUSE_PROMPT_GENERIC), which
+// the Style Kit panel imports too. The live prompt is read from
+// /aiAssistant/styleKit/{kit}/prompt when one is saved.
+// The catalogue is an ES module; this file is CommonJS — loaded once, lazily.
+let styleKitCatalogueMod = null;
+const styleKitCatalogue = () => (styleKitCatalogueMod || (styleKitCatalogueMod = import("./lib/style-kit-catalogue.mjs")));
+let styleKitDriftMod = null;
+const styleKitDrift = () => (styleKitDriftMod || (styleKitDriftMod = import("./lib/style-kit-drift.mjs")));
 
 
 // PROVIDER BOUNDARY: given image bytes + the per-product prompt, return { buffer,
@@ -2839,24 +2791,75 @@ async function normalizeHouseStyle(buffer, fallbackMime) {
 // from RTDB else the code default) + the enabled reference images, capped at
 // HOUSE_MAX_REFS (oldest first — the curated core of the kit). Ref buffers are
 // fetched ONCE and shared by every product in the batch.
+// (The SOCIAL generator's view: sneaker + clothing only. Product photos use
+// makeKitResolver below, which routes by the Catalogue.)
 async function loadStyleKit(db) {
   const snap = await db.ref(STYLE_KIT_PATH).once("value");
-  const kit = snap.val() || {};
+  const node = snap.val() || {};
+  const cat = await styleKitCatalogue();
   const out = {};
-  for (const template of ["sneaker", "clothing"]) {
-    const t = kit[template] || {};
-    const prompt = (typeof t.prompt === "string" && t.prompt.trim()) ? t.prompt.trim() : HOUSE_DEFAULT_PROMPTS[template];
-    const refEntries = Object.entries(t.refs || {})
-      .filter(([, r]) => r && r.url && r.enabled !== false)
-      .sort(([, a], [, b]) => (a.addedAt || 0) - (b.addedAt || 0))
-      .slice(0, HOUSE_MAX_REFS);
-    const refs = (await Promise.all(refEntries.map(async ([id, r]) => {
+  for (const template of cat.BASE_KITS) {
+    const { prompt } = cat.promptFor(node, template);
+    const refEntries = cat.enabledRefs(node, template).slice(0, HOUSE_MAX_REFS);
+    const refs = (await Promise.all(refEntries.map(async (r) => {
       try { return await fetchImageBuffer(r.url); }
-      catch (err) { console.warn(`styleKit ref ${template}/${id} fetch failed:`, err && err.message); return null; }
+      catch (err) { console.warn(`styleKit ref ${template}/${r.id} fetch failed:`, err && err.message); return null; }
     }))).filter(Boolean);
     out[template] = { prompt, refs };
   }
   return out;
+}
+
+// THE CATALOGUE ROUTER (Junid, 20 Nov 2026): every house-style generation uses
+// the kit for the product's catalogue category — its own assignment, else its
+// category's kit, then the parent kit, then the house-style default (the old
+// sneaker/clothing choice). The kit node is read ONCE per call (a small config
+// node) and each kit's reference photos are fetched once and shared.
+// → kitFor(product, pid) → { kit, label, chain, dedicated, prompt, promptFamily, refs: [{buffer, contentType}] }
+async function makeKitResolver(db) {
+  const cat = await styleKitCatalogue();
+  const node = (await db.ref(STYLE_KIT_PATH).once("value")).val() || {};
+  const refCache = new Map();
+  const refsOf = (kit) => {
+    if (!refCache.has(kit)) {
+      refCache.set(kit, Promise.all(cat.enabledRefs(node, kit).slice(0, HOUSE_MAX_REFS).map(async (r) => {
+        try { return await fetchImageBuffer(r.url); }
+        catch (err) { console.warn(`styleKit ref ${kit}/${r.id} fetch failed:`, err && err.message); return null; }
+      })).then((xs) => xs.filter(Boolean)));
+    }
+    return refCache.get(kit);
+  };
+  return async (product, pid) => {
+    const r = cat.resolveKit(product, pid, node);
+    const refs = await refsOf(r.kit);
+    if (refs.length || !r.dedicated) return { ...r, refs };
+    // A dedicated kit whose photos could not be fetched never fails the product: the next kit in its chain
+    // with photos that load, else the house-style default — the same as the shared generator.
+    for (const k of r.chain.slice(r.chain.indexOf(r.kit) + 1)) {
+      const got = await refsOf(k);
+      if (got.length || k === r.chain[r.chain.length - 1]) {
+        const { prompt, family } = cat.promptFor(node, k);
+        return { ...r, kit: k, label: cat.kitDefs(node)[k]?.label || k, dedicated: !cat.BASE_KITS.includes(k), prompt, promptFamily: family, refs: got };
+      }
+    }
+    return { ...r, refs };
+  };
+}
+
+// The product cut out of its own photo, centred on the catalogue's white
+// square — the drift fallback: the REAL product, never a drifted one.
+async function cutoutOnWhite(buffer) {
+  const c = await require("./lib/lookbook-render.cjs").cutout(buffer, { edge: 2048 });
+  if (!c || !c.png) throw new Error("the product could not be cut out of its photo");
+  // Its own pixels, untouched: flattened on white and centred on the 1500² square
+  // (no dark-strengthen pass — the fallback exists to show the product as it is).
+  const sharp = require("sharp");
+  const box = Math.round(CATALOGUE_CANVAS * CATALOGUE_FILL);
+  const fit = await sharp(c.png).flatten({ background: "#ffffff" }).resize(box, box, { fit: "inside" }).toBuffer({ resolveWithObject: true });
+  const out = await sharp({ create: { width: CATALOGUE_CANVAS, height: CATALOGUE_CANVAS, channels: 3, background: "#ffffff" } })
+    .composite([{ input: fit.data, left: Math.round((CATALOGUE_CANVAS - fit.info.width) / 2), top: Math.round((CATALOGUE_CANVAS - fit.info.height) / 2) }])
+    .jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer();
+  return { buffer: out, mime: "image/jpeg" };
 }
 
 // Map a raw per-product error into a short, aggregatable reason the Studio UI can
@@ -2888,8 +2891,8 @@ function classifyPhotoError(msg, engName) {
   if (/HTTP 429|\brate[ -]?limit|quota|RESOURCE_EXHAUSTED/i.test(m)) {
     return `AI rate-limited or over quota (429) — check ${provider} billing`;
   }
-  const kit = m.match(/no usable (\w+) Style Kit references/i);
-  if (kit) return `No ${kit[1]} Style Kit references — add & enable refs for that template`;
+  const kit = m.match(/no usable ([\w-]+) Style Kit references/i);
+  if (kit) return `No ${kit[1]} Style Kit references — add & enable refs for that kit`;
   if (/image fetch HTTP|untrusted image host|invalid image url/i.test(m)) return "Couldn't fetch the product image";
   if (/image too large/i.test(m)) return "Product image too large";
   if (/timed out/i.test(m)) return "AI request timed out";
@@ -2981,7 +2984,10 @@ exports.generateProductPhotos = onCall(
 
     // House style: load the Style Kit (locked prompts + enabled refs) once —
     // the ref buffers are shared across every product in this batch.
-    const styleKit = style === "house" ? await loadStyleKit(db) : null;
+    // Routed per product by the Style Kit Catalogue (makeKitResolver).
+    const kitFor = style === "house" ? await makeKitResolver(db) : null;
+    const drift = style === "house" ? await styleKitDrift() : null;
+    const sharpLib = style === "house" ? require("sharp") : null;
 
     let processed = 0, failed = 0, estCostUSD = 0;
     const costByEngine = { openai: 0, gemini: 0, nbpro: 0 };
@@ -2994,8 +3000,6 @@ exports.generateProductPhotos = onCall(
         const id = ids[cursor++];
         const p = products[id];
         const isClothing = p.category === "Clothing" || p.productType === "clothing";
-        // House style always runs on Nano Banana Pro; templates key on productType.
-        const template = isClothing ? "clothing" : "sneaker";
         const engName = style === "house" ? "nbpro" : (engineOverride || defaultEngineFor(p));
         try {
           // The override when the caller named one, else the record's hero.
@@ -3003,11 +3007,14 @@ exports.generateProductPhotos = onCall(
           const { buffer, contentType } = await fetchImageBuffer(srcUrl);
           // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
           const size = isClothing ? "1024x1536" : PHOTO_SIZE;
-          const kit = styleKit ? styleKit[template] : null;
+          // THE KIT FOR THIS PRODUCT'S CATEGORY (Catalogue): its own, else its
+          // category's, else the parent's, else the house-style default.
+          const kit = kitFor ? await kitFor(p, id) : null;
+          const template = kit ? kit.kit : (isClothing ? "clothing" : "sneaker");
           // Never write a style:"house" proposal that isn't actually reference-
-          // conditioned: if the template has no enabled refs (or every ref fetch
+          // conditioned: if the kit has no enabled refs (or every ref fetch
           // failed), fail this product loudly instead of burning an NB Pro gen on
-          // an ungrounded result. The Style Kit panel warns when a template is empty.
+          // an ungrounded result. The Style Kit panel warns when a kit is empty.
           if (kit && !kit.refs.length) {
             throw new Error(`house style: no usable ${template} Style Kit references`);
           }
@@ -3016,18 +3023,57 @@ exports.generateProductPhotos = onCall(
           // Sneaker house shots include the product's own box photo when one is
           // saved (photoBoxUrl). Best-effort: a broken box URL downgrades to the
           // no-box prompt path instead of failing the product.
+          // (The sneaker family keeps its box; a generic kit — perfume — shows
+          // its box when it has one; clothing never had one.)
           let box = null;
-          if (kit && template === "sneaker" && p.photoBoxUrl) {
+          if (kit && kit.promptFamily !== "clothing" && p.photoBoxUrl) {
             try { box = await fetchImageBuffer(p.photoBoxUrl); }
             catch (err) { console.warn(`generateProductPhotos: ${id} box photo fetch failed:`, err && err.message); }
           }
-          const { buffer: rawBuf, costUSD, mime: rawMime } = await getEngine(engName)
+          const runOnce = () => getEngine(engName)
             .generate(buffer, contentType, { quality, size, prompt, box, refs: kit ? kit.refs : undefined });
+          let { buffer: rawBuf, costUSD, mime: rawMime } = await runOnce();
+          // ── THE DRIFT CHECK (house style): the result against the ORIGINAL
+          // photo. Drifted → ONE retry; drifted again → the product's own
+          // cut-out on white. A check that cannot run never counts as a drift.
+          let driftInfo = null, driftFallback = false;
+          // The drift check judges against the TRUE original photograph: when the hero was itself an
+          // approved generation, photoUrlOriginal is the real staff photo (best-effort; else the input).
+          let truth = buffer;
+          if (kit && !sourceUrl && p.photoUrlOriginal && p.photoUrlOriginal !== srcUrl) {
+            try { truth = (await fetchImageBuffer(p.photoUrlOriginal)).buffer; } catch { truth = buffer; }
+          }
+          if (kit) {
+            const d1 = await drift.checkDrift({ original: truth, generated: rawBuf }, { apiKey: geminiApiKey.value(), sharp: sharpLib });
+            driftInfo = { first: d1.checked ? (d1.drift ? "drifted" : "same") : "unchecked", issues: d1.issues || "" };
+            if (d1.drift) {
+              console.warn(`generateProductPhotos: ${id} drifted (${d1.issues}) — retrying once`);
+              let second = null;
+              // A retry that fails outright never costs the product: the cut-out stands in for the drifted photo.
+              try { second = await runOnce(); costUSD += second.costUSD; }
+              catch (err) { console.warn(`generateProductPhotos: ${id} drift retry failed:`, err && err.message); driftInfo.retry = "failed"; driftFallback = true; }
+              if (second) {
+                const d2 = await drift.checkDrift({ original: truth, generated: second.buffer }, { apiKey: geminiApiKey.value(), sharp: sharpLib });
+                driftInfo.retry = d2.checked ? (d2.drift ? "drifted" : "same") : "unchecked";
+                if (d2.drift) { driftInfo.retryIssues = d2.issues || ""; driftFallback = true; }
+                else { rawBuf = second.buffer; rawMime = second.mime; }
+              }
+            }
+          }
           // White: trim + centre on a uniform white square so the catalogue grid is
-          // consistent. House: keep the generated scene — resize only.
-          const { buffer: outBuf, mime } = kit
-            ? await normalizeHouseStyle(rawBuf, rawMime)
-            : await normalizeForCatalogue(rawBuf, rawMime);
+          // consistent. House: keep the generated scene — resize only. Drifted
+          // twice: the real product cut out of its photo.
+          // (No clean cut-out: the generated photo is kept — it was paid for — and the record says it drifted.)
+          let cut = null;
+          if (driftFallback) {
+            try { cut = await cutoutOnWhite(buffer); }
+            catch (err) { console.warn(`generateProductPhotos: ${id} no cut-out for the drift fallback:`, err && err.message); driftFallback = false; driftInfo.fallback = "no-cutout"; }
+          }
+          const { buffer: outBuf, mime } = cut
+            ? cut
+            : kit
+              ? await normalizeHouseStyle(rawBuf, rawMime)
+              : await normalizeForCatalogue(rawBuf, rawMime);
           const proposedUrl = await uploadProposalImage(id, outBuf, mime);
           estCostUSD += costUSD;
           costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
@@ -3069,7 +3115,9 @@ exports.generateProductPhotos = onCall(
               at: Date.now(),
               by: request.auth.uid,
               // House-style provenance (absent on white runs — their records are unchanged).
-              ...(kit ? { style: "house", template, refsUsed: kit.refs.length } : {}),
+              ...(kit ? { style: "house", template, kit: kit.kit, kitLabel: kit.label, refsUsed: kit.refs.length } : {}),
+              ...(driftInfo ? { drift: driftInfo } : {}),
+              ...(driftFallback ? { driftFallback: "cutout" } : {}),
             });
           }
           processed++;
@@ -3078,7 +3126,8 @@ exports.generateProductPhotos = onCall(
           // refuse to show a side-by-side against a different one — which is
           // what a deployed build older than this argument would produce, and
           // what a rollback would produce again.
-          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName, sourceUrl: srcUrl });
+          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName, sourceUrl: srcUrl,
+            ...(kit ? { kit: kit.kit, kitLabel: kit.label } : {}), ...(driftInfo ? { drift: driftInfo } : {}), ...(driftFallback ? { driftFallback: "cutout" } : {}) });
         } catch (err) {
           failed++;
           if (failures.length < 50) failures.push({ id, name: p.name || "", reason: classifyPhotoError(err && err.message, engName) });

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue, useLayoutEffect } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue, useLayoutEffect, Fragment } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, orderByKey, equalTo, startAt, endAt } from "firebase/database";
 import AiSpendTab from "./components/AiSpendTab";
 import { useActiveStore, requestSwitch as requestActiveStoreSwitch, activeStoreStamp } from "./utils/activeStore";
@@ -4699,88 +4699,32 @@ function RegenerateModal({ row, quality, house = false, product = null, extraCou
   );
 }
 
-// ─── STYLE KIT — HOUSE-STYLE REFERENCE MANAGER ────────────────────────────────
+// ─── STYLE KIT — HOUSE-STYLE REFERENCE MANAGER + CATALOGUE ────────────────────
 // Super-admin panel (inside AI Studio) for the reference images + locked prompts
-// that drive house-style generations. Two templates keyed on productType:
-// "sneaker" (shoe + its box) and "clothing" (garment sets). Everything lives at
-// /aiAssistant/styleKit/{template} = { prompt, refs:{refId:{url,path,enabled,…}} }
-// and Storage aiStudio/styleKit/{template}/{refId}.jpg — the generate function
-// re-reads it per call, so changes apply to the NEXT generation, no redeploy.
-const STYLE_KIT_TEMPLATES = [
-  { key: "sneaker",  label: "Sneaker",  hint: "shoe displayed with its box" },
-  { key: "clothing", label: "Clothing", hint: "garment sets on the backdrop" },
-];
+// that drive house-style generations. Since 20 Nov 2026 (Junid) it is a
+// CATALOGUE: one kit per catalogue category (Sneakers, Clothing, Caps, Beanies,
+// Sunglasses, Perfumes, Bags, Belts, Jerseys, Slides, Tracksuits, Accessories …),
+// sub-categories Junid makes himself (Caps > Trucker), and one-tap assignment of
+// any category or product to a kit. Which kit a product uses is decided by ONE
+// shared module — functions/lib/style-kit-catalogue.mjs — imported here, by the
+// Shopify / AI Studio publisher and by the New Arrivals / Black Friday generator.
+// Everything lives at /aiAssistant/styleKit/{kit} = { label?, parent?, prompt?, refs }
+// (+ _routes/categories, _routes/products) and Storage aiStudio/styleKit/{kit}/{refId}.jpg;
+// every generator re-reads it per call — changes apply to the NEXT generation.
 // Cosmetic garment-type labels for CLOTHING refs — organisation only, so the
 // spread across types is visible at a glance. The generator ignores them and
 // sends the first enabled clothing refs regardless of label.
 const STYLE_KIT_KINDS = ["cap", "tee", "jeans", "jacket", "tracksuit", "other"];
-const STYLE_KIT_MAX_SENT = 6; // KEEP IN SYNC with HOUSE_MAX_REFS in functions/index.js
+const STYLE_KIT_MAX_SENT = SK_MAX_REFS_SENT; // the generators' "first 6 sent" (lib/style-kit-catalogue.mjs)
 
-// Panel starting text for the locked prompts — display copies of the function's
-// code defaults. KEEP IN SYNC with HOUSE_PROMPT_* in functions/index.js: the
-// function only reads /aiAssistant/styleKit/{template}/prompt when one is SAVED;
-// until then it uses its own identical built-in.
-const STYLE_KIT_DEFAULT_PROMPTS = {
-  clothing: [
-    "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
-    "images show our exact studio scene — recreate that scene precisely: the same backdrop and wall,",
-    "the same hangers and display hardware, the same lighting direction, softness and colour grade,",
-    "the same camera height, distance, angle and framing, and the same layout and spacing. The output",
-    "must look like it was shot in the SAME session, in the SAME spot, with the SAME lighting rig as",
-    "the references.",
-    "CRITICAL — the references define ONLY the scene and styling. The garments shown in the references",
-    "are DIFFERENT products: none of their design, colour, fabric, branding or details may appear in",
-    "the output.",
-    "The PRODUCT image shows the actual item to photograph. Keep the product's design EXACTLY —",
-    "identical shape, proportions, colour, materials, patterns, logos and text. Never redesign,",
-    "restyle, recolour, or invent details the real product does not have. Render every brand wordmark",
-    "and logo crisply and correctly — properly letter-formed, correctly spelled, matching the real",
-    "brand's exact lettering; never garbled, warped or fake-looking.",
-    "Present the garments as a coordinated SET, displayed exactly the way the reference sets are",
-    "displayed — every piece visible in the product photo (e.g. hoodie and matching joggers) arranged",
-    "together in the same configuration, on the same hangers, with the same spacing as the references.",
-    "If the product photo shows a single piece, present just that piece in the identical scene and",
-    "position. Settle out the creases a garment picks up from packing, folding or a hanger — but anything",
-    "set into the cloth by WEAR stays. Natural drape, squared shoulders and straight hems; nothing cropped",
-    "or cut off.",
-    "Render the product's colours as the ITEM ACTUALLY IS — never washed out or over-exposed by the",
-    "rendering, and never freshened either: colour genuinely lost to fading or yellowing stays lost. Darks",
-    "must not be lifted or greyed by the exposure. Match the exposure and white balance of the reference",
-    "scene so the product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a",
-    "photorealistic result indistinguishable from a real photo of THIS item taken in our studio.",
-  ].join(" "),
-  sneaker: [
-    "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
-    "images show our exact studio scene — recreate it precisely: the same backdrop, surface, lighting",
-    "direction, softness and colour grade, the same camera height, angle and framing, and the same",
-    "shoe-and-box composition and spacing as the references. The output must look like it was shot in",
-    "the SAME session, in the SAME spot, with the SAME lighting rig.",
-    "CRITICAL — the references define ONLY the scene, layout and styling. The sneakers and boxes shown",
-    "in them are DIFFERENT products: none of their design, colourway or branding may appear in the",
-    "output.",
-    "The PRODUCT image shows the actual sneaker to photograph. Keep its design EXACTLY — identical",
-    "shape, proportions, colourway, materials, patterns, logos and text. Show the OUTER (lateral)",
-    "branded display side facing the camera, keeping the SAME side and SAME left/right facing as the",
-    "product photo — never flip, mirror or rotate to the plain inner side. Never redesign or invent",
-    "details.",
-    "Display the sneaker WITH its retail box, positioned exactly as the boxes are positioned in the",
-    "references. If a BOX image is provided, reproduce that exact box — its true colours, graphics,",
-    "logos and label text, correctly spelled and crisply rendered. If no box image is provided, show",
-    "this exact model's authentic retail box using your knowledge of the real product; keep all box",
-    "text and branding accurate and legible, and never invent box artwork that doesn't exist.",
-    "Colours as the ITEM ACTUALLY IS — darks not lifted or greyed by the exposure, and colour genuinely",
-    "lost to fading left lost; match the reference scene's exposure and white balance. Tack-sharp focus",
-    "and detail; a photorealistic result indistinguishable from a real photo of THIS item in our studio.",
-  ].join(" "),
-};
-
-function StyleKitPanel() {
+function StyleKitPanel({ products = [] }) {
   const { user } = usePermissions();
   const [kit, setKit] = useState({});
   useEffect(() => {
     const unsub = onValue(ref(database, "aiAssistant/styleKit"), snap => setKit(snap.val() || {}));
     return () => unsub();
   }, []);
+  const { registry: taxonomy } = useTaxonomy();
   const [template, setTemplate] = useState("sneaker");
   const [uploadKind, setUploadKind] = useState("other");
   const [uploading, setUploading] = useState(false);
@@ -4789,9 +4733,26 @@ function StyleKitPanel() {
   // Prompt draft: null = showing the saved (or default) text; a string = edited.
   const [draft, setDraft] = useState(null);
   const [savingPrompt, setSavingPrompt] = useState(false);
-  useEffect(() => { setDraft(null); setMsg(null); }, [template]);
+  const [showCats, setShowCats] = useState(false);
+  const [prodQ, setProdQ] = useState("");
+  useEffect(() => { setDraft(null); setMsg(null); setProdQ(""); }, [template]);
 
-  const t = kit[template] || {};
+  // ── The Catalogue: every kit, what it covers, what it sends ──
+  const defs = useMemo(() => skKitDefs(kit), [kit]);
+  const counts = useMemo(() => skKitCounts(products, kit), [products, kit]);
+  const liveOf = (k) => skEnabledRefs(kit, k).length;
+  const children = (parent) => Object.values(defs).filter(d => (d.parent || null) === parent);
+  // Top-level kits in the built-in order, Junid's own after.
+  const topKits = [...children(null)].sort((a, b) => (a.custom - b.custom));
+  // A kit's products include its sub-kits' (Caps covers Caps > Trucker too).
+  const coverTotal = (k, seen = new Set()) => {
+    if (seen.has(k)) return 0; seen.add(k);
+    return (counts[k] || 0) + children(k).reduce((n, c) => n + coverTotal(c.key, seen), 0);
+  };
+  const sel = defs[template] ? template : "sneaker";
+  const selDef = defs[sel];
+
+  const t = kit[sel] || {};
   const refsArr = useMemo(() => Object.entries(t.refs || {})
     .map(([id, r]) => ({ id, ...r }))
     .sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0)), [t.refs]);
@@ -4799,9 +4760,11 @@ function StyleKitPanel() {
   // The generator sends the FIRST STYLE_KIT_MAX_SENT enabled refs (oldest first)
   // — badge exactly those so what's "live" is never a guess.
   const sentIds = new Set(enabled.slice(0, STYLE_KIT_MAX_SENT).map(r => r.id));
+  // Where this kit's products go while it has no enabled photos.
+  const fallbackFor = (k) => { let cur = defs[k]?.parent; while (cur && !liveOf(cur)) cur = defs[cur]?.parent; return cur ? defs[cur].label : "the house-style default (Sneakers / Clothing)"; };
 
   const isCustomPrompt = typeof t.prompt === "string" && t.prompt.trim().length > 0;
-  const effectivePrompt = isCustomPrompt ? t.prompt : STYLE_KIT_DEFAULT_PROMPTS[template];
+  const effectivePrompt = skPromptFor(kit, sel).prompt;
   const shownPrompt = draft !== null ? draft : effectivePrompt;
   const promptDirty = draft !== null && draft.trim() !== effectivePrompt.trim();
 
@@ -4809,56 +4772,124 @@ function StyleKitPanel() {
     const files = [...(e.target.files || [])];
     e.target.value = "";
     if (!files.length) return;
-    setUploading(true); setMsg(`Uploading ${files.length} reference${files.length === 1 ? "" : "s"}…`);
+    const target = sel; // the kit the files were picked for, even if Junid taps another kit mid-upload
+    setUploading(true); setMsg(`Uploading ${files.length} reference${files.length === 1 ? "" : "s"} to ${defs[target]?.label || target}…`);
+    // A new app version never reloads this tab under an upload (the updater's busy registry).
+    setUpdateBusy("stylekit-upload", true);
+    try {
     let ok = 0, fail = 0;
     for (const file of files) {
       try {
         // References drive scene fidelity — keep more detail than product thumbs.
         const blob = await compressImageFile(file, 1600, 800 * 1024);
         const refId = `r${serverNowMs()}_${Math.random().toString(36).slice(2, 7)}`;
-        const path = `aiStudio/styleKit/${template}/${refId}.jpg`;
+        const path = `aiStudio/styleKit/${target}/${refId}.jpg`;
         const sRef = storageRef(storage, path);
         await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=31536000, immutable" });
         const url = await getDownloadURL(sRef);
-        await set(ref(database, `aiAssistant/styleKit/${template}/refs/${refId}`), {
+        await set(ref(database, `aiAssistant/styleKit/${target}/refs/${refId}`), {
           url, path, enabled: true, addedAt: serverNowMs(), by: user?.email || "",
-          ...(template === "clothing" ? { kind: uploadKind } : {}),
+          ...(target === "clothing" ? { kind: uploadKind } : {}),
         });
         ok++;
       } catch (err) { fail++; console.warn("styleKit ref upload failed:", err); }
     }
-    setMsg(`Added ${ok} reference${ok === 1 ? "" : "s"}${fail ? ` · ${fail} failed` : ""}.`);
-    setUploading(false);
+    setMsg(`Added ${ok} reference${ok === 1 ? "" : "s"} to ${defs[target]?.label || target}${fail ? ` · ${fail} failed` : ""}.`);
+    } finally { setUpdateBusy("stylekit-upload", false); setUploading(false); }
   };
-  const toggleRef = (r) => update(ref(database, `aiAssistant/styleKit/${template}/refs/${r.id}`), { enabled: r.enabled === false });
-  const setRefKind = (r, kind) => update(ref(database, `aiAssistant/styleKit/${template}/refs/${r.id}`), { kind });
+  const toggleRef = (r) => update(ref(database, `aiAssistant/styleKit/${sel}/refs/${r.id}`), { enabled: r.enabled === false });
+  const setRefKind = (r, kind) => update(ref(database, `aiAssistant/styleKit/${sel}/refs/${r.id}`), { kind });
   const deleteRef = async (r) => {
     if (!window.confirm("Delete this reference image?")) return;
     try {
-      await remove(ref(database, `aiAssistant/styleKit/${template}/refs/${r.id}`));
+      await remove(ref(database, `aiAssistant/styleKit/${sel}/refs/${r.id}`));
       if (r.path) deleteObject(storageRef(storage, r.path)).catch(() => {}); // best-effort; the RTDB entry is the source of truth
       setMsg("Reference deleted.");
     } catch (err) { setMsg(`Couldn't delete: ${err?.message || err}`); }
+  };
+  // Move a photo to another kit in one write: the same file, its entry re-homed (added time kept, so its
+  // place in "first 6 sent" order is its own). One multi-path update — never in two kits, never in none.
+  const moveRef = async (r, to) => {
+    if (!to || to === sel) return;
+    const { id, ...entry } = r;
+    try {
+      await update(ref(database, "aiAssistant/styleKit"), {
+        [`${to}/refs/${id}`]: { ...entry, movedFrom: sel, movedAt: serverNowMs() },
+        [`${sel}/refs/${id}`]: null,
+      });
+      setMsg(`Moved to ${defs[to]?.label || to}.`);
+    } catch (err) { setMsg(`Couldn't move: ${err?.message || err}`); }
   };
   const savePrompt = async () => {
     const text = shownPrompt.trim();
     if (!text) { setMsg("Prompt can't be empty — use Reset to go back to the default."); return; }
     setSavingPrompt(true);
-    try { await set(ref(database, `aiAssistant/styleKit/${template}/prompt`), text); setDraft(null); setMsg("Prompt saved — applies from the next generation."); }
+    try { await set(ref(database, `aiAssistant/styleKit/${sel}/prompt`), text); setDraft(null); setMsg("Prompt saved — applies from the next generation."); }
     catch (err) { setMsg(`Couldn't save: ${err?.message || err}`); }
     finally { setSavingPrompt(false); }
   };
   const resetPrompt = async () => {
-    if (!window.confirm("Reset this template's prompt to the built-in default?")) return;
+    if (!window.confirm("Reset this kit's prompt to the built-in default?")) return;
     setSavingPrompt(true);
-    try { await set(ref(database, `aiAssistant/styleKit/${template}/prompt`), null); setDraft(null); setMsg("Reset to the built-in default prompt."); }
+    try { await set(ref(database, `aiAssistant/styleKit/${sel}/prompt`), null); setDraft(null); setMsg("Reset to the built-in default prompt."); }
     catch (err) { setMsg(`Couldn't reset: ${err?.message || err}`); }
     finally { setSavingPrompt(false); }
   };
+  // ── Sub-categories (Caps > Trucker) ──
+  const addSubKit = async () => {
+    const name = (window.prompt(`New sub-category under ${selDef.label} (e.g. Trucker):`) || "").trim();
+    if (!name) return;
+    let key = skSlugKitKey(`${sel}-${name}`);
+    if (!key || defs[key] || key.startsWith("_")) key = `${key || "kit"}-${Math.random().toString(36).slice(2, 5)}`;
+    try {
+      await update(ref(database, `aiAssistant/styleKit/${key}`), { label: name, parent: sel, createdAt: serverNowMs(), by: user?.email || "" });
+      setTemplate(key); setMsg(`Made ${selDef.label} › ${name}. Add its photos, then assign products or categories to it.`);
+    } catch (err) { setMsg(`Couldn't make it: ${err?.message || err}`); }
+  };
+  const deleteSubKit = async () => {
+    if (!selDef.custom) return;
+    if (refsArr.length) { setMsg("Remove or move its photos first."); return; }
+    if (children(sel).length) { setMsg("Delete or move its own sub-categories first."); return; }
+    if (!window.confirm(`Delete the sub-category ${selDef.label}? Its products go back to ${defs[selDef.parent]?.label || "their category kit"}.`)) return;
+    // Its own fields only — never the whole node, so a photo moved in from another tab meanwhile is not wiped.
+    const updates = { [`${sel}/label`]: null, [`${sel}/parent`]: null, [`${sel}/prompt`]: null, [`${sel}/createdAt`]: null, [`${sel}/by`]: null };
+    for (const [pid, k] of Object.entries(kit._routes?.products || {})) if (k === sel) updates[`_routes/products/${pid}`] = null;
+    for (const [c, k] of Object.entries(kit._routes?.categories || {})) if (k === sel) updates[`_routes/categories/${c}`] = null;
+    try { await update(ref(database, "aiAssistant/styleKit"), updates); setTemplate(selDef.parent || "sneaker"); }
+    catch (err) { setMsg(`Couldn't delete: ${err?.message || err}`); }
+  };
+  // ── One-tap assignment ──
+  const assignCategory = async (catKey, kitKey) => {
+    // An explicit pick is stored as picked; "automatic" (empty) clears it back to the default map.
+    try { await set(ref(database, `aiAssistant/styleKit/_routes/categories/${catKey}`), kitKey || null); }
+    catch (err) { setMsg(`Couldn't assign: ${err?.message || err}`); }
+  };
+  const assignProduct = async (pid, kitKey) => {
+    try { await set(ref(database, `aiAssistant/styleKit/_routes/products/${pid}`), kitKey || null); }
+    catch (err) { setMsg(`Couldn't assign: ${err?.message || err}`); }
+  };
+  const productRoutes = kit._routes?.products || {};
+  const assignedHere = useMemo(() => products.filter(p => p && productRoutes[p.id] === sel), [products, productRoutes, sel]);
+  const prodHits = useMemo(() => {
+    const q = prodQ.trim().toLowerCase();
+    if (q.length < 2) return [];
+    const words = q.split(/\s+/);
+    return products.filter(p => p && p.id && !p.deleted && words.every(w => `${p.name || ""} ${p.sku || ""} ${p.barcode || ""}`.toLowerCase().includes(w))).slice(0, 12);
+  }, [products, prodQ]);
+  const catRows = useMemo(() => {
+    const byCat = {};
+    for (const p of products) { if (!p || p.deleted || p.archived) continue; const k = p.categoryKey || ""; byCat[k] = (byCat[k] || 0) + 1; }
+    const cats = Object.values(taxonomy?.cats || {}).filter(c => c && c.key && c.active !== false);
+    const known = new Set(cats.map(c => c.key));
+    const extra = Object.keys(byCat).filter(k => k && !known.has(k)).map(k => ({ key: k, label: k }));
+    return [...cats, ...extra].map(c => ({ key: c.key, label: c.label || c.key, n: byCat[c.key] || 0, kit: skCategoryKitOf(kit, c.key) }))
+      .sort((a, b) => String(a.label).localeCompare(String(b.label)));
+  }, [products, taxonomy, kit]);
+  const kitOptions = Object.values(defs).map(d => ({ key: d.key, label: d.parent ? `${defs[d.parent]?.label || d.parent} › ${d.label}` : d.label }));
 
-  // Clothing tab: group by cosmetic garment-type label so the spread across
-  // types is visible. Sneaker tab: one flat group.
-  const groups = template === "clothing"
+  // Clothing kit: group by cosmetic garment-type label so the spread across
+  // types is visible. Every other kit: one flat group.
+  const groups = sel === "clothing"
     ? STYLE_KIT_KINDS.map(k => ({ kind: k, items: refsArr.filter(r => (r.kind || "other") === k) })).filter(g => g.items.length)
     : [{ kind: null, items: refsArr }];
 
@@ -4867,6 +4898,19 @@ function StyleKitPanel() {
     border: "1px solid " + (on ? `${tint}90` : "rgba(255,255,255,.13)"),
     borderRadius: 999, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer",
   });
+  const kitChip = (d, depth = 0) => {
+    const on = sel === d.key;
+    const live = liveOf(d.key);
+    return (
+      <Fragment key={d.key}>
+        <button onClick={() => setTemplate(d.key)} title={live ? `${live} enabled photos` : `No photos yet — its products use ${fallbackFor(d.key)}`}
+                style={{ ...chip(on, "#A78BFA"), ...(depth ? { padding: "5px 11px", fontSize: 11.5 } : {}), opacity: live || on ? 1 : .72 }}>
+          {depth ? "› " : ""}{d.label} <span style={{ opacity:.65, fontWeight:600 }}>· {live} live · {coverTotal(d.key)} products</span>
+        </button>
+        {children(d.key).map(c => kitChip(c, depth + 1))}
+      </Fragment>
+    );
+  };
 
   return (
     <div style={{ padding:"0 14px 30px" }}>
@@ -4877,27 +4921,50 @@ function StyleKitPanel() {
         </span>
       </div>
       <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginBottom:12, lineHeight:1.5 }}>
-        Upload 5–10 photos of the Marathon scene per template. Every house-style generation sends the product photo
-        {" "}(+ box photo for sneakers) plus the first {STYLE_KIT_MAX_SENT} enabled references — changes apply from the
-        next generation, no redeploy.
+        One kit per catalogue category. Every Generate — Photo Studio, Shopify, New Arrivals, Black Friday, Regenerate — uses the
+        kit for the product's category: its own kit first, then the parent kit, then the house-style default. A kit with no
+        enabled photos is skipped. Each generation sends the product photo (+ box photo for sneakers) plus the first {STYLE_KIT_MAX_SENT} enabled
+        references, then checks the result against the original photo.
       </div>
 
-      {/* Template tabs */}
-      <div style={{ display:"flex", gap:8, marginBottom:14 }}>
-        {STYLE_KIT_TEMPLATES.map(tp => {
-          const on = template === tp.key;
-          const count = Object.values((kit[tp.key] || {}).refs || {}).filter(r => r && r.enabled !== false).length;
-          return (
-            <button key={tp.key} onClick={() => setTemplate(tp.key)} title={tp.hint} style={chip(on, "#A78BFA")}>
-              {tp.label} <span style={{ opacity:.65, fontWeight:600 }}>· {count} live</span>
-            </button>
-          );
-        })}
+      {/* The Catalogue: every kit, its sub-categories, what it covers */}
+      <div style={{ fontSize:11, fontWeight:800, letterSpacing:.6, textTransform:"uppercase", color:"rgba(196,181,253,.85)", margin:"4px 2px 8px" }}>Catalogue</div>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+        {topKits.map(d => kitChip(d))}
+      </div>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14 }}>
+        <button onClick={addSubKit} style={{ ...chip(false), padding:"6px 12px", fontSize:11.5 }}>＋ Sub-category under {selDef.label}</button>
+        <button onClick={() => setShowCats(v => !v)} style={{ ...chip(showCats), padding:"6px 12px", fontSize:11.5 }}>{showCats ? "Hide" : "Show"} categories → kits</button>
+        {selDef.custom && <button onClick={deleteSubKit} style={{ ...chip(false), padding:"6px 12px", fontSize:11.5, color:"rgba(255,140,140,.9)" }}>Delete {selDef.label}</button>}
+      </div>
+
+      {showCats && (
+        <div style={{ background:"rgba(8,11,20,.95)", border:"1px solid rgba(255,255,255,.1)", borderRadius:12, padding:"8px 10px", marginBottom:14 }}>
+          <div style={{ fontSize:10.5, color:"rgba(255,255,255,.4)", margin:"2px 2px 8px" }}>
+            Every category in the product catalogue and the kit it uses. Pick a kit to move a whole category.
+          </div>
+          {catRows.map(c => (
+            <div key={c.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 2px", borderTop:"1px solid rgba(255,255,255,.05)" }}>
+              <span style={{ flex:1, fontSize:12, color:"rgba(255,255,255,.8)" }}>{c.label} <span style={{ color:"rgba(255,255,255,.35)" }}>· {c.n}</span></span>
+              <select value={kit._routes?.categories?.[c.key] && defs[kit._routes.categories[c.key]] ? kit._routes.categories[c.key] : ""} onChange={e => assignCategory(c.key, e.target.value)}
+                      style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, color:"rgba(255,255,255,.8)", padding:"4px 6px", fontSize:11.5, maxWidth:190 }}>
+                <option value="">{SK_CATEGORY_KIT[c.key] ? `automatic (${defs[SK_CATEGORY_KIT[c.key]]?.label || SK_CATEGORY_KIT[c.key]})` : "house-style default"}</option>
+                {kitOptions.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+              </select>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* The selected kit */}
+      <div style={{ display:"flex", alignItems:"baseline", gap:8, margin:"6px 2px 8px", flexWrap:"wrap" }}>
+        <span style={{ fontSize:15, fontWeight:800, color:"#fff" }}>{selDef.parent ? `${defs[selDef.parent]?.label} › ` : ""}{selDef.label}</span>
+        <span style={{ fontSize:11.5, color:"rgba(255,255,255,.45)" }}>covers {coverTotal(sel)} product{coverTotal(sel) === 1 ? "" : "s"}</span>
       </div>
 
       {/* Upload row */}
       <div style={{ background:"rgba(8,11,20,.95)", border:"1px solid rgba(167,139,250,.3)", borderRadius:12, padding:12, marginBottom:14 }}>
-        {template === "clothing" && (
+        {sel === "clothing" && (
           <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginBottom:10 }}>
             <span style={{ fontSize:11, fontWeight:700, color:"rgba(255,255,255,.45)", marginRight:2 }}>LABEL UPLOADS AS</span>
             {STYLE_KIT_KINDS.map(k => (
@@ -4922,7 +4989,9 @@ function StyleKitPanel() {
         </div>
         {enabled.length === 0 && (
           <div style={{ marginTop:8, fontSize:11.5, color:"#FFC46B" }}>
-            ⚠ No enabled references — house-style runs for this template will rely on the prompt alone until you add some.
+            {skBaseKits.includes(sel)
+              ? "⚠ No enabled references — house-style runs for this kit will fail until you add some."
+              : `No photos yet — its products use ${fallbackFor(sel)} until you add some.`}
           </div>
         )}
       </div>
@@ -4957,18 +5026,25 @@ function StyleKitPanel() {
                     <button onClick={() => deleteRef(r)} aria-label="Delete reference" title="Delete reference"
                             style={{ position:"absolute", top:5, right:5, width:20, height:20, borderRadius:"50%", background:"rgba(10,12,20,.85)", color:"rgba(255,140,140,.9)", border:"1px solid rgba(255,255,255,.2)", fontSize:12, lineHeight:1, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>×</button>
                   </div>
-                  <div style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 8px" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 8px 4px" }}>
                     <button onClick={() => toggleRef(r)}
                             style={{ flex:1, background: on ? "rgba(74,202,122,.14)" : "rgba(255,255,255,.05)", color: on ? "#5FD894" : "rgba(255,255,255,.5)",
                                      border:"1px solid " + (on ? "rgba(74,202,122,.4)" : "rgba(255,255,255,.13)"), borderRadius:8, padding:"5px 0", fontSize:10.5, fontWeight:800, cursor:"pointer" }}>
                       {on ? "✓ Enabled" : "Off"}
                     </button>
-                    {template === "clothing" && (
+                    {sel === "clothing" && (
                       <select value={r.kind || "other"} onChange={e => setRefKind(r, e.target.value)} title="Garment-type label (organisation only)"
                               style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, color:"rgba(255,255,255,.75)", padding:"4px 5px", fontSize:10.5, maxWidth:86 }}>
                         {STYLE_KIT_KINDS.map(k => <option key={k} value={k}>{k}</option>)}
                       </select>
                     )}
+                  </div>
+                  <div style={{ padding:"0 8px 7px" }}>
+                    <select value="" onChange={e => moveRef(r, e.target.value)} title="Move this photo to another kit"
+                            style={{ width:"100%", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", borderRadius:8, color:"rgba(255,255,255,.55)", padding:"3px 5px", fontSize:10.5 }}>
+                      <option value="">Move to kit…</option>
+                      {kitOptions.filter(o => o.key !== sel).map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                    </select>
                   </div>
                 </div>
               );
@@ -4978,13 +5054,44 @@ function StyleKitPanel() {
       ))}
       {refsArr.length === 0 && (
         <div style={{ textAlign:"center", color:"#555", padding:"2rem 1rem", fontSize:"0.9rem" }}>
-          No {template} references yet — add the photos that define the Marathon look for this template.
+          No {selDef.label} references yet — add the photos that define the Marathon look for this kit.
         </div>
       )}
 
+      {/* Products assigned to this kit (one tap) */}
+      <div style={{ display:"flex", alignItems:"center", gap:8, margin:"18px 0 8px" }}>
+        <span style={{ fontSize:13.5, fontWeight:800, color:"#fff" }}>Products assigned to {selDef.label}</span>
+        <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>{assignedHere.length} by hand · the rest come from their category</span>
+      </div>
+      {assignedHere.length > 0 && (
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
+          {assignedHere.map(p => (
+            <span key={p.id} style={{ ...chip(true, "#A78BFA"), cursor:"default", padding:"4px 6px 4px 11px", fontSize:11, display:"inline-flex", alignItems:"center", gap:6 }}>
+              {p.name || p.id}
+              <button onClick={() => assignProduct(p.id, null)} aria-label="Unassign" style={{ background:"transparent", border:"none", color:"rgba(255,160,160,.9)", cursor:"pointer", fontSize:13, padding:"0 4px" }}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <input value={prodQ} onChange={e => setProdQ(e.target.value)} placeholder={`Find a product to put in ${selDef.label}…`}
+             style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.13)", borderRadius:10, color:"#fff", padding:"9px 12px", fontSize:12.5 }}/>
+      {prodHits.map(p => {
+        const here = productRoutes[p.id] === sel;
+        const now = skCoveringKit(p, p.id, kit);
+        return (
+          <div key={p.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 2px", borderBottom:"1px solid rgba(255,255,255,.05)" }}>
+            {p.photoUrl ? <img src={p.photoUrl} alt="" style={{ width:34, height:34, borderRadius:7, objectFit:"cover" }}/> : <span style={{ width:34 }}/>}
+            <span style={{ flex:1, fontSize:12, color:"rgba(255,255,255,.8)" }}>{p.name || p.id} <span style={{ color:"rgba(255,255,255,.35)" }}>· now {defs[now]?.label || now}</span></span>
+            <button onClick={() => assignProduct(p.id, here ? null : sel)} style={{ ...chip(here, "#A78BFA"), padding:"5px 12px", fontSize:11 }}>
+              {here ? "✓ In this kit" : `Put in ${selDef.label}`}
+            </button>
+          </div>
+        );
+      })}
+
       {/* Locked prompt editor */}
       <div style={{ display:"flex", alignItems:"center", gap:8, margin:"18px 0 8px" }}>
-        <span style={{ fontSize:13.5, fontWeight:800, color:"#fff" }}>Locked prompt · {template}</span>
+        <span style={{ fontSize:13.5, fontWeight:800, color:"#fff" }}>Locked prompt · {selDef.label}</span>
         <span style={{ background: isCustomPrompt ? "rgba(167,139,250,.16)" : "rgba(255,255,255,.06)", border:"1px solid " + (isCustomPrompt ? "rgba(167,139,250,.45)" : "rgba(255,255,255,.13)"),
                        color: isCustomPrompt ? "#C4B5FD" : "rgba(255,255,255,.5)", fontSize:10.5, fontWeight:700, padding:"2px 9px", borderRadius:999 }}>
           {isCustomPrompt ? "custom" : "built-in default"}
@@ -5008,8 +5115,8 @@ function StyleKitPanel() {
       </div>
       <div style={{ fontSize:10.5, color:"rgba(255,255,255,.35)", marginTop:8, lineHeight:1.5 }}>
         The prompt locks scene rules (product identity, layout, no reference-product leakage); the reference photos are
-        the authority on the exact backdrop, lighting and framing. Product name + any regenerate fix-note are added
-        automatically per product.
+        the authority on the exact backdrop, angle, lighting and framing — never on the product. Product name + any
+        regenerate fix-note are added automatically per product.
       </div>
     </div>
   );
@@ -5324,6 +5431,12 @@ import BulkPricingTab from "./components/admin/BulkPricingTab";
 import SpecialsTab from "./components/admin/SpecialsTab";
 import { btHandoff } from "./btHandoff/handoff.js";
 import BtHandoffStatus from "./btHandoff/BtHandoffStatus.jsx";
+// The Style Kit Catalogue's routing — the SAME module the generators import (functions/lib).
+import {
+  kitDefs as skKitDefs, kitCounts as skKitCounts, enabledRefs as skEnabledRefs, promptFor as skPromptFor,
+  slugKitKey as skSlugKitKey, categoryKitOf as skCategoryKitOf, coveringKit as skCoveringKit,
+  CATEGORY_KIT as SK_CATEGORY_KIT, BASE_KITS as skBaseKits, MAX_REFS_SENT as SK_MAX_REFS_SENT,
+} from "../functions/lib/style-kit-catalogue.mjs";
 
 // Missing-Prices category chips: All + the real top-levels (so a new category
 // appears automatically) + an Uncategorized catch-all. Keys match typeOf()
@@ -6122,7 +6235,7 @@ function AiStudioView({ products, onExit }) {
   const toolBody =
     activeId === "names"    ? <AdminReviewNamesTab products={products} /> :
     activeId === "reorder"  ? <InsightReorderTab productPhotoMap={productPhotoMap} /> :
-    activeId === "stylekit" ? <StyleKitPanel /> :
+    activeId === "stylekit" ? <StyleKitPanel products={products} /> :
     activeId === "spend"    ? <AiSpendTab /> :
                               <AdminReviewPhotosTab products={products} />;
 
