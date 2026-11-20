@@ -4846,8 +4846,10 @@ function StyleKitPanel({ products = [] }) {
   const deleteSubKit = async () => {
     if (!selDef.custom) return;
     if (refsArr.length) { setMsg("Remove or move its photos first."); return; }
+    if (children(sel).length) { setMsg("Delete or move its own sub-categories first."); return; }
     if (!window.confirm(`Delete the sub-category ${selDef.label}? Its products go back to ${defs[selDef.parent]?.label || "their category kit"}.`)) return;
-    const updates = { [sel]: null };
+    // Its own fields only — never the whole node, so a photo moved in from another tab meanwhile is not wiped.
+    const updates = { [`${sel}/label`]: null, [`${sel}/parent`]: null, [`${sel}/prompt`]: null, [`${sel}/createdAt`]: null, [`${sel}/by`]: null };
     for (const [pid, k] of Object.entries(kit._routes?.products || {})) if (k === sel) updates[`_routes/products/${pid}`] = null;
     for (const [c, k] of Object.entries(kit._routes?.categories || {})) if (k === sel) updates[`_routes/categories/${c}`] = null;
     try { await update(ref(database, "aiAssistant/styleKit"), updates); setTemplate(selDef.parent || "sneaker"); }

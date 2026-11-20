@@ -2831,7 +2831,18 @@ async function makeKitResolver(db) {
   };
   return async (product, pid) => {
     const r = cat.resolveKit(product, pid, node);
-    return { ...r, refs: await refsOf(r.kit) };
+    const refs = await refsOf(r.kit);
+    if (refs.length || !r.dedicated) return { ...r, refs };
+    // A dedicated kit whose photos could not be fetched never fails the product: the next kit in its chain
+    // with photos that load, else the house-style default — the same as the shared generator.
+    for (const k of r.chain.slice(r.chain.indexOf(r.kit) + 1)) {
+      const got = await refsOf(k);
+      if (got.length || k === r.chain[r.chain.length - 1]) {
+        const { prompt, family } = cat.promptFor(node, k);
+        return { ...r, kit: k, label: cat.kitDefs(node)[k]?.label || k, dedicated: !cat.BASE_KITS.includes(k), prompt, promptFamily: family, refs: got };
+      }
+    }
+    return { ...r, refs };
   };
 }
 
@@ -3031,19 +3042,29 @@ exports.generateProductPhotos = onCall(
             driftInfo = { first: d1.checked ? (d1.drift ? "drifted" : "same") : "unchecked", issues: d1.issues || "" };
             if (d1.drift) {
               console.warn(`generateProductPhotos: ${id} drifted (${d1.issues}) — retrying once`);
-              const second = await runOnce();
-              costUSD += second.costUSD;
-              const d2 = await drift.checkDrift({ original: buffer, generated: second.buffer }, { apiKey: geminiApiKey.value(), sharp: sharpLib });
-              driftInfo.retry = d2.checked ? (d2.drift ? "drifted" : "same") : "unchecked";
-              if (d2.drift) { driftInfo.retryIssues = d2.issues || ""; driftFallback = true; }
-              else { rawBuf = second.buffer; rawMime = second.mime; }
+              let second = null;
+              // A retry that fails outright never costs the product: the cut-out stands in for the drifted photo.
+              try { second = await runOnce(); costUSD += second.costUSD; }
+              catch (err) { console.warn(`generateProductPhotos: ${id} drift retry failed:`, err && err.message); driftInfo.retry = "failed"; driftFallback = true; }
+              if (second) {
+                const d2 = await drift.checkDrift({ original: buffer, generated: second.buffer }, { apiKey: geminiApiKey.value(), sharp: sharpLib });
+                driftInfo.retry = d2.checked ? (d2.drift ? "drifted" : "same") : "unchecked";
+                if (d2.drift) { driftInfo.retryIssues = d2.issues || ""; driftFallback = true; }
+                else { rawBuf = second.buffer; rawMime = second.mime; }
+              }
             }
           }
           // White: trim + centre on a uniform white square so the catalogue grid is
           // consistent. House: keep the generated scene — resize only. Drifted
           // twice: the real product cut out of its photo.
-          const { buffer: outBuf, mime } = driftFallback
-            ? await cutoutOnWhite(buffer)
+          // (No clean cut-out: the generated photo is kept — it was paid for — and the record says it drifted.)
+          let cut = null;
+          if (driftFallback) {
+            try { cut = await cutoutOnWhite(buffer); }
+            catch (err) { console.warn(`generateProductPhotos: ${id} no cut-out for the drift fallback:`, err && err.message); driftFallback = false; driftInfo.fallback = "no-cutout"; }
+          }
+          const { buffer: outBuf, mime } = cut
+            ? cut
             : kit
               ? await normalizeHouseStyle(rawBuf, rawMime)
               : await normalizeForCatalogue(rawBuf, rawMime);

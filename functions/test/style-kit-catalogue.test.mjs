@@ -146,7 +146,23 @@ test("drift guard: drifted twice → the product cut out of its own photo, both 
   assert.equal(again, 1);
   assert.equal(r.driftFallback, "cutout"); assert.equal(r.note, DRIFT_NOTE);
   assert.match(r.generated.path, /^products\/p1\/new_arrivals\/gen_\d+\.jpg$/);
-  assert.equal(r.usage, null); assert.deepEqual(r.wastedUsages, [{ n: 1 }, { n: 2 }]);
+  // Booked exactly once each: the last image as the result's own cost, the first as wasted — no phantom estimate.
+  assert.deepEqual(r.usage, { n: 2 }); assert.deepEqual(r.wastedUsages, [{ n: 1 }]);
+});
+
+test("drift guard: a retry that fails after being charged is still booked, and the cut-out is used", async () => {
+  const w = guardWorld(["drift"]);
+  const r = await driftGuard({ first: w.res(1), again: async () => { const e = new Error("stored failed"); e.paid = true; e.usage = { n: 2 }; throw e; }, item: w.item, product: w.product, deps: w.deps });
+  assert.equal(r.driftFallback, "cutout"); assert.equal(r.drift.retry, "failed");
+  assert.deepEqual(r.usage, { n: 2 }); assert.deepEqual(r.wastedUsages, [{ n: 1 }]);
+});
+
+test("drift guard: with no time left for a retry, it goes straight to the cut-out", async () => {
+  const w = guardWorld(["drift"]);
+  let again = 0;
+  const r = await driftGuard({ first: w.res(1), again: async () => { again++; return w.res(2); }, item: w.item, product: w.product, deps: w.deps, startedMs: 0, clockMs: () => 600_000 });
+  assert.equal(again, 0); assert.equal(r.driftFallback, "cutout"); assert.equal(r.drift.retry, "skipped");
+  assert.deepEqual(r.usage, { n: 1 }); assert.deepEqual(r.wastedUsages, []);
 });
 
 test("drift guard: a check that cannot run is never a drift — no retry, no extra spend", async () => {

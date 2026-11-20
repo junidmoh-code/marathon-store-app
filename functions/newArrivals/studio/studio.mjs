@@ -322,8 +322,11 @@ export async function generate({ item, product, genId, method = "full", provider
       return { ...res, echoFallback: { firstDiff: e.diff ?? null }, wastedUsages: [e.usage || null] };
     }
   };
+  const startedMs = Date.now();
   const first = withKit(await attempt(genId), kit);
-  return driftGuard({ first, again: async () => withKit(await attempt(`${genId}-drift`), kit), item, product, deps, emit });
+  // (Split places the product by code from Gemini's cut-out — nothing for the check to judge against a scene.)
+  if (first?.method === "split") return first;
+  return driftGuard({ first, again: async () => withKit(await attempt(`${genId}-drift`), kit), item, product, deps, emit, startedMs });
 }
 
 /** Stamp which Style Kit made the photo on its result (and so on the record). Pure. */
@@ -336,7 +339,9 @@ function withKit(res, kit) {
 // product) → ONE more generation; drifted again → the product cut out of its own photo, on white. The check
 // that cannot run is never a drift; the guard can never lose a photo that was made.
 export const DRIFT_NOTE = "The generated photo changed the product twice, so this is the product cut out of its own photo — tap Regenerate to try again.";
-export async function driftGuard({ first, again, item, product, deps, emit = () => {} }) {
+// The callables run for at most 540 s: a retry is only started while there is clearly time for it.
+export const DRIFT_RETRY_BUDGET_MS = 240_000;
+export async function driftGuard({ first, again, item, product, deps, emit = () => {}, startedMs = Date.now(), clockMs = () => Date.now() }) {
   if (!deps.driftCheck || !first?.generated?.url) return first;
   const say = (text) => { try { emit({ type: "status", text }); } catch { /* view only */ } };
   let raw;
@@ -350,34 +355,40 @@ export async function driftGuard({ first, again, item, product, deps, emit = () 
   const d1 = await check(first);
   if (!d1.drift) return { ...first, drift: { first: tag(d1) } };
   deps.log?.(`the photo drifted from the original (${d1.issues}) — trying once more`);
-  say("The product changed in the photo — trying once more…");
-  const wasted1 = [...(first.wastedUsages || []), first.usage || null];
-  let second;
-  try { second = await again(); }
-  catch (e) {
-    // The retry failed outright: fall back to the cut-out rather than show a drifted product.
-    second = null; deps.log?.(`the drift retry failed (${String(e.message).slice(0, 80)})`);
-  }
+  // Every image paid for along the way, so the caller books all of them and nothing twice.
+  const paid = [...(first.wastedUsages || []), first.usage || null];
+  let second = null, retry = "skipped";
+  if (clockMs() - startedMs < DRIFT_RETRY_BUDGET_MS) {
+    say("The product changed in the photo — trying once more…");
+    try { second = await again(); retry = "made"; }
+    catch (e) {
+      // The retry failed outright: anything it was charged is still booked, then the cut-out.
+      paid.push(...(e.wastedUsages || []), ...(e.paid || e.echo ? [e.usage || null] : []));
+      retry = "failed"; deps.log?.(`the drift retry failed (${String(e.message).slice(0, 80)})`);
+    }
+  } else deps.log?.("no time left for a drift retry — using the cut-out");
   if (second) {
     const d2 = await check(second);
-    if (!d2.drift) return { ...second, drift: { first: "drifted", issues: d1.issues || "", retry: tag(d2) }, wastedUsages: [...wasted1, ...(second.wastedUsages || [])] };
+    if (!d2.drift) return { ...second, drift: { first: "drifted", issues: d1.issues || "", retry: tag(d2) }, wastedUsages: [...paid, ...(second.wastedUsages || [])] };
     d1.retryIssues = d2.issues || "";
+    paid.push(...(second.wastedUsages || []), second.usage || null);
   }
-  say("It changed the product again — using the product cut out of its own photo…");
+  const driftRec = { first: "drifted", issues: d1.issues || "", retry: second ? "drifted" : retry, ...(d1.retryIssues ? { retryIssues: d1.retryIssues } : {}) };
+  // The LAST paid image is this result's own cost; the rest are wasted — the total booked is exactly what was paid.
+  const ownUsage = paid.length ? paid[paid.length - 1] : null;
+  const wastedUsages = paid.slice(0, -1);
   const base = second || first;
+  say("It changed the product again — using the product cut out of its own photo…");
   try {
     const up = await cutoutResult({ raw, item, deps });
-    const wasted = second ? [...wasted1, ...(second.wastedUsages || []), second.usage || null] : wasted1;
-    // usage null: every paid image above is in wastedUsages, so the caller still counts what was spent.
-    const out = { ...base, generated: up, usage: null, driftFallback: "cutout", note: DRIFT_NOTE, draftFiles: [],
-      drift: { first: "drifted", issues: d1.issues || "", ...(second ? { retry: "drifted", retryIssues: d1.retryIssues || "" } : { retry: "failed" }) }, wastedUsages: wasted };
+    const out = { ...base, generated: up, usage: ownUsage, driftFallback: "cutout", note: DRIFT_NOTE, draftFiles: [], drift: driftRec, wastedUsages };
     delete out.uncorrected; delete out.corrected; // the cut-out is not a corrected generation
     return out;
   } catch (e) {
     // No clean cut-out: keep the generated photo (it was paid for) and say plainly that it drifted.
     deps.log?.(`no cut-out for the drift fallback (${String(e.message).slice(0, 80)})`);
-    return { ...base, drift: { first: "drifted", issues: d1.issues || "", retry: second ? "drifted" : "failed", fallback: "no-cutout" },
-      note: "The check says this photo may not match the real product (colour, logo or shape) and no clean cut-out could be made — check it by eye.", ...(second ? { wastedUsages: [...wasted1, ...(second.wastedUsages || [])] } : {}) };
+    return { ...base, usage: ownUsage, drift: { ...driftRec, fallback: "no-cutout" }, wastedUsages,
+      note: "The check says this photo may not match the real product (colour, logo or shape) and no clean cut-out could be made — check it by eye." };
   }
 }
 
