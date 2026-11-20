@@ -12,8 +12,13 @@
 // or finishing of its own here. A kind with no New Arrivals plate (caps,
 // perfume, bags …) is handed over as `look`, and the shared generator stages it
 // (studio/staging.cjs) through that same model, size and finishing.
-// A result that is really the original photo is never shown as generated: it
-// fails ("Failed, tap to retry") — but never a photo that carries Junid's plate.
+// A result that is really the original photo is never shown as generated: the
+// shared generator refuses it before it is stored and tries ONCE more with the
+// product cut out of the staff photo onto plain white (20 Nov 2026). Only if
+// that is refused too does the card say "Failed, tap to retry". Junid can also
+// ask for the cleaned input directly (data.input "cutout"), with an explicit
+// place-it note (data.place) or a clean catalogue photo already in Storage as
+// a second reference (data.secondRefUrl).
 // The New Arrivals generation pause stops this too.
 //
 // Writes only /bf_campaign_2026/photos/{pid} and stats; photos go to
@@ -62,42 +67,6 @@ async function release(db, pid, claimAt) {
   } catch (e) { console.error(`bfGenerate: ${pid} not released — ${e.message}`); }
 }
 
-/** Mean absolute difference (0-255) between two photos at 64x64 greyscale: near 0 = the same picture.
- *  `edges`: only the left and right eighths (the backdrop either side of the product). */
-async function picDiff(sharp, a, b, { edges = false } = {}) {
-  const g = (x) => sharp(x).rotate().resize(64, 64, { fit: "fill" }).greyscale().raw().toBuffer();
-  const [x, y] = await Promise.all([g(a), g(b)]);
-  let t = 0, n = 0;
-  for (let i = 0; i < x.length; i++) {
-    const c = i % 64;
-    if (edges && c >= 8 && c < 56) continue;
-    t += Math.abs(x[i] - y[i]); n++;
-  }
-  return t / n;
-}
-const ECHO_DIFF = 12;
-// A photo whose backdrop either side of the product is this close to Junid's plate CARRIES THE PLATE: it was
-// composed onto the plate, so it is never "the original given back" — even when the staff photo was itself
-// taken against the shop's fence and the two look alike (measured 20 Nov: a real echo 34.7 from the plate,
-// a real New Arrivals photo 3.6–8.2).
-const PLATE_EDGE_DIFF = 12;
-/** A "generated" photo that is really the original (the model gave it back): never landed, never charged to the item. */
-async function refuseEcho({ shown, product, pid, studio, fetchBytes, sharp, usage, plate = null }) {
-  const url = studio.originalUrlOf({ pid }, product);
-  if (!url) return;
-  let d = null;
-  try { d = await picDiff(sharp, shown, (await fetchBytes(url)).buffer); } catch { return; }
-  if (d === null || d >= ECHO_DIFF) return;
-  if (plate && plate.buffer) {
-    let pe = null;
-    try { pe = await picDiff(sharp, shown, plate.buffer, { edges: true }); } catch { pe = null; }
-    if (pe !== null && pe <= PLATE_EDGE_DIFF) return;
-  }
-  const err = new Error(`the model returned the original photo (difference ${d.toFixed(1)})`);
-  err.echo = true; err.usage = usage || null;
-  throw err;
-}
-
 /** The product after a finished photo: added to its generations and made the photo it shows. Pure. */
 function landed(base, { genId, gen, claimAt }) {
   const p = base || {};
@@ -111,7 +80,8 @@ function landed(base, { genId, gen, claimAt }) {
  * deps (injectable for tests): { bucket, apiKey, now(), engine?, image?, fetchBytes?, assets?, correct?, sharp?, fx? }
  * → { ok, pid, genId, kind, costZar, width, height, mime }
  */
-async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
+async function bfGenerate(db, { pid, section, input = "photo", place = false, secondRefUrl = null }, uid, deps, emit = () => {}) {
+  if (!["photo", "cutout"].includes(input)) throw new HttpsError("invalid-argument", "input is photo or cutout.");
   if (await pauseSwitch.isPaused(db, "generation")) throw new HttpsError("failed-precondition", "Paused — generation is switched off on the New Arrivals card.");
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   const order = core.SECTIONS.includes(section) ? [section, ...core.SECTIONS.filter((s) => s !== section)] : core.SECTIONS;
@@ -127,6 +97,13 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
   const sharp = deps.sharp || require("sharp");
   const now = deps.now || (() => Date.now());
   const fxAt = (t) => (deps.fx ? deps.fx(t) : e.usdZarToday(db, t)).catch(() => ({ rate: e.prices.usdToZar, fallback: true }));
+  const keepFailedCost = async (usages) => {
+    for (const u of usages) {
+      if (!u) continue;
+      const c = record.generationCost({ model: e.generation.imageModel, usage: u, prices: e.prices, fx: await fxAt(now()), imageSize: e.generation.imageSize });
+      if (Number.isFinite(c.zar) && c.zar > 0) await db.ref(`${core.ROOT}/stats`).update({ failedZar: admin.database.ServerValue.increment(c.zar) }).catch(() => {});
+    }
+  };
   const t0 = now();
   await claim(db, pid, uid, t0);
   const genId = `g${t0}`;
@@ -139,16 +116,15 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
     const established = styles.ESTABLISHED.includes(kind);
     const asProduct = !established || compose.kindFor(product) ? product
       : { ...product, categoryKey: kind === "sneakers" ? "sneakers" : styles.clothingKeyFor(product.categoryKey) };
-    let shown = null;
     const upload = async (p, buf, mime) => {
       const bfPath = String(p).replace("/new_arrivals/", "/black_friday/");
       const r = await e.uploadImmutable(bucket, bfPath, buf, mime);
-      if (/\/gen_\d+\.(png|jpg|webp)$/.test(bfPath)) { shown = buf; const m = await sharp(buf).metadata().catch(() => ({})); final = { width: m.width || null, height: m.height || null, mime, bytes: buf.length }; }
+      if (/\/gen_\d+\.(png|jpg|webp)$/.test(bfPath)) { const m = await sharp(buf).metadata().catch(() => ({})); final = { width: m.width || null, height: m.height || null, mime, bytes: buf.length }; }
       return r;
     };
     res = await studio.generate({
       item: { pid, categoryKey: asProduct.categoryKey || null, name: product.name || null }, product: asProduct, genId, method: "full", provider: "gemini",
-      look: established ? null : kind, emit,
+      look: established ? null : kind, input, placeNote: place === true, secondRef: secondRefUrl ? { url: String(secondRefUrl) } : null, emit,
       deps: {
         fetchBytes: deps.fetchBytes || e.fetchBytes,
         loadPlate: (k) => e.loadRoleFile(bucket, compose.ROLES[k].plate, compose.forModel),
@@ -161,19 +137,13 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
         spec: e.spec, generation: e.generation, conditionClause: e.CONDITION_CLAUSE,
         ...(deps.correct ? { correct: deps.correct } : {}),
         image: e.atModelCall(db, deps.image || ((m, p, c, o) => gemini.streamImage(m, p, c, { ...o, apiKey: deps.apiKey }))),
+        cutout: deps.cutout || e.cutout,
         upload, now, log: (m) => console.warn(`bfGenerate: ${pid} — ${m}`),
       },
     });
-    // Never the original photo shown as a generated one (Junid): checked against the product's own photo,
-    // and never a photo that carries Junid's plate.
-    if (shown) {
-      let plate = null;
-      try { plate = res.plateFile ? await (deps.assets?.loadPlateFile || ((f) => e.loadRoleFile(bucket, f, compose.forModel)))(res.plateFile) : null; } catch { plate = null; }
-      await refuseEcho({ shown, product, pid, studio, fetchBytes: deps.fetchBytes || e.fetchBytes, sharp, usage: res.usage, plate });
-    }
   } catch (err) {
     const status = Number(err.status) || 0;
-    const reason = err.echo ? "Failed, tap to retry — the model gave back the original photo, so nothing was charged"
+    const reason = err.echo ? (err.cutoutFailed ? "Failed, tap to retry — the model gave back the original photo and it could not be cut out cleanly to try again, so nothing was charged" : "Failed, tap to retry — the model gave back the original photo, even from the cleaned cut-out, so nothing was charged")
       : err.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
       : err.studioRefusal ? err.message
       : err.refusal ? "Gemini declined to make this photo"
@@ -184,12 +154,11 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
     console.error(`bfGenerate: ${pid} (${kind}) failed${err.paid ? " AFTER the image was made" : ""} — ${err.message}`);
     // The card shows "Failed, tap to retry" from this mark; the next successful photo clears it.
     await db.ref(`${core.ROOT}/photos/${pid}/failed`).set({ at: now(), reason: String(reason).slice(0, 200) }).catch(() => {});
-    if (err.echo) {
-      // Nothing charged to the item or the card's AI spend; the provider's real cost is kept apart, for the record.
-      const fx = await fxAt(now());
-      const zar = record.failedCallZar({ model, usage: err.usage, prices: e.prices, fx });
-      if (Number.isFinite(zar) && zar > 0) await db.ref(`${core.ROOT}/stats`).update({ failedZar: admin.database.ServerValue.increment(zar) }).catch(() => {});
-    } else if (err.paid || err.usage) {
+    if (err.echo || err.wastedUsages) {
+      // Nothing charged to the item or the card's AI spend; the provider's real cost (a whole image each) is kept apart.
+      await keepFailedCost([...(err.wastedUsages || []), ...(err.echo ? [err.usage] : [])]);
+    }
+    if (!err.echo && (err.paid || err.usage)) {
       const fx = await fxAt(now());
       const lost = err.paid ? record.generationCost({ model, usage: err.usage, prices: e.prices, fx, imageSize: e.generation.imageSize }) : null;
       const zar = lost ? lost.zar : record.failedCallZar({ model, usage: err.usage, prices: e.prices, fx });
@@ -198,11 +167,13 @@ async function bfGenerate(db, { pid, section }, uid, deps, emit = () => {}) {
     throw new HttpsError(err.studioRefusal ? "failed-precondition" : status === 402 ? "resource-exhausted" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
   }
 
+  await keepFailedCost(res.wastedUsages || []);
   const at = now();
   const cost = record.generationCost({ model, usage: res.usage, prices: e.prices, fx: await fxAt(at), imageSize: e.generation.imageSize });
   const gen = {
     url: res.generated.url, path: res.generated.path || null, at, model, imageSize: e.generation.imageSize, kind,
     pipeline: "shared", finish: studio.SHARED_FINISH, ...(res.look ? { look: res.look } : {}),
+    input: res.input || "photo", ...(res.echoFallback ? { echoFallback: true } : {}), ...(res.placeNote ? { placeNote: true } : {}), ...(res.secondRef ? { secondRef: res.secondRef } : {}),
     costZar: Number.isFinite(cost.zar) ? cost.zar : null, costEstimated: !!cost.estimated,
     ...(final || {}), ...(res.note ? { note: res.note } : {}),
   };
@@ -237,9 +208,9 @@ const bfGenerateFn = onCall(
     const emit = request.acceptsStreaming && response ? (ev) => { response.sendChunk(ev); } : () => {};
     const d = request.data || {};
     const e = await engine();
-    return bfGenerate(admin.database(), { pid: d.pid, section: d.section }, request.auth.uid,
+    return bfGenerate(admin.database(), { pid: d.pid, section: d.section, input: d.input === "cutout" ? "cutout" : "photo", place: d.place === true, secondRefUrl: typeof d.secondRefUrl === "string" ? d.secondRefUrl : null }, request.auth.uid,
       { bucket: admin.storage().bucket(e.BUCKET), apiKey: geminiApiKey.value() }, emit);
   },
 );
 
-module.exports = { bfGenerate: bfGenerateFn, _internals: { bfGenerate, landed, claim, release, picDiff, refuseEcho, ECHO_DIFF, PLATE_EDGE_DIFF } };
+module.exports = { bfGenerate: bfGenerateFn, _internals: { bfGenerate, landed, claim, release } };

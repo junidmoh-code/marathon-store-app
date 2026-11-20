@@ -170,3 +170,97 @@ test("NO GENERATE PATH HAS ITS OWN MODEL, PROMPT, SIZE OR FINISHING: both callab
   assert.equal((studioSrc.match(/await toMaster\(/g) || []).length, 2, "generateOne and generateOther both finish with toMaster");
   assert.equal((studioSrc.match(/imageSize: generation\.imageSize/g) || []).length, 2, "generateOne and generateOther both ask generation.imageSize");
 });
+
+// The fake RTDB stores a ServerValue.increment as its sentinel: read its amount.
+const failedZar = (snap) => { const v = snap.val(); return typeof v === "number" ? v : Number(v?.[".sv"]?.increment ?? v?.increment ?? 0); };
+// ── THE ORIGINAL GIVEN BACK → ONE RETRY WITH THE CLEANED CUT-OUT (Junid, 20 Nov 2026) ─────
+const cutoutPng = () => sharp({ create: { width: 200, height: 260, channels: 4, background: { r: 20, g: 30, b: 120, alpha: 1 } } }).extend({ top: 20, bottom: 20, left: 20, right: 20, background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer();
+async function echoWorld(card, { echoTimes = 1, input } = {}) {
+  const s = await shared();
+  const product = { name: "Ajax away soccer jersey", categoryKey: "t-shirts" };
+  const calls = [], uploads = [], cut = [];
+  let n = 0;
+  const image = async (model, parts, imageConfig) => {
+    calls.push({ model, imageConfig, texts: parts.filter((p) => p.text).map((p) => p.text), images: parts.filter((p) => !p.text).map((p) => sha(JSON.stringify(p))) });
+    n++;
+    // The model hands back the staff photo itself (upscaled), echoTimes times; then a real photo.
+    const buffer = n <= echoTimes ? await sharp(s.source).resize(1792, 2240).jpeg().toBuffer() : s.answer;
+    return { buffer, mime: "image/jpeg", usage: { promptTokenCount: 9000, candidatesTokenCount: 2000, candidatesTokensDetails: [{ modality: "IMAGE", tokenCount: 2000 }] }, request: { imageConfig } };
+  };
+  const cutout = async (buf) => { cut.push(buf.length); return { png: await cutoutPng(), method: "test" }; };
+  let clock = 1_791_100_000_000;
+  const common = { now: () => (clock += 1000), bucket: { name: "b", file: (p) => ({ save: async (buf) => { uploads.push({ path: p, buf }); } }) }, fetchBytes: async () => ({ buffer: s.source }), assets: assetsFor(s), fx: async () => ({ rate: 18 }), image, cutout };
+  let db, run;
+  if (card === "na") {
+    db = makeFakeDb({ products: { [PID]: { photoUrl: "https://x/orig.jpg", stockPrice: 300, ...product } }, new_arrivals: { genSeq: 1, items: { [PID]: { pid: PID, status: "new", enqueuedAt: 5, statusAt: 5, name: product.name, categoryKey: product.categoryKey } }, by_status: { new: { [PID]: 5 } } } });
+    run = () => na.studioGenerate(db, { pid: PID }, "junid", common);
+  } else {
+    db = makeFakeDb({ products: { [PID]: { photoUrl: "https://x/orig.jpg", stockPrice: 300, ...product } }, bf_campaign_2026: { items: { main: { [PID]: { name: product.name, price: 300, qty: 40, kind: "clothing" } } } } });
+    run = () => bf.bfGenerate(db, { pid: PID, ...(input ? { input } : {}), ...(input === "cutout" ? { place: true } : {}) }, "junid", common);
+  }
+  return { s, db, calls, uploads, cut, run };
+}
+
+for (const card of ["na", "bf"]) {
+  test(`ORIGINAL GIVEN BACK (${card === "na" ? "New Arrivals" : "Black Friday"}): refused unstored, then ONE retry with the cut-out on white — same prompt, plate, model and size`, async () => {
+    const w = await echoWorld(card);
+    await w.run();
+    assert.equal(w.calls.length, 2, "exactly one retry");
+    assert.equal(w.cut.length, 1, "the staff photo was cut out once");
+    assert.deepEqual(w.calls[1].texts, w.calls[0].texts, "the same prompt, word for word");
+    assert.deepEqual(w.calls[1].imageConfig, w.calls[0].imageConfig);
+    assert.equal(w.calls[1].model, w.calls[0].model);
+    const last = w.calls[0].images.length - 1;
+    assert.deepEqual(w.calls[1].images.slice(0, last), w.calls[0].images.slice(0, last), "the same plate (and diagram)");
+    assert.notEqual(w.calls[1].images[last], w.calls[0].images[last], "the cut-out goes in place of the raw staff photo");
+    const masters = w.uploads.filter((u) => /\/gen_\d+\.jpg$/.test(u.path));
+    assert.equal(masters.length, 1, "the echo was never stored");
+    assert.equal(sha(masters[0].buf), sha(await (await import("../newArrivals/studio/compose.mjs")).toMaster(w.s.answer, w.s.plate)));
+    if (card === "bf") {
+      const ph = (await w.db.ref(`bf_campaign_2026/photos/${PID}`).once("value")).val();
+      assert.equal(ph.gens[ph.genId].input, "cutout");
+      assert.equal(ph.gens[ph.genId].echoFallback, true);
+      assert.equal(ph.failed, undefined);
+      assert.ok(failedZar(await w.db.ref("bf_campaign_2026/stats/failedZar").once("value")) > 3, "the refused image's real cost is kept apart");
+    }
+  });
+}
+
+test("ORIGINAL GIVEN BACK TWICE: 'Failed, tap to retry', nothing stored, never a third call; both images' cost kept apart", async () => {
+  const w = await echoWorld("bf", { echoTimes: 2 });
+  await assert.rejects(w.run(), /Failed, tap to retry/);
+  assert.equal(w.calls.length, 2);
+  assert.equal(w.uploads.filter((u) => /\/gen_\d+\.jpg$/.test(u.path)).length, 0);
+  assert.ok(failedZar(await w.db.ref("bf_campaign_2026/stats/failedZar").once("value")) > 3, "kept apart (the fake keeps only the last increment)");
+});
+
+test("CLEANED INPUT ON REQUEST (Junid, jerseys): the raw staff photo is never sent; the place-it note goes before the cut-out; same prompt otherwise", async () => {
+  const w = await echoWorld("bf", { echoTimes: 0, input: "cutout" });
+  await w.run();
+  assert.equal(w.calls.length, 1);
+  assert.equal(w.cut.length, 1);
+  const { PLACE_NOTE } = await import("../newArrivals/studio/studio.mjs");
+  const i = w.calls[0].texts.indexOf(PLACE_NOTE);
+  assert.ok(i > 0 && w.calls[0].texts[i + 1].startsWith("GARMENT PHOTO"));
+  const plain = await echoWorld("bf", { echoTimes: 0 });
+  await plain.run();
+  assert.deepEqual(w.calls[0].texts.filter((t) => t !== PLACE_NOTE), plain.calls[0].texts, "the New Arrivals prompt otherwise unchanged");
+  assert.notEqual(w.calls[0].images.at(-1), plain.calls[0].images.at(-1), "the cut-out, not the staff photo");
+});
+
+test("CLEAN CUT-OUT: a fence tail under the hem is cut, a pale panel and an enclosed hole come back solid; a long see-through shirt is never cut", async () => {
+  const { cleanCutout } = await import("../newArrivals/studio/studio.mjs");
+  const W = 100, H = 200;
+  const make = (alphaAt) => { const b = Buffer.alloc(W * H * 4); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = (y * W + x) * 4; b[i] = 30; b[i + 1] = 40; b[i + 2] = 120; b[i + 3] = alphaAt(x, y); } return sharp(b, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer(); };
+  const alphaRows = async (png) => { const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true }); return { h: info.height, w: info.width, at: (x, y) => data[(y * info.width + x) * 4 + 3] }; };
+  // A shirt (rows 10-169, solid, a hole at its centre, a pale panel) and a fence tail (rows 170-189, ~80% alpha).
+  const shirt = await make((x, y) => (x < 20 || x > 80 ? 0 : y < 10 ? 0 : y < 170 ? ((x > 45 && x < 55 && y > 80 && y < 90) ? 0 : (x > 30 && x < 40 && y > 30 && y < 60 ? 70 : 255)) : y < 190 ? (x % 4 ? 230 : 120) : 0));
+  const out = await alphaRows(await cleanCutout(shirt));
+  assert.ok(out.h <= 162, `the tail is gone (height ${out.h})`);
+  // (Trimmed: x and y are 20 and 10 less than in the input.)
+  assert.equal(out.at(30, 75), 255, "the enclosed hole is filled");
+  assert.ok(out.at(15, 35) >= 200, "the pale panel is lifted back (alpha 70 → 210)");
+  // A see-through shirt from top to bottom (the Tottenham case): the 'tail' would be most of it — never cut.
+  const pale = await make((x, y) => (x < 20 || x > 80 || y < 10 || y > 189 ? 0 : y < 20 ? 255 : 200));
+  assert.ok((await alphaRows(await cleanCutout(pale))).h >= 178);
+});

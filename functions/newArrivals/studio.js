@@ -50,6 +50,17 @@ const mods = () => (modsP ||= Promise.all([
 const val = async (db, path) => (await db.ref(path).once("value")).val();
 const sha256 = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
 
+// THE CLEANED INPUT (20 Nov 2026): the product cut out of its staff photo (the background-removal matte the
+// lookbook already uses), for the shared generator's one retry after the model gave back the original photo.
+// Loaded lazily: only a generation that needs it pays for the matte model.
+// One matte at a time per instance: the ONNX model is large, and it runs right after a 4K photo (2 GiB, concurrency 3).
+let cutoutQueue = Promise.resolve();
+const cutoutForStudio = (buf) => {
+  const run = cutoutQueue.then(() => require("../lib/lookbook-render.cjs").cutout(buf, { edge: 2048 }));
+  cutoutQueue = run.catch(() => {});
+  return run;
+};
+
 // ── storage ──────────────────────────────────────────────────────────────────
 const downloadUrl = (bucketName, objectPath, token) =>
   `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(objectPath)}?alt=media&token=${token}`;
@@ -304,13 +315,15 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
         log: (m) => console.warn(`newArrivalsStudio: ${pid} — ${m}`),
         // The split method: Gemini makes the product only; code places it on the plate.
         split: split.splitGenerate,
+        cutout: deps.cutout || cutoutForStudio,
         ...(deps.matte ? { matte: deps.matte } : {}),
       },
     });
   } catch (e) {
     // What Junid is told is one of a few fixed sentences; the detail goes to the log only.
     const status = Number(e.status) || 0;
-    const reason = e.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
+    const reason = e.echo ? (e.cutoutFailed ? "it gave back the original photo, and the product could not be cut out cleanly to try again — tap Generate to try again" : "it gave back the original photo, even from the cleaned cut-out — tap Generate to try again")
+      : e.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
       : e.studioRefusal ? e.message
       : e.refusal ? `${who} declined to make this photo`
       : status === 402 || (engine === "openai" && status === 429 && /quota|billing/i.test(String(e.message))) ? `the ${who}${engine === "openai" ? "" : " prepaid"} credit has run out — top it up${engine === "openai" ? " on the OpenAI platform" : " in Google AI Studio"}, then tap Generate again`
@@ -322,7 +335,11 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
     console.error(`newArrivalsStudio: ${pid} failed${e.paid ? " AFTER the image was made" : ""} — ${e.message}`);
     // What the call cost is counted in the spend even though no photo landed:
     // the whole image when it was made and lost (paid), else its prompt tokens.
-    if (e.paid || e.usage) {
+    // An image the model made and that was refused as the original is billed in full, like a photo.
+    for (const u of [...(e.wastedUsages || []), ...(e.echo ? [e.usage] : [])]) {
+      if (u) await addSpend(db, record.generationCost({ model, usage: u, prices, fx: await fxOf(now()), imageSize: (deps.generation || generation).imageSize }).zar);
+    }
+    if (!e.echo && (e.paid || e.usage)) {
       const fx = await fxOf(now());
       const lost = e.paid ? record.generationCost({ model, usage: e.usage, prices, fx, imageSize: (deps.generation || generation).imageSize }) : null;
       await addSpend(db, lost ? lost.zar : record.failedCallZar({ model, usage: e.usage, prices, fx }), { estimated: !!lost?.estimated });
@@ -379,6 +396,11 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
     "stats/generations": admin.database.ServerValue.increment(1),
     "stats/updatedAt": at,
   };
+  // The call that gave back the original (before the cleaned retry) was billed too.
+  for (const u of res.wastedUsages || []) {
+    const w = record.generationCost({ model, usage: u, prices, fx: await fxOf(at), imageSize: (deps.generation || generation).imageSize });
+    if (Number.isFinite(w.zar) && w.zar > 0) cost.zar = (Number(cost.zar) || 0) + w.zar;
+  }
   if (Number.isFinite(cost.zar) && cost.zar > 0) {
     paths["stats/totalSpentZar"] = admin.database.ServerValue.increment(cost.zar);
     if (cost.estimated) paths["stats/estimatedPartZar"] = admin.database.ServerValue.increment(cost.zar);
@@ -418,5 +440,5 @@ module.exports = {
   _internals: { exampleFiles, studioGenerate, claim, release, landed, usdZarToday, uploadImmutable, fetchBytes, mods },
   // The engine's pieces, shared with Black Friday's generator (functions/blackFriday/generate.js):
   // the same plates, references, brand boxes, prompt config, rate and pause switch — one house look.
-  engine: { mods, fetchBytes, uploadImmutable, usdZarToday, atModelCall, loadRoleFile, loadExamples, libraryBox, generation, spec, prices, CONDITION_CLAUSE, BUCKET },
+  engine: { mods, cutout: cutoutForStudio, fetchBytes, uploadImmutable, usdZarToday, atModelCall, loadRoleFile, loadExamples, libraryBox, generation, spec, prices, CONDITION_CLAUSE, BUCKET },
 };

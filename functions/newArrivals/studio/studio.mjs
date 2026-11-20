@@ -73,7 +73,7 @@ const draftJpeg = (buf) => sharp(buf).rotate().resize(1280, 1280, { fit: "inside
  * emit({ type, … }) — progress for the card; never throws.
  * → { generated, kind, method, promptVersion, layersUsed, box, trace, draftFiles, usage }
  */
-export async function generateOne({ item, product, genId, method = "full", provider = "gemini", deps, emit = () => {} }) {
+export async function generateOne({ item, product, genId, method = "full", provider = "gemini", input = "photo", placeNote = false, secondRef = null, deps, emit = () => {} }) {
   // The engine: its model and its name for the card's progress line. Everything else is the same for both.
   const model = provider === "openai" ? deps.generation.openaiModel : deps.generation.imageModel;
   const engine = PROVIDER_NAME[provider] || "Gemini";
@@ -89,7 +89,8 @@ export async function generateOne({ item, product, genId, method = "full", provi
   const layers = generation.layers || {};
 
   say({ type: "status", text: "Reading the original photo…" });
-  const orig = await forModel((await deps.fetchBytes(originalUrl)).buffer);
+  const { raw, orig } = await sourceFor({ deps, originalUrl, input, say });
+  const ref2 = await secondRefFor({ deps, secondRef });
 
   // The box (footwear): its own box photo, else the brand's library box, else none.
   let box = null, boxMode = "none", boxSource = null, boxFrom = null, boxNote = null, libraryBoxPng = null;
@@ -162,7 +163,9 @@ export async function generateOne({ item, product, genId, method = "full", provi
     ...(refJ ? [textPart("REFERENCE — the target composition and look:"), imagePart(refJ)] : []),
     ...(examples.length ? [textPart(EXAMPLES_LABEL), ...examples.map((e) => imagePart(e.forModel))] : []),
     textPart("LAYOUT DIAGRAM — NOT part of the photo: the dashed box(es) on this grey diagram show where and how large the product goes on the canvas. Never draw boxes, outlines, labels or grey into the result. FIDELITY COMES FIRST: never change the product in any way to make it fit the box — only move it and scale it uniformly:"), imagePart(guideJ),
+    ...(placeNote ? [textPart(PLACE_NOTE)] : []),
     textPart(kind === "footwear" ? "SHOE PHOTO — the real shoe:" : "GARMENT PHOTO — the real garment(s):"), imagePart(orig),
+    ...(ref2 ? [textPart(SECOND_REF_LABEL), imagePart(ref2)] : []),
     ...(box ? [textPart(boxMode === "own" ? "BOX PHOTO — this shoe's own box:" : "BOX PHOTO — a box of this shoe's brand:"), imagePart(box)] : []),
   ];
   const imageConfig = { aspectRatio: aspect, imageSize: generation.imageSize };
@@ -178,6 +181,8 @@ export async function generateOne({ item, product, genId, method = "full", provi
     },
   });
   await Promise.all(draftJobs);
+  // The original given back (Junid, 20 Nov): never stored, never shown — the caller cleans the input and tries again.
+  await refuseEcho({ out: gen.buffer, raw, sent: orig, plate, usage: gen.usage });
 
   // ── THE PHOTO IS PAID FOR. From here nothing may lose it: every step is
   // retried, and if the finishing step itself fails the photo is kept exactly
@@ -253,7 +258,7 @@ export async function generateOne({ item, product, genId, method = "full", provi
   const finalData = gen.buffer.toString("base64");
   const kept = draftFiles.filter((d) => d.data !== finalData).sort((a, b) => a.n - b.n).map(({ url, path }) => ({ url, path }));
   return {
-    generated, kind, plateFile: plate.file || null, method: "full", provider, model,
+    generated, kind, plateFile: plate.file || null, method: "full", provider, model, input, ...(placeNote ? { placeNote: true } : {}), ...(ref2 ? { secondRef: secondRef.url } : {}),
     ...(uncorrected ? { uncorrected } : {}), ...(correction ? { corrected: correction.applied } : {}), ...(note ? { note } : {}),
     // The product photo this was made from: a later re-shoot makes the generation out of date.
     // (Always the product's photo address — the same one the list compares with — even when the
@@ -284,16 +289,118 @@ export const SHARED_FINISH = "master-jpeg-q92";
 
 /** One photo for one product, whatever the card. `look`: a staging kind (staging.cjs) for a product with no
  *  New Arrivals plate; omitted, the product's own category decides (footwear / clothing → generateOne). */
-export async function generate({ item, product, genId, method = "full", provider = "gemini", look = null, deps, emit = () => {} }) {
-  if (look && staging.hasStaging(look)) return generateOther({ item, product, genId, kind: look, deps, emit });
-  return generateOne({ item, product, genId, method, provider, deps, emit });
+export async function generate({ item, product, genId, method = "full", provider = "gemini", look = null, input = "photo", placeNote = false, secondRef = null, deps, emit = () => {} }) {
+  // (The retry's drafts get their own names: the first attempt's are already stored and Storage never overwrites.)
+  const runAs = (inp, gid) => (look && staging.hasStaging(look)
+    ? generateOther({ item, product, genId: gid, kind: look, input: inp, placeNote, deps, emit })
+    : generateOne({ item, product, genId: gid, method, provider, input: inp, placeNote, secondRef, deps, emit }));
+  const run = (inp) => runAs(inp, genId);
+  // THE ORIGINAL GIVEN BACK (Junid, 20 Nov 2026): when the model hands back the staff photo, the input is cleaned
+  // — the product cut out of the staff photo (background removal) and put on plain white — and the SAME request
+  // (prompt, plate, model, size) is made ONCE more with that cut-out in place of the raw photo. Never more than once.
+  try { return await run(input); }
+  catch (e) {
+    if (!e.echo || input === "cutout" || !deps.cutout) throw e;
+    try { emit({ type: "status", text: "It gave back the original photo — cleaning the photo and trying once more…" }); } catch { /* view only */ }
+    let res;
+    try { res = await runAs("cutout", `${genId}-cutout`); }
+    catch (e2) {
+      // No clean cut-out could be made: the first answer's refusal stands, and the card is told why.
+      if (e2.noCutout) { e.cutoutFailed = true; throw e; }
+      e2.wastedUsages = [e.usage || null, ...(e2.wastedUsages || [])]; throw e2;
+    }
+    return { ...res, echoFallback: { firstDiff: e.diff ?? null }, wastedUsages: [e.usage || null] };
+  }
+}
+
+// ── THE CLEANED INPUT AND THE ECHO CHECK (20 Nov 2026) ──────────────────────
+export const PLACE_NOTE = "PLACE IT ON THE BACKDROP: the GARMENT PHOTO below is a cut-out on plain white, NOT a finished photo. Hang this exact garment on the fence of the BACKGROUND PLATE as the brief above says — the result is the plate with the garment on it, never the cut-out on white and never the photo it was cut from.";
+export const SECOND_REF_LABEL = "SECOND REFERENCE — a clean catalogue photo of this exact item (the same club, season and colourway). Use it ONLY to read detail the GARMENT PHOTO shows unclearly (badges, sponsor, trims); the result must be the item in the GARMENT PHOTO — never a different version:";
+export const ECHO_DIFF = 12;        // 64x64 grey mean difference: under this, the output is the input picture
+export const PLATE_EDGE_DIFF = 12;  // the backdrop either side this close to the plate: it IS on the plate, never an echo
+
+/** Mean absolute difference (0-255) of two photos at 64x64 greyscale; `edges`: the left and right eighths only. */
+export async function picDiff(a, b, { edges = false } = {}) {
+  const g = (x) => sharp(x).rotate().resize(64, 64, { fit: "fill" }).greyscale().raw().toBuffer();
+  const [x, y] = await Promise.all([g(a), g(b)]);
+  let t = 0, n = 0;
+  for (let i = 0; i < x.length; i++) { const c = i % 64; if (edges && c >= 8 && c < 56) continue; t += Math.abs(x[i] - y[i]); n++; }
+  return t / n;
+}
+
+/** Throws { echo } when `out` is the photo that was sent (or the staff photo) and does not carry the plate. */
+export async function refuseEcho({ out, raw, sent, plate, usage }) {
+  let d = null;
+  try { d = Math.min(await picDiff(out, raw), sent ? await picDiff(out, sent) : Infinity); } catch { return; }
+  if (!(d < ECHO_DIFF)) return;
+  if (plate?.buffer) {
+    let pe = null;
+    try { pe = await picDiff(out, plate.buffer, { edges: true }); } catch { pe = null; }
+    if (pe !== null && pe <= PLATE_EDGE_DIFF) return;
+  }
+  const err = new Error(`the model returned the original photo (difference ${d.toFixed(1)})`);
+  err.echo = true; err.diff = d; err.usage = usage || null;
+  throw err;
+}
+
+/** The product photo to send: the staff photo, or (input "cutout") the product cut out of it on plain white. */
+export async function sourceFor({ deps, originalUrl, input, say = () => {} }) {
+  const raw = (await deps.fetchBytes(originalUrl)).buffer;
+  if (input !== "cutout") return { raw, orig: await forModel(raw) };
+  say({ type: "status", text: "Cutting the product out of the photo…" });
+  const c = deps.cutout ? await deps.cutout(raw).catch(() => null) : null;
+  if (!c?.png) { const e = new StudioRefusal("the product could not be cut out of its photo cleanly"); e.noCutout = true; throw e; }
+  const solid = await cleanCutout(c.png);
+  const m = await sharp(solid).metadata();
+  const pad = Math.round(Math.max(m.width, m.height) * 0.06);
+  const white = await sharp(solid).flatten({ background: "#ffffff" }).extend({ top: pad, bottom: pad, left: pad, right: pad, background: "#ffffff" }).jpeg({ quality: 92 }).toBuffer();
+  return { raw, orig: await forModel(white), cutout: true };
+}
+
+/**
+ * A background-removal matte made fit to send (measured 20 Nov on the Ajax, Tottenham and Real Madrid jerseys):
+ *  · the TAIL: the rows below the lowest solid row (mean alpha 97%+), when they are 4%–20% of the height
+ *    and only partly opaque on average (under 90%) — the display fence showing under a hem — are cut away;
+ *  · semi-transparent product areas (a white shirt's pale panel) are lifted back to solid (alpha × 3);
+ *  · holes the background cannot reach from the edges are filled.
+ * The product's own pixels are kept everywhere it is. → PNG with alpha.
+ */
+export async function cleanCutout(png, { lift = 3, floor = 0.06 } = {}) {
+  const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const w = info.width, h = info.height, N = w * h;
+  const rowMean = (y) => { let l = -1, r = -1; for (let x = 0; x < w; x++) if (data[(y * w + x) * 4 + 3] > 40) { if (l < 0) l = x; r = x; } if (l < 0) return null; let t = 0; for (let x = l; x <= r; x++) t += data[(y * w + x) * 4 + 3]; return t / (r - l + 1) / 2.55; };
+  const means = Array.from({ length: h }, (_, yy) => rowMean(yy));
+  let cut = h, y = h - 1;
+  while (y >= 0 && !(means[y] >= 97)) y--; // the lowest solid row
+  if (y >= 0 && h - 1 - y >= 0.04 * h && h - 1 - y <= 0.2 * h) {
+    const tail = means.slice(y + 1).filter((m) => m !== null);
+    if (tail.length && tail.reduce((t, m) => t + m, 0) / tail.length < 90) cut = y + 1;
+  }
+  const a = new Float32Array(N);
+  for (let i = 0; i < N; i++) a[i] = i >= cut * w ? 0 : Math.min(1, (data[i * 4 + 3] / 255) * lift);
+  const bg = new Uint8Array(N), st = new Int32Array(N); let sp = 0;
+  const push = (i) => { if (!bg[i] && a[i] < floor) { bg[i] = 1; st[sp++] = i; } };
+  for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+  for (let yy = 0; yy < h; yy++) { push(yy * w); push(yy * w + w - 1); }
+  while (sp) { const i = st[--sp], x = i % w; if (x > 0) push(i - 1); if (x < w - 1) push(i + 1); if (i >= w) push(i - w); if (i < N - w) push(i + w); }
+  const out = Buffer.alloc(N * 4);
+  for (let i = 0; i < N; i++) {
+    out[i * 4] = data[i * 4]; out[i * 4 + 1] = data[i * 4 + 1]; out[i * 4 + 2] = data[i * 4 + 2];
+    out[i * 4 + 3] = bg[i] ? 0 : Math.round((a[i] < floor ? 1 : a[i]) * 255);
+  }
+  return sharp(out, { raw: { width: w, height: h, channels: 4 } }).trim({ threshold: 1 }).png().toBuffer().catch(() => sharp(out, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer());
+}
+
+async function secondRefFor({ deps, secondRef }) {
+  if (!secondRef?.url) return null;
+  return forModel((await deps.fetchBytes(secondRef.url)).buffer);
 }
 
 /**
  * A kind with no New Arrivals plate: one image call with Junid's plate, the product photo (and, for perfume,
  * its box). deps as for generateOne, plus loadPlateFile(file) → { buffer, width, height, file, forModel }.
  */
-export async function generateOther({ item, product, genId, kind, deps, emit = () => {} }) {
+export async function generateOther({ item, product, genId, kind, input = "photo", placeNote = false, deps, emit = () => {} }) {
   const say = (ev) => { try { emit(ev); } catch { /* the card's view never affects the generation */ } };
   const { generation } = deps;
   const model = generation.imageModel;
@@ -302,15 +409,16 @@ export async function generateOther({ item, product, genId, kind, deps, emit = (
   if (!originalUrl) throw new StudioRefusal("the product has no photo to work from");
   const plate = await deps.loadPlateFile(st.plate);
   say({ type: "status", text: "Reading the original photo…" });
-  const orig = await forModel((await deps.fetchBytes(originalUrl)).buffer);
+  const { raw, orig } = await sourceFor({ deps, originalUrl, input, say });
   let box = null;
   if (kind === "perfume" && product?.photoBoxUrl) { try { box = await forModel((await deps.fetchBytes(product.photoBoxUrl)).buffer); } catch { box = null; } }
   const promptText = staging.promptFor(kind, { hasBox: !!box, conditionClause: deps.conditionClause });
   const plateJ = plate.forModel || await forModel(plate.buffer);
-  const parts = [textPart(promptText), imagePart(plateJ), imagePart(orig), ...(box ? [imagePart(box)] : [])];
+  const parts = [textPart(promptText), imagePart(plateJ), ...(placeNote ? [textPart(PLACE_NOTE)] : []), imagePart(orig), ...(box ? [imagePart(box)] : [])];
   const imageConfig = { aspectRatio: closestAspect(plate.width, plate.height), imageSize: generation.imageSize };
   say({ type: "status", text: "Gemini is working…" });
   const gen = await deps.image(model, parts, imageConfig, { onEvent: (ev) => { if (ev && ev.type === "thought" && ev.text) say({ type: "thought", text: ev.text }); } });
+  await refuseEcho({ out: gen.buffer, raw, sent: orig, plate, usage: gen.usage });
   say({ type: "status", text: "Finishing the photo…" });
   let generated, gm = {};
   try {
@@ -321,7 +429,7 @@ export async function generateOther({ item, product, genId, kind, deps, emit = (
     generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}.jpg`, out, "image/jpeg"));
   } catch (e) { e.paid = true; e.usage = gen.usage || null; throw e; }
   return {
-    generated, kind, look: kind, plateFile: st.plate, method: "full", provider: "gemini", model,
+    generated, kind, look: kind, plateFile: st.plate, method: "full", provider: "gemini", model, input,
     sourceUrl: sourcePhoto.currentSourceUrl(item.pid, product, item),
     promptVersion: `staging-${kind}`, layersUsed: [], box: null, draftFiles: [], usage: gen.usage || null, measurements: null,
     trace: { promptText, request: gen.request || null, usage: gen.usage || null, requestMs: gen.requestMs ?? null, resolution: gm.width ? { width: gm.width, height: gm.height } : null },
