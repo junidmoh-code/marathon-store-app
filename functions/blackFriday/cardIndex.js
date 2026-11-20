@@ -169,7 +169,9 @@ async function readPages(db, tab, from, n) {
     const raw = await Promise.all(Array.from({ length: k }, (_, i) => val(db, `${IDX}/main/pages/${tab}/${f + i}`)));
     const pages = [];
     for (const r of raw) { const p = parse(r); if (!p) break; pages.push(p); }
-    if (pages.every((p) => p.at === (pages[0] && pages[0].at))) return { tab, from: f, at: pages.length ? pages[0].at : null, pages };
+    // Past the end: the list's own version, so the card can tell "this tab ended" from "the list changed".
+    if (!pages.length) return { tab, from: f, at: Number(await val(db, `${IDX}/main/at`)) || null, pages };
+    if (pages.every((p) => p.at === pages[0].at)) return { tab, from: f, at: pages[0].at, pages };
   }
   return { tab, from: f, at: null, pages: [], rebuilt: true };
 }

@@ -316,7 +316,7 @@ export function fromHead(h) {
 export function addPages(d, res) {
   if (!d || !res) return d;
   if (d.full) return d;
-  if (res.rebuilt || (res.pages || []).some((p) => p.at !== d.indexAt)) return null;
+  if (res.rebuilt || (res.at && res.at !== d.indexAt) || (res.pages || []).some((p) => p.at !== d.indexAt)) return null;
   const tab = res.tab;
   if (!TABS3.includes(tab) || ((d.pages && d.pages[tab]) || 0) !== res.from) return d;
   const have = new Set(rowsOf(d, tab).map((r) => r.pid));
@@ -527,7 +527,11 @@ export default function BlackFridayScreen({ api, onExit }) {
   const [gens, setGens] = useState({});
   const [showRejected, setShowRejected] = useState(false);
   const [selectMode, setSelectMode] = useState(!!su.selectMode);
-  const [selected, setSelected] = useState(() => new Map()); // pid → row
+  // notEdit: selections the card made itself (the first empty one, ticks put back, the server's copy, rows
+  // filled in) — never stamped as his change, never saved by themselves.
+  const notEdit = useRef(null);
+  if (!notEdit.current) notEdit.current = new WeakSet();
+  const [selected, setSelected] = useState(() => { const m = new Map(); notEdit.current.add(m); return m; }); // pid → row
   const [toast, setToast] = useState(null); // { text, undo }
   const [quick, setQuick] = useState(null); // the long-pressed row
   const [viewer, setViewer] = useState(null); // the row whose photos are open
@@ -635,6 +639,7 @@ export default function BlackFridayScreen({ api, onExit }) {
       await loadMore(tb, 8);
       if (rowsOf(mainRef.current, tb).length === before && !isComplete(mainRef.current, tb)) await new Promise((r) => setTimeout(r, 300));
     }
+    return isComplete(mainRef.current, tb);
   }, [loadMore]);
   // The "Loading more…" line under the last loaded row: when it comes within MORE_AHEAD_PX, the next pages.
   const moreRef = useRef(null);
@@ -697,8 +702,11 @@ export default function BlackFridayScreen({ api, onExit }) {
       const saved = pickedSel ? pickedSel.sigs : null;
       if (!saved || !Object.keys(saved).length) return;
       const m = tickRows(main, saved);
-      fromRestore.current = m;
+      notEdit.current.add(m);
+      selAt.current = Number(pickedSel.at) || 0; // the ticks' own time, not now
       setSelected(m);
+      // The phone's ticks won over the server's answer: they go up now.
+      if (serverSelSeen.current && su.sel && pickedSel.sigs === su.sel.sigs && api.selSave) { pendingSel.current = { sigs: saved, label: pickedSel.label || null }; flushSel(); }
       setSelectMode(true);
       // Back on the tab that holds the ticks (a recovered selection is shown on To review) — unless the card
       // is coming back to the exact tab he was on.
@@ -714,7 +722,10 @@ export default function BlackFridayScreen({ api, onExit }) {
       serverSelSeen.current = true;
       const sv = main.selection;
       if (sv && sv.sigs && Object.keys(sv.sigs).length && Number(sv.at || 0) > selAt.current) {
-        setSelected(tickRows(main, sv.sigs));
+        const m = tickRows(main, sv.sigs);
+        notEdit.current.add(m);
+        selAt.current = Number(sv.at) || 0;
+        setSelected(m);
         setSelectMode(true);
         if (sv.label) setSelLabel(sv.label);
       } else if (selected.size && api.selSave) {
@@ -773,7 +784,7 @@ export default function BlackFridayScreen({ api, onExit }) {
   // beats a newer server selection after a kill (review, PR #945).
   const selAt = useRef(su.sel ? Number(su.sel.at) || 0 : 0);
   const selFirst = useRef(true);
-  useEffect(() => { if (selFirst.current) { selFirst.current = false; return; } selAt.current = serverNowMs(); }, [selected]);
+  useEffect(() => { if (selFirst.current) { selFirst.current = false; return; } if (!notEdit.current.has(selected)) selAt.current = serverNowMs(); }, [selected]);
   const placeApplied = useRef(!savedUi.current); // nothing to put back: saving may start at once
   const place = useRef({});
   place.current = { tab, selectMode, showUnder, onlySel, selLabel, viewer, find, selected };
@@ -845,29 +856,52 @@ export default function BlackFridayScreen({ api, onExit }) {
   // EVERY TICK IS SAVED ON THE SERVER (selection/{uid}): a moment after the last tick, and at once when
   // the card is hidden (he switched apps) or closed.
   const saveTimer = useRef(null);
-  const pendingSel = useRef(null);
+  const pendingSel = useRef(null); // the newest selection not yet on the server
+  const selInFlight = useRef(false);
+  // One save at a time; a newer selection waits and goes next; a failed save is retried only while it is
+  // still the newest (an older answer never brings back older ticks).
   const flushSel = useCallback(() => {
     clearTimeout(saveTimer.current);
+    if (selInFlight.current || !api.selSave) return;
     const p = pendingSel.current;
-    if (!p || !api.selSave) return;
+    if (!p) return;
     pendingSel.current = null;
-    api.selSave(p.sigs, p.label).then(() => { if (!pendingSel.current) setSelSaved(true); }, () => {
-      if (!pendingSel.current) { pendingSel.current = p; saveTimer.current = setTimeout(flushSel, 5000); }
+    selInFlight.current = true;
+    api.selSave(p.sigs, p.label).then(() => {
+      selInFlight.current = false;
+      if (pendingSel.current) flushSel(); else setSelSaved(true);
+    }, () => {
+      selInFlight.current = false;
+      if (pendingSel.current) { flushSel(); return; }
+      pendingSel.current = p;
+      saveTimer.current = setTimeout(flushSel, 5000);
     });
   }, [api]);
-  const fromRestore = useRef(null); // the ticks put back from the phone (that very Map): not his change
   useEffect(() => {
     if (!restored.current || !api.selSave) return undefined;
-    // Ticks put back from the phone are never written over the server's copy before it has answered (it may
-    // be newer). His own next tick is saved as always.
-    // (Also drops a save armed in the same first pass, before the ticks were put back.)
-    if (selected === fromRestore.current && !serverSelSeen.current) { clearTimeout(saveTimer.current); pendingSel.current = null; return undefined; }
+    // A selection the card made itself (ticks put back, the server's copy, rows filled in) is not saved by
+    // itself: the server already has it, or (put back from the phone) it may be older than the server's.
+    if (notEdit.current.has(selected)) return undefined;
     setSelSaved(false);
     pendingSel.current = { sigs: Object.fromEntries([...selected.values()].map((r) => [r.pid, sigOfRow(r)])), label: selected.size ? selLabel : null };
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSel, SAVE_MS);
     return undefined;
   }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Ticks put back before their rows were loaded are filled in as the rows arrive (Generate needs the row).
+  useEffect(() => {
+    if (!main || !selected.size) return;
+    const rows = new Map([...(main.newArrivals || []), ...(main.review || []), ...(main.approved || [])].map((r) => [r.pid, r]));
+    let changed = false;
+    const m = new Map();
+    for (const [pid, r] of selected) {
+      const full = !r.tab && rows.get(pid);
+      if (full) { changed = true; m.set(pid, { ...full, section: "main", sig: r.sig }); } else m.set(pid, r);
+    }
+    if (!changed) return;
+    notEdit.current.add(m);
+    setSelected(m);
+  }, [main]); // eslint-disable-line react-hooks/exhaustive-deps
   // Leaving the card (←) with a tick not yet sent: sent now.
   useEffect(() => () => { flushSel(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const generate = async (r) => {
@@ -1013,7 +1047,9 @@ export default function BlackFridayScreen({ api, onExit }) {
   const tabDone = isComplete(d, tab);
   return (
     // Bottom padding: the selection bar and the Undo toast never cover the last row.
-    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: `14px 14px ${BOTTOM_ROOM}px`, paddingBottom: `calc(${BOTTOM_ROOM}px + env(safe-area-inset-bottom))` }}>
+    // overflowAnchor none on the whole card: the browser must never anchor on the "Loading more…" line (each
+    // page that came in pushed the screen down by its own height, and loaded the next one).
+    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: `14px 14px ${BOTTOM_ROOM}px`, paddingBottom: `calc(${BOTTOM_ROOM}px + env(safe-area-inset-bottom))`, overflowAnchor: "none" }}>
       <div style={{ maxWidth: 680, margin: "0 auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
           <button onClick={onExit} style={{ ...bGray, minHeight: 40, padding: "0 12px" }} aria-label="Back">←</button>
@@ -1054,10 +1090,10 @@ export default function BlackFridayScreen({ api, onExit }) {
             <Block testid="block-appr-na" title="New Arrivals" rows={apprNa} total={tot("apprNa")} {...shared} />
             <Block testid="block-appr-normal" title="Normal" rows={apprNormal} total={tot("apprNormal")} {...shared} />
             <Block testid="block-big" title="30+ on hand" rows={big} total={tot("big")} {...shared}>
-              {tab === "review" && bigToReview > 0 && <button data-testid="approve-big" disabled={busy} onClick={async () => { await ensureAll("review"); const dd = mainRef.current || d; run(() => api.approveBig(Object.fromEntries(dd.review.filter((x) => x.big).map((x) => [x.pid, sigOfRow(x)]))), { reload: true, undo: (x) => (x && x.pids && x.pids.length ? { text: `Approved ${x.pids.length} with 30+`, reverse: undoWith(x.undo || {}) } : null) }); }} style={{ ...bGreen, padding: "6px 10px", fontSize: 12 }}>Approve all 30+ ({bigToReview})</button>}
+              {tab === "review" && bigToReview > 0 && <button data-testid="approve-big" disabled={busy} onClick={async () => { if (!(await ensureAll("review"))) { setNote("Not every 30+ product could be loaded — nothing approved. Tap again."); return; } const dd = mainRef.current || d; run(() => api.approveBig(Object.fromEntries(dd.review.filter((x) => x.big).map((x) => [x.pid, sigOfRow(x)]))), { reload: true, undo: (x) => (x && x.pids && x.pids.length ? { text: `Approved ${x.pids.length} with 30+`, reverse: undoWith(x.undo || {}) } : null) }); }} style={{ ...bGreen, padding: "6px 10px", fontSize: 12 }}>Approve all 30+ ({bigToReview})</button>}
             </Block>
             <Block testid="block-mid" title="13–29 on hand" rows={mid} total={tot("mid")} {...shared} />
-            {!tabDone && <div ref={moreRef} data-testid="more" style={{ color: GRAY, fontSize: 12, textAlign: "center", padding: "14px 0" }}>Loading more… ({rowsOf(d, tab).length} of {cn ? cn[tab] : "…"})</div>}
+            {!tabDone && <div ref={moreRef} data-testid="more" style={{ color: GRAY, fontSize: 12, textAlign: "center", padding: "14px 0", overflowAnchor: "none" }}>Loading more… ({rowsOf(d, tab).length} of {cn ? cn[tab] : "…"})</div>}
             {tab === "review" && <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "8px 0" }}>
               <input data-testid="show-under" type="checkbox" checked={showUnder} onChange={(e) => { setShowUnder(e.target.checked); clearSel(); }} /> Show under 13{t.underReview != null ? ` (${t.underReview} to review)` : d.meta.under ? ` (${d.meta.under})` : ""}
             </label>}

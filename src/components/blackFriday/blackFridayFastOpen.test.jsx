@@ -204,6 +204,48 @@ describe("fast open: the card", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("Approve all 30+ approves nothing when To review cannot be loaded in full", async () => {
+    const server = makeServer();
+    const api = fakeApi(server, { pages: vi.fn(async () => { throw new Error("offline"); }) });
+    const r = await mount(api);
+    await act(async () => { await byId(r, "approve-big").props.onClick(); });
+    expect(api.approveBig).not.toHaveBeenCalled();
+    expect(text(byId(r, "note"))).toContain("nothing approved");
+  }, 30_000);
+
+  it("saves go one at a time: a failed older save never brings back older ticks over a newer one", async () => {
+    const server = makeServer();
+    const calls = [];
+    let failFirst;
+    const api = fakeApi(server, { selSave: vi.fn((sigs) => { calls.push(Object.keys(sigs).sort().join(",")); return calls.length === 1 ? new Promise((_, no) => { failFirst = no; }) : Promise.resolve({ ok: true }); }) });
+    const r = await mount(api);
+    await act(async () => { byId(r, "select-toggle").props.onClick(); });
+    await act(async () => { byId(r, "row-p00").props.onClick(); });
+    await act(async () => { await new Promise((ok) => setTimeout(ok, 450)); }); // save 1 (p00) in flight
+    await act(async () => { byId(r, "row-p01").props.onClick(); });
+    await act(async () => { await new Promise((ok) => setTimeout(ok, 450)); }); // save 2 waits for save 1
+    expect(calls).toEqual(["p00"]);
+    await act(async () => { failFirst(new Error("network")); await new Promise((ok) => setTimeout(ok, 0)); });
+    await flush();
+    expect(calls).toEqual(["p00", "p00,p01"]); // the newest goes next; the failed older one is not retried
+  });
+
+  it("ticks put back before their rows were loaded are filled in as the rows arrive", async () => {
+    globalThis.localStorage = mem(); globalThis.sessionStorage = mem();
+    const server = makeServer();
+    server.st.selection = { at: Date.now() + 60_000, sigs: { p40: "current" } }; // page 1, not in the head
+    const api = fakeApi(server, { generate: vi.fn(async () => ({ ok: true })) });
+    const r = await mount(api);
+    expect(byId(r, "tab-review").props["aria-pressed"]).toBe(true);
+    expect(text(byId(r, "select-count"))).toBe("1 selected");
+    await act(async () => { await byId(r, "approve-big").props.onClick(); }); // loads every page of To review
+    await flush();
+    // Generate gets the product's real row (its section), not the bare placeholder.
+    await act(async () => { byId(r, "bulk-generate").props.onClick(); });
+    await flush();
+    expect(api.generate).toHaveBeenCalledWith("p40", "main", expect.anything());
+  });
+
   it("when the precomputed list cannot be read, the card falls back to the whole list", async () => {
     const server = makeServer();
     const api = fakeApi(server, { head: vi.fn(async () => { throw new Error("boom"); }) });

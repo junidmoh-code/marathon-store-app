@@ -45,6 +45,7 @@ test("readHead builds the list the first time; its rows are exactly list()'s row
   assert.deepEqual(p.pages.flatMap((x) => x.rows), v.review.slice(ci.PAGE));
   const past = await ci.readPages(db, "review", 50, 2);
   assert.deepEqual(past.pages, []);
+  assert.equal(past.at, h.at, "past the end: the list's version");
   await assert.rejects(() => ci.readPages(db, "nope", 0, 1), /tab/);
 });
 
