@@ -33,6 +33,44 @@ export function packedLineItems(order) {
   return out;
 }
 
+// ── ONE ORDER, ONE PARCEL: NO PART-SHIPPING (Junid, 20 Nov 2026) ─────────────
+// "One order ships as one parcel, all items together, unless the 24h no-reply rule fired. Part-shipping is blocked."
+// A pack may leave a line out ONLY when a recorded decision has taken that line off the order's parcel:
+//   store_credit       Jamie's ship-without rule (the 24 h no-reply rule, or the customer said no to the alternatives)
+//   refund             the money went back for that line
+//   refund_requested   the customer asked for that line's money back
+//   resolution/money   the store's customer agent settled it in credit or a refund
+//   cancelled          the line was cancelled
+// Anything else left behind (left out by "Ship available items", still resolving, unavailable, no stock, not found,
+// moved to a follow-up) stops the ship step BEFORE a courier is booked: #2204's T-shirt and #2292's trainer were
+// left behind that way on 20 Nov and each customer got half an order. A second parcel (<id>r<n>), a follow-up record
+// and an exchange are their own parcels and are not judged here.
+export const OFF_PARCEL_OUTCOMES = Object.freeze(["store_credit", "refund", "refund_requested"]);
+const isOwnParcel = (id, order) => !!order?.followUpOf || !!order?.reship || /^exchange-/.test(String(id)) || /^\d+[rf]\d+$/.test(String(id));
+/** Has a recorded decision taken this line off the parcel? PURE. */
+export function settledOffParcel(line) {
+  if (!line) return true;
+  if (String(line.source?.status || line.status || "") === "cancelled") return true;
+  if (OFF_PARCEL_OUTCOMES.includes(String(line.resolution?.outcome?.kind || ""))) return true;
+  const money = line.resolution?.money;
+  return !!money && ["credit", "refund"].includes(String(money.kind)) && Number(money.amountCents) > 0;
+}
+/**
+ * The lines a pack left behind with nothing settled: [{ i, title, size, status }] (empty = the parcel is the whole
+ * order, or everything missing from it was settled). PURE.
+ */
+export function partShipBlockers(id, order) {
+  if (!order?.packedLines || isOwnParcel(id, order)) return [];
+  const out = [];
+  linesOf(order).forEach((l, i) => {
+    if (!l || order.packedLines[i]) return;
+    if (!settledOffParcel(l)) out.push({ i, title: l.title || l.pid || `line ${i + 1}`, size: l.size ?? null, status: String(l.source?.status || l.status || "open") });
+  });
+  return out;
+}
+/** The one sentence the packer and Junid read. PURE. */
+export const partShipReason = (blockers) => `part-shipping is blocked: ${blockers.map((b) => `${b.title}${b.size != null && b.size !== "_" ? ` ${b.size}` : ""} (${b.status.replace(/_/g, " ")})`).join(", ")} ${blockers.length === 1 ? "is" : "are"} not in the parcel and nothing has settled ${blockers.length === 1 ? "it" : "them"}. One order ships as one parcel: add the item, or wait until it is settled (Jamie's 24 hour rule), then press Retry`;
+
 export async function fulfilParcel(ctx, id, order, { trackingNumber = null, trackingCompany = null } = {}) {
   const packed = packedLineItems(order);
   if (!packed) return fulfilOnShopify(ctx.graphql, { orderGid: order.shopifyGid, trackingNumber, ...(trackingCompany ? { trackingCompany } : {}) });

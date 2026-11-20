@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createRequire } from "node:module";
 import { fakeDb } from "../../shopify/onlineOrders/fakeDb.testutil.mjs";
-import { runOrderAgent, summaryText, bundle } from "./run.mjs";
+import { runOrderAgent, summaryText, bundle, shopifyRefunds, isEditRemoval } from "./run.mjs";
 import { chaseQueueOver, CHASE_TABLE } from "./chaseQueue.mjs";
 
 // vitest cannot resolve node:sqlite as an import (it strips the prefix); require reaches the built-in.
@@ -145,5 +145,22 @@ describe("architect review of #905 (run)", () => {
     const pushes = [];
     await runOrderAgent({ db: f.db, chase: mkQueue(), push: async (p) => { pushes.push(p); return { sent: true }; }, now: T("2026-11-14T09:00:00Z"), commit: true });
     expect(pushes.length).toBe(5);
+  });
+});
+
+describe("a line removed in a Shopify order edit is not a refund (#2204, #2292: 20 Nov 2026)", () => {
+  const order = (refunds) => ({ order: { id: "gid://shopify/Order/1", cancelledAt: null, displayFinancialStatus: "PAID", refunds } });
+  const rl = (id, restockType, amount = "350.0") => ({ quantity: 1, restockType, lineItem: { id: `gid://shopify/LineItem/${id}` }, subtotalSet: { shopMoney: { amount } } });
+  const rec = (total, lines) => ({ createdAt: "2026-11-20T11:30:28Z", totalRefundedSet: { shopMoney: { amount: total } }, refundLineItems: { nodes: lines } });
+
+  it("the R0 CANCEL record an order edit leaves is ignored; nothing is 'refunded'", async () => {
+    expect(isEditRemoval(rec("0.0", []), rl(1, "CANCEL"))).toBe(true);
+    const got = await shopifyRefunds(async () => order([rec("0.0", [rl(50918987858069, "CANCEL")])]), "gid://shopify/Order/1");
+    expect(got.byLine).toEqual({});
+  });
+
+  it("a refund that moved money still counts, restocked or not; so does Jamie's no-money PayFast record (NO_RESTOCK)", async () => {
+    const got = await shopifyRefunds(async () => order([rec("350.0", [rl(1, "CANCEL")]), rec("0.0", [rl(2, "NO_RESTOCK", "700.0")])]), "gid://shopify/Order/1");
+    expect(got.byLine).toEqual({ 1: { at: Date.parse("2026-11-20T11:30:28Z"), cents: 35000, qty: 1 }, 2: { at: Date.parse("2026-11-20T11:30:28Z"), cents: 70000, qty: 1 } });
   });
 });

@@ -5,15 +5,25 @@
 // /config/shipping/deliveryMode is not "door". Rates and pickup-point lookups
 // only: nothing here books, cancels or writes.
 //
-//   the parcel    ALWAYS one shoe: /config/shipping/locker/parcel, 34 × 23 × 13 cm,
-//                 1.5 kg. Never estimated from the order's lines. Courier Guy
-//                 measures at collection and re-rates; reconcile.mjs keeps the
-//                 difference on the order (shipping/adjustment).
-//   how many      one parcel per pair of shoes in the order (never fewer than
-//                 one), or shipping/lockerParcels on the order when a person
-//                 set it (rebook-locker.mjs --parcels). Pickup-point shipments
-//                 carry ONE parcel each (TCG doc), so N parcels are N shipments
-//                 to the SAME locker. Size never refuses a booking.
+//   how many      ONE ORDER IS ONE PARCEL ON ONE WAYBILL (Junid, 20 Nov 2026
+//                 evening: "one order ships as one parcel, all items
+//                 together"). The first version of this file booked one
+//                 shipment per pair of shoes: #2256 (2 pairs) cost R260.62 on
+//                 two waybills and #2309 (5 pairs) R651.55 on five, where one
+//                 parcel to the same locker is R192.72. Only a person splits
+//                 an order: shipping/lockerParcels on the order
+//                 (rebook-locker.mjs --parcels) is N one-shoe shipments to the
+//                 SAME locker (a pickup-point shipment carries one parcel).
+//   the parcel    an order of at most one pair of shoes is declared as one
+//                 shoe: /config/shipping/locker/parcel, 34 × 23 × 13 cm,
+//                 1.5 kg, never estimated from its lines. An order of two or
+//                 more pairs is declared as the ONE parcel the parcel rule
+//                 packs it in (estimateParcel), so Courier Guy quotes the
+//                 locker size it really fits (measured 20 Nov: 2 to 6 pairs →
+//                 D2LL - ECO R192.72 flat). Courier Guy measures at collection
+//                 and re-rates; reconcile.mjs keeps the difference on the
+//                 order (shipping/adjustment). A parcel no locker takes is
+//                 refused like "no locker" below: a person books it.
 //   the locker    the customer's address placed on the map (placeAddress:
 //                 OpenStreetMap, the street first; a street it does not know —
 //                 most of ours — is placed by its POSTAL CODE, which in a city
@@ -84,12 +94,29 @@ export function oneShoe(cfg) {
   return { kind: "oneShoe", lengthCm: pos(p.lengthCm, 34), widthCm: pos(p.widthCm, 23), heightCm: pos(p.heightCm, 13), actualKg: pos(p.kg, 1.5) };
 }
 
-/** How many one-shoe parcels the order ships as. Pure. */
-export function lockerParcelCount(order, estimate) {
+/**
+ * How many shipments the order is booked as. Pure. ALWAYS ONE (Junid, 20 Nov 2026: "one order ships as one parcel"),
+ * unless a person set shipping/lockerParcels on the order (rebook-locker.mjs --parcels). Never derived from the lines.
+ */
+export function lockerParcelCount(order) {
   const set = Number(order?.shipping?.lockerParcels);
-  if (Number.isInteger(set) && set >= 1) return set;
-  const pairs = (estimate?.parcels ?? []).reduce((t, p) => t + (Number(p?.pairs) || 0), 0);
-  return Math.max(1, pairs);
+  return Number.isInteger(set) && set >= 1 ? set : 1;
+}
+
+/** The pairs of shoes in the order (the parcel rule's count). Pure. */
+export const pairsIn = (estimate) => (estimate?.parcels ?? []).reduce((t, p) => t + (Number(p?.pairs) || 0), 0);
+
+/**
+ * The parcel each shipment declares. Pure. One shoe, except a single-parcel order of two or more pairs: that is the
+ * whole order in the one parcel the parcel rule packs (a one-shoe declaration would book a locker it cannot fit in).
+ */
+export function declaredParcel(cfg, estimate, count = 1) {
+  const whole = estimate?.parcels?.length === 1 ? estimate.parcels[0] : null;
+  const dims = whole ? [whole.lengthCm, whole.widthCm, whole.heightCm, whole.actualKg].map(Number) : [];
+  if (count === 1 && pairsIn(estimate) > 1 && dims.length === 4 && dims.every((n) => Number.isFinite(n) && n > 0)) {
+    return { kind: "wholeOrder", lengthCm: dims[0], widthCm: dims[1], heightCm: dims[2], actualKg: dims[3] };
+  }
+  return oneShoe(cfg);
 }
 
 const townOf = (address) => str(address?.city) || str(address?.local_area) || "the customer's address";
@@ -106,10 +133,11 @@ async function rates(client, body) {
  */
 export async function planLockerDelivery({ order, key = "<orderKey>", cfg, client, estimate, address, contact, ref, liveBlockers, geocoder = placeAddress }) {
   const lk = cfg.locker ?? {};
-  const shoe = oneShoe(cfg);
-  const count = lockerParcelCount(order, estimate);
+  const count = lockerParcelCount(order);
+  // `shoe` is the parcel EVERY shipment of this order declares (one shoe, or the whole order in one parcel).
+  const shoe = declaredParcel(cfg, estimate, count);
   const parcel = {
-    declaredAs: "one_shoe",
+    declaredAs: shoe.kind === "wholeOrder" ? "whole_order" : "one_shoe",
     parcels: Array.from({ length: count }, () => ({ ...shoe })),
     parcelCount: count,
     actualKg: shoe.actualKg * count,
@@ -137,7 +165,7 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
   const at = await geocoder(address);
   // No line to Junid for this one: the map service being down looks the same, and the order's own attention says it.
   if (!at) return refuse(`no Courier Guy locker could be chosen for ${town}: the address could not be placed on the map`, { transient: true, junidLine: null });
-  const size = chooseLocker([shoe.lengthCm, shoe.widthCm, shoe.heightCm], shoe.actualKg, { ...(cfg.dropBox ?? {}), enabled: true })?.size ?? "M";
+  const size = chooseLocker([shoe.lengthCm, shoe.widthCm, shoe.heightCm], shoe.actualKg, { ...(cfg.dropBox ?? {}), enabled: true })?.size ?? (shoe.kind === "wholeOrder" ? "L" : "M");
   let lockers;
   try { lockers = await nearestLockers(client, at, size); }
   catch (err) { return { ok: false, transient: true, parcel, reason: `the locker list could not be read (${str(err?.message || err).slice(0, 200)})` }; }
@@ -199,7 +227,7 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
   const door = await doorAsk;
   const doorQuote = door?.rate ? { code: door.rate.code, rate: finiteOrNull(door.rate.rate) } : null;
 
-  // THE SPEND CEILING, per shipment (each parcel is its own shipment at the same rate).
+  // THE SPEND CEILING, per shipment (one per order; a person's split is several at the same rate).
   const blockers = [...liveBlockers];
   // The locker PIN goes by SMS: without a mobile number the customer could never open it (#1671).
   if (!str(contact?.mobile_number)) blockers.push("no customer mobile number (the locker PIN is sent by SMS)");
@@ -229,7 +257,7 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
     delivery_pickup_point_id: found.locker.id,
     delivery_pickup_point_provider: found.locker.provider,
     delivery_contact: contact,
-    // ONE parcel per shipment (a pickup-point shipment carries one).
+    // ONE parcel per shipment (a pickup-point shipment carries one), and one shipment per order unless a person split it.
     parcels: [tcgParcel(shoe)],
     service_level_code: rate.code,
     customer_reference: count > 1 ? `${ref} (${i + 1}/${count})` : ref,

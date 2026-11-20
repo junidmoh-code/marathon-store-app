@@ -116,7 +116,15 @@ async function lineFacts(db, id, order, i, line) {
   return facts;
 }
 
-const REFUNDS_Q = `query($id: ID!) { order(id: $id) { id cancelledAt displayFinancialStatus refunds { createdAt refundLineItems(first: 100) { nodes { quantity lineItem { id } subtotalSet { shopMoney { amount } } } } } } }`;
+const REFUNDS_Q = `query($id: ID!) { order(id: $id) { id cancelledAt displayFinancialStatus refunds { createdAt totalRefundedSet { shopMoney { amount } } refundLineItems(first: 100) { nodes { quantity restockType lineItem { id } subtotalSet { shopMoney { amount } } } } } } }`;
+/**
+ * A line REMOVED IN A SHOPIFY ORDER EDIT is not a refund. Shopify records the removal as a refund of R0 whose line has
+ * restockType CANCEL and still carries the line's full subtotal. Read as a refund it closed the replacement line: #2204's
+ * T-shirt and #2292's trainer came off the pack list as "refunded R350 / R700" and the rest shipped without them
+ * (20 Nov 2026). Only a refund that moved money, or a no-money record that is not a removal (Jamie's PayFast record:
+ * NO_RESTOCK), counts. PURE.
+ */
+export const isEditRemoval = (refund, refundLine) => !(num(refund?.totalRefundedSet?.shopMoney?.amount) > 0) && String(refundLine?.restockType || "").toUpperCase() === "CANCEL";
 /** Shopify's refund records per line item: { [lineItemTail]: { at, cents, qty } }, plus cancelledAt. */
 export async function shopifyRefunds(graphql, gid) {
   if (!graphql || !gid) return null;
@@ -128,7 +136,7 @@ export async function shopifyRefunds(graphql, gid) {
     const at = Date.parse(r.createdAt) || 0;
     for (const n of r.refundLineItems?.nodes || []) {
       const k = String(n.lineItem?.id || "").split("/").pop();
-      if (!k) continue;
+      if (!k || isEditRemoval(r, n)) continue;
       const prev = byLine[k] || { at: 0, cents: 0, qty: 0 };
       byLine[k] = { at: Math.max(prev.at, at), cents: prev.cents + Math.round(num(n.subtotalSet?.shopMoney?.amount) * 100), qty: prev.qty + num(n.quantity) };
     }

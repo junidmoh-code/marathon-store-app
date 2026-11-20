@@ -4,7 +4,7 @@
 // old booking, unchanged.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { bookShipment, cancelShipment, planShipment } from "./bookShipment.mjs";
-import { lockerParcelCount, oneShoe, placeAddress, NO_CODE_NOTE } from "./lockerDelivery.mjs";
+import { lockerParcelCount, declaredParcel, oneShoe, placeAddress, NO_CODE_NOTE } from "./lockerDelivery.mjs";
 import { rebookLocker, UNCOLLECTED } from "./rebook-locker.mjs";
 import { reconcileOrder, runReconcile, shipmentsOf } from "./reconcile.mjs";
 import { adjustmentLines } from "./courier-recon.mjs";
@@ -56,6 +56,8 @@ const ORDER = (over = {}) => ({
   ...over,
 });
 const PAIRS = (qty) => ORDER({ lines: [{ category: "Footwear", subcategory: "Sneakers", name: "Runner", size: "9", qty }] });
+// A split is only ever a person's: shipping/lockerParcels on the order (rebook-locker.mjs --parcels).
+const SPLIT = (n) => { const o = ORDER(); return { ...o, shipping: { ...o.shipping, lockerParcels: n } }; };
 // NO deliveryMode in the node: the code's default is door-to-locker.
 const db = (live, cfg = {}, extra = {}) => fakeDb({
   config: { shipping: { ...(live === undefined ? {} : { live }), collectionContact: CONTACT, ...cfg } },
@@ -298,23 +300,53 @@ describe("the R500 ceiling, per shipment", () => {
   });
 
   it("three parcels at R130.31 each (R390.93 together) are each under the ceiling: booked", async () => {
-    const res = await bookShipment(PAIRS(3), deps(db(true, { maxChargeRand: 200 }), fakeClient()));
+    const res = await bookShipment(SPLIT(3), deps(db(true, { maxChargeRand: 200 }), fakeClient()));
     expect(res.waybills).toEqual(["WB1", "WB2", "WB3"]);
   });
 });
 
 describe("a split: N one-shoe parcels, each its own shipment to the SAME locker", () => {
-  it("one parcel per pair of shoes, never fewer than one; a person's count wins", () => {
+  it("ONE shipment per order however many pairs (Junid, 20 Nov 2026); only a person's count splits it", () => {
     expect(lockerParcelCount({}, { parcels: [{ pairs: 0 }] })).toBe(1);
     expect(lockerParcelCount({}, { parcels: [{ pairs: 1 }] })).toBe(1);
-    expect(lockerParcelCount({}, { parcels: [{ pairs: 3 }] })).toBe(3);
+    expect(lockerParcelCount({}, { parcels: [{ pairs: 3 }] })).toBe(1);
+    expect(lockerParcelCount({}, { parcels: [{ pairs: 5 }] })).toBe(1);
     expect(lockerParcelCount({ shipping: { lockerParcels: 2 } }, { parcels: [{ pairs: 1 }] })).toBe(2);
+  });
+
+  it("#2256 / #2309: two and five pairs are ONE create, ONE waybill, the whole order declared as one parcel", async () => {
+    for (const qty of [2, 5]) {
+      const d = db(true);
+      const client = fakeClient();
+      const res = await bookShipment(PAIRS(qty), deps(d, client));
+      const sent = client.of("createShipment");
+      expect(sent).toHaveLength(1);
+      expect(sent[0].customer_reference).toBe("#2257");
+      expect(sent[0].parcels).toHaveLength(1);
+      // not the one-shoe box: the parcel the parcel rule packs the pairs in (so the locker booked is one it fits)
+      const p = sent[0].parcels[0];
+      expect(p.submitted_length_cm * p.submitted_width_cm * p.submitted_height_cm).toBeGreaterThan(34 * 23 * 13);
+      // the price asked is for that same parcel
+      expect(client.of("getRates").find((b) => b.delivery_pickup_point_id).parcels).toEqual(sent[0].parcels);
+      const s = d.root.online_orders["1001"].shipping;
+      expect(s.waybills).toEqual(["WB1"]);
+      expect(s.shipments).toHaveLength(1);
+      expect(s.parcel).toMatchObject({ declaredAs: "whole_order", parcelCount: 1 });
+      expect(res.waybill).toBe("WB1");
+    }
+  });
+
+  it("one pair with clothes is still declared as one shoe", () => {
+    expect(declaredParcel({}, { parcels: [{ pairs: 1, lengthCm: 34, widthCm: 23, heightCm: 16, actualKg: 2.8 }] })).toMatchObject({ kind: "oneShoe", lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.5 });
+    expect(declaredParcel({}, { parcels: [{ pairs: 2, lengthCm: 34, widthCm: 23, heightCm: 26, actualKg: 2.4 }] })).toEqual({ kind: "wholeOrder", lengthCm: 34, widthCm: 23, heightCm: 26, actualKg: 2.4 });
+    // a person's split is one-shoe shipments, whatever the pairs
+    expect(declaredParcel({}, { parcels: [{ pairs: 2, lengthCm: 34, widthCm: 23, heightCm: 26, actualKg: 2.4 }] }, 2).kind).toBe("oneShoe");
   });
 
   it("three pairs: three creates to one locker, every waybill and the total cost recorded, the first as shipping.waybill", async () => {
     const d = db(true);
     const client = fakeClient();
-    const res = await bookShipment(PAIRS(3), deps(d, client));
+    const res = await bookShipment(SPLIT(3), deps(d, client));
     const sent = client.of("createShipment");
     expect(sent).toHaveLength(3);
     expect(new Set(sent.map((b) => b.delivery_pickup_point_id))).toEqual(new Set(["RVM01240"]));
@@ -327,13 +359,13 @@ describe("a split: N one-shoe parcels, each its own shipment to the SAME locker"
     expect(s.partial).toBeUndefined();
     expect(res.waybills).toHaveLength(3);
     // ONE claim for the order: a second call books nothing more
-    expect((await bookShipment({ ...PAIRS(3), shipping: s }, deps(d, client))).reason).toBe("already booked");
+    expect((await bookShipment({ ...SPLIT(3), shipping: s }, deps(d, client))).reason).toBe("already booked");
     expect(client.of("createShipment")).toHaveLength(3);
   });
 
   it("more parcels than locker.maxParcels goes to a person", async () => {
     const client = fakeClient();
-    const res = await bookShipment(PAIRS(11), deps(db(true), client));
+    const res = await bookShipment(SPLIT(11), deps(db(true), client));
     expect(res.reason).toMatch(/needs 11 locker parcels, more than the 10 booked automatically/);
     expect(client.shipmentCalls()).toEqual([]);
   });
@@ -342,14 +374,14 @@ describe("a split: N one-shoe parcels, each its own shipment to the SAME locker"
     const d = db(true);
     const bad = Object.assign(new Error("HTTP 400 invalid"), { status: 400 });
     const client = fakeClient({ createErrors: { 2: bad } });
-    await expect(bookShipment(PAIRS(3), deps(d, client))).rejects.toThrow(/400/);
+    await expect(bookShipment(SPLIT(3), deps(d, client))).rejects.toThrow(/400/);
     let s = d.root.online_orders["1001"].shipping;
     expect(s.waybill).toBeUndefined(); // not "booked": the order is held as courier not booked
     expect(s.courierBooking).toMatchObject({ state: "failed", booked: ["WB1"] });
     expect(s.partial).toMatchObject({ count: 3, locker: { id: "RVM01240" }, shipments: [{ waybill: "WB1" }] });
     // the retry: the nearest locker has changed meanwhile, the split still goes to the first one
     const client2 = fakeClient({ points: [SECOND, NEAR] });
-    const res = await bookShipment({ ...PAIRS(3), shipping: { ...PAIRS(3).shipping, ...s } }, deps(d, client2));
+    const res = await bookShipment({ ...SPLIT(3), shipping: { ...SPLIT(3).shipping, ...s } }, deps(d, client2));
     expect(client2.of("createShipment")).toHaveLength(2);
     expect(client2.of("createShipment").every((b) => b.delivery_pickup_point_id === "RVM01240")).toBe(true);
     expect(res.waybills).toEqual(["WB1", "WB1", "WB2"].map((w, i) => (i === 0 ? "WB1" : `WB${i}`)));
@@ -361,10 +393,10 @@ describe("a split: N one-shoe parcels, each its own shipment to the SAME locker"
   it("a half-booked split is never finished as a different plan: the mode switched to door books nothing and keeps the checkpoint", async () => {
     const d = db(true);
     const client = fakeClient({ createErrors: { 2: Object.assign(new Error("HTTP 400 invalid"), { status: 400 }) } });
-    await expect(bookShipment(PAIRS(3), deps(d, client))).rejects.toThrow(/400/);
+    await expect(bookShipment(SPLIT(3), deps(d, client))).rejects.toThrow(/400/);
     d.root.config.shipping.deliveryMode = "door";
     const client2 = fakeClient();
-    const res = await bookShipment({ ...PAIRS(3), shipping: { ...PAIRS(3).shipping, ...d.root.online_orders["1001"].shipping } }, deps(d, client2));
+    const res = await bookShipment({ ...SPLIT(3), shipping: { ...SPLIT(3).shipping, ...d.root.online_orders["1001"].shipping } }, deps(d, client2));
     expect(res.skipped).toBe(true);
     expect(res.reason).toMatch(/a split is half booked \(WB1 to locker RVM01240\) and can no longer be finished as planned/);
     expect(client2.shipmentCalls()).toEqual([]);
@@ -377,9 +409,9 @@ describe("a split: N one-shoe parcels, each its own shipment to the SAME locker"
     const d = db(true);
     const failing = { ...d, ref: (p) => (String(p).endsWith("/shipping/partial") ? { ...d.ref(p), set: async () => { throw new Error("write denied"); } } : d.ref(p)) };
     const client = fakeClient({ createErrors: { 2: Object.assign(new Error("HTTP 400 invalid"), { status: 400 }) } });
-    await expect(bookShipment(PAIRS(2), deps(failing, client))).rejects.toThrow(/400/);
+    await expect(bookShipment(SPLIT(2), deps(failing, client))).rejects.toThrow(/400/);
     expect(d.root.online_orders["1001"].shipping.courierBooking).toMatchObject({ state: "unknown", booked: ["WB1"] });
-    const again = await bookShipment({ ...PAIRS(2), shipping: { ...PAIRS(2).shipping, ...d.root.online_orders["1001"].shipping } }, deps(d, client));
+    const again = await bookShipment({ ...SPLIT(2), shipping: { ...SPLIT(2).shipping, ...d.root.online_orders["1001"].shipping } }, deps(d, client));
     expect(again.reason).toBe("booking already unknown");
     expect(client.of("createShipment")).toHaveLength(2);
   });
@@ -387,9 +419,9 @@ describe("a split: N one-shoe parcels, each its own shipment to the SAME locker"
   it("a lost response mid-split holds the claim as unknown (never re-booked blind)", async () => {
     const d = db(true);
     const client = fakeClient({ createErrors: { 2: Object.assign(new Error("HTTP 502"), { status: 502 }) } });
-    await expect(bookShipment(PAIRS(2), deps(d, client))).rejects.toThrow();
+    await expect(bookShipment(SPLIT(2), deps(d, client))).rejects.toThrow();
     expect(d.root.online_orders["1001"].shipping.courierBooking).toMatchObject({ state: "unknown", booked: ["WB1"] });
-    const again = await bookShipment({ ...PAIRS(2), shipping: { ...PAIRS(2).shipping, ...d.root.online_orders["1001"].shipping } }, deps(d, client));
+    const again = await bookShipment({ ...SPLIT(2), shipping: { ...SPLIT(2).shipping, ...d.root.online_orders["1001"].shipping } }, deps(d, client));
     expect(again.reason).toBe("booking already unknown");
     expect(client.of("createShipment")).toHaveLength(2);
   });
@@ -397,8 +429,8 @@ describe("a split: N one-shoe parcels, each its own shipment to the SAME locker"
   it("cancelShipment cancels every shipment of a split; a dry run cancels none", async () => {
     const d = db(true);
     const client = fakeClient();
-    await bookShipment(PAIRS(3), deps(d, client));
-    const booked = { ...PAIRS(3), shipping: d.root.online_orders["1001"].shipping };
+    await bookShipment(SPLIT(3), deps(d, client));
+    const booked = { ...SPLIT(3), shipping: d.root.online_orders["1001"].shipping };
     const dry = fakeClient();
     expect((await cancelShipment(booked, deps(db(false), dry))).dryRun).toEqual({ tracking_references: ["WB1", "WB2", "WB3"] });
     expect(dry.shipmentCalls()).toEqual([]);
@@ -412,7 +444,7 @@ describe("THE DRY-RUN GUARD, door-to-locker — nothing reaches createShipment /
   const NOT_LIVE = [undefined, false, null, "true", "yes", 1, 0, {}, []];
   const ORDERS = [
     ["one shoe", ORDER()],
-    ["split", PAIRS(4)],
+    ["split", SPLIT(4)],
     ["booked split", ORDER({ shipping: { ...ORDER().shipping, provider: "courier_guy", waybill: "WB1", trackingReference: "WB1", shipments: [{ waybill: "WB1" }, { waybill: "WB2" }], deliveryLocker: { id: "RVM01240" } } })],
     ["partial", ORDER({ shipping: { ...ORDER().shipping, partial: { count: 2, locker: { id: "RVM01240" }, shipments: [{ waybill: "WB1", shipmentId: 1 }] } } })],
     ["no locker", ORDER({ shipping: { address: { street: "1 Far Road", city: "Nowhere", zip: "0001" } } })],
@@ -489,7 +521,7 @@ describe("rebook-locker: cancel the uncollected shipment and book the same parce
   });
 
   it("a split is rebooked whole: every shipment cancelled, the same number booked again", async () => {
-    const d = await bookedWorld(PAIRS(2));
+    const d = await bookedWorld(SPLIT(2));
     const client = fakeClient();
     const out = await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW + 5 });
     expect(out.ok).toBe(true);
@@ -663,7 +695,7 @@ describe("placeAddress: the street, else the postal code's own point, else the t
 describe("planShipment in locker mode is rates and lookups only", () => {
   it("never calls a shipment endpoint, whatever live says", async () => {
     const client = fakeClient();
-    const plan = await planShipment(PAIRS(2), { db: db(true), client, geocoder: geo() });
+    const plan = await planShipment(SPLIT(2), { db: db(true), client, geocoder: geo() });
     expect(plan).toMatchObject({ ok: true, locker: { id: "RVM01240" }, doorQuote: { code: "ECO" } });
     expect(plan.payloads).toHaveLength(2);
     expect(client.shipmentCalls()).toEqual([]);
