@@ -51,6 +51,7 @@ import AllProductsList from "./components/concrete/AllProductsList";
 import BrandCheckTab, { useBrandCheckCount } from "./components/concrete/BrandCheckTab";
 import { canVerifyBrand, useConcreteLiveSet } from "./components/concrete/concreteStore";
 import { BRAND_CHECK_TAB, CONCRETE_PRODUCTS_CARD } from "./config/temporaryCards";
+import ConcreteProductsCard from "./components/concrete/ConcreteProductsCard";
 import { isSuperAdmin as isSuperAdminEmail } from "./config/superAdmins";
 import { toAuthPassword } from "./utils/auth-utils";
 import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, phoneGroupKey } from "./utils/phone";
@@ -3089,6 +3090,14 @@ const RoleIcons = {
       <path d="M22 2 11 13"/>
     </svg>
   ),
+  concrete_products: (
+    // A plain block — Concrete. TEMPORARY card (src/config/temporaryCards.js).
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#E5E5E5" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 8 12 3l9 5v8l-9 5-9-5z"/>
+      <path d="M3 8l9 5 9-5"/>
+      <path d="M12 13v8"/>
+    </svg>
+  ),
   black_friday: (
     // A price tag — the Black Friday card groups everything by its stock price.
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -3614,6 +3623,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // Black Friday 2026 — Junid approves each stock-price group; the Mac mini posts
       // the approved ones to the 14 WhatsApp groups. Super-admin only (the
       // bfCampaign* callables re-check it server-side).
+      // CONCRETE PRODUCTS — TEMPORARY (Junid, 20 Nov 2026): mark which clothing
+      // is Concrete-only. Junid or a stockRole admin (canVerifyBrand — the
+      // mark IS the brand check). One flag removes tile and route:
+      // src/config/temporaryCards.js CONCRETE_PRODUCTS_CARD.
+      CONCRETE_PRODUCTS_CARD && canVerifyBrand(homeUser, homePerm) && { key:"concrete_products", icon:RoleIcons.concrete_products, name:"Concrete Products", desc:"Temporary · mark clothing Concrete-only", onClick:()=>(window.location.hash = "#concrete-products") },
       isSuperAdmin                                             && { key:"black_friday", icon:RoleIcons.black_friday, name:"Black Friday", desc:"Price groups · approve · WhatsApp", onClick:()=>(window.location.hash = "#black-friday") },
       shopifyVisible                                           && { key:"shopify_publish", icon:RoleIcons.shopify_publish, name:"Shopify Publishing", desc:"Clean names · condition · publish", badge:shopifyBadge, onClick:()=>onSelect(ROLES.SHOPIFY_PUBLISH) },
       // Social — generated posts waiting for approval, the style reference
@@ -21042,6 +21056,15 @@ if (typeof document !== "undefined" && !document.getElementById("__bcast_spin"))
 // working for the next visitor on the device.
 
 
+// The TEMPORARY Concrete Products card's mount: the live taxonomy (labels for
+// the subcategory filter) and the Concrete live set (unmarking one live there
+// also switches its Concrete listing off). temporaryCards.js removes it.
+function ConcreteProductsCardRoute({ products }) {
+  const { registry } = useTaxonomy();
+  const live = useConcreteLiveSet(true);
+  return <ConcreteProductsCard products={products} ProductPhoto={ProductPhoto} registry={registry} liveOnConcrete={live} onExit={() => (window.location.hash = "")} />;
+}
+
 function AdminSignInScreen({ onCancel }) {
   const [busy,  setBusy]  = useState(false);
   const [error, setError] = useState(null);
@@ -21211,6 +21234,8 @@ function AppInner() {
   // /#black-friday — the Black Friday 2026 card. Recognises the hash only; the
   // mount below gates (super admin), and the callables are what actually refuse.
   const wantBlackFriday = hash === "#black-friday" || hash === "#black-friday/";
+  // /#concrete-products — the TEMPORARY Concrete Products card (temporaryCards.js).
+  const wantConcreteProducts = CONCRETE_PRODUCTS_CARD && (hash === "#concrete-products" || hash === "#concrete-products/");
   // /#admin/network — NETWORK. Recognises the HASH only and grants nothing;
   // authorization happens at the mount below, and the RTDB rule on /network
   // is what actually refuses the write.
@@ -21506,6 +21531,10 @@ function AppInner() {
     // real account gets the admin sign-in (which only Junid can pass).
     view = (isSuperAdmin || deviceIdentity?.canManageCodes === true)
       ? <DeviceCodesCard isOwner={isSuperAdmin} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantConcreteProducts) {
+    view = canVerifyBrand(authUser, permRecord)
+      ? <ConcreteProductsCardRoute products={products} />
       : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantBlackFriday) {
     view = isSuperAdmin
