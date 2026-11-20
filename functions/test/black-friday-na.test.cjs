@@ -172,3 +172,14 @@ test("architect review: an AI photo with no generation id approves that photo (s
   assert.equal((await read(db, `bf_campaign_2026/picks/${GEN}`)).shown, "https://x/gen.jpg");
   assert.notEqual(await read(db, `new_arrivals/items/${GEN}/useCurrentPhoto`), true);
 });
+
+test("CodeRabbit: Undo of a Reject on an approved New Arrival puts the approval back", async () => {
+  const db = world();
+  await tap(db, { action: "approve", pid: NEW1, sig: "current" });
+  const rj = await tap(db, { action: "reject", pid: NEW1 });
+  assert.equal(await read(db, `new_arrivals/items/${NEW1}/status`), "skipped");
+  const u = await bf.restore(db, rj.undo, "junid", NOW + 10);
+  assert.deepEqual(u.done, [NEW1]);
+  assert.equal(await read(db, `new_arrivals/items/${NEW1}/status`), "approved");
+  assert.equal((await read(db, `bf_campaign_2026/picks/${NEW1}`)).state, "approved");
+});

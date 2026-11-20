@@ -98,7 +98,11 @@ async function naTap(db, pid, action, { sig = null, status }, uid, nowMs) {
   let r = null;
   try {
     if (action === "approve") {
-      if (naCore.APPROVED_LANES.includes(status)) return { noop: true, prev, pick: prev };
+      if (naCore.APPROVED_LANES.includes(status)) {
+        // Already approved in New Arrivals: make sure the pick (and its record) caught up, then nothing to do.
+        const m = await naLib.mirror(db, pid, nowMs, { na: naMod(), ledger });
+        return { noop: true, prev, pick: m.pick || prev };
+      }
       if (sig === "current") { r = await na.useCurrent(db, { pid }, uid, nowMs); if (!r.approved.length) return { refusal: naRefusal(r) }; }
       else {
         r = await na.approve(db, { pids: [pid], ...(sig && core.GEN_RE.test(String(sig)) ? { genId: sig } : {}) }, uid, nowMs);
@@ -108,7 +112,7 @@ async function naTap(db, pid, action, { sig = null, status }, uid, nowMs) {
         }
       }
     } else if (action === "reject") {
-      if (status === "skipped") return { noop: true, prev, pick: prev };
+      if (status === "skipped") { const m = await naLib.mirror(db, pid, nowMs, { na: naMod(), ledger }); return { noop: true, prev, pick: m.pick || prev }; }
       if (naCore.APPROVED_LANES.includes(status)) { const u = await na.unapprove(db, { pid }, uid, nowMs); if (!u.ok) return { refusal: u.why }; }
       r = await na.skip(db, { pids: [pid] }, uid, nowMs);
       if (!r.skippedPids.length) return { refusal: naRefusal(r) };
@@ -194,7 +198,9 @@ async function tap(db, { action, pid, section, use, genId, sig }, uid, nowMs) {
   } else if (action === "approve") {
     const photo = await val(db, `${core.ROOT}/photos/${pid}`);
     if (sig !== undefined && sig !== null && !core.SIG_OK(sig)) throw new HttpsError("invalid-argument", "Which photo?");
-    await revTransaction(pickRef, core.approveMutator({ item, section: sec, photo, uid, nowMs, seenSig: sig || null }, out), out);
+    const res = await revTransaction(pickRef, core.approveMutator({ item, section: sec, photo, uid, nowMs, seenSig: sig || null }, out), out);
+    // The record is of the approval as committed (a later tap may already have changed the pick).
+    if (res && res.committed && !out.noop && !out.refusal) await ledger(db, pid, res.snapshot.val()).catch(() => {});
   } else if (action === "reject") {
     await revTransaction(pickRef, core.rejectMutator({ item, section: sec, uid, nowMs }, out), out);
   } else {
@@ -202,7 +208,6 @@ async function tap(db, { action, pid, section, use, genId, sig }, uid, nowMs) {
   }
   if (out.refusal) return { ok: false, pid, refusal: out.refusal };
   if (!out.noop) {
-    if (action === "approve") await ledger(db, pid, await val(db, `${core.ROOT}/picks/${pid}`)).catch(() => {});
     await log(db, { at: nowMs, by: uid || null, action, pid, ...(use ? { use } : {}), ...(genId ? { genId } : {}) });
     await replan(db, nowMs);
   }
@@ -325,7 +330,14 @@ async function restore(db, items, uid, nowMs) {
         if (Number(cur.at) !== Number(e.expectAt)) { refused.push({ pid, refusal: "it changed since — not undone" }); return; }
         const status = await val(db, `${naCore.ITEMS}/${pid}/status`);
         const r = await naTap(db, pid, "reset", { status }, uid, nowMs);
-        if (r.refusal) refused.push({ pid, refusal: r.refusal }); else done.push(pid);
+        if (r.refusal) { refused.push({ pid, refusal: r.refusal }); return; }
+        // It was approved before (e.g. a Reject is undone): approved again, with the same kind of photo.
+        const prev = e.prev && typeof e.prev === "object" ? e.prev : null;
+        if (prev && prev.state === "approved" && prev.src === "na") {
+          const back = await naTap(db, pid, "approve", { sig: prev.useCurrent ? "current" : "na", status: await val(db, `${naCore.ITEMS}/${pid}/status`) }, uid, nowMs);
+          if (back.refusal) { refused.push({ pid, refusal: back.refusal }); return; }
+        }
+        done.push(pid);
         return;
       }
       const prev = e.prev && typeof e.prev === "object" ? e.prev : null;

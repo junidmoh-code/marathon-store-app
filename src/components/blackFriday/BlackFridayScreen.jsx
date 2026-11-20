@@ -35,6 +35,8 @@ const price = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number
 export function rowActions(r) {
   const na = r.tab === "newArrivals";
   const review = r.tab === "review" || na;
+  // An approved New Arrival's photo is the one New Arrivals approved: no photo switching here (Back to review first).
+  if (r.tab === "approved" && r.src === "na") return { approve: false, approveDisabled: false, reject: true, backToReview: true, useCurrent: false, useCurrentPrimary: false, useAi: false, generate: false, regenerate: false, approveLook: false };
   const canGen = r.canGenerate !== false;
   return {
     approve: review,
@@ -247,7 +249,7 @@ export default function BlackFridayScreen({ api, onExit }) {
     // Back on the tab that holds the ticks (a recovered selection is shown on To review).
     const naPids = new Set((main.newArrivals || []).map((r) => r.pid));
     const allNa = [...m.keys()].every((pid) => naPids.has(pid));
-    setTab(allNa && !main.selection.label ? "newArrivals" : (main.approved || []).some((r) => m.has(r.pid)) && ![...m.keys()].some((pid) => (main.review || []).some((r) => r.pid === pid) || naPids.has(pid)) ? "approved" : "review");
+    setTab(allNa ? "newArrivals" : (main.approved || []).some((r) => m.has(r.pid)) && ![...m.keys()].some((pid) => (main.review || []).some((r) => r.pid === pid) || naPids.has(pid)) ? "approved" : "review");
     if (main.selection.label) { setSelLabel(main.selection.label); setOnlySel(true); }
     else setNote(`${m.size} selected — your selection was kept`);
   }, [main]);
@@ -414,7 +416,7 @@ export default function BlackFridayScreen({ api, onExit }) {
               <button data-testid="tab-review" aria-pressed={tab === "review"} onClick={() => { setTab("review"); clearSel(); }} style={{ ...(tab === "review" ? bBlue : bGray), flex: 1, padding: "8px 4px", fontSize: 13 }}>To review ({nReview})</button>
               <button data-testid="tab-approved" aria-pressed={tab === "approved"} onClick={() => { setTab("approved"); clearSel(); }} style={{ ...(tab === "approved" ? bBlue : bGray), flex: 1, padding: "8px 4px", fontSize: 13 }}>Approved ({nApproved})</button>
             </div>
-            {selLabel && selected.size > 0 && tab === "review" && (
+            {selLabel && selected.size > 0 && (tab === "review" || tab === "newArrivals") && (
               <div data-testid="recovered" style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, padding: "8px 10px", borderRadius: 10, background: "rgba(74,127,255,.14)", border: `1px solid ${BLUE_L}` }}>
                 <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{selLabel} ({selected.size}) <span style={{ display: "block", fontSize: 11, fontWeight: 400, color: GRAY }}>All ticked. Untick any mistakes, then Approve all.</span></div>
                 <button data-testid="recovered-toggle" onClick={() => setOnlySel(!onlySel)} style={{ ...bGray, padding: "6px 10px", fontSize: 12 }}>{onlySel ? "Show all" : "Show only these"}</button>
@@ -455,7 +457,7 @@ export default function BlackFridayScreen({ api, onExit }) {
           <div onClick={(e) => e.stopPropagation()} style={{ ...GLASS, background: "#151924", width: "100%", maxWidth: 520, padding: 16, borderRadius: "16px 16px 0 0", paddingBottom: "max(16px, env(safe-area-inset-bottom))" }}>
             <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{quick.name}</div>
             <div style={{ display: "flex", gap: 10 }}>
-              {quick.canGenerate !== false && <button data-testid="quick-generate" disabled={!!gens[quick.pid] || quick.generating} onClick={() => { const r = quick; setQuick(null); generate(r); }} style={{ ...bBlue, flex: 1, minHeight: 56, fontSize: 16 }}>{quick.generations ? "Regenerate" : "Generate"}</button>}
+              {quick.canGenerate !== false && (quick.tab === "review" || quick.tab === "newArrivals") && <button data-testid="quick-generate" disabled={!!gens[quick.pid] || quick.generating} onClick={() => { const r = quick; setQuick(null); generate(r); }} style={{ ...bBlue, flex: 1, minHeight: 56, fontSize: 16 }}>{quick.generations ? "Regenerate" : "Generate"}</button>}
               {(quick.tab === "review" || quick.tab === "newArrivals") && <button data-testid="quick-approve" disabled={busy || quick.generating} onClick={() => { const r = quick; setQuick(null); on.approve(r); }} style={{ ...bGreen, flex: 1, minHeight: 56, fontSize: 16 }}>Approve</button>}
             </div>
           </div>

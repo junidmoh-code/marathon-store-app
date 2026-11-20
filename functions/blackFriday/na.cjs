@@ -76,6 +76,8 @@ const NEW = naCore.NEW_LANES;
 function mirrorPick(pid, item, facts, cur, { inWindow = false } = {}) {
   const status = item && item.status;
   const ours = !!cur && cur.src === "na";
+  // A decision Junid made on the Black Friday card itself (not mirrored) is never overwritten from New Arrivals.
+  if (cur && cur.state && !ours) return undefined;
   if (status && APPROVED.includes(status)) {
     const at = Number(item.approvedAt) || 0;
     // An approval made before the campaign (even of a product still in the 20-day window) is not a
@@ -214,13 +216,27 @@ async function factsOf(db, pid, nowMs, na) {
 }
 
 /** Bring the Black Friday pick in line with the New Arrivals item (one approval). → { changed, pick } */
-async function mirror(db, pid, nowMs, { na = require("../newArrivals/newArrivals.js"), ledger = null } = {}) {
+async function mirror(db, pid, nowMs, opts = {}) {
+  // The item may move while this runs (an un-approve right after an approve): settle on the item as it ends up.
+  let out = { changed: false };
+  for (let i = 0; i < 3; i++) {
+    const before = await val(db, `${naCore.ITEMS}/${pid}/status`);
+    out = await mirrorOnce(db, pid, nowMs, opts);
+    if ((await val(db, `${naCore.ITEMS}/${pid}/status`)) === before) break;
+  }
+  return out;
+}
+async function mirrorOnce(db, pid, nowMs, { na = require("../newArrivals/newArrivals.js"), ledger = null } = {}) {
   const item = await val(db, `${naCore.ITEMS}/${pid}`);
   if (!item) return { changed: false };
   const inWindow = String(pid) >= naCore.windowStartKey(nowMs);
   const ref = db.ref(`${ROOT}/picks/${pid}`);
   const cur0 = await val(db, `${ROOT}/picks/${pid}`);
-  if (mirrorPick(pid, item, {}, cur0, { inWindow }) === undefined) return { changed: false, pick: cur0 };
+  if (mirrorPick(pid, item, {}, cur0, { inWindow }) === undefined) {
+    // Nothing to change — but a mirrored approval whose permanent record is missing gets it now.
+    if (ledger && cur0 && cur0.src === "na" && cur0.state === "approved") await ledger(db, pid, cur0).catch(() => {});
+    return { changed: false, pick: cur0 };
+  }
   const facts = await factsOf(db, pid, nowMs, na);
   let wrote = null;
   const res = await ref.transaction((cur) => {
