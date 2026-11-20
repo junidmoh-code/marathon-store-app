@@ -30,9 +30,11 @@ export const FITTED_CAPS_KEY = "fitted-caps";
 const HEADWEAR_KEYS = new Set([CAPS_BEANIES_KEY, FITTED_CAPS_KEY, "visors"]);
 
 const BEANIE = /\bbeanies?\b/i;
-const BUCKET_HAT = /\bbucket\s*hats?\b/i;
+const BUCKET_HAT = /\bbucket[\s-]*hats?\b/i;
 const CAP = /\bcaps?\b/i;
-const NOT_NORMAL = /\bvisors?\b|\bfitted\b|\b59\s*fifty\b|\bcap\s*sleeves?\b/i;
+// Not headwear we sell as caps: cap-sleeve garments, cap-toe shoes, swim /
+// shower caps, lens and bottle caps.
+const NOT_NORMAL = /\bvisors?\b|\bfitted\b|\b59\s*fifty\b|\bcap[\s-]*sleeves?\b|\bcap[\s-]*toe\b|\b(swim|swimming|shower|lens|bottle)[\s-]*caps?\b/i;
 
 /** "beanie" | "bucket-hat" | "cap" | null — null for anything else, visors and fitted caps included. */
 export function normalHeadwearKind(name) {

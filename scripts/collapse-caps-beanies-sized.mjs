@@ -58,7 +58,8 @@ const EXECUTE = process.argv.includes("--execute");
 const ONLY = (process.argv.find((a) => a.startsWith("--only=")) || "").slice(7).split(",").filter(Boolean);
 const CAPS = "caps-beanies";
 const isOneSizeP = (p) => Array.isArray(p?.sizes) && p.sizes.length === 1 && String(p.sizes[0]) === "_";
-const isInScope = (p) => !!p && !p.mergedInto && p.categoryKey === CAPS && !!normalHeadwearKind(p.name) && !isOneSizeP(p);
+const keyOf = (p) => (typeof p?.categoryKey === "string" ? p.categoryKey.trim() : "");
+const isInScope = (p) => !!p && !p.mergedInto && keyOf(p) === CAPS && !!normalHeadwearKind(p.name) && !isOneSizeP(p);
 const SNAP = process.env.SNAPSHOT_PATH || join(homedir(), `caps-beanies-collapse-rollback-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
 
 // The locations under /stock and /stock_targets, listed shallowly once.
@@ -67,6 +68,9 @@ let TARGET_LOCS = [];
 let FOCUS = [];   // the product(s) whose by-key view io.read("stock") serves
 const realRead = (p) => db.ref(p).once("value").then((s) => s.val());
 async function scopedView(root, locs, pids) {
+  // An empty focus would answer "nothing there" — and assertDrained would read
+  // that as drained. Refuse instead of failing open.
+  if (!pids.length) throw new Error(`by-key view of /${root} asked with no product in focus`);
   const out = {};
   await Promise.all(locs.flatMap((loc) => pids.map(async (pid) => {
     const v = await realRead(`${root}/${loc}/${pid}`);
@@ -166,7 +170,7 @@ function hasPrivilegedCredential(app) {
   [STOCK_LOCS, TARGET_LOCS] = await Promise.all([shallowKeys(app, "stock"), shallowKeys(app, "stock_targets")]);
   const products = await readMapPaged(db, "products", { pageSize: 500 });
   // Name-ambiguous caps-beanies records: listed with evidence, never collapsed.
-  const ambiguous = Object.entries(products).filter(([, p]) => p && !p.mergedInto && p.categoryKey === CAPS && !normalHeadwearKind(p.name));
+  const ambiguous = Object.entries(products).filter(([, p]) => p && !p.mergedInto && keyOf(p) === CAPS && !normalHeadwearKind(p.name));
   console.log(`\n  NAME-AMBIGUOUS caps-beanies records (listed, NOT collapsed): ${ambiguous.length}`);
   for (const [pid, p] of ambiguous) {
     const forCap = [`categoryKey caps-beanies`, p.subcategory === "Caps & Hats" ? "on the Caps & Hats shelf" : null].filter(Boolean).join("; ");
@@ -174,6 +178,7 @@ function hasPrivilegedCredential(app) {
     console.log(`     ${pid}  ${JSON.stringify(p.name)}  sizes=${JSON.stringify(p.sizes)}  FOR: ${forCap}  AGAINST: ${against}`);
   }
   const scopePids = Object.entries(products).filter(([, p]) => isInScope(p)).map(([pid]) => pid);
+  if (!scopePids.length) { console.log("  nothing in scope — every normal caps-beanies product is already one size."); process.exit(0); }
   FOCUS = scopePids;
   const [stock, allTargets, barcodesIdx, transfers, orders, refillRequests, openLocks, dcActive, session, movements] = await Promise.all([
     io.read("stock"), io.read("stock_targets"), readMapPaged(db, "barcodes", { pageSize: 2000 }),
@@ -421,6 +426,10 @@ function hasPrivilegedCredential(app) {
     // isInScope and Step 2 then RECREATES products/{pid} holding only `sizes`
     // and `barcodes` — a record with no inner `id`, which the app hides from
     // every list. A missing product gates instead. (Review of PR #345.)
+    // Re-list the locations per product: a location that gained a cell for
+    // this product mid-run must be seen by the fresh read, the drain check and
+    // the verify.
+    [STOCK_LOCS, TARGET_LOCS] = await Promise.all([shallowKeys(app, "stock"), shallowKeys(app, "stock_targets")]);
     const pLive = await io.read(`products/${pid}`);
     const p = pLive || pStart;
     const name = p.name || pid;
@@ -604,7 +613,12 @@ function hasPrivilegedCredential(app) {
         // Only ids THIS run actually applied — an idempotent no-op means the id
         // belongs to an earlier run and must NOT be excluded from that run's
         // rollback activity check.
-        if (!r.idempotent) appliedMovementIds.push(r.movementId);
+        if (!r.idempotent) {
+          appliedMovementIds.push(r.movementId);
+          // Persisted at once: a crash or an early exit must still leave a
+          // rollback that knows which movements this run applied.
+          writeFileSync(SNAP, JSON.stringify({ ...snapshot, appliedMovementIds }, null, 2));
+        }
       }
       if (failed) break;
     }
@@ -663,7 +677,7 @@ function hasPrivilegedCredential(app) {
     // Final proof: network totals must be unchanged for the products this run
     // actually touched, measured against the fresh per-product baselines.
     FOCUS = [...baselinePids];
-    const stockAfter = (await io.read("stock")) || {};
+    const stockAfter = FOCUS.length ? ((await io.read("stock")) || {}) : {};
     const totalsAfter = {};
     for (const [loc, byPid] of Object.entries(stockAfter)) {
       for (const pid of baselinePids) {

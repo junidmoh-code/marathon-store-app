@@ -211,6 +211,9 @@ const mapUsable = (cat, entry) => cat.perSize === true
 // effectiveCategoryKey, the browser twin of policyCategoryKey); the trim here
 // is the backstop. Groups are consulted only when the caller hands them in.
 // Pinned against the engine by solvePlan.engineParity.test.js.
+// carriedOnly is deliberately NOT applied: it scopes the engine to locations
+// that already hold a cell, and Solve's own write IS that cell (the seed), so
+// "would the engine refill what I am about to seed" is answered without it.
 function entryFor(policy, categoryKey, policyGroups) {
   const key = typeof categoryKey === "string" ? categoryKey.trim() : "";
   if (!key) return null;

@@ -6519,13 +6519,15 @@ function AdminView({ products, orders, onExit }) {
     // 2026 — utils/headwearCategory.js). From another one-size category the
     // builder re-files it silently (same "_" size, nothing typed is lost).
     // From a SIZED category the typed quantities are keyed by sizes the product
-    // will not have, so the form switches to Caps & Beanies here and asks for
-    // the one quantity again rather than guess which size's number to keep.
+    // will not have, so the form offers to switch to Caps & Beanies and asks
+    // for the one quantity again rather than guess which size's number to
+    // keep. Cancel keeps the chosen category (a name the rule misreads must
+    // never block a save).
     {
       const fixKey = headwearCategoryKeyFor(form.name, form.categoryKey);
-      if (fixKey && !formOneSize && isAssignable(taxonomy, fixKey)) {
+      if (fixKey && !formOneSize && isAssignable(taxonomy, fixKey)
+          && window.confirm("Caps, beanies and bucket hats are Caps & Beanies, one size. Switch the category to Caps & Beanies? (You will enter the quantity once more.)\n\nCancel keeps the category you picked.")) {
         selectCategory(fixKey);
-        alert("Caps, beanies and bucket hats are always Caps & Beanies, one size. The category has been switched — enter the quantity again and save.");
         return;
       }
     }

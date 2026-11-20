@@ -18,6 +18,7 @@ describe("normalHeadwearKind", () => {
     expect(normalHeadwearKind("Nike cap white")).toBe("cap");
     expect(normalHeadwearKind("NIKE CAPS")).toBe("cap");
     expect(normalHeadwearKind("Lacoste bucket hat navy blue")).toBe("bucket-hat");
+    expect(normalHeadwearKind("Nike bucket-hat green")).toBe("bucket-hat");
     expect(normalHeadwearKind("Nike buckethat")).toBe("bucket-hat"); // run together still counts
   });
   it("never claims a visor, a fitted cap or a cap-sleeve garment", () => {
@@ -25,6 +26,12 @@ describe("normalHeadwearKind", () => {
     expect(normalHeadwearKind("NY fitted cap black -1")).toBe(null);
     expect(normalHeadwearKind("New Era 59FIFTY Detroit Tigers cap")).toBe(null);
     expect(normalHeadwearKind("Zara cap sleeve top")).toBe(null);
+    expect(normalHeadwearKind("Zara cap-sleeve dress")).toBe(null);
+    expect(normalHeadwearKind("Cap toe oxford")).toBe(null);
+    expect(normalHeadwearKind("Speedo swim cap")).toBe(null);
+    expect(normalHeadwearKind("Shower cap")).toBe(null);
+    expect(normalHeadwearKind("Camera lens cap")).toBe(null);
+    expect(normalHeadwearKind("Bottle cap tee")).toBe(null);
   });
   it("is not fooled by words that merely start with cap", () => {
     expect(normalHeadwearKind("Nike capri pants")).toBe(null);
@@ -65,8 +72,10 @@ describe("buildNewProduct — the creation path that produced the bad records", 
   it("every live mis-filed name comes out as caps-beanies", () => {
     for (const name of LIVE_MISFILED) expect(buildNewProduct(TAXONOMY_SEED, form({ name }), { id: "p1" }).categoryKey).toBe("caps-beanies");
   });
-  it("refuses a headwear name on a SIZED category (the form switches it first)", () => {
-    expect(buildNewProduct(TAXONOMY_SEED, form({ name: "Nike beanie", categoryKey: "t-shirts", sizeRun: ["M"] }), { id: "p1" })).toBe(null);
+  it("leaves a headwear name on a SIZED category as chosen (the form asks first; the operator kept it)", () => {
+    const p = buildNewProduct(TAXONOMY_SEED, form({ name: "Nike beanie", categoryKey: "t-shirts", sizeRun: ["M"] }), { id: "p1" });
+    expect(p.categoryKey).toBe("t-shirts");
+    expect(p.sizes).toEqual(["M"]);
   });
   it("fitted caps keep their own key and sizes", () => {
     const p = buildNewProduct(TAXONOMY_SEED, form({ name: "NY fitted cap black", categoryKey: "fitted-caps", sizeRun: ["57", "58"] }), { id: "p1" });

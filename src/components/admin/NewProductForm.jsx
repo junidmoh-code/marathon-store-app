@@ -219,7 +219,9 @@ export default function NewProductForm({
             correction is never a surprise on the product page. */}
         {catOk && headwearCategoryKeyFor(form.name, form.categoryKey) && (
           <div style={{ marginTop: 8, fontSize: 12.5, color: "#FBBF24", fontWeight: 600 }}>
-            This will be saved as Caps &amp; Beanies, one size — caps, beanies and bucket hats always are.
+            {formOneSize
+              ? "This will be saved as Caps & Beanies, one size — caps, beanies and bucket hats always are."
+              : "Caps, beanies and bucket hats are Caps & Beanies, one size — you will be asked to switch when you save."}
           </div>
         )}
       </div>

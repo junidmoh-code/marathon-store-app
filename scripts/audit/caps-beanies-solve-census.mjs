@@ -39,6 +39,7 @@ const { solveHubFor, storeIds } = await import("../../src/components/stock/secti
 const { normalizeNetwork } = await import("../../src/utils/networkRegistry.js");
 const { setCurrentNetworkFromRaw } = await import("../../src/utils/networkStore.js");
 const { decodedCellKey } = await import("../../src/utils/sizeKey.js");
+const { effectiveCategoryKey } = await import("../../src/utils/productTaxonomy.js");
 
 const app = admin.initializeApp({
   credential: admin.credential.applicationDefault(),
@@ -99,7 +100,7 @@ function mirror(pid) {
   const run = resolvedRun({
     std: ruleEligible ? (pcfg?.defaultRunByStore || {}) : {}, subRun: ruleEligible ? pcfg?.subcategoryRunByLocation : undefined,
     subcategory: p.subcategory, sizes, targets, pid, ruleBasedTargets: pcfg?.ruleBasedTargets,
-    categoryPolicy: pcfg?.categoryPolicy, categoryKey: p.categoryKey,
+    categoryPolicy: pcfg?.categoryPolicy, policyGroups: pcfg?.policyGroups, categoryKey: effectiveCategoryKey(p),
     unitsAnywhere: (sz) => Object.keys(allStockDecoded).reduce((t, loc) => t + qtyAt(loc, sz), 0),
   });
   const card = cardOf.get(pid) || { pid, source: "central", units: 1 };

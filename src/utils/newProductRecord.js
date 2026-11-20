@@ -65,12 +65,13 @@ export function buildNewProduct(registry, formIn, extras = {}) {
   // the one builder every new product passes through, but only from one
   // one-size category to another: the size stays the "_" sentinel, so the
   // opening stock (keyed "_") and the minted barcode stay valid. A headwear
-  // name on a SIZED category is refused (null) — App.jsx switches the form to
-  // Caps & Beanies before it gets here, so this is the backstop, never the path.
-  const fixKey = headwearCategoryKeyFor(formIn && formIn.name, formIn && formIn.categoryKey);
+  // name on a SIZED category is left as chosen: App.jsx asks the operator
+  // first (the typed letter quantities cannot be guessed into "_"), so
+  // reaching here with one means they kept it deliberately.
+  let fixKey = headwearCategoryKeyFor(formIn && formIn.name, formIn && formIn.categoryKey);
   if (fixKey) {
     const chosen = catByKey(registry, formIn.categoryKey);
-    if (!chosen || !isOneSize(chosen) || !legacyFor(registry, fixKey)) return null;
+    if (!chosen || !isOneSize(chosen) || !legacyFor(registry, fixKey)) fixKey = null;
   }
   const form = fixKey ? { ...formIn, categoryKey: fixKey } : formIn;
   const cat = catByKey(registry, form && form.categoryKey);
