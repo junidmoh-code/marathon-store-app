@@ -9789,7 +9789,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
 // ─── ASSISTANT LABEL FINDER — lives in components/assistant/AssistantLabelFinder.jsx
 // (lifted out 2026-08-23 so it renders in a test like every other label surface).
 
-function AssistantView({ products, onExit, orders = [] }) {
+export function AssistantView({ products, onExit, orders = [] }) {
   // The tongue-label finder (owner fix 4): a small overlay, visually secondary
   // to search — a shortcut, not the main path.
   const [labelFinderOpen, setLabelFinderOpen] = useState(false);
