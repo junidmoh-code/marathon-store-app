@@ -485,7 +485,9 @@ test("POSTING BRAIN: the card reads brain/view and writes only brain/control (Pa
   await _internals.brainSlot(db, { day: "2026-11-21", i: 1, at: "14:15" }, "junid", 2);
   assert.equal((await _internals.brainView(db)).overrides["2026-11-21"][1], "14:15");
   await assert.rejects(_internals.brainSlot(db, { day: "2026-11-21", i: 1, at: "23:00" }, "junid", 3), /never 22:00/);
-  await assert.rejects(_internals.brainSlot(db, { day: "2026-12-01", i: 1, at: "10:00" }, "junid", 3), /day of the campaign/);
+  await _internals.brainSlot(db, { day: "2026-12-01", i: 1, at: "10:00" }, "junid", 3); // ongoing daily plan: no end date
+  await assert.rejects(_internals.brainSlot(db, { day: "2026-11-18", i: 1, at: "10:00" }, "junid", 3), /day of the plan/);
+  await assert.rejects(_internals.brainSlot(db, { day: "2026-12-01", i: 8, at: "10:00" }, "junid", 3), /Slot 0–7/);
 });
 
 test("CAPTION (Junid 20 Nov): two lines, every in-stock size, never a range", () => {
