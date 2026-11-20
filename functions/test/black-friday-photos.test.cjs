@@ -241,7 +241,10 @@ test("Find online: the search words are brand + name + colour + style code, each
 
 test("Find online: only public https addresses are ever fetched (private, loopback, metadata, other ports and http refused; redirects checked)", async () => {
   for (const ip of ["10.0.0.1", "127.0.0.1", "169.254.169.254", "172.16.5.4", "192.168.1.1", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1"]) assert.equal(web.isPrivateIp(ip), true, ip);
-  for (const ip of ["8.8.8.8", "151.101.1.1", "2606:4700::1111"]) assert.equal(web.isPrivateIp(ip), false, ip);
+  for (const ip of ["8.8.8.8", "151.101.1.1", "2606:4700::1111", "::ffff:8.8.8.8", "2002:808:808::1"]) assert.equal(web.isPrivateIp(ip), false, ip);
+  // IPv4 inside IPv6 in its hex spelling (what new URL() turns [::ffff:127.0.0.1] into) — reviewer's finding.
+  for (const ip of ["::ffff:7f00:1", "::ffff:a9fe:a9fe", "::7f00:1", "2002:7f00:1::", "2002:a9fe:a9fe::1", "64:ff9b::a9fe:a9fe", "0:0:0:0:0:0:0:1", "::"]) assert.equal(web.isPrivateIp(ip), true, ip);
+  for (const u of ["https://[::ffff:127.0.0.1]/x", "https://[::ffff:a9fe:a9fe]/x", "https://[::7f00:1]/x", "https://[2002:7f00:1::]/x"]) assert.throws(() => web.checkUrl(u), u);
   for (const u of ["http://shop.example/x.jpg", "https://169.254.169.254/x", "https://metadata.google.internal/x", "https://localhost/x", "https://shop.example:8443/x", "https://u:p@shop.example/x", "file:///etc/passwd"]) assert.throws(() => web.checkUrl(u), u);
   const lookup = async (h) => (h === "evil.example" ? [{ address: "10.1.2.3", family: 4 }] : [{ address: "93.184.216.34", family: 4 }]);
   await assert.rejects(() => web.safeFetch("https://evil.example/x.jpg", { maxBytes: 100, lookup, fetchImpl: async () => { throw new Error("must not fetch"); } }), /not public/);
@@ -299,4 +302,20 @@ test("Find online: candidates come from the grounded pages' own photos, one site
   assert.ok(uploads[uploads.length - 1].buf.equals(bigB), "the photo exactly as the site serves it");
   const row = (await bf.list(db)).review.find((x) => x.pid === "c");
   assert.deepEqual([row.shownFrom, row.gallery[1].label, row.gallery[1].pageUrl], ["web", "From b.example", "https://b.example/p"]);
+});
+
+test("a New Arrival approved on the Black Friday card (his photo) is rejected / taken back as a Black Friday decision — the pick follows, nothing posts", async () => {
+  const db = naWorld();
+  const naRow = (pid) => naLib.campaignRowOfNa(db, pid, NOW, require("../newArrivals/newArrivals.js"));
+  const { id } = await src.upload(db, { pid: NA1, imageBase64: (await jpeg(900, 900)).toString("base64") }, "junid", deps({ naRow }));
+  await bf.tap(db, { action: "approve", pid: NA1, sig: id }, "junid", NOW);
+  const rj = await bf.tap(db, { action: "reject", pid: NA1 }, "junid", NOW + 1);
+  assert.equal(rj.ok, true);
+  assert.equal((await read(db, `${R}/picks/${NA1}`)).state, "rejected");
+  assert.deepEqual(Object.keys(core.toPost(await read(db, `${R}/picks`), await read(db, `${R}/photos`), {})), []);
+  await bf.tap(db, { action: "reset", pid: NA1 }, "junid", NOW + 2);
+  await bf.tap(db, { action: "approve", pid: NA1, sig: id }, "junid", NOW + 3);
+  const m = await bf.many(db, "reject", [NA1], "junid", NOW + 4);
+  assert.deepEqual(m.done, [NA1]);
+  assert.equal((await read(db, `${R}/picks/${NA1}`)).state, "rejected");
 });

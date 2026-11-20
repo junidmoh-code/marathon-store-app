@@ -57,20 +57,43 @@ function searchPrompt(query) {
 }
 
 // ── public addresses only ────────────────────────────────────────────────────
-/** Is this IP address a private, loopback, link-local, CGNAT, multicast or reserved one? Pure. */
+/** An IPv6 address as 8 numbers (any spelling: "::", embedded dotted IPv4, hex), or null. Pure. */
+function v6Groups(ip) {
+  let x = String(ip).toLowerCase().split("%")[0];
+  const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(x);
+  if (dotted) {
+    const b = dotted[1].split(".").map(Number);
+    if (b.some((n) => n > 255)) return null;
+    x = x.slice(0, -dotted[1].length) + `${((b[0] << 8) | b[1]).toString(16)}:${((b[2] << 8) | b[3]).toString(16)}`;
+  }
+  const halves = x.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [], tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0) return null;
+  const g = [...head, ...Array(fill).fill("0"), ...tail].map((h) => parseInt(h, 16));
+  return g.length === 8 && g.every((n) => Number.isInteger(n) && n >= 0 && n <= 0xffff) ? g : null;
+}
+const v4Of = (hi, lo) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+/** Is this IP address a private, loopback, link-local, CGNAT, multicast or reserved one — in ANY spelling? Pure. */
 function isPrivateIp(ip) {
-  const v = net.isIP(ip);
+  const v = net.isIP(String(ip).split("%")[0]);
   if (v === 4) {
     const [a, b] = ip.split(".").map(Number);
     return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
       || (a === 100 && b >= 64 && b <= 127) || (a === 192 && b === 0) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
   }
   if (v === 6) {
-    const x = ip.toLowerCase();
-    if (x === "::" || x === "::1") return true;
-    const m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(x);
-    if (m) return isPrivateIp(m[1]);
-    return /^(fc|fd|fe8|fe9|fea|feb|ff)/.test(x) || x.startsWith("64:ff9b:") || x.startsWith("2001:db8");
+    const g = v6Groups(ip);
+    if (!g) return true;
+    // An IPv4 address inside IPv6 (::a.b.c.d, ::ffff:a.b.c.d in any spelling, 6to4 2002::/16, NAT64 64:ff9b::/96): judged as that IPv4.
+    if (g.slice(0, 5).every((n) => n === 0) && (g[5] === 0 || g[5] === 0xffff)) return g[6] === 0 && g[7] <= 1 && g[5] === 0 ? true : isPrivateIp(v4Of(g[6], g[7]));
+    if (g[0] === 0x2002) return isPrivateIp(v4Of(g[1], g[2]));
+    if (g[0] === 0x64 && g[1] === 0xff9b) return true;
+    if ((g[0] & 0xfe00) === 0xfc00 || (g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xff00) === 0xff00) return true; // unique-local, link-local, multicast
+    if (g[0] === 0x2001 && g[1] === 0xdb8) return true; // documentation
+    if (g[0] === 0x100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true; // discard
+    return false;
   }
   return true;
 }
@@ -255,4 +278,4 @@ async function findCandidates(product, deps = {}) {
   return { query, candidates: out.map(({ print, ...c }) => c), entryPoint: g.entryPoint, searched: g.queries }; // eslint-disable-line no-unused-vars
 }
 
-module.exports = { samePrint, SEARCH_MODEL, MAX_CANDIDATES, IMAGE_MAX_BYTES, queryOf, searchPrompt, isPrivateIp, checkUrl, checkHost, safeFetch, imagesFromHtml, siteOf, groundedPages, realPageUrl, findCandidates };
+module.exports = { v6Groups, samePrint, SEARCH_MODEL, MAX_CANDIDATES, IMAGE_MAX_BYTES, queryOf, searchPrompt, isPrivateIp, checkUrl, checkHost, safeFetch, imagesFromHtml, siteOf, groundedPages, realPageUrl, findCandidates };
