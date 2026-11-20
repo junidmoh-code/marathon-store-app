@@ -39,7 +39,14 @@ const MARATHON_FIELDS = ["desiredState", "updatedAt", "updatedBy", "lastOff", "o
 
 let offset = null;
 async function serverNow() {
-  if (offset == null) offset = Number((await db.ref(".info/serverTimeOffset").get()).val()) || 0;
+  // once("value"), never get(): /.info is not a server path (get() rejects
+  // "Invalid token in path"). Bounded, as publishNode.serverNowMs is.
+  if (offset == null) {
+    offset = Number(await Promise.race([
+      db.ref(".info/serverTimeOffset").once("value").then((s) => s.val()),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("no connection handshake in 10s — nothing written")), 10_000).unref?.()),
+    ])) || 0;
+  }
   return Date.now() + offset;
 }
 
