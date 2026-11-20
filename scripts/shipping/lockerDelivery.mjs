@@ -14,8 +14,11 @@
 //                 set it (rebook-locker.mjs --parcels). Pickup-point shipments
 //                 carry ONE parcel each (TCG doc), so N parcels are N shipments
 //                 to the SAME locker. Size never refuses a booking.
-//   the locker    the customer's address geocoded (bookReturn.mjs geocode:
-//                 OpenStreetMap, the street first, then the suburb/town), then
+//   the locker    the customer's address placed on the map (placeAddress:
+//                 OpenStreetMap, the street first; a street it does not know —
+//                 most of ours — is placed by its POSTAL CODE, which in a city
+//                 is far nearer the customer than the town's centre; failing
+//                 that the suburb/town), then
 //                 GET /pickup-points nearest first: online, listed, with a
 //                 compartment the parcel fits. The nearest that PRICES wins
 //                 (locker.tryLockers are tried). shipping/lockerChoice/id on
@@ -50,6 +53,31 @@ const str = (v) => String(v ?? "").trim();
 const pos = (v, fallback) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : fallback);
 const finiteOrNull = (n) => (Number.isFinite(Number(n)) ? Number(n) : null);
 
+/**
+ * The customer's address → { lat, lng, from, by: "street" | "postcode" | "town" } | null.
+ * bookReturn's geocode finds the street, or falls back to the suburb/town. Most
+ * of our streets are not on OpenStreetMap, and "the centre of Soweto" is a poor
+ * stand-in for a customer's home: the postal code's own point is asked for
+ * first when the street is unknown (1804 lands 5 km from Soweto's centre).
+ */
+export async function placeAddress(address, { fetchImpl = globalThis.fetch, base = geocode, wait = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  const at = await base(address, { fetchImpl });
+  if (at && placedByStreet(address, at)) return { ...at, by: "street" };
+  const code = str(address?.code);
+  if (/^\d{4}$/.test(code)) {
+    try {
+      await wait(1100); // Nominatim's policy: at most one request a second
+      const res = await fetchImpl(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=za&limit=1&postalcode=${code}`, {
+        headers: { "User-Agent": "marathon-club-shipping/1.0", Accept: "application/json" },
+        signal: AbortSignal.timeout(10000),
+      });
+      const hit = res.ok ? (await res.json())?.[0] : null;
+      if (hit && Number.isFinite(Number(hit.lat)) && Number.isFinite(Number(hit.lon))) return { lat: Number(hit.lat), lng: Number(hit.lon), from: `postal code ${code}`, by: "postcode" };
+    } catch { /* the town's point, below */ }
+  }
+  return at ? { ...at, by: "town" } : null;
+}
+
 /** The one parcel every booking declares. Pure. */
 export function oneShoe(cfg) {
   const p = cfg?.locker?.parcel ?? {};
@@ -76,7 +104,7 @@ async function rates(client, body) {
  * → { ok: true, payload, payloads, parcel, chosen, quoted, ref, liveBlockers, overCeiling: null, quotes, locker, doorQuote }
  *   | { ok: false, reason, attention?, junidLine?, transient?, parcel }
  */
-export async function planLockerDelivery({ order, key = "<orderKey>", cfg, client, estimate, address, contact, ref, liveBlockers, geocoder = geocode }) {
+export async function planLockerDelivery({ order, key = "<orderKey>", cfg, client, estimate, address, contact, ref, liveBlockers, geocoder = placeAddress }) {
   const lk = cfg.locker ?? {};
   const shoe = oneShoe(cfg);
   const count = lockerParcelCount(order, estimate);
@@ -113,7 +141,8 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
   try { lockers = await nearestLockers(client, at, size); }
   catch (err) { return { ok: false, transient: true, parcel, reason: `the locker list could not be read (${str(err?.message || err).slice(0, 200)})` }; }
 
-  const byStreet = placedByStreet(address, at);
+  const placedBy = at.by ?? (placedByStreet(address, at) ? "street" : "town");
+  const byStreet = placedBy === "street";
   const limit = byStreet ? pos(lk.maxKm, 30) : pos(lk.maxTownKm, 20);
   const chosenId = str(order?.shipping?.lockerChoice?.id);
   let candidates;
@@ -129,7 +158,7 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
       const nearest = lockers[0];
       return refuse(`no Courier Guy locker within ${limit} km of ${town}` +
         (nearest ? ` (the nearest, ${nearest.name}, is ${nearest.km ?? "?"} km away)` : "") +
-        (byStreet ? "" : "; only the town could be placed on the map"));
+        (byStreet ? "" : `; only the ${placedBy === "postcode" ? "postal code" : "town"} could be placed on the map`));
     }
   }
 
@@ -179,7 +208,7 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
   const collectionContact = cfg.collectionContact ?? {};
   const locker = {
     ...found.locker,
-    placedBy: byStreet ? "street" : "town",
+    placedBy,
     ...(chosenId ? { chosenBy: str(order?.shipping?.lockerChoice?.by) || "hand" } : {}),
     // The PIN goes by SMS to this number when the parcel lands (a wrong number means no PIN: #1671).
     smsTo: str(contact?.mobile_number) || null,

@@ -4,7 +4,7 @@
 // old booking, unchanged.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { bookShipment, cancelShipment, planShipment } from "./bookShipment.mjs";
-import { lockerParcelCount, oneShoe, NO_CODE_NOTE } from "./lockerDelivery.mjs";
+import { lockerParcelCount, oneShoe, placeAddress, NO_CODE_NOTE } from "./lockerDelivery.mjs";
 import { rebookLocker, UNCOLLECTED } from "./rebook-locker.mjs";
 import { reconcileOrder, runReconcile, shipmentsOf } from "./reconcile.mjs";
 import { adjustmentLines } from "./courier-recon.mjs";
@@ -531,6 +531,41 @@ describe("the billed-vs-booked adjustment, on the order", () => {
     expect((await runReconcile({ db: rooted(d), client, sendJunid: async () => true, now: NOW })).reconciled).toBe(1);
     expect(d.root.online_orders["1001"].shipping.adjustment).toMatchObject({ booked: 260.62, billed: 323.03, diff: 62.41, waybills: ["WB1", "WB2"], parts: [{ waybill: "WB1", diff: 62.41 }, { waybill: "WB2", diff: 0 }] });
     expect(d.root.shipping_recon.diffs.WB1).toMatchObject({ waybill: "WB1", invoiced: 192.72 });
+  });
+});
+
+describe("placeAddress: the street, else the postal code's own point, else the town", () => {
+  const ADDRESS = { street_address: "12 Carmichael Street", local_area: "", city: "Soweto", code: "1804" };
+  const hit = (lat, lon) => ({ ok: true, json: async () => [{ lat: String(lat), lon: String(lon) }] });
+  const wait = async () => {};
+
+  it("a street on the map is used as it is: no second lookup", async () => {
+    const fetchImpl = vi.fn();
+    const at = await placeAddress(ADDRESS, { fetchImpl, wait, base: async () => ({ lat: -26.25, lng: 27.9, from: "12 Carmichael Street, Soweto, 1804" }) });
+    expect(at).toMatchObject({ lat: -26.25, by: "street" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("a street the map does not know is placed by its postal code, not the town's centre", async () => {
+    const fetchImpl = vi.fn(async () => hit(-26.262, 27.9175));
+    const at = await placeAddress(ADDRESS, { fetchImpl, wait, base: async () => ({ lat: -26.223, lng: 27.89, from: "Soweto, 1804" }) });
+    expect(at).toEqual({ lat: -26.262, lng: 27.9175, from: "postal code 1804", by: "postcode" });
+    expect(fetchImpl.mock.calls[0][0]).toMatch(/countrycodes=za&limit=1&postalcode=1804$/);
+  });
+
+  it("no postal-code point (or the lookup fails): the town's; nothing at all: null", async () => {
+    const town = async () => ({ lat: -26.223, lng: 27.89, from: "Soweto, 1804" });
+    expect(await placeAddress(ADDRESS, { fetchImpl: async () => ({ ok: true, json: async () => [] }), wait, base: town })).toMatchObject({ lat: -26.223, by: "town" });
+    expect(await placeAddress(ADDRESS, { fetchImpl: async () => { throw new Error("down"); }, wait, base: town })).toMatchObject({ by: "town" });
+    expect(await placeAddress({ ...ADDRESS, code: "" }, { fetchImpl: async () => { throw new Error("never"); }, wait, base: async () => null })).toBe(null);
+  });
+
+  it("the booking records how the address was placed, and a postal-code placement gets the tighter limit", async () => {
+    const res = await bookShipment(ORDER(), deps(db(false), fakeClient(), { geocoder: async () => ({ ...AT, from: "postal code 2710", by: "postcode" }) }));
+    expect(res.deliveryLocker.placedBy).toBe("postcode");
+    const mid = point("CG777", "Twenty-five away", -26.541, 26.8227);
+    const far = await bookShipment(ORDER(), deps(db(false), fakeClient({ points: [mid] }), { geocoder: async () => ({ ...AT, from: "postal code 2710", by: "postcode" }) }));
+    expect(far.reason).toMatch(/within 20 km of Ventersdorp .*; only the postal code could be placed on the map/);
   });
 });
 

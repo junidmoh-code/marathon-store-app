@@ -200,9 +200,9 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
     parcel: { lengthCm: 34, widthCm: 23, heightCm: 13, kg: 1.5 },
     // The nearest locker must be near enough to be "the customer's locker":
     // further than this from the address, nothing is booked and Junid decides
-    // (never a silent door-to-door). maxTownKm applies when only the town
-    // could be placed on the map (the street was not found), so "nearest" is
-    // measured from the town centre.
+    // (never a silent door-to-door). maxTownKm applies when the street was
+    // not found on the map, so "nearest" is measured from the postal code's
+    // point (or, failing that, the town centre).
     maxKm: 30,
     maxTownKm: 20,
     // The nearest lockers tried, in order, until one prices.

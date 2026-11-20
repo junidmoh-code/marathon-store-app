@@ -249,8 +249,8 @@ card does not edit it; set it in the database.
 |---|---|
 | The parcel | Always ONE SHOE: 34 x 23 x 13 cm, 1.5 kg (`/config/shipping/locker/parcel`). Never estimated from the order's lines. Courier Guy measures at collection and re-rates; see "The adjustment" under the reconciliation loop. |
 | How many | One parcel per pair of shoes in the order, never fewer than one. Each is its own shipment to the SAME locker (a pickup-point shipment carries one parcel). `shipping/lockerParcels` on the order overrides the count. Above `locker/maxParcels` (10) a person books it. Size never refuses a booking. |
-| The locker | The address is placed on the map (OpenStreetMap: the street, then the suburb/town), then `GET /pickup-points` nearest first: online, listed, with a compartment a shoe fits. The nearest one Courier Guy prices wins (`locker/tryLockers`, 3). |
-| How near | Within `locker/maxKm` (**30 km**) of the address; within `locker/maxTownKm` (**20 km**) when only the town could be placed on the map. Further, or an address that cannot be placed at all: **not booked**. |
+| The locker | The address is placed on the map (OpenStreetMap: the street; when the map does not know the street, which is most of ours, the postal code's own point; failing that the suburb/town), then `GET /pickup-points` nearest first: online, listed, with a compartment a shoe fits. The nearest one Courier Guy prices wins (`locker/tryLockers`, 3). |
+| How near | Within `locker/maxKm` (**30 km**) of the address; within `locker/maxTownKm` (**20 km**) when only the postal code or the town could be placed on the map (`deliveryLocker.placedBy` says which: "nearest" is then nearest to that point, not to the customer's door). Further, or an address that cannot be placed at all: **not booked**. |
 | The service | The cheapest service Courier Guy quotes for that locker (`D2LM - ECO` for a shoe), `excludeServiceCodes` left out. |
 | The ceiling | `/config/shipping/maxChargeRand` (R500), per shipment. |
 | The request | The normal `/rates` and `/shipments` body with the customer's address kept as `delivery_address`, plus `delivery_pickup_point_id` and `delivery_pickup_point_provider`. |
@@ -269,7 +269,7 @@ raises `locker/maxKm`.
 
 | Node | What |
 |---|---|
-| `deliveryLocker` | `{ id, provider, name, address, hours, description, km, placedBy: "street" \| "town", smsTo, hasCollectionCode: false, collectionCodeNote }`: what Jamie tells the customer. |
+| `deliveryLocker` | `{ id, provider, name, address, hours, description, km, placedBy: "street" \| "postcode" \| "town", smsTo, hasCollectionCode: false, collectionCodeNote }`: what Jamie tells the customer. |
 | `waybill`, `waybills[]`, `shipments[]` | The first waybill (what every older reader uses), every waybill, and each shipment `{ shipmentId, waybill, trackingReference, service, cost, quoted }`. |
 | `cost`, `priced.quoted` | Every shipment added up. `priced.mode` is `door_to_locker`. |
 | `doorQuote` | `{ code, rate }`: what door-to-door would have cost for the parcel the old rule declared (one more `/rates` call; `locker/doorQuote: false` switches it off). |
