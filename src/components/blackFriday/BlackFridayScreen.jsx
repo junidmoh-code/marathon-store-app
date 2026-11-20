@@ -361,10 +361,24 @@ export function BrainPanel({ brain, api, busy, run }) {
   return (
     <div data-testid="brain" style={{ ...GLASS, padding: 12, marginBottom: 12, fontSize: 13 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-        <div style={{ flex: 1, fontWeight: 800 }}>{brain.plan === "daily" ? "Daily plan" : "Posting plan"}{brain.plan === "daily" && <span data-testid="brain-plan" style={{ fontWeight: 600, color: GRAY, fontSize: 12 }}> · {brain.target || 120} photos a day, 08:00–20:00, ongoing until Pause{brain.rotating ? " · rotating" : ""}</span>} {brain.paused && <span data-testid="brain-paused" style={{ color: AMBER, fontWeight: 700 }}>· paused</span>}</div>
+        <div style={{ flex: 1, fontWeight: 800 }}>{brain.plan === "daily" ? "Daily plan" : "Posting plan"}{brain.plan === "daily" && <span data-testid="brain-plan" style={{ fontWeight: 600, color: GRAY, fontSize: 12 }}> · {brain.dayPlan ? "one category a day, " : ""}{brain.target || 120} photos a day, 08:00–20:00, ongoing until Pause{brain.rotating ? " · rotating" : ""}</span>} {brain.paused && <span data-testid="brain-paused" style={{ color: AMBER, fontWeight: 700 }}>· paused</span>}</div>
         <button data-testid="brain-pause" disabled={busy} onClick={() => run(() => api.brainPause(!brain.paused), { reload: true })} style={{ ...(brain.paused ? bGreen : bGray), padding: "6px 12px", fontSize: 12, color: brain.paused ? undefined : AMBER }}>{brain.paused ? "Resume" : "Pause"}</button>
       </div>
       <div data-testid="brain-counts" style={{ fontSize: 12, color: "#dfe7ff", marginBottom: 8 }}>Posted {brain.posted} · Remaining {brain.remaining}{brain.plan === "daily" ? null : <> · Held for Friday {brain.reserved}</>} · New Arrivals {brain.newArrivals} · Today {brain.todayPhotos}/{brain.plan === "daily" ? (brain.target || 120) : brain.cap} photos{brain.plan === "daily" ? ` (safety ceiling ${brain.cap})` : ""}</div>
+      {Array.isArray(brain.dayPlan) && brain.dayPlan.length > 0 && (
+        <div data-testid="brain-dayplan" style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 2 }}>Category plan <span style={{ fontWeight: 400, color: GRAY, fontSize: 11 }}>· one category a day; same price = one album</span></div>
+          {brain.dayPlan.map((d, k) => (
+            <div key={d.day} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, padding: "2px 0" }}>
+              <div style={{ width: 88, color: k === 0 ? "#fff" : GRAY }}>{k === 0 ? "Today" : d.day}</div>
+              <select data-testid={`daycat-${d.day}`} disabled={busy} value={d.cat || ""} onChange={(e) => run(() => api.brainDayCat(d.day, e.target.value || null), { reload: true })} style={{ flex: 1, maxWidth: 200, fontSize: 12 }}>
+                {(brain.categories || [{ cat: d.cat, label: d.label }]).map((c) => <option key={c.cat} value={c.cat}>{c.label}{c.approved ? ` (${c.approved})` : ""}</option>)}
+              </select>
+              {d.set ? <button data-testid={`daycat-reset-${d.day}`} disabled={busy} onClick={() => run(() => api.brainDayCat(d.day, null), { reload: true })} style={{ background: "none", border: "none", color: BLUE_L, padding: 0, fontSize: 10, cursor: "pointer" }}>back to the rotation</button> : <span style={{ fontSize: 10, color: GRAY }}>rotation</span>}
+            </div>
+          ))}
+        </div>
+      )}
       {days.map(([day, slots], di) => (
         <div key={day} data-testid={`brain-day-${day}`} style={{ marginBottom: 8 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: di === 0 ? "#fff" : GRAY }}>{di === 0 ? "Today / next" : day}</div>

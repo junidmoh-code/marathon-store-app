@@ -107,6 +107,23 @@ describe("Black Friday card v3", () => {
     expect(text(byId(r, "block-under"))).toContain("Under 13 (1)");
   });
 
+  it("the category plan: one category a day, Junid changes a day or gives it back to the rotation", async () => {
+    const brain = {
+      plan: "daily", target: 120, paused: false, approved: 633, posted: 125, remaining: 508, reserved: 0, newArrivals: 0, todayPhotos: 8, cap: 400, overrides: {}, days: {}, hours: [],
+      dayPlan: [{ day: "2026-11-20", cat: "soccer-boots", label: "Soccer boots", set: true }, { day: "2026-11-21", cat: "sneakers", label: "Sneakers", set: false }],
+      categories: [{ cat: "sneakers", label: "Sneakers", approved: 337 }, { cat: "soccer-boots", label: "Soccer boots", approved: 33 }, { cat: "tracksuits", label: "Tracksuits", approved: 81 }],
+    };
+    const api = fakeApi({ list: vi.fn(async () => view({ brain })), brainDayCat: vi.fn(async () => ({ ok: true })) });
+    const r = await mount(api);
+    await act(async () => { byId(r, "tab-approved").props.onClick(); });
+    expect(text(byId(r, "brain-dayplan"))).toContain("Category plan");
+    expect(byId(r, "daycat-2026-11-21").props.value).toBe("sneakers");
+    await act(async () => { byId(r, "daycat-2026-11-21").props.onChange({ target: { value: "tracksuits" } }); });
+    expect(api.brainDayCat).toHaveBeenCalledWith("2026-11-21", "tracksuits");
+    await act(async () => { byId(r, "daycat-reset-2026-11-20").props.onClick(); });
+    expect(api.brainDayCat).toHaveBeenCalledWith("2026-11-20", null);
+  });
+
   it("the ongoing daily plan: renamed plan line, today against 120, no Held for Friday", async () => {
     const brain = {
       plan: "daily", target: 120, rotating: false, paused: false, approved: 633, posted: 125, remaining: 508, reserved: 0, newArrivals: 15, todayPhotos: 30, todaySent: 156, cap: 400, overrides: {},

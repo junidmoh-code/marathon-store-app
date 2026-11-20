@@ -53,6 +53,7 @@ export const blackFridayApi = {
   // The posting brain: Pause / resume, and a slot moved to another time (null = back to the brain's time).
   brainPause: (paused) => set({ action: "brainPause", paused: paused === true }),
   brainSlot: (day, i, at) => set({ action: "brainSlot", day, i, at: at || null }),
+  brainDayCat: (day, cat) => set({ action: "brainDayCat", day, cat: cat || null }),
   // Repost: approved products go to the next slot again ({ pids }). Nothing reposts by itself.
   repost: (pids) => set({ action: "repost", pids }),
   // A New Arrival's photo is made by New Arrivals' own studio (the same generator, the same item the
