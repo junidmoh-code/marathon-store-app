@@ -124,6 +124,8 @@ export function returnContact(order, email = null) {
   return { name: contact.name || str(order?.customer?.name), mobile_number: mobile, email: str(email) || contact.email };
 }
 
+const SA_MOBILE = /^(?:\+27|27|0)[6-8]\d{8}$/;
+
 /** Our side of an incoming parcel: /config/shipping returnContact (Yusuf), never collectionContact. Pure. */
 export function shopReturnContact(cfg) {
   const c = cfg?.returnContact ?? {};
@@ -152,11 +154,14 @@ export async function planReturn(order, { db, client, products = null, email = n
     ...addrMissing.map((m) => `customer ${m}`),
     ...(!contact.mobile_number && !contact.email ? ["customer phone or email"] : []),
     ...(!lines.length ? ["the exchange's lines"] : []),
-    // The mobile is what The Courier Guy calls and sends the OTP to: an email alone is not enough on a return.
-    ...(!shopContact.name || !shopContact.mobile_number ? ["the return contact's name and mobile (/config/shipping/returnContact)"] : []),
     ...(!n ? ["order number"] : []),
   ];
   if (missing.length) return { ok: false, reason: `missing: ${missing.join(", ")}`, parcel };
+  // The mobile is what The Courier Guy calls and sends the OTP to: an email alone is not enough on a return. A config
+  // gap, not the exchange's: transient, so the booking retries once /config/shipping/returnContact is fixed.
+  if (!shopContact.name || !SA_MOBILE.test(shopContact.mobile_number.replace(/[\s-]/g, ""))) {
+    return { ok: false, transient: true, reason: "the return contact's name and SA mobile are not set (/config/shipping/returnContact)", parcel };
+  }
   if (!parcel.fits || !parcel.dropBoxEligible) return { ok: false, reason: "the parcel fits no Courier Guy locker", parcel };
 
   const at = await geocoder(from);

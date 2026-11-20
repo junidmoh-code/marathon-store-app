@@ -9,7 +9,7 @@ import shipmentLocker from "./fixtures/shipment-locker.json";
 
 const KEY = "exchange-1793-1793333411004";
 const SHOP_CONTACT = { name: "Junid Atugar", mobile_number: "0310000000", email: "shop@example.com" };
-const RETURN_CONTACT = { name: "Yusuf", mobile_number: "+27000000001", email: "" };
+const RETURN_CONTACT = { name: "Yusuf", mobile_number: "+27600000001", email: "" };
 const POINTS = {
   pickup_points: [
     { pickup_point_id: "CG999", pickup_point_provider: "tcg-locker", name: "Far Mall", type: "locker", lat: -32.95, lng: 27.5, status: "online", available_compartment_sizes: ["V4-L"], address: { street_address: "1 Far Rd", city: "Qonce" } },
@@ -93,7 +93,10 @@ describe("planReturn", () => {
     const client = fakeClient();
     const plan = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db({ returnContact: null }), client, geocoder, key: KEY, products: {} });
     expect(plan.ok).toBe(false);
-    expect(plan.reason).toMatch(/return contact's name and mobile/);
+    expect(plan.reason).toMatch(/return contact's name and SA mobile/);
+    expect(plan.transient).toBe(true); // retried once the config is fixed, never stuck as refused
+    const typo = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db({ returnContact: { name: "Yusuf", mobile_number: "069888222" } }), client, geocoder, key: KEY, products: {} });
+    expect(typo.ok).toBe(false);
     const emailOnly = await planReturn({ ...EXCHANGE(), key: KEY }, { db: db({ returnContact: { name: "Yusuf", mobile_number: "", email: "y@example.com" } }), client, geocoder, key: KEY, products: {} });
     expect(emailOnly.ok).toBe(false);
     expect(client.calls).toHaveLength(0); // refused before any quote
