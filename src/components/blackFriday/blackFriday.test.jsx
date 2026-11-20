@@ -307,3 +307,56 @@ describe("Black Friday card: the selection is never lost", () => {
     expect(Object.keys(api.undo.mock.calls[0][0]).length).toBe(200);
   });
 });
+
+describe("Black Friday card: New Arrivals tab, Approved split, Repost (Junid, 20 Nov)", () => {
+  const UP = Date.parse("2026-11-18T10:00:00+02:00");
+  const naRow = (pid, over = {}) => row(pid, 4, { tab: "newArrivals", na: true, src: "na", uploadedAt: UP, canGenerate: true, ...over });
+  const naView = () => view({
+    newArrivals: [naRow("n1"), naRow("n2", { kind: "headwear", canGenerate: false }), naRow("n3", { use: "generated", generatedUrl: "https://x/g.jpg", genId: "g1795100000000", sig: "g1795100000000", generations: 1 })],
+    approved: [row("d", 15, { tab: "approved", na: true, postedN: 2, postedLast: UP }), row("e", 40, { tab: "approved" })],
+    totals: { review: 3, approved: 2, rejected: 0, spentZar: 0, newArrivals: 3, approvedNa: 1, approvedNormal: 1 },
+  });
+  const api = (over = {}) => fakeApi({ list: vi.fn(async () => naView()), generateNa: vi.fn(async () => ({ ok: true })), repost: vi.fn(async (pids) => ({ ok: true, done: pids, refused: [] })), selSave: vi.fn(async () => ({ ok: true })), ...over });
+
+  it("opens on New Arrivals (three tabs with counts); each row shows its upload date; a new 13+ product is not in To review", async () => {
+    const r = await mount(api());
+    expect(text(byId(r, "tab-new"))).toBe("New Arrivals (3)");
+    expect(byId(r, "tab-new").props["aria-pressed"]).toBe(true);
+    expect(text(byId(r, "block-na"))).toContain("(3)");
+    expect(text(byId(r, "uploaded-n1"))).toMatch(/^Uploaded 18 Nov/);
+    expect(has(r, "block-big")).toBe(false);
+  });
+
+  it("New Arrivals controls: Approve, Use current photo (= approve with the app photo, with Undo), Generate through New Arrivals' studio; no Generate for a kind New Arrivals cannot frame", async () => {
+    const a = api();
+    const r = await mount(a);
+    await act(async () => { byId(r, "use-current-n1").props.onClick(); });
+    await flush();
+    expect(a.approve).toHaveBeenCalledWith("n1", "main", "current");
+    expect(has(r, "toast-undo")).toBe(true);
+    await act(async () => { byId(r, "approve-n3").props.onClick(); });
+    expect(a.approve).toHaveBeenCalledWith("n3", "main", "g1795100000000");
+    await act(async () => { byId(r, "generate-n1").props.onClick(); });
+    await flush();
+    expect(a.generateNa).toHaveBeenCalledWith("n1", expect.anything());
+    expect(a.generate).not.toHaveBeenCalled();
+    expect(has(r, "generate-n2")).toBe(false);
+    expect(rowActions(naRow("x"))).toMatchObject({ approve: true, useCurrent: true, useCurrentPrimary: true, backToReview: false });
+  });
+
+  it("Approved shows New Arrivals and Normal with counts; a posted product stays with 'Posted 2× · last'; multi-select Repost queues it", async () => {
+    const a = api();
+    const r = await mount(a);
+    await act(async () => { byId(r, "tab-approved").props.onClick(); });
+    expect(text(byId(r, "approved-split"))).toContain("New Arrivals 1 · Normal 1");
+    expect(text(byId(r, "block-appr-na"))).toContain("New Arrivals (1)");
+    expect(text(byId(r, "block-appr-normal"))).toContain("Normal (1)");
+    expect(text(byId(r, "posted-d"))).toMatch(/^Posted 2× · last 18 Nov/);
+    await act(async () => { byId(r, "select-toggle").props.onClick(); });
+    await act(async () => { byId(r, "row-d").props.onClick(); });
+    expect(has(r, "bulk-approve")).toBe(false);
+    await act(async () => { byId(r, "bulk-repost").props.onClick(); });
+    await flush();
+    expect(a.repost).toHaveBeenCalledWith(["d"]);
+  });
+});
