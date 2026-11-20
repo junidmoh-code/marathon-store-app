@@ -56,6 +56,23 @@ function buildSwitchEntry({ uid, userRec, data, shopIds, nowMs }) {
 
 exports.buildSwitchEntry = buildSwitchEntry;
 
+// IO: two leaf reads + the registry, then ONE push. `at` is injected so the
+// callable passes ServerValue.TIMESTAMP and tests pass a number.
+async function runLogStoreSwitch(db, { uid, email, data, nowMs, at }) {
+  const leaf = (k) => db.ref(`users/${uid}/${k}`).once("value").then((s) => s.val());
+  const [displayName, username, destShop, network] = await Promise.all([
+    leaf("displayName"), leaf("username"), leaf("destShop"), loadNetwork(db),
+  ]);
+  const shopIds = storesOf(network).map((l) => l.id);
+  const built = buildSwitchEntry({ uid, userRec: { displayName, username, destShop }, data, shopIds, nowMs });
+  if (!built.ok) return built;
+  const entry = { ...built.entry, name: built.entry.name || clip(email, 80), at };
+  const ref = db.ref(`store_switch_log/${built.saDate}`).push();
+  await ref.set(entry);
+  return { ok: true, id: ref.key, saDate: built.saDate };
+}
+exports.runLogStoreSwitch = runLogStoreSwitch;
+
 exports.logStoreSwitch = onCall(
   { region: "europe-west1", timeoutSeconds: 20, memory: "256MiB" },
   async (request) => {
@@ -63,22 +80,14 @@ exports.logStoreSwitch = onCall(
     if (!request.auth || provider === "anonymous") {
       throw new HttpsError("unauthenticated", "Sign-in required.");
     }
-    const uid = request.auth.uid;
-    const db = admin.database();
-    const [displayName, username, destShop, network] = await Promise.all([
-      db.ref(`users/${uid}/displayName`).get().then((s) => s.val()),
-      db.ref(`users/${uid}/username`).get().then((s) => s.val()),
-      db.ref(`users/${uid}/destShop`).get().then((s) => s.val()),
-      loadNetwork(db),
-    ]);
-    const shopIds = storesOf(network).map((l) => l.id);
-    const built = buildSwitchEntry({
-      uid, userRec: { displayName, username, destShop }, data: request.data, shopIds, nowMs: Date.now(),
+    const out = await runLogStoreSwitch(admin.database(), {
+      uid: request.auth.uid,
+      email: request.auth.token?.email || null,
+      data: request.data,
+      nowMs: Date.now(),
+      at: admin.database.ServerValue.TIMESTAMP,
     });
-    if (!built.ok) throw new HttpsError("invalid-argument", built.code);
-    const entry = { ...built.entry, name: built.entry.name || clip(request.auth.token?.email, 80), at: admin.database.ServerValue.TIMESTAMP };
-    const ref = db.ref(`store_switch_log/${built.saDate}`).push();
-    await ref.set(entry);
-    return { ok: true, id: ref.key };
+    if (!out.ok) throw new HttpsError("invalid-argument", out.code);
+    return { ok: true, id: out.id };
   }
 );
