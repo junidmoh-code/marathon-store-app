@@ -112,7 +112,7 @@ export function PhotoViewer({ r, busy, onUse, onClose }) {
     : g.id === "na" ? (na ? { label: "Use this photo", kind: "naBack" } : null)
     : { label: r.tab === "approved" ? "Use this photo (approves it)" : "Use this photo", kind: g.id === "app" ? "app" : "gen" };
   return (
-    <div data-testid="viewer" onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.9)", zIndex: 60, display: "flex", flexDirection: "column" }}>
+    <div data-testid="viewer" onClick={onClose} style={{ position: "fixed", inset: 0, background: "#000", zIndex: 60, display: "flex", flexDirection: "column" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", alignItems: "center", gap: 8, padding: "calc(10px + env(safe-area-inset-top)) 12px 8px" }}>
         <div style={{ flex: 1, fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</div>
         <button data-testid="viewer-close" onClick={onClose} style={{ ...bGray, minHeight: 36, padding: "0 12px" }} aria-label="Close">✕</button>
