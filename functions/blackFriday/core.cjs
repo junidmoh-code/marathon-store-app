@@ -136,16 +136,19 @@ function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = 
     // The permanent posting record (the brain's brain/sent/{pid}): how many times and when last; a Repost queued since.
     ...postingOf(sent, repost, posted),
     // On the website (Junid, 20 Nov 2026: published there before it posts) — approved rows only.
-    web: approved ? webOf(web) : null,
+    web: approved ? webOf(web, pick) : null,
   };
 }
 /**
  * The website status a row shows. web: bf_campaign_2026/web/{pid} (the Mac mini's runner). Pure.
  * → { s: "live" | "pub" | "fail" | "oos", why? }. No entry yet = "pub": an approval is queued at once.
  */
-function webOf(web) {
-  const s = web && ["live", "pub", "fail", "oos"].includes(web.s) ? web.s : "pub";
-  const why = web && web.why && s !== "live" ? String(web.why).slice(0, 160) : null;
+function webOf(web, pick = null) {
+  let s = web && ["live", "pub", "fail", "oos"].includes(web.s) ? web.s : "pub";
+  // A failure recorded for an EARLIER approval (another photo, an Undo) is not this approval's: it shows
+  // Publishing… until the runner has this one's own result. "On website ✓" is Shopify's, whatever the approval.
+  if ((s === "fail" || s === "oos") && pick && web.approvedAt != null && Number(pick.at) && Number(web.approvedAt) !== Number(pick.at)) s = "pub";
+  const why = web && web.why && s === web.s && s !== "live" ? String(web.why).slice(0, 160) : null;
   return why ? { s, why } : { s };
 }
 /** "Posted n× · last <date>" and a Repost waiting for the next slot. Pure. */

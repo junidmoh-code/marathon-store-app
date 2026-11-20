@@ -167,7 +167,9 @@ function primaryDeps(pid, deps) {
 export async function publishOne(pid, deps, { web = null } = {}) {
   const { db } = deps;
   const [pick, photo] = await Promise.all([val(db, `${ROOT}/picks/${pid}`), val(db, `${ROOT}/photos/${pid}`)]);
-  if (!bfCore.isApproved(pick, photo)) return { pid, outcome: "unapproved" };
+  // Still approved on the card but the photo shown has moved off the approved one: kept queued, looked at
+  // again later (a photo choice back to the approved one writes only photos/{pid}, which queues nothing).
+  if (!bfCore.isApproved(pick, photo)) return { pid, outcome: "unapproved", held: !!pick && pick.state === "approved" };
   let node = await val(db, `shopify_publish/${pid}`);
   if (isOn(node)) return { pid, outcome: "live" };
 
@@ -199,10 +201,11 @@ export async function publishOne(pid, deps, { web = null } = {}) {
   if (stocked === null) return { pid, outcome: "failed", why: "the product has no sizes, so its stock cannot be judged" };
 
   // (3a) the name, decided before anything is written.
-  let name, source, viaProposal = false;
+  let name, source, viaProposal = false, seenProposedAt = null;
   const proposalOk = isPendingProposal(node) && proposalApplyBlocker(node).ok;
   if (proposalOk) {
     name = String(node.nameProposal.name).trim(); source = "ai"; viaProposal = true;
+    seenProposedAt = node.nameProposal?.proposedAt ?? null; // pinned now: a newer suggestion is not applied unchecked
   } else {
     // A name the website refused as a duplicate is not tried again: a new one is asked for.
     if (blocked && COLLISION_RE.test(blocked)) return { pid, outcome: "needs-name", why: `the website name is taken — ${blocked.slice(0, 160)}` };
@@ -228,7 +231,7 @@ export async function publishOne(pid, deps, { web = null } = {}) {
   const sinceOurs = refusedOurs ? (await deps.now()) - Number(web.pubAt) : 0;
   const retryable = /publishing again retries it/i.test(blocked || "");
   if (refusedOurs && !viaProposal && !changed && !(sinceOurs > (retryable ? RETRY_MS : RETRY_MAX_MS))) {
-    return { pid, outcome: "failed", why: blocked };
+    return { pid, outcome: "failed", why: blocked, retryAt: Number(web.pubAt) + (retryable ? RETRY_MS : RETRY_MAX_MS) + 1000 };
   }
   if (changed || !node?.media) {
     const problem = mediaListProblem(media);
@@ -241,12 +244,12 @@ export async function publishOne(pid, deps, { web = null } = {}) {
   // also when the list already led with the approved photo (written by an earlier pass or another writer).
   if (product.photoUrl !== approvedUrl) {
     const app = await setShopifyPrimaryPhoto(pid, { product, oldPrimary: product.photoUrl || null, newPrimary: approvedUrl, fallbackOriginal: product.photoUrl || null }, primaryDeps(pid, deps));
-    if (!app.ok) throw new Error(`app photo not updated: ${app.message || app.reason || "unknown"}`);
+    if (!app.ok) return { pid, outcome: "failed", why: `the app photo could not be set to the approved photo: ${app.message || app.reason || "unknown"}` };
   }
 
   // (3b) apply the suggestion exactly as its button does (pinned to the one just read).
   if (viaProposal) {
-    const res = await decide(db, pid, node, applyProposalMutator, { seenProposedAt: node.nameProposal?.proposedAt ?? null }, await ctx());
+    const res = await decide(db, pid, node, applyProposalMutator, { seenProposedAt }, await ctx());
     if (!res.ok) return { pid, outcome: "failed", why: `name suggestion not applied: ${res.message}` };
     node = res.node;
     name = node.cleanName; source = node.cleanNameSource;
@@ -262,6 +265,9 @@ export async function publishOne(pid, deps, { web = null } = {}) {
   // (5) publish — the intent only; the reconciler does Shopify. Stock again first: a sale during the
   // steps above must not ship a product that has just sold out.
   if ((await inStock(db, pid, product, deps.locNames || [])) === false) return { pid, outcome: "oos", why: "out of stock — not published" };
+  // And the approval again: one taken back (or replaced) while the photo was prepared is not published.
+  const [pick2, photo2] = await Promise.all([val(db, `${ROOT}/picks/${pid}`), val(db, `${ROOT}/photos/${pid}`)]);
+  if (!bfCore.isApproved(pick2, photo2) || Number(pick2.at) !== Number(pick.at)) return { pid, outcome: "unapproved", held: !!pick2 && pick2.state === "approved" };
   const res = await decide(db, pid, node, publishMutator, { name, source }, await ctx());
   if (!res.ok) return { pid, outcome: "failed", why: res.message };
   return { pid, outcome: "published", why: name };
@@ -276,7 +282,7 @@ export function entryFor(r, prevWeb = null) {
     case "needs-name": return webEntry("pub", "waiting for a website name");
     case "oos": return webEntry("oos", r.why);
     case "failed": case "gone": return webEntry("fail", r.why);
-    case "error": return prevWeb && prevWeb.s ? null : webEntry("pub");
+    case "error": return webEntry("fail", r.why);
     case "unapproved": return null;
     default: return null;
   }
@@ -292,7 +298,6 @@ export const isFinal = (outcome) => ["live", "oos", "gone", "unapproved"].includ
 export async function recordWeb(db, pid, r, { prev, approvedAt, now }) {
   const e = entryFor(r, prev);
   if (r.outcome === "unapproved") { if (prev) await db.ref(`${WEB}/${pid}`).set(null); return null; }
-  if (r.outcome === "error" && prev && prev.s) return prev; // a crash is not news
   const next = { ...e, approvedAt: approvedAt ?? prev?.approvedAt ?? null };
   if (r.outcome === "published") next.pubAt = now;
   else if (prev?.pubAt && next.s === "pub") next.pubAt = prev.pubAt;
@@ -333,22 +338,33 @@ export async function drain(deps, { max = MAX_PUBLISH_PER_RUN, maxAttempts = MAX
     const now = await deps.now();
     await recordWeb(db, pid, r, { prev, approvedAt: q?.approvedAt ?? null, now });
     if (r.outcome === "published") out.published++;
-    if (isFinal(r.outcome)) { await db.ref(`${QUEUE}/${pid}`).set(null); continue; }
+    if (r.outcome === "unapproved" && r.held) { await db.ref(`${QUEUE}/${pid}`).update({ tryAt: now + RETRY_MS }); continue; }
+    if (isFinal(r.outcome)) {
+      // Only THIS approval's entry: a re-approval queued meanwhile is kept.
+      await db.ref(`${QUEUE}/${pid}`).transaction((cur) => (cur && (cur.approvedAt ?? null) !== (q?.approvedAt ?? null) ? undefined : null));
+      continue;
+    }
     if (r.outcome === "published" || r.outcome === "pending") {
       // Look again soon for the reconciler's verdict (its tick is 2 minutes).
       await db.ref(`${QUEUE}/${pid}`).update({ tryAt: r.outcome === "published" ? null : now + 4 * 60 * 1000, ...(r.outcome === "published" ? { tries: 0 } : {}) });
       continue;
     }
     if (r.outcome === "needs-name") {
-      if (!(Number(q?.nameAt) > now - NAME_RETRY_MS)) { namePids.push(pid); await db.ref(`${QUEUE}/${pid}`).update({ nameAt: now, tryAt: now + 5 * 60 * 1000 }); }
+      if (!(Number(q?.nameAt) > now - NAME_RETRY_MS)) { namePids.push(pid); await db.ref(`${QUEUE}/${pid}`).update({ tryAt: now + 5 * 60 * 1000 }); }
       else await db.ref(`${QUEUE}/${pid}`).update({ tryAt: Number(q.nameAt) + NAME_RETRY_MS });
       continue;
     }
     const tries = (Number(q?.tries) || 0) + 1;
-    await db.ref(`${QUEUE}/${pid}`).update({ tries, tryAt: now + retryDelay(tries), why: String(r.why || "").slice(0, 240) });
+    // A refusal of our publish waits for its own cooldown, not the growing backoff.
+    await db.ref(`${QUEUE}/${pid}`).update({ tries, tryAt: Number(r.retryAt) > now ? Number(r.retryAt) : now + retryDelay(tries), why: String(r.why || "").slice(0, 240) });
   }
   if (namePids.length && deps.suggestNames) {
-    try { await deps.suggestNames(namePids); out.named = namePids.length; } catch (e) { log(`namer: ${String(e?.message || e)}`); }
+    try {
+      await deps.suggestNames(namePids); out.named = namePids.length;
+      // Throttled only once the namer has the request (an unsent one is asked again next pass).
+      const at = await deps.now();
+      await db.ref(QUEUE).update(Object.fromEntries(namePids.map((pid) => [`${pid}/nameAt`, at])));
+    } catch (e) { log(`namer: ${String(e?.message || e)}`); }
   }
   return out;
 }

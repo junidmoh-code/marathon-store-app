@@ -134,8 +134,8 @@ async function naRowAfter(db, pid, pick, nowMs) {
   if (pick && pick.state === "approved") {
     const built = (await val(db, `${core.ROOT}/items/main/${pid}`)) || (await val(db, `${core.ROOT}/items/under/${pid}`));
     const it = built || { name: pick.name, price: pick.price, kind: pick.kind, sizes: pick.sizes, photo: pick.shown, qty: 0 };
-    const [sent, repost] = await Promise.all([val(db, `${core.ROOT}/brain/sent/${pid}`), val(db, `${core.ROOT}/repost/${pid}`)]);
-    return core.viewItem(pid, it, { pick, photo: null, nowMs, sent, repost, na: true });
+    const [sent, repost, web] = await Promise.all([val(db, `${core.ROOT}/brain/sent/${pid}`), val(db, `${core.ROOT}/repost/${pid}`), val(db, `${core.ROOT}/web/${pid}`)]);
+    return core.viewItem(pid, it, { pick, photo: null, nowMs, sent, repost, na: true, web });
   }
   if (pick && pick.state === "rejected") return null;
   const built = (await val(db, `${core.ROOT}/items/main/${pid}`)) || (await val(db, `${core.ROOT}/items/under/${pid}`));
@@ -242,14 +242,14 @@ async function tap(db, { action, pid, section, use, genId, sig, app = false, app
     await log(db, { at: nowMs, by: uid || null, action, pid, ...(use ? { use } : {}), ...(genId ? { genId } : {}) });
     await replan(db, nowMs);
   }
-  const [pick, photo, posted, styles, sent, repost] = await Promise.all([`picks/${pid}`, `photos/${pid}`, `posted/${pid}`, "styles", `brain/sent/${pid}`, `repost/${pid}`].map((p) => val(db, `${core.ROOT}/${p}`)));
+  const [pick, photo, posted, styles, sent, repost, web] = await Promise.all([`picks/${pid}`, `photos/${pid}`, `posted/${pid}`, "styles", `brain/sent/${pid}`, `repost/${pid}`, `web/${pid}`].map((p) => val(db, `${core.ROOT}/${p}`)));
   const undo = (action === "approve" || action === "reject" || approvedToo) && !out.noop ? { [pid]: { prev: out.base || null, expectAt: nowMs } } : null;
   // A New Arrival still waiting (no Black Friday decision): its row is the New Arrivals row, with the photo layer.
   if (naNow && naCore.NEW_LANES.includes(naNow) && !(pick && pick.state)) {
     const f = await naLib.naFields(db, pid);
     return { ok: true, pid, noop: !!out.noop, rejected: false, undo, row: naLib.viewNaRow(pid, item, f, { nowMs, photo }) };
   }
-  return { ok: true, pid, noop: !!out.noop, rejected: core.isRejected(pick), undo, row: item ? core.viewItem(pid, item, { pick, photo, posted, styles: styles || {}, nowMs, sent, repost, na: !!naNow }) : null };
+  return { ok: true, pid, noop: !!out.noop, rejected: core.isRejected(pick), undo, row: item ? core.viewItem(pid, item, { pick, photo, posted, styles: styles || {}, nowMs, sent, repost, na: !!naNow, web }) : null };
 }
 
 /**

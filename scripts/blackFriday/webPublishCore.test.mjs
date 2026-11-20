@@ -292,6 +292,39 @@ describe("drain — the queue and the card's status", () => {
     expect(again.queued).toBe(0);
   });
 
+  it("approved, but the photo shown moved off the approved one: kept queued for later, not dropped", async () => {
+    const db = world({ photo: genPhoto }); // approved on the app photo; the generated one is shown now
+    await db.ref(`${QUEUE}/${PID}`).set({ approvedAt: T - 50 });
+    const { d } = deps(db);
+    const o = await drain(d);
+    expect(o.results[0]).toMatchObject({ outcome: "unapproved", held: true });
+    expect((await read(db, `${QUEUE}/${PID}`)).tryAt).toBeGreaterThan(T);
+    expect(await read(db, `shopify_publish/${PID}`)).toBeNull();
+  });
+
+  it("a settled result never removes a re-approval queued meanwhile", async () => {
+    const db = world({ pick: null });
+    await db.ref(`${QUEUE}/${PID}`).set({ approvedAt: T - 50 });
+    const { d } = deps(db);
+    const o = await drain(d);
+    expect(o.results[0].outcome).toBe("unapproved");
+    expect(await read(db, `${QUEUE}/${PID}`)).toBeNull();
+    // With a newer entry in place the removal keeps it.
+    await db.ref(`${QUEUE}/${PID}`).set({ approvedAt: T + 999 });
+    await db.ref(`${QUEUE}/${PID}`).transaction((cur) => (cur && (cur.approvedAt ?? null) !== (T - 50) ? undefined : null));
+    expect(await read(db, `${QUEUE}/${PID}`)).toMatchObject({ approvedAt: T + 999 });
+  });
+
+  it("a refusal of our own publish is looked at again when its cooldown ends, not later", async () => {
+    const db = world({ node: { state: "blocked", blockedReason: "media: a photo failed on Shopify every time it was sent", desiredState: "off", condition: EXCELLENT, cleanName: "Sneaker white", photos: [APP, GAL] } });
+    await db.ref(`${QUEUE}/${PID}`).set({ approvedAt: T - 50 });
+    await db.ref(`${WEB}/${PID}`).set({ s: "pub", pubAt: T - 60_000, approvedAt: T - 50 });
+    const { d } = deps(db);
+    const o = await drain(d);
+    expect(o.results[0].outcome).toBe("failed");
+    expect((await read(db, `${QUEUE}/${PID}`)).tryAt).toBe(T - 60_000 + RETRY_MAX_MS + 1000);
+  });
+
   it("entryFor maps each outcome to the card's three words", () => {
     expect(entryFor({ outcome: "live" })).toEqual({ s: "live" });
     expect(entryFor({ outcome: "published" })).toEqual({ s: "pub" });

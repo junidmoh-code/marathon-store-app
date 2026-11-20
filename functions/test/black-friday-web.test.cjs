@@ -3,7 +3,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { _internals: { webQueueChange } } = require("../blackFriday/webQueue.js");
+const { _internals: { webQueueChange, settle } } = require("../blackFriday/webQueue.js");
 const core = require("../blackFriday/core.cjs");
 const ci = require("../blackFriday/cardIndex.js");
 
@@ -48,4 +48,19 @@ test("an approved row carries its website status; just approved = Publishing; re
 
 test("the card's precomputed list is rebuilt when a website status changes", () => {
   assert.ok(ci.bfCardIndexWeb, "bfCardIndexWeb is exported");
+});
+
+test("a late or retried event does only what the pick says now", () => {
+  // A withdrawal arriving after a re-approval does not clear the new approval's work.
+  assert.equal(settle({ remove: true }, ap({ at: 300 })), null);
+  assert.deepEqual(settle({ remove: true }, { state: "rejected" }), { remove: true });
+  // An approval arriving after it was withdrawn queues nothing; the current approval's time is used.
+  assert.equal(settle({ queue: { approvedAt: 100 } }, null), null);
+  assert.deepEqual(settle({ queue: { approvedAt: 100 } }, ap({ at: 300 })), { queue: { approvedAt: 300 } });
+});
+
+test("a failure recorded for an earlier approval is not shown on a new one; On website stays", () => {
+  assert.deepEqual(core.webOf({ s: "fail", why: "x", approvedAt: 100 }, ap({ at: 200 })), { s: "pub" });
+  assert.deepEqual(core.webOf({ s: "fail", why: "x", approvedAt: 200 }, ap({ at: 200 })), { s: "fail", why: "x" });
+  assert.deepEqual(core.webOf({ s: "live", approvedAt: 100 }, ap({ at: 200 })), { s: "live" });
 });

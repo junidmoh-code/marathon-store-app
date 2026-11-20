@@ -39,22 +39,38 @@ function webQueueChange(before, after) {
 }
 
 const bfWebQueue = onValueWritten(
-  { ref: `/${core.ROOT}/picks/{pid}`, instance: "marathon-club-default-rtdb", region: "europe-west1", memory: "256MiB", maxInstances: 5, timeoutSeconds: 60, retry: false },
+  // retry: both writes are idempotent and re-checked against the pick as it is NOW, so a retried (or
+  // late, out-of-order) event can never queue a withdrawn approval or clear a newer one.
+  { ref: `/${core.ROOT}/picks/{pid}`, instance: "marathon-club-default-rtdb", region: "europe-west1", memory: "256MiB", maxInstances: 5, timeoutSeconds: 60, retry: true },
   async (event) => {
     const pid = event.params.pid;
     if (!core.PID_RE.test(String(pid))) return;
     const ch = webQueueChange(event.data.before.val(), event.data.after.val());
     if (!ch) return;
     const db = admin.database();
-    try {
-      if (ch.queue) await db.ref(`${QUEUE}/${pid}`).update({ approvedAt: ch.queue.approvedAt, at: Date.now(), tryAt: null, tries: 0 });
+    // Only what the pick says now counts (events can arrive late or out of order).
+    const now = (await db.ref(`${core.ROOT}/picks/${pid}`).once("value")).val();
+    const act = settle(ch, now);
+    if (!act) return;
+    // Functions run on Google's clock (Date.now() here is server time).
+    if (act.queue) {
+      await db.ref(core.ROOT).update({
+        [`webQueue/${pid}/approvedAt`]: act.queue.approvedAt, [`webQueue/${pid}/at`]: Date.now(),
+        [`webQueue/${pid}/tryAt`]: null, [`webQueue/${pid}/tries`]: 0,
+      });
+    } else {
       // Taken back: no work left, and no website status on a product that is not approved.
       // (A product already on the website stays there: an un-approve is not a take-down.)
-      else await db.ref(core.ROOT).update({ [`webQueue/${pid}`]: null, [`web/${pid}`]: null });
-    } catch (e) {
-      console.error(`bfWebQueue ${pid}: ${e.message}`);
+      await db.ref(core.ROOT).update({ [`webQueue/${pid}`]: null, [`web/${pid}`]: null });
     }
   },
 );
 
-module.exports = { bfWebQueue, _internals: { webQueueChange, QUEUE, WEB } };
+/** The change, checked against the pick as it is now (an event that is no longer true does nothing). Pure. */
+function settle(ch, current) {
+  if (ch.queue) return approvedState(current) ? { queue: { approvedAt: Number(current.at) || ch.queue.approvedAt } } : null;
+  if (ch.remove) return approvedState(current) ? null : ch;
+  return null;
+}
+
+module.exports = { bfWebQueue, _internals: { webQueueChange, settle, QUEUE, WEB } };
