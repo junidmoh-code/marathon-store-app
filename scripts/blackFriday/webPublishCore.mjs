@@ -212,11 +212,6 @@ export async function publishOne(pid, deps, { web = null } = {}) {
     name = eff.name; source = eff.source;
   }
   if (precheck.publish(name)) return { pid, outcome: "needs-name", why: `the suggested name cannot be used (${precheck.publish(name)})` };
-  if (refusedOurs && !viaProposal && !/media|photo|originalSource/i.test(blocked)) {
-    // Same name, same refusal: only a change (a new name, a new photo) is worth a new try.
-    return { pid, outcome: "failed", why: blocked };
-  }
-
   const ctx = async () => ({ now: await deps.now(), uid: AGENT_UID });
 
   // (2) the photo: approved first, the others kept.
@@ -225,18 +220,24 @@ export async function publishOne(pid, deps, { web = null } = {}) {
   const bad = websitePhotoProblem(approvedUrl);
   if (bad) return { pid, outcome: "failed", why: bad };
   const { media, changed } = mediaWithFirst(node, product, approvedUrl);
+  // The website refused a publish WE wrote: the same name and the same photos would be refused again.
+  // Only a change (a new suggested name, a different photo list) is worth a new try — or, for a refusal
+  // whose cause lies outside (stock, a rule since fixed), one more try every RETRY_MAX_MS.
+  if (refusedOurs && !viaProposal && !changed && !(await deps.now() - Number(web.pubAt) > RETRY_MAX_MS)) {
+    return { pid, outcome: "failed", why: blocked };
+  }
   if (changed || !node?.media) {
     const problem = mediaListProblem(media);
     if (problem) return { pid, outcome: "failed", why: problem };
-    const oldPrimary = resolveMediaList(node, product).items[0]?.url || null;
     const res = await decide(db, pid, node, mediaMutator, { media, basisKey: storedMediaKey(node) }, await ctx());
     if (!res.ok) return { pid, outcome: "failed", why: res.message };
     node = res.node;
-    // The app photo follows the website's first photo (THE one write; never throws).
-    if (product.photoUrl !== approvedUrl) {
-      const app = await setShopifyPrimaryPhoto(pid, { product, oldPrimary, newPrimary: approvedUrl, fallbackOriginal: product.photoUrl || null }, primaryDeps(pid, deps));
-      if (!app.ok) throw new Error(`app photo not updated: ${app.message || app.reason || "unknown"}`);
-    }
+  }
+  // The app photo follows the website's first photo (THE one write; never throws) — whenever they differ,
+  // also when the list already led with the approved photo (written by an earlier pass or another writer).
+  if (product.photoUrl !== approvedUrl) {
+    const app = await setShopifyPrimaryPhoto(pid, { product, oldPrimary: product.photoUrl || null, newPrimary: approvedUrl, fallbackOriginal: product.photoUrl || null }, primaryDeps(pid, deps));
+    if (!app.ok) throw new Error(`app photo not updated: ${app.message || app.reason || "unknown"}`);
   }
 
   // (3b) apply the suggestion exactly as its button does (pinned to the one just read).

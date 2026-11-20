@@ -170,6 +170,21 @@ describe("publishOne — the publisher card's steps", () => {
     expect((await publishOne(PID, deps(world({ node })).d)).outcome).toBe("published");
   });
 
+  it("a refusal of OUR publish is not retried when nothing changed — even a photo refusal (no 2-minute loop)", async () => {
+    const node = { state: "blocked", desiredState: "off", blockedReason: "media[0].originalSource: brand trigger(s) in URL path: x", condition: EXCELLENT, cleanName: "Sneaker white", photos: [APP, GAL] };
+    const db = world({ node });
+    expect((await publishOne(PID, deps(db).d, { web: { s: "fail", pubAt: T - 10 } })).outcome).toBe("failed");
+    expect((await read(db, `shopify_publish/${PID}`)).desiredState).toBe("off");
+    // After RETRY_MAX_MS since our publish: one more try (the cause may lie outside).
+    expect((await publishOne(PID, deps(db).d, { web: { s: "fail", pubAt: T - RETRY_MAX_MS - 10 } })).outcome).toBe("published");
+  });
+
+  it("the app photo follows even when the list already leads with the approved photo", async () => {
+    const db = world({ pick: pickOf({ sig: "g1795000000000" }), photo: genPhoto, node: { state: "awaiting", photos: [GEN, APP], media: [{ id: "a1", type: "photo", url: GEN }, { id: "a2", type: "photo", url: APP }] } });
+    expect((await publishOne(PID, deps(db).d)).outcome).toBe("published");
+    expect((await read(db, `products/${PID}`)).photoUrl).toBe(GEN);
+  });
+
   it("an old block for a branded photo file: tried again without that photo", async () => {
     const node = { state: "blocked", desiredState: "off", blockedReason: "media[1].originalSource: brand trigger(s) in URL path: nike", condition: EXCELLENT, cleanName: "Sneaker white", photos: [APP, BRANDED] };
     const db = world({ node });
