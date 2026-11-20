@@ -3,7 +3,7 @@
 import { describe, it, expect, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import BlackFridayScreen, { rowActions } from "./BlackFridayScreen";
+import BlackFridayScreen, { rowActions, shownId } from "./BlackFridayScreen";
 import { isUpdateBusy } from "../../update/updateChecker";
 
 const row = (pid, qty, over = {}) => ({ pid, name: `Item ${pid}`, price: 300, qty, sizes: "M-XL", kind: "clothing", big: qty >= 30, na: false, photo: `https://x/${pid}.jpg`, shown: `https://x/${pid}.jpg`,
@@ -45,14 +45,16 @@ function fakeApi(over = {}) {
 async function mount(api) { let r; await act(async () => { r = TestRenderer.create(<BlackFridayScreen api={api} onExit={() => {}} />); }); await flush(); return r; }
 
 describe("Black Friday card v3", () => {
-  it("row buttons: Approve never greyed out on a generated photo; a new kind defaults to Use current photo but still allows Generate", () => {
-    const g = row("a", 40, { use: "generated", generations: 1, genId: "g1", generatedUrl: "u" });
-    expect(rowActions(g)).toMatchObject({ approve: true, approveDisabled: false, useCurrent: true, regenerate: true });
+  it("row buttons: Approve never greyed out on a generated photo; Generate on EVERY row, every kind, every tab (no category-look gate, Junid 20 Nov)", () => {
+    const g = row("a", 40, { use: "generated", generations: 1, genId: "g1", sig: "g1", aiGenId: "g1", generatedUrl: "u" });
+    expect(rowActions(g)).toMatchObject({ approve: true, approveDisabled: false, useCurrent: true, regenerate: true, replace: true, findOnline: true });
     expect(rowActions({ ...g, generating: true }).approveDisabled).toBe(true);
     const cap = row("c", 20, { kind: "headwear", styleApproved: false });
-    expect(rowActions(cap)).toMatchObject({ useCurrent: true, useCurrentPrimary: true, generate: true, approveLook: false });
-    expect(rowActions({ ...cap, generations: 1, use: "generated", generatedUrl: "u" }).approveLook).toBe(true);
-    expect(rowActions(row("d", 15, { tab: "approved" }))).toMatchObject({ approve: false, backToReview: true, reject: true });
+    expect(rowActions(cap)).toMatchObject({ generate: true, replace: true, findOnline: true });
+    expect(rowActions(cap).approveLook).toBeFalsy();
+    expect(rowActions(row("d", 15, { tab: "approved" }))).toMatchObject({ approve: false, backToReview: true, reject: true, generate: true, replace: true, findOnline: true });
+    expect(rowActions(row("d", 15, { tab: "approved", src: "na" }))).toMatchObject({ generate: true, replace: true, findOnline: true, backToReview: true });
+    expect(rowActions(row("n", 4, { tab: "newArrivals", kind: "perfume", canGenerate: true }))).toMatchObject({ generate: true });
   });
 
   it("short totals; two tabs with counts; 30+ block first with Approve all 30+, then 13–29; no badges, no chips, no schedule on the main view", async () => {
@@ -120,11 +122,14 @@ describe("Black Friday card v3", () => {
     expect(api.brainSlot).toHaveBeenCalledWith("2026-11-20", 0, "09:30");
   });
 
-  it("a new kind's AI look can be approved from a product that has one", async () => {
-    const api = fakeApi({ list: vi.fn(async () => view({ review: [row("c", 20, { kind: "headwear", styleApproved: false, generations: 1, use: "generated", generatedUrl: "u" })] })) });
+  it("no 'Approve the AI look' gate any more: a cap shows Generate straight away", async () => {
+    const api = fakeApi({ list: vi.fn(async () => view({ review: [row("c", 20, { kind: "headwear", styleApproved: false })] })) });
     const r = await mount(api);
-    await act(async () => { byId(r, "look-c").props.onClick(); });
-    expect(api.approveStyle).toHaveBeenCalledWith("headwear");
+    expect(has(r, "look-c")).toBe(false);
+    expect(text(byId(r, "generate-c"))).toBe("Generate");
+    await act(async () => { byId(r, "generate-c").props.onClick(); });
+    await flush();
+    expect(api.generate).toHaveBeenCalledWith("c", "main", expect.anything());
   });
 
   it("a failed tap shows the error and re-reads", async () => {
@@ -312,7 +317,7 @@ describe("Black Friday card: New Arrivals tab, Approved split, Repost (Junid, 20
   const UP = Date.parse("2026-11-18T10:00:00+02:00");
   const naRow = (pid, over = {}) => row(pid, 4, { tab: "newArrivals", na: true, src: "na", uploadedAt: UP, canGenerate: true, ...over });
   const naView = () => view({
-    newArrivals: [naRow("n1"), naRow("n2", { kind: "headwear", canGenerate: false }), naRow("n3", { use: "generated", generatedUrl: "https://x/g.jpg", genId: "g1795100000000", sig: "g1795100000000", generations: 1 })],
+    newArrivals: [naRow("n1", { naStudio: true }), naRow("n2", { kind: "headwear", naStudio: false }), naRow("n3", { use: "generated", generatedUrl: "https://x/g.jpg", genId: "g1795100000000", sig: "g1795100000000", generations: 1 })],
     approved: [row("d", 15, { tab: "approved", na: true, postedN: 2, postedLast: UP }), row("e", 40, { tab: "approved" })],
     totals: { review: 3, approved: 2, rejected: 0, spentZar: 0, newArrivals: 3, approvedNa: 1, approvedNormal: 1 },
   });
@@ -327,7 +332,7 @@ describe("Black Friday card: New Arrivals tab, Approved split, Repost (Junid, 20
     expect(has(r, "block-big")).toBe(false);
   });
 
-  it("New Arrivals controls: Approve, Use current photo (= approve with the app photo, with Undo), Generate through New Arrivals' studio; no Generate for a kind New Arrivals cannot frame", async () => {
+  it("New Arrivals controls: Approve, Use current photo (= approve with the app photo, with Undo), Generate through New Arrivals' studio; any other kind through Black Friday's Generate", async () => {
     const a = api();
     const r = await mount(a);
     await act(async () => { byId(r, "use-current-n1").props.onClick(); });
@@ -340,7 +345,9 @@ describe("Black Friday card: New Arrivals tab, Approved split, Repost (Junid, 20
     await flush();
     expect(a.generateNa).toHaveBeenCalledWith("n1", expect.anything());
     expect(a.generate).not.toHaveBeenCalled();
-    expect(has(r, "generate-n2")).toBe(false);
+    await act(async () => { byId(r, "generate-n2").props.onClick(); });
+    await flush();
+    expect(a.generate).toHaveBeenCalledWith("n2", "main", expect.anything());
     expect(rowActions(naRow("x"))).toMatchObject({ approve: true, useCurrent: true, useCurrentPrimary: true, backToReview: false });
   });
 
@@ -358,5 +365,106 @@ describe("Black Friday card: New Arrivals tab, Approved split, Repost (Junid, 20
     await act(async () => { byId(r, "bulk-repost").props.onClick(); });
     await flush();
     expect(a.repost).toHaveBeenCalledWith(["d"]);
+  });
+});
+
+describe("Black Friday card: Junid's own photo, Find online, R0 guard (Junid, 20 Nov)", () => {
+  const SRC = "g1795200000000", AI = "g1795100000000";
+  const withSrc = (over = {}) => row("s", 20, { kind: "headwear", use: "generated", genId: SRC, sig: SRC, srcId: SRC, srcUrl: "https://x/src.jpg", shown: "https://x/src.jpg", shownFrom: "upload",
+    gallery: [{ id: "app", url: "https://x/s.jpg", label: "App photo" }, { id: SRC, url: "https://x/src.jpg", label: "Your photo" }], ...over });
+  const cand = { imageUrl: "https://shop.example/p.jpg", pageUrl: "https://shop.example/p", site: "shop.example", width: 1200, height: 1200, thumb: "data:image/jpeg;base64,AA" };
+  const api = (rows, over = {}) => fakeApi({ list: vi.fn(async () => view({ review: rows })), selSave: vi.fn(async () => ({ ok: true })),
+    photoUpload: vi.fn(async () => ({ ok: true, id: SRC })), findOnline: vi.fn(async () => ({ ok: true, query: "New Era cap", candidates: [cand], entryPoint: "<div>g</div>" })),
+    pickOnline: vi.fn(async () => ({ ok: true, id: SRC })), ...over });
+
+  it("R0: 'No price, set price first' instead of Approve; bulk/quick approve not offered for it", async () => {
+    const a = api([row("z", 20, { price: 0, noPrice: true }), row("a", 20)]);
+    const r = await mount(a);
+    expect(has(r, "approve-z")).toBe(false);
+    expect(text(byId(r, "noprice-z"))).toBe("No price, set price first");
+    expect(has(r, "approve-a")).toBe(true);
+    expect(rowActions(row("z", 1, { tab: "newArrivals", noPrice: true }))).toMatchObject({ approve: false, useCurrent: false, noPrice: true });
+  });
+
+  it("R0 approvals are listed on their own on the Approved tab, never among what posts", async () => {
+    const a = fakeApi({ list: vi.fn(async () => view({ approved: [row("d", 15, { tab: "approved" }), row("z", 15, { tab: "approved", price: 0, noPrice: true })] })) });
+    const r = await mount(a);
+    await act(async () => { byId(r, "tab-approved").props.onClick(); });
+    expect(text(byId(r, "block-noprice"))).toContain("(1)");
+    expect(text(byId(r, "block-noprice"))).toContain("Item z");
+    expect(text(byId(r, "block-appr-normal"))).not.toContain("Item z");
+  });
+
+  it("Replace photo opens the phone's picker and uploads the picked photo for that product", async () => {
+    const a = api([row("a", 20)]);
+    const r = await mount(a);
+    const input = byId(r, "replace-input");
+    expect(input.props.accept).toBe("image/*");
+    expect(input.props.capture).toBeUndefined();
+    await act(async () => { byId(r, "replace-a").props.onClick(); });
+    const file = new Blob([new Uint8Array([0xff, 0xd8, 0xff])], { type: "image/jpeg" });
+    await act(async () => { await input.props.onChange({ target: { files: [file] } }); });
+    await flush();
+    expect(a.photoUpload).toHaveBeenCalledWith("a", "/9j/");
+    expect(a.list.mock.calls.length).toBeGreaterThan(1); // the card re-reads: the row shows his photo
+  });
+
+  it("with his photo: the badge says YOURS, Generate says 'from your photo', the photo viewer swipes app ↔ his photo and 'Use this photo' brings the app photo back", async () => {
+    const a = api([withSrc()]);
+    const r = await mount(a);
+    expect(text(byId(r, "badge-s"))).toBe("YOURS");
+    expect(text(byId(r, "generate-s"))).toBe("Generate from your photo");
+    expect(has(r, "use-current-s")).toBe(false); // already showing his photo
+    await act(async () => { byId(r, "thumb-s").props.onClick({ stopPropagation() {} }); });
+    expect(text(byId(r, "viewer-label"))).toContain("Your photo");
+    expect(text(byId(r, "viewer-label"))).toContain("showing");
+    await act(async () => { byId(r, "viewer-prev").props.onClick(); });
+    expect(text(byId(r, "viewer-label"))).toContain("App photo");
+    await act(async () => { byId(r, "viewer-use").props.onClick(); });
+    await flush();
+    expect(a.use).toHaveBeenCalledWith("s", "current", null, "main", { app: true, approve: false });
+  });
+
+  it("after Generate from his photo: Use current photo (= his photo) switches back to it; Use AI photo is offered when his photo shows", async () => {
+    const a = api([withSrc({ genId: AI, sig: AI, aiGenId: AI, generations: 1, shown: "https://x/ai.jpg", shownFrom: "ai" })]);
+    const r = await mount(a);
+    await act(async () => { byId(r, "use-current-s").props.onClick(); });
+    await flush();
+    expect(a.use).toHaveBeenCalledWith("s", "generated", SRC, "main");
+    expect(rowActions(withSrc({ aiGenId: AI, generations: 1 }))).toMatchObject({ useAi: true, useCurrent: false, regenerate: true });
+  });
+
+  it("Find online: nothing is used until a candidate is tapped; the site shows under each; Google's suggestions are shown", async () => {
+    const a = api([row("a", 20)]);
+    const r = await mount(a);
+    await act(async () => { byId(r, "find-a").props.onClick(); });
+    await flush();
+    expect(a.findOnline).toHaveBeenCalledWith("a");
+    expect(a.pickOnline).not.toHaveBeenCalled();
+    expect(text(byId(r, "cand-site-0"))).toBe("shop.example");
+    expect(has(r, "find-google")).toBe(true);
+    await act(async () => { byId(r, "cand-0").props.onClick(); });
+    await flush();
+    expect(a.pickOnline).toHaveBeenCalledWith("a", cand);
+    expect(has(r, "find")).toBe(false);
+  });
+
+  it("Approved tab: 'Use this photo' in the viewer approves the picked photo in the same tap", async () => {
+    const a = fakeApi({ list: vi.fn(async () => view({ approved: [withSrc({ tab: "approved", genId: AI, sig: AI, shownFrom: "ai", gallery: [{ id: "app", url: "u0", label: "App photo" }, { id: SRC, url: "u1", label: "Your photo" }, { id: AI, url: "u2", label: "AI" }] })] })) });
+    const r = await mount(a);
+    await act(async () => { byId(r, "tab-approved").props.onClick(); });
+    await act(async () => { byId(r, "thumb-s").props.onClick({ stopPropagation() {} }); });
+    await act(async () => { byId(r, "viewer-prev").props.onClick(); });
+    expect(text(byId(r, "viewer-use"))).toBe("Use this photo (approves it)");
+    await act(async () => { byId(r, "viewer-use").props.onClick(); });
+    await flush();
+    expect(a.use).toHaveBeenCalledWith("s", "generated", SRC, "main", { approve: true });
+  });
+
+  it("shownId names the photo a row shows", () => {
+    expect(shownId(row("a", 1))).toBe("app");
+    expect(shownId(withSrc())).toBe(SRC);
+    expect(shownId(row("n", 1, { tab: "newArrivals", generatedUrl: "u" }))).toBe("na");
+    expect(shownId(row("n", 1, { tab: "newArrivals", bfPhoto: true, use: "generated", sig: SRC }))).toBe(SRC);
   });
 });

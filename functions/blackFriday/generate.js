@@ -21,6 +21,16 @@
 // a second reference (data.secondRefUrl).
 // The New Arrivals generation pause stops this too.
 //
+// GENERATE ON EVERY PRODUCT (Junid, 20 Nov 2026): every kind, every tab —
+// New Arrivals not in the build included (their row is made from the product
+// now). FROM HIS OWN PHOTO: when the product has a source photo on the card
+// (photos/{pid}/srcId — Replace photo or Find online), the shared generator is
+// handed THAT photo as the product photo, in place of the app's; nothing else
+// about the request changes (same prompt, model, size, finishing — the prompt
+// already keeps the product exactly as the photo shows it: colour, logos,
+// details). An APPROVED product keeps posting its approved photo: a new photo
+// is added beside it until Junid picks it.
+//
 // Writes only /bf_campaign_2026/photos/{pid} and stats; photos go to
 // products/{pid}/black_friday/. Deploy BY NAME: firebase deploy --only functions:bfGenerate
 "use strict";
@@ -34,6 +44,9 @@ const pauseSwitch = require("../newArrivals/pause.cjs");
 const { isSuperAdminToken } = require("../lib/super-admins.cjs");
 
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
+
+// A New Arrival not in the build (lazy: New Arrivals' module is only loaded when needed).
+const naRow = (db, pid) => require("./na.cjs").campaignRowOfNa(db, pid, Date.now(), require("../newArrivals/newArrivals.js"));
 
 let engineP = null;
 const engine = () => (engineP ||= Promise.resolve().then(() => require("../newArrivals/studio.js").engine));
@@ -67,10 +80,10 @@ async function release(db, pid, claimAt) {
   } catch (e) { console.error(`bfGenerate: ${pid} not released — ${e.message}`); }
 }
 
-/** The product after a finished photo: added to its generations and made the photo it shows. Pure. */
-function landed(base, { genId, gen, claimAt }) {
+/** The product after a finished photo: added to its generations and made the photo it shows (unless keepChoice). Pure. */
+function landed(base, { genId, gen, claimAt, keepChoice = false }) {
   const p = base || {};
-  const next = { ...p, gens: { ...(p.gens || {}), [genId]: gen }, genId, use: "generated" };
+  const next = keepChoice ? { ...p, gens: { ...(p.gens || {}), [genId]: gen } } : { ...p, gens: { ...(p.gens || {}), [genId]: gen }, genId, use: "generated" };
   delete next.failed; // a photo landed: no longer "Failed, tap to retry"
   if (p.generating && p.generating.at === claimAt) delete next.generating;
   return core.withRev(next, base);
@@ -87,9 +100,18 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
   const order = core.SECTIONS.includes(section) ? [section, ...core.SECTIONS.filter((s) => s !== section)] : core.SECTIONS;
   let item = null;
   for (const s of order) { item = await val(db, `${core.ROOT}/items/${s}/${pid}`); if (item) break; }
+  // A New Arrival not in the build: its row made from the product now.
+  if (!item && deps.naRow) item = await deps.naRow(pid).catch(() => null);
   if (!item) throw new HttpsError("invalid-argument", "That product is not in the campaign.");
-  const product = await val(db, `products/${pid}`);
-  if (!product) throw new HttpsError("failed-precondition", "Can't generate — the product record no longer exists.");
+  const product0 = await val(db, `products/${pid}`);
+  if (!product0) throw new HttpsError("failed-precondition", "Can't generate — the product record no longer exists.");
+  // His own photo, when he chose one: the shared generator's source rule picks it up as the product photo.
+  const photoNode = await val(db, `${core.ROOT}/photos/${pid}`);
+  const source = core.sourceOf(photoNode);
+  const product = source ? { ...product0, photoUrl: source.url, photoUrlOriginal: null, photoSourceUrl: null } : product0;
+  // Approved now with the photo it shows: the new photo waits beside it (the approved photo keeps posting).
+  const pickNow = await val(db, `${core.ROOT}/picks/${pid}`);
+  const keepChoice = !!pickNow && pickNow.state === "approved" && (pickNow.src === "na" || core.isApproved(pickNow, photoNode));
   const kind = item.kind || "clothing";
   const e = deps.engine || await engine();
   const mods = await e.mods();
@@ -176,6 +198,7 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
     input: res.input || "photo", ...(res.echoFallback ? { echoFallback: true } : {}), ...(res.placeNote ? { placeNote: true } : {}), ...(res.secondRef ? { secondRef: res.secondRef } : {}),
     costZar: Number.isFinite(cost.zar) ? cost.zar : null, costEstimated: !!cost.estimated,
     ...(final || {}), ...(res.note ? { note: res.note } : {}),
+    ...(source ? { fromSrc: source.id, fromSrcKind: source.src } : {}),
   };
   for (const [k, v] of Object.entries(gen)) if (v === null || v === undefined) delete gen[k];
   const ref = db.ref(`${core.ROOT}/photos/${pid}`);
@@ -185,7 +208,7 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
     const done = await studio.withRetries(() => ref.transaction((cur) => {
       const base = cur === null ? pre : cur;
       if (base && base.gens && base.gens[genId]) return undefined;
-      return landed(base, { genId, gen, claimAt: t0 });
+      return landed(base, { genId, gen, claimAt: t0, keepChoice });
     }));
     saved = done && done.snapshot && done.snapshot.val();
   } catch (err) { console.error(`bfGenerate: ${pid} landing failed — ${err.message}`); }
@@ -198,7 +221,7 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
     throw new HttpsError("internal", `No photo — the photo was made (${res.generated.path}) but could not be put on the card. It was charged; tap Generate to make another.`);
   }
   await db.ref(`${core.ROOT}/decisions`).push().set({ at: t0, by: uid || null, action: "generate", pid, genId, kind }).catch(() => {});
-  return { ok: true, pid, genId, kind, url: gen.url, costZar: gen.costZar || null, width: gen.width || null, height: gen.height || null, mime: gen.mime || null };
+  return { ok: true, pid, genId, kind, url: gen.url, costZar: gen.costZar || null, width: gen.width || null, height: gen.height || null, mime: gen.mime || null, ...(source ? { fromSrc: source.id } : {}), ...(keepChoice ? { keptApproved: true } : {}) };
 }
 
 const bfGenerateFn = onCall(
@@ -209,7 +232,7 @@ const bfGenerateFn = onCall(
     const d = request.data || {};
     const e = await engine();
     return bfGenerate(admin.database(), { pid: d.pid, section: d.section, input: d.input === "cutout" ? "cutout" : "photo", place: d.place === true, secondRefUrl: typeof d.secondRefUrl === "string" ? d.secondRefUrl : null }, request.auth.uid,
-      { bucket: admin.storage().bucket(e.BUCKET), apiKey: geminiApiKey.value() }, emit);
+      { bucket: admin.storage().bucket(e.BUCKET), apiKey: geminiApiKey.value(), naRow: (pid) => naRow(admin.database(), pid) }, emit);
   },
 );
 

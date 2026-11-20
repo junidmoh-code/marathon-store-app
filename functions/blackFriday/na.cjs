@@ -17,6 +17,7 @@
 "use strict";
 
 const naCore = require("../newArrivals/core.cjs");
+const bfCore = require("./core.cjs");
 
 const ROOT = "bf_campaign_2026";
 // The campaign began 19 Nov 2026 (SAST): an approval on the New Arrivals card from then on also posts here.
@@ -56,7 +57,12 @@ function kindOf(p) {
 }
 const isPaperBag = (p) => String((p && p.categoryKey) || "") === "packaging" || /paper\s*-?\s*bag/i.test(String((p && p.name) || ""));
 const isPricePlaceholder = (p) => String((p && p.category) || "") === "Price Products";
-/** New Arrivals' generator frames footwear and clothing only (its plates): Generate is offered for these. Pure. */
+/**
+ * New Arrivals' own studio frames footwear and clothing (its plates): those
+ * New Arrivals rows generate on the New Arrivals item as before. Every other
+ * kind (caps, beanies, perfume, bags …) generates through Black Friday's
+ * Generate — the SAME shared generator — onto the Black Friday photo. Pure.
+ */
 const naCanGenerate = (kind) => kind === "sneakers" || kind === "clothing";
 
 /** The upload time: the product id is "p" + the creation time (New Arrivals' window is by this key). Pure. */
@@ -110,9 +116,39 @@ function mirrorPick(pid, item, facts, cur, { inWindow = false } = {}) {
  * core.viewItem). base: the build's row (items/main|under) or one made live;
  * na: { status, generatedUrl, currentGen, generateRequest, useCurrentPhoto }. Pure.
  */
-function viewNaRow(pid, base, na, { nowMs = Date.now(), uploadedAt = null } = {}) {
+function viewNaRow(pid, base, na, { nowMs = Date.now(), uploadedAt = null, photo = null } = {}) {
   const kind = base.kind || "clothing";
   const gen = na && na.generatedUrl && !na.useCurrentPhoto ? na.generatedUrl : null;
+  // THE BLACK FRIDAY PHOTO LAYER (20 Nov 2026): his own photo (Replace photo / Find online) or a photo made by
+  // Black Friday's Generate is on bf_campaign_2026/photos/{pid}; while one is chosen the row shows it, and
+  // Approve approves exactly it as a Black Friday decision (the New Arrivals item is left as it is).
+  const bfSig = bfCore.sigOf(photo);
+  const bf = bfSig !== "current" ? photo.gens[bfSig] : null;
+  const source = bfCore.sourceOf(photo);
+  const aiId = bfCore.latestAiId(photo);
+  const layer = {
+    bfPhoto: !!bf, srcId: source ? source.id : null, srcUrl: source ? source.url : null, srcFrom: source ? source.src : null, aiGenId: aiId,
+    gallery: bfCore.galleryOf(base.photo || null, photo, { extra: gen ? [{ id: "na", url: gen, label: "New Arrivals AI" }] : [] }),
+    noPrice: !bfCore.hasPrice(base.price),
+    // Which generator a Generate tap goes to: New Arrivals' studio (footwear/clothing, no Black Friday photo
+    // chosen), else Black Friday's — both are the one shared generator.
+    naStudio: naCanGenerate(kind) && !bf && !source,
+  };
+  if (bf) {
+    return {
+      pid, name: base.name || pid, price: base.price, qty: Number(base.qty) || 0, sizes: base.sizes || "", kind,
+      big: (Number(base.qty) || 0) >= 30, na: true, src: "na",
+      photo: base.photo || null, shown: bf.url, use: "generated", genId: bfSig, sig: bfSig,
+      shownFrom: bfCore.isSourceGen(bf) ? bf.src : "ai",
+      generatedUrl: aiId ? photo.gens[aiId].url : null, generations: Object.values(photo.gens).filter((g) => g && g.url && !bfCore.isSourceGen(g)).length,
+      generating: !!(photo.generating && nowMs - Number(photo.generating.at) < bfCore.CLAIM_MS),
+      styleApproved: true, canGenerate: true,
+      failed: photo.failed && photo.failed.at ? { at: photo.failed.at, reason: String(photo.failed.reason || "") } : null,
+      tab: "newArrivals", changedSinceApproval: false, posted: null,
+      uploadedAt: uploadedAt || uploadedAtOf(pid), ...layer,
+    };
+  }
+  const bfGenerating = !!(photo && photo.generating && nowMs - Number(photo.generating.at) < bfCore.CLAIM_MS);
   return {
     pid, name: base.name || pid, price: base.price, qty: Number(base.qty) || 0, sizes: base.sizes || "", kind,
     big: (Number(base.qty) || 0) >= 30, na: true, src: "na",
@@ -120,11 +156,13 @@ function viewNaRow(pid, base, na, { nowMs = Date.now(), uploadedAt = null } = {}
     // sig: the photo shown — its New Arrivals generation, "na" (its main AI photo, no generation id), or "current".
     use: gen ? "generated" : "current", genId: gen ? (na.currentGen || null) : null, sig: gen ? (na.currentGen || "na") : "current",
     generatedUrl: gen, generations: na && na.currentGen ? 1 : 0,
-    generating: !!(na && naCore.requestPending(na, nowMs) && na.generateRequest && na.generateRequest.studio === true),
-    styleApproved: true, canGenerate: naCanGenerate(kind),
-    failed: na && na.lastAttempt && na.lastAttempt.failed && !na.currentGen ? { at: na.lastAttempt.at || null, reason: String(na.lastAttempt.reason || "") } : null,
+    shownFrom: gen ? "na" : "app",
+    generating: bfGenerating || !!(na && naCore.requestPending(na, nowMs) && na.generateRequest && na.generateRequest.studio === true),
+    styleApproved: true, canGenerate: true,
+    failed: photo && photo.failed && photo.failed.at && !layer.naStudio ? { at: photo.failed.at, reason: String(photo.failed.reason || "") }
+      : na && na.lastAttempt && na.lastAttempt.failed && !na.currentGen ? { at: na.lastAttempt.at || null, reason: String(na.lastAttempt.reason || "") } : null,
     tab: "newArrivals", changedSinceApproval: false, posted: null,
-    uploadedAt: uploadedAt || uploadedAtOf(pid),
+    uploadedAt: uploadedAt || uploadedAtOf(pid), ...layer,
   };
 }
 
@@ -188,7 +226,7 @@ async function inBatches(xs, width, fn) {
  * product in the window (for "shows ONLY under New Arrivals" and the
  * Approved split).
  */
-async function naTab(db, { lanes, items, picks, nowMs, na, underRow = async () => null }) {
+async function naTab(db, { lanes, items, picks, photos = {}, nowMs, na, underRow = async () => null }) {
   const rows = [];
   const pids = [...lanes.entries()].filter(([, lane]) => NEW.includes(lane)).map(([pid]) => pid);
   await inBatches(pids, 50, async (pid) => {
@@ -199,7 +237,7 @@ async function naTab(db, { lanes, items, picks, nowMs, na, underRow = async () =
     if (!base) return;
     const f = await naFields(db, pid, lanes.get(pid));
     if (!f.status || !NEW.includes(f.status)) return;
-    rows.push(viewNaRow(pid, base, f, { nowMs, uploadedAt: base.uploadedAt }));
+    rows.push(viewNaRow(pid, base, f, { nowMs, uploadedAt: base.uploadedAt, photo: (photos || {})[pid] || null }));
   });
   rows.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0) || (a.pid < b.pid ? 1 : -1));
   return rows;
@@ -213,6 +251,21 @@ async function factsOf(db, pid, nowMs, na) {
   if (live) return live;
   const [name, stockPrice, categoryKey, category, subcategory] = await Promise.all(["name", "stockPrice", "categoryKey", "category", "subcategory"].map((k) => val(db, `products/${pid}/${k}`)));
   return { name: name || pid, price: naCore.stockPriceOf({ stockPrice }), kind: kindOf({ name, categoryKey, category, subcategory }), sizes: "" };
+}
+
+/**
+ * A New Arrival that is not in the 05:00 build (uploaded since, or under the
+ * build's rules): the campaign row made from the product as it is now, so its
+ * Black Friday photo can be generated and approved. → row | null
+ */
+async function campaignRowOfNa(db, pid, nowMs, na) {
+  const status = await val(db, `${naCore.ITEMS}/${pid}/status`);
+  if (!status) return null;
+  const live = await liveRow(db, pid, nowMs, na).catch(() => null);
+  if (live) return { ...live, na: true };
+  const f = await factsOf(db, pid, nowMs, na);
+  const photo = await val(db, `products/${pid}/photoUrl`);
+  return { name: f.name || pid, price: f.price ?? null, kind: f.kind || "clothing", sizes: f.sizes || "", qty: Number(f.qty) || 0, photo: photo || null, na: true };
 }
 
 /** Bring the Black Friday pick in line with the New Arrivals item (one approval). → { changed, pick } */
@@ -252,5 +305,5 @@ async function mirrorOnce(db, pid, nowMs, { na = require("../newArrivals/newArri
 
 module.exports = {
   ROOT, CAMPAIGN_START_MS, kindOf, isPaperBag, isPricePlaceholder, naCanGenerate, uploadedAtOf,
-  mirrorPick, viewNaRow, windowLanes, naTab, naFields, liveRow, factsOf, mirror,
+  mirrorPick, viewNaRow, windowLanes, naTab, naFields, liveRow, factsOf, mirror, campaignRowOfNa,
 };
