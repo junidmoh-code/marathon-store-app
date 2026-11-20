@@ -340,30 +340,33 @@ async function genWorld({ geminiW = 1728, geminiH = 2304, pid = "a", product = {
   return { db, deps, uploads, calls };
 }
 
-test("Generate (clothing): the New Arrivals engine exactly as New Arrivals runs it (2K, its own finishing), under black_friday/", async () => {
+test("Generate (clothing): the ONE shared generator, exactly as New Arrivals runs it (4K, the full-resolution JPEG q92 master), under black_friday/", async () => {
   const w = await genWorld();
   const out = await gen.bfGenerate(w.db, { pid: "a" }, "junid", w.deps);
   assert.equal(out.kind, "clothing");
   const image = w.calls.filter((c) => c[0] === "image");
   assert.equal(image.length, 1);
-  assert.equal(image[0][2].imageSize, "2K", "New Arrivals' own size, not the reverted 4K");
+  assert.equal(image[0][2].imageSize, NA_GENERATION.imageSize, "the shared generator's size");
+  assert.equal(image[0][2].imageSize, "4K");
   const final = w.uploads.find((u) => /\/gen_\d+\.(png|jpg)$/.test(u.path));
   assert.match(final.path, /^products\/a\/black_friday\//);
-  assert.equal((await sharp(final.buf).metadata()).format, "jpeg", "New Arrivals' plate canvas (JPEG q93), not the reverted lossless PNG");
+  const fm = await sharp(final.buf).metadata();
+  assert.deepEqual([fm.format, fm.width, fm.height], ["jpeg", 1728, 2304], "the master at the model's full resolution, JPEG — never shrunk to the plate, never PNG");
   assert.ok(!w.uploads.some((u) => u.path.includes("/new_arrivals/")));
   const v = await _internals.list(w.db);
   assert.deepEqual([v.review.find((x) => x.pid === "a").use, v.review.find((x) => x.pid === "a").generations], ["generated", 1]);
 });
 
-test("Generate (footwear): New Arrivals' path byte for byte — 2K, its correction WITHOUT the lossless override", async () => {
+test("Generate (footwear): the last-good request — 4K, Gemini composes the whole photo (the plate-lock paste is never run)", async () => {
   const w = await genWorld({ product: { categoryKey: "sneakers" } });
   await w.db.ref(`${core.ROOT}/items/main/a/kind`).set("sneakers");
   const seen = [];
   w.deps.correct = async (args) => { seen.push(args); return { problem: "test: not placed" }; };
   await gen.bfGenerate(w.db, { pid: "a" }, "junid", w.deps).catch(() => {});
   const image = w.calls.filter((c) => c[0] === "image");
-  assert.equal(image[0][2].imageSize, "2K");
-  for (const a of seen) assert.equal(a.lossless, undefined, "no lossless override for footwear");
+  assert.equal(image[0][2].imageSize, "4K");
+  assert.equal(seen.length, 0, "no cut-out-and-paste onto the plate: that made the shoe small and the box float");
+  assert.match(image[0][3], /the shoe's heel at x=17\.8%, its toe tip at x=83\.8% \(shoe 66% of the frame width\)/, "the 2 Oct (last-good) placement");
 });
 
 test("Generate: a result that is really the original photo is never shown — 'Failed, tap to retry', nothing charged to the item", async () => {
@@ -382,6 +385,19 @@ test("Generate: a result that is really the original photo is never shown — 'F
   await gen.bfGenerate(w.db, { pid: "a" }, "junid", w.deps);
   assert.equal(((await w.db.ref(`${core.ROOT}/photos/a`).once("value")).val() || {}).failed, undefined);
   void w2image;
+});
+
+test("Generate: a photo that CARRIES JUNID'S PLATE is never refused as 'the original', even when the staff photo was taken on the shop's fence and looks alike", async () => {
+  const w = await genWorld();
+  // The staff photo IS (near enough) the plate: the old rule (difference < 12 → refused) failed a real photo here.
+  const plateLike = await png(400, 500, "#888");
+  w.deps.fetchBytes = async (url) => { w.calls.push(["fetch", url]); return { buffer: plateLike }; };
+  w.deps.image = async (model, parts, imageConfig) => ({ buffer: await png(1728, 2304, "#888"), mime: "image/png", usage: { promptTokenCount: 9000, candidatesTokenCount: 2000 }, request: { imageConfig } });
+  const out = await gen.bfGenerate(w.db, { pid: "a" }, "junid", w.deps);
+  assert.equal(out.ok, true);
+  const ph = (await w.db.ref(`${core.ROOT}/photos/a`).once("value")).val();
+  assert.equal(ph.failed, undefined);
+  assert.equal(ph.use, "generated");
 });
 
 test("Generate (caps & beanies): its OWN staging on the fence plate, New Arrivals' model at 4K, saved as JPEG q92 — never the sneaker or hanger formula", async () => {
@@ -410,7 +426,8 @@ test("ONE BRAIN: footwear and clothing call New Arrivals' generator with its own
   assert.equal(image[0][2].imageSize, NA_GENERATION.imageSize);
   assert.doesNotMatch(image[0][3], /Black Friday/, "New Arrivals' own prompt, not a Black Friday one");
   const ph = (await w.db.ref(`${core.ROOT}/photos/a`).once("value")).val();
-  assert.equal(ph.gens[ph.genId].pipeline, "new-arrivals");
+  assert.equal(ph.gens[ph.genId].pipeline, "shared");
+  assert.equal(ph.gens[ph.genId].finish, "master-jpeg-q92");
   assert.equal(ph.gens[ph.genId].model, NA_GENERATION.imageModel);
 });
 

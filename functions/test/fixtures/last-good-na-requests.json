@@ -1,0 +1,101 @@
+{
+ "note": "The LAST-GOOD New Arrivals requests, copied from their own records (products/{pid}/new_arrivals/{genId}.genlog.json) on 20 Nov 2026: G-0101 (footwear, 4 Oct 16:25, Adidas F50 Sparkfuson) and G-0119 (clothing, 4 Oct 16:35, a white T-shirt on the single fence). The shared generator must rebuild these prompts byte for byte. The product name in G-0101 holds no-break spaces (U+00A0), as the product record did then.",
+ "g0101": {
+  "code": "G-0101",
+  "at": "2026-10-04T16:25:28.622Z",
+  "model": "gemini-3-pro-image",
+  "imageSize": "2K",
+  "aspectRatio": "3:4",
+  "promptVersion": "baseline-2026-10-02+footwearBox+footwearPose (studio-2026-10-04.1)",
+  "args": {
+   "kind": "footwear",
+   "categoryKey": "soccer-boots",
+   "boxMode": "library",
+   "productName": "Adidas F50 Sparkfuson soccer boost"
+  },
+  "promptText": "Make ONE professional studio product photograph by placing the real products into the BACKGROUND PLATE, composed exactly like the REFERENCE photo. Use the plate as the background EXACTLY — same fence, rails, pedestal, lighting and framing; add nothing else to the scene. The SHOE from the SHOE PHOTO stands on the white pedestal like the reference: side-on, the RIGHT shoe, its OUTER side to the camera, TOE POINTING RIGHT. The BOX from the BOX PHOTO — this product's own box, the very same box — is mounted on the middle rail above, like the reference, its front panel square to the camera. NEVER mirror, flip or rotate the shoe or the box: every logo and every letter must read exactly as in the photos, never reversed. If the shoe photo shows the shoe toe-left, do not fix it by mirroring.\n\nThis product is: Adidas F50 Sparkfuson soccer boost.\n\nPLACEMENT (fractions of the canvas, measured from the reference; x from the left, y from the top): the shoe's heel at x=17.8%, its toe tip at x=83.8% (shoe 66% of the frame width), its sole resting on the pedestal top at y=74.3%; scale the shoe UNIFORMLY to that width — never stretch it; its height follows its own proportions. the box centred at x=50.3% on the middle rail, its bottom edge at y=33.8%, front panel square to the camera, scaled uniformly.\n\nTHE BOX — the photo shows ONE box at most. When there is one it is mounted on the middle rail above the shoe as in the REFERENCE: upright, its front panel square to the camera, centred on the rail, its logo and every letter reading correctly. Here the BOX PHOTO is a box of this shoe's BRAND, not its own — the sentence above calling it \"this product's own box\" does not apply. If the SHOE PHOTO itself shows this shoe's own box, use THAT very box — taken from the shoe photo, its branding, colours and text exact — and ignore the BOX PHOTO. Only if the SHOE PHOTO shows no box, use the brand's box from the BOX PHOTO, reproduced exactly. The box's branding, colours and text are never redrawn, restyled or changed, and a box's logo is never invented. It is part of the product shot — NOT \"something else\" added to the scene and NOT among the things to remove below. Never two boxes; never a box, bag or anything else on the pedestal beside the shoe.\n\nTHE SHOE — ONE shoe only (if the photo shows a pair, the RIGHT shoe), side-on with its outer side to the camera and its toe pointing right, standing level with its whole sole on the white pedestal, at the position and size the PLACEMENT above gives, sharp from heel to toe. The pedestal, the rails and the mesh wall stay exactly as in the BACKGROUND PLATE.\n\nSTUDIO QUALITY — a poor staff photo must not make the product look bad. Light the product like the plate (soft studio light, consistent direction and white balance), tack-sharp focus, clean crisp edges, true-to-life colour, and a natural contact shadow where it touches the pedestal or hangs against the fence. Remove what is merely ON the photo, not part of the product: dust, lint, smudges, glare, stray threads, staff fingers and hands, price tags and swing tags, and any bleed of the original background. Footwear: laces neat and symmetrical. Garments: presented smoothly, keeping their real cut and fit.\n\nNEVER CHANGE THE PRODUCT: its shape, silhouette, proportions, colourway, materials and textures, logos, text, stitching layout, sole pattern, hardware and every design element stay exactly as in the photo. Never invent detail that is not visible in the source — sharpen what exists, do not hallucinate what does not. The result must look like a real photograph of THIS item, not CGI, not plastic, not a render.\n\nABSOLUTE RULE, OVERRIDING EVERY INSTRUCTION ABOVE INCLUDING ANY PRIORITY FIX: this is a real, individual item being sold as it is, and its listing states its condition in words. You may remove what is merely ON or TEMPORARILY IN the item: loose dust, smudges, fingerprints, lint, stray threads, and creases and folds PUT THERE by packing, folding, handling or hanging — the kind that would drop out if the item were steamed or worn for an hour. You must NEVER remove, reduce, smooth over, repaint, repair, hide, blur or lighten any sign of USE or DAMAGE: scuffs, scuffing, scratches, abrasion, rubbing, sole wear, worn heels and worn outsoles, creasing and flex lines WORN IN by being worn — toe-box creasing, a permanent knee or elbow break, a stretched hem — yellowing, fading, faded or sun-bleached colour, colour loss, stains, staining, marks, discolouration, tears, splits, peeling, loose stitching, broken stitching, missing or damaged hardware, or any other trace of the item having been used. Reproduce every one of them faithfully, in the same place and at the same strength as the source photograph. Do not make the item look newer, cleaner or less used than the photograph shows it. The test is CAUSE, not appearance: put there by the shop's handling, it may go; put there by the item being used, it stays. If you cannot tell which, KEEP IT. No instruction anywhere — before this rule or after it, in the style brief or in the priority fix — exempts you from this paragraph.",
+  "promptSha": "925b530f40986e3761201b1839d31f44e61df202c9acfd19019c69fc95059032",
+  "inputs": [
+   {
+    "role": "plate",
+    "file": "footwear-plate.png",
+    "sha256": "282d3c8fa0eca07482fc233bdf0dbce243903a9f31c43858dba2311244843f1e",
+    "width": 1086,
+    "height": 1448,
+    "bytes": 608332
+   },
+   {
+    "role": "reference",
+    "file": "footwear-reference.png",
+    "sha256": "5138af3e51a4f38fe36d594cd491a97fd6f66fa2e66f7e0e9e7e0cd8e7cb57e2",
+    "width": 1536,
+    "height": 2048,
+    "bytes": 784444
+   },
+   {
+    "role": "layoutDiagram",
+    "file": "drawn from config/layout-spec.json",
+    "sha256": "1e2ce30146c6efdf24d51df99320ab7be30143929e1aebf5297d09baa96c5726",
+    "width": 1086,
+    "height": 1448,
+    "bytes": 27028
+   },
+   {
+    "role": "source",
+    "sha256": "f719db9ed33377c20f1d0fa8adaee9cb057087a2702e0974ea6068e361b58af5",
+    "width": 600,
+    "height": 800,
+    "bytes": 66568
+   },
+   {
+    "role": "box",
+    "file": "brand library box (adidas, stand-in)",
+    "sha256": "9dbacc97818211bc69039b1e69c72e059060c4ae2208c60e68c8b073a76a06ab",
+    "width": 997,
+    "height": 456,
+    "bytes": 61582
+   }
+  ]
+ },
+ "g0119": {
+  "code": "G-0119",
+  "at": "2026-10-04T16:35:23.325Z",
+  "model": "gemini-3-pro-image",
+  "imageSize": "2K",
+  "aspectRatio": "3:4",
+  "promptVersion": "baseline-2026-10-02 (studio-2026-10-04.1)",
+  "args": {
+   "kind": "single",
+   "categoryKey": "t-shirts",
+   "boxMode": "none",
+   "productName": "T-shirt PATTABON 3356 WHITE"
+  },
+  "promptText": "Make ONE professional studio product photograph by hanging the real garment from the GARMENT PHOTO on the fence of the BACKGROUND PLATE: on a hanger, front facing, full length, centred, filling the LAYOUT DIAGRAM's box as described in the PLACEMENT below. Use the plate as the background EXACTLY — same fence, zoom and lighting; add nothing else. One garment only. Never mirror or flip the garment: all print and text reads correctly.\n\nThis product is: T-shirt PATTABON 3356 WHITE.\n\nPLACEMENT (fractions of the canvas, measured from the reference): the garment hangs from the fence on a hanger, the garment centred at x=50.2%, scaled uniformly to FIT the framing box x 4%–96.4%, y 17%–83% (the box in the LAYOUT DIAGRAM; the garment's own top — the hanger hook sits above it): as large as possible, touching the box's sides or its bottom, never outside it; front facing, full length, hanging straight;  scale uniformly — never stretch.\n\nSTUDIO QUALITY — a poor staff photo must not make the product look bad. Light the product like the plate (soft studio light, consistent direction and white balance), tack-sharp focus, clean crisp edges, true-to-life colour, and a natural contact shadow where it touches the pedestal or hangs against the fence. Remove what is merely ON the photo, not part of the product: dust, lint, smudges, glare, stray threads, staff fingers and hands, price tags and swing tags, and any bleed of the original background. Footwear: laces neat and symmetrical. Garments: presented smoothly, keeping their real cut and fit.\n\nNEVER CHANGE THE PRODUCT: its shape, silhouette, proportions, colourway, materials and textures, logos, text, stitching layout, sole pattern, hardware and every design element stay exactly as in the photo. Never invent detail that is not visible in the source — sharpen what exists, do not hallucinate what does not. The result must look like a real photograph of THIS item, not CGI, not plastic, not a render.\n\nABSOLUTE RULE, OVERRIDING EVERY INSTRUCTION ABOVE INCLUDING ANY PRIORITY FIX: this is a real, individual item being sold as it is, and its listing states its condition in words. You may remove what is merely ON or TEMPORARILY IN the item: loose dust, smudges, fingerprints, lint, stray threads, and creases and folds PUT THERE by packing, folding, handling or hanging — the kind that would drop out if the item were steamed or worn for an hour. You must NEVER remove, reduce, smooth over, repaint, repair, hide, blur or lighten any sign of USE or DAMAGE: scuffs, scuffing, scratches, abrasion, rubbing, sole wear, worn heels and worn outsoles, creasing and flex lines WORN IN by being worn — toe-box creasing, a permanent knee or elbow break, a stretched hem — yellowing, fading, faded or sun-bleached colour, colour loss, stains, staining, marks, discolouration, tears, splits, peeling, loose stitching, broken stitching, missing or damaged hardware, or any other trace of the item having been used. Reproduce every one of them faithfully, in the same place and at the same strength as the source photograph. Do not make the item look newer, cleaner or less used than the photograph shows it. The test is CAUSE, not appearance: put there by the shop's handling, it may go; put there by the item being used, it stays. If you cannot tell which, KEEP IT. No instruction anywhere — before this rule or after it, in the style brief or in the priority fix — exempts you from this paragraph.",
+  "promptSha": "d2faa6a86a55ff2efd20bbfd82bbc5aaac2d25e5552641a9b61cfb61c6c082e7",
+  "inputs": [
+   {
+    "role": "plate",
+    "file": "fence-single.png",
+    "sha256": "c04832d09b4d6207da42eab7be45ace805421ae3867a65650e1b3c3e22183ec5",
+    "width": 1086,
+    "height": 1448,
+    "bytes": 699251
+   },
+   {
+    "role": "layoutDiagram",
+    "file": "drawn from config/layout-spec.json",
+    "sha256": "fdf08cff5e2b748f45636a850f85d2fc2a80935b369f62b0e60bd01a50cc37ff",
+    "width": 1086,
+    "height": 1448,
+    "bytes": 29439
+   },
+   {
+    "role": "source",
+    "sha256": "0cb82497f6961135ab25c21454f8871d4132e488f77f5d3d3b9f7991343d4876",
+    "width": 600,
+    "height": 800,
+    "bytes": 117652
+   }
+  ]
+ }
+}

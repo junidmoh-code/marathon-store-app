@@ -11,7 +11,9 @@ import { liftFromPlate, soleLine, fillHoles, label, stripFromOutside } from "../
 import { placementText, ROLES } from "../newArrivals/studio/compose.mjs";
 
 const require = createRequire(import.meta.url);
-const spec = require("../newArrivals/studio/config/layout-spec.json").footwear;
+// The plate lock's own layout (G-0102). Since 20 Nov 2026 the Full request uses the 2 Oct layout again
+// (layout-spec.json footwear); G-0102's is kept as footwearPlateLock, for this (switched-off) correction only.
+const spec = require("../newArrivals/studio/config/layout-spec.json").footwearPlateLock;
 const gen = require("../newArrivals/studio/config/generation.json");
 const plates = require("../newArrivals/studio/config/plates.lock.json");
 const W = 1086, H = 1448;
@@ -141,7 +143,7 @@ test("the small tools: holes are filled, groups are labelled, a soft rim is peel
   assert.equal(peeled[12], 1, "an inner soft pixel behind a wall stays");
 });
 
-test("THE LAYOUT is G-0102's, on the real plate — and its numbers are said outright in the footwear prompt", () => {
+test("THE PLATE-LOCK LAYOUT is G-0102's, on the real plate — and its numbers are what placementText would say with it", () => {
   assert.match(spec.measuredFrom, /^G-0102/);
   assert.equal(spec.plateSha, plates["footwear-plate.png"].sha256);
   const ped = { left: spec.pedestal.left, right: spec.pedestal.right, frontEdgeY: spec.pedestal.frontEdgeY, backRimY: spec.pedestal.topY, canvasW: W, canvasH: H };
@@ -161,11 +163,12 @@ test("THE LAYOUT is G-0102's, on the real plate — and its numbers are said out
   assert.ok(!placementText("footwear", { ...spec, box: undefined }).includes("THE BOX"));
 });
 
-test("G-0102 is the footwear reference, locked; the correction is switched on", () => {
-  assert.equal(ROLES.footwear.reference, "footwear-reference-g0102.jpg");
+test("20 Nov 2026: the LAST-GOOD footwear reference is sent again and the plate lock is OFF; G-0102 stays locked, unsent", () => {
+  assert.equal(ROLES.footwear.reference, "footwear-reference.png");
+  assert.match(plates["footwear-reference.png"].sha256, /^[0-9a-f]{64}$/);
   assert.match(plates["footwear-reference-g0102.jpg"].sha256, /^[0-9a-f]{64}$/);
   assert.equal(require("../newArrivals/studio/config/baseline.lock.json").footwearLayout.referenceSha256, plates["footwear-reference-g0102.jpg"].sha256);
-  assert.equal(gen.footwearCorrection, true);
+  assert.equal(gen.footwearCorrection, false);
 });
 
 test("a shoe joined to the box above it is NOT cut as one piece; a shoe too tall for the layout, or one that would run into the box, is refused", async () => {

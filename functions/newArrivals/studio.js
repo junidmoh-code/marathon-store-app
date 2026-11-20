@@ -280,7 +280,8 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
   const fxOf = (at) => (deps.fx ? deps.fx(at) : usdZarToday(db, at)).catch(() => ({ rate: prices.usdToZar, fallback: true }));
   let res;
   try {
-    res = await studio.generateOne({
+    // THE ONE SHARED GENERATOR (20 Nov 2026): the same function Black Friday's Generate calls.
+    res = await studio.generate({
       item: { ...item, pid }, product, genId, method: how, provider: engine, emit,
       deps: {
         fetchBytes: deps.fetchBytes || fetchBytes,

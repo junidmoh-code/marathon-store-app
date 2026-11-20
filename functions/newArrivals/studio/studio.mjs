@@ -9,13 +9,14 @@
 import sharp from "sharp";
 import {
   kindFor, UNKNOWN_FRAMING, brandKey, placementText, layoutGuideImage, genFrameOf,
-  RATIOS, closestAspect, toCanvas, forModel, inputOf,
+  RATIOS, closestAspect, toMaster, forModel, inputOf,
 } from "./compose.mjs";
 import { studioPrompt, setupName } from "./prompt.mjs";
 import { imagePart, textPart } from "./gemini-stream.mjs";
 import { objectiveMeasurements } from "./measure.mjs";
 import { correctFootwear } from "./correct.mjs";
 import sourcePhoto from "../sourcePhoto.cjs";
+import staging from "./staging.cjs";
 
 export const METHODS = Object.freeze(["full", "split"]);
 export const PROVIDERS = Object.freeze(["gemini", "openai"]);
@@ -188,12 +189,8 @@ export async function generateOne({ item, product, genId, method = "full", provi
     // An answer that is not a readable image is not a photo: it is never stored or shown as one.
     if (!gm.width || !gm.height) throw new Error("the image model's answer was not a readable image");
     let out, mime = "image/jpeg";
-    // deps.finish (optional, Black Friday): its own finishing step → { buffer, mime } (e.g. lossless PNG at
-    // the model's full resolution). New Arrivals passes none: the plate canvas as JPEG q93, as always.
-    try {
-      if (deps.finish) ({ buffer: out, mime } = await deps.finish(gen.buffer, plate));
-      else out = await toCanvas(gen.buffer, plate);
-    }
+    // THE ONE FINISHING STEP (20 Nov 2026): the master at the model's full resolution, JPEG q92 — for every caller.
+    try { out = await toMaster(gen.buffer, plate); }
     catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as ${engine} made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
     measured = out;
     const stamp = deps.now();
@@ -209,15 +206,15 @@ export async function generateOne({ item, product, genId, method = "full", provi
     if (kind === "footwear" && generation.footwearCorrection && !finishNote) {
       say({ type: "status", text: "Placing it on your backdrop…" });
       let fixed = null;
-      try { fixed = await (deps.correct || correctFootwear)({ photoBuf: gen.buffer, plate, spec, ...(deps.lossless ? { lossless: true } : {}) }); }
+      // (Switched off since 20 Nov 2026 — generation.json footwearCorrection. When on, it places by the G-0102 layout.)
+      try { fixed = await (deps.correct || correctFootwear)({ photoBuf: gen.buffer, plate, spec: deps.spec?.footwearPlateLock || spec }); }
       catch (e) { fixed = { problem: `the correction step failed (${String(e.message || e).slice(0, 80)})` }; }
       if (fixed?.buffer) {
         // Gemini's own photo is kept beside it, as a thumbnail on the card and on the record.
         try { const u = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}-uncorrected.${mime === "image/jpeg" ? "jpg" : "png"}`, out, mime)); uncorrected = { url: u.url, path: u.path || null }; }
         catch { /* the corrected photo is still shown; the record says the thumbnail is missing */ }
         out = fixed.buffer; measured = out;
-        // The corrected photo's own format (JPEG for New Arrivals; PNG when Black Friday asked for lossless).
-        mime = (await sharp(out).metadata().catch(() => ({}))).format === "png" ? "image/png" : "image/jpeg";
+        mime = "image/jpeg";
         if (fixed.fittedSpec) placedSpec = fixed.fittedSpec;
         correction = { applied: true, ...(uncorrected ? {} : { thumbnailMissing: true }), version: fixed.version, how: fixed.how, found: fixed.found, placed: fixed.placed, deviations: fixed.deviations || null, ...(fixed.fitted ? { fitted: fixed.fitted } : {}) };
         // Gemini was given a box but none could be found in its photo: the corrected photo has no box — said, never silent.
@@ -256,7 +253,7 @@ export async function generateOne({ item, product, genId, method = "full", provi
   const finalData = gen.buffer.toString("base64");
   const kept = draftFiles.filter((d) => d.data !== finalData).sort((a, b) => a.n - b.n).map(({ url, path }) => ({ url, path }));
   return {
-    generated, kind, method: "full", provider, model,
+    generated, kind, plateFile: plate.file || null, method: "full", provider, model,
     ...(uncorrected ? { uncorrected } : {}), ...(correction ? { corrected: correction.applied } : {}), ...(note ? { note } : {}),
     // The product photo this was made from: a later re-shoot makes the generation out of date.
     // (Always the product's photo address — the same one the list compares with — even when the
@@ -273,6 +270,61 @@ export async function generateOne({ item, product, genId, method = "full", provi
       ...(gen.cutShort ? { streamCutShort: gen.cutShort } : {}), ...(finishNote ? { finishNote } : {}), ...(boxNote ? { boxNote } : {}),
       ...(correction ? { correction } : {}),
     },
+  };
+}
+
+// ── THE ONE SHARED GENERATOR (Junid, 20 Nov 2026) ───────────────────────────
+// EVERY in-app Generate (New Arrivals' newArrivalsStudio, Black Friday's bfGenerate) calls THIS function and
+// nothing else: one model (generation.imageModel), one size (generation.imageSize), one finishing step
+// (toMaster: the model's full resolution, JPEG q92). Footwear and clothing get the last-good New Arrivals
+// request (generateOne, studio-2026-10-04.1); a kind with no New Arrivals plate (caps, perfume, bags …),
+// named by the caller as `look`, gets its staging (staging.cjs) on Junid's same plates through the same
+// model, size and finishing. functions/test/shared-generator.test.cjs fails if any path drifts from this.
+export const SHARED_FINISH = "master-jpeg-q92";
+
+/** One photo for one product, whatever the card. `look`: a staging kind (staging.cjs) for a product with no
+ *  New Arrivals plate; omitted, the product's own category decides (footwear / clothing → generateOne). */
+export async function generate({ item, product, genId, method = "full", provider = "gemini", look = null, deps, emit = () => {} }) {
+  if (look && staging.hasStaging(look)) return generateOther({ item, product, genId, kind: look, deps, emit });
+  return generateOne({ item, product, genId, method, provider, deps, emit });
+}
+
+/**
+ * A kind with no New Arrivals plate: one image call with Junid's plate, the product photo (and, for perfume,
+ * its box). deps as for generateOne, plus loadPlateFile(file) → { buffer, width, height, file, forModel }.
+ */
+export async function generateOther({ item, product, genId, kind, deps, emit = () => {} }) {
+  const say = (ev) => { try { emit(ev); } catch { /* the card's view never affects the generation */ } };
+  const { generation } = deps;
+  const model = generation.imageModel;
+  const st = staging.stagingFor(kind);
+  const originalUrl = originalUrlOf(item, product);
+  if (!originalUrl) throw new StudioRefusal("the product has no photo to work from");
+  const plate = await deps.loadPlateFile(st.plate);
+  say({ type: "status", text: "Reading the original photo…" });
+  const orig = await forModel((await deps.fetchBytes(originalUrl)).buffer);
+  let box = null;
+  if (kind === "perfume" && product?.photoBoxUrl) { try { box = await forModel((await deps.fetchBytes(product.photoBoxUrl)).buffer); } catch { box = null; } }
+  const promptText = staging.promptFor(kind, { hasBox: !!box, conditionClause: deps.conditionClause });
+  const plateJ = plate.forModel || await forModel(plate.buffer);
+  const parts = [textPart(promptText), imagePart(plateJ), imagePart(orig), ...(box ? [imagePart(box)] : [])];
+  const imageConfig = { aspectRatio: closestAspect(plate.width, plate.height), imageSize: generation.imageSize };
+  say({ type: "status", text: "Gemini is working…" });
+  const gen = await deps.image(model, parts, imageConfig, { onEvent: (ev) => { if (ev && ev.type === "thought" && ev.text) say({ type: "thought", text: ev.text }); } });
+  say({ type: "status", text: "Finishing the photo…" });
+  let generated, gm = {};
+  try {
+    gm = await sharp(gen.buffer).metadata().catch(() => ({}));
+    if (!gm.width || !gm.height) throw new Error("the image model's answer was not a readable image");
+    const out = await toMaster(gen.buffer, plate);
+    const stamp = deps.now();
+    generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}.jpg`, out, "image/jpeg"));
+  } catch (e) { e.paid = true; e.usage = gen.usage || null; throw e; }
+  return {
+    generated, kind, look: kind, plateFile: st.plate, method: "full", provider: "gemini", model,
+    sourceUrl: sourcePhoto.currentSourceUrl(item.pid, product, item),
+    promptVersion: `staging-${kind}`, layersUsed: [], box: null, draftFiles: [], usage: gen.usage || null, measurements: null,
+    trace: { promptText, request: gen.request || null, usage: gen.usage || null, requestMs: gen.requestMs ?? null, resolution: gm.width ? { width: gm.width, height: gm.height } : null },
   };
 }
 
