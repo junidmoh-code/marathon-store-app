@@ -467,6 +467,16 @@ async function brainSlot(db, { day, i, at }, uid, nowMs) {
   return { ok: true, day, i, at };
 }
 
+// ONE CATEGORY PER DAY (Junid, 20 Nov evening): Junid sets a day's category (a categoryKey) or gives it back to
+// the rotation (null). The Mac's brain reads brain/control/dayCats/{day}.
+async function brainDayCat(db, { day, cat }, uid, nowMs) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day || "")) || String(day) < "2026-11-19") throw new HttpsError("invalid-argument", "A day of the plan (YYYY-MM-DD).");
+  if (cat !== null && !/^[a-z0-9][a-z0-9-]{0,40}$/.test(String(cat))) throw new HttpsError("invalid-argument", "A category key like soccer-boots.");
+  await db.ref(`${core.ROOT}/brain/control/dayCats/${day}`).set(cat);
+  await log(db, { at: nowMs, by: uid || null, action: "brainDayCat", day, cat });
+  return { ok: true, day, cat };
+}
+
 const bfCampaignList = onCall(callableOpts, async (request) => {
   assertJunid(request);
   const db = admin.database();
@@ -485,6 +495,7 @@ const bfCampaignSet = onCall(callableOpts, async (request) => {
   const uid = request.auth && request.auth.uid;
   const now = Date.now();
   if (d.action === "brainPause") return brainPause(db, d.paused, uid, now);
+  if (d.action === "brainDayCat") return brainDayCat(db, { day: d.day, cat: d.cat === undefined ? null : d.cat }, uid, now);
   if (d.action === "brainSlot") return brainSlot(db, { day: d.day, i: d.i, at: d.at === undefined ? null : d.at }, uid, now);
   if (d.action === "schedule") return schedule(db, d.schedule, { confirm: d.confirm === true }, uid, now);
   if (d.action === "clearSchedule") return clearSchedule(db, uid, now);
@@ -513,4 +524,4 @@ const bfNaMirror = onValueWritten(
   },
 );
 
-module.exports = { bfCampaignList, bfCampaignSet, bfNaMirror, _internals: { bfPhotoSig, findItem, repost, naTap, naStatus, ledger, brainView, brainPause, brainSlot, list, tap, saveSelection, loadSelection, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };
+module.exports = { bfCampaignList, bfCampaignSet, bfNaMirror, _internals: { bfPhotoSig, findItem, repost, naTap, naStatus, ledger, brainView, brainPause, brainSlot, brainDayCat, list, tap, saveSelection, loadSelection, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };
