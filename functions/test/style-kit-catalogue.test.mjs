@@ -66,6 +66,13 @@ test("a beanie in 'Caps & Beanies' goes to Beanies; legacy products route by sub
   assert.equal(defaultCategoryKit({ category: "Footwear" }), "sneaker");
 });
 
+test("the no-photos fallback is the house default even when it sits mid-chain", () => {
+  const node = { _routes: { products: { pX: "clothing" } } };
+  const cap = { categoryKey: "caps-beanies", category: "Clothing", productType: "clothing", name: "cap" };
+  assert.deepEqual(kitChain(cap, "pX", node), ["clothing", "caps"]);
+  assert.equal(resolveKit(cap, "pX", node).kit, "clothing");
+});
+
 test("Junid's category re-assignment wins over the default map, and a dropped kit is ignored", () => {
   const node = { tees: { label: "Tees", parent: "clothing", ...withRefs(5) }, _routes: { categories: { "t-shirts": "tees", jeans: "nope" } } };
   assert.equal(resolveKit({ categoryKey: "t-shirts", productType: "clothing" }, "p", node).kit, "tees");

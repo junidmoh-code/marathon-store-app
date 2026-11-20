@@ -197,7 +197,9 @@ export function coveringKit(product, pid, node) {
 export function resolveKit(product, pid, node) {
   const defs = kitDefs(node);
   const chain = kitChain(product, pid, node);
-  const fallback = chain[chain.length - 1];
+  // The house-style default — never "whatever came last in the chain" (a product hand-assigned to Clothing
+  // whose category kit is Caps would otherwise fall to an empty Caps).
+  const fallback = defaultTemplate(product);
   const kit = chain.find((k) => enabledRefs(node, k).length > 0) || fallback;
   const { prompt, family } = promptFor(node, kit);
   return {

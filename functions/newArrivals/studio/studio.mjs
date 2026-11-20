@@ -300,7 +300,7 @@ export async function generate({ item, product, genId, method = "full", provider
   }
   // (The retry's drafts get their own names: the first attempt's are already stored and Storage never overwrites.)
   const runAs = (inp, gid) => (kit
-    ? generateKit({ item, product, genId: gid, kit, input: inp, placeNote, deps, emit })
+    ? generateKit({ item, product, genId: gid, kit, input: inp, placeNote, secondRef, deps, emit })
     : look && staging.hasStaging(look)
       ? generateOther({ item, product, genId: gid, kind: look, input: inp, placeNote, deps, emit })
       : generateOne({ item, product, genId: gid, method, provider, input: inp, placeNote, secondRef, deps, emit }));
@@ -412,7 +412,7 @@ async function cutoutResult({ raw, item, deps }) {
  * model, size and finishing (toMaster: full resolution, JPEG q92) as every other shared generation.
  */
 export const KIT_REFS_LABEL = "STYLE REFERENCES — copy ONLY the scene, backdrop, camera angle, lighting and framing from these. The products in them are DIFFERENT items: never copy their design, colour, logo or shape. The product in the result comes only from the PRODUCT photo above:";
-export async function generateKit({ item, product, genId, kit, input = "photo", placeNote = false, deps, emit = () => {} }) {
+export async function generateKit({ item, product, genId, kit, input = "photo", placeNote = false, secondRef = null, deps, emit = () => {} }) {
   const say = (ev) => { try { emit(ev); } catch { /* the card's view never affects the generation */ } };
   const { generation } = deps;
   const model = generation.imageModel;
@@ -426,12 +426,14 @@ export async function generateKit({ item, product, genId, kit, input = "photo", 
     catch (e) { deps.log?.(`its own box photo could not be read (${String(e.message).slice(0, 80)})`); }
   }
   const refsJ = await Promise.all(kit.refs.map((b) => forModel(b)));
+  const ref2 = await secondRefFor({ deps, secondRef }); // a clean catalogue photo of THIS item, for detail only
   const name = product?.name || item.name || "";
   const promptText = [kit.prompt, name ? `The product is: ${name}.` : "", deps.conditionClause].filter(Boolean).join("\n\n");
   const parts = [
     textPart(promptText),
     ...(placeNote ? [textPart("The PRODUCT photo below is a cut-out on plain white, NOT a finished photo: place this exact item in the reference scene.")] : []),
     textPart("PRODUCT — the real item to photograph:"), imagePart(orig),
+    ...(ref2 ? [textPart(SECOND_REF_LABEL), imagePart(ref2)] : []),
     ...(box ? [textPart("PRODUCT'S BOX — reproduce this exact box:"), imagePart(box)] : []),
     textPart(KIT_REFS_LABEL), ...refsJ.map((r) => imagePart(r)),
   ];

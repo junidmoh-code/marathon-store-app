@@ -3037,8 +3037,14 @@ exports.generateProductPhotos = onCall(
           // photo. Drifted → ONE retry; drifted again → the product's own
           // cut-out on white. A check that cannot run never counts as a drift.
           let driftInfo = null, driftFallback = false;
+          // The drift check judges against the TRUE original photograph: when the hero was itself an
+          // approved generation, photoUrlOriginal is the real staff photo (best-effort; else the input).
+          let truth = buffer;
+          if (kit && !sourceUrl && p.photoUrlOriginal && p.photoUrlOriginal !== srcUrl) {
+            try { truth = (await fetchImageBuffer(p.photoUrlOriginal)).buffer; } catch { truth = buffer; }
+          }
           if (kit) {
-            const d1 = await drift.checkDrift({ original: buffer, generated: rawBuf }, { apiKey: geminiApiKey.value(), sharp: sharpLib });
+            const d1 = await drift.checkDrift({ original: truth, generated: rawBuf }, { apiKey: geminiApiKey.value(), sharp: sharpLib });
             driftInfo = { first: d1.checked ? (d1.drift ? "drifted" : "same") : "unchecked", issues: d1.issues || "" };
             if (d1.drift) {
               console.warn(`generateProductPhotos: ${id} drifted (${d1.issues}) — retrying once`);
@@ -3047,7 +3053,7 @@ exports.generateProductPhotos = onCall(
               try { second = await runOnce(); costUSD += second.costUSD; }
               catch (err) { console.warn(`generateProductPhotos: ${id} drift retry failed:`, err && err.message); driftInfo.retry = "failed"; driftFallback = true; }
               if (second) {
-                const d2 = await drift.checkDrift({ original: buffer, generated: second.buffer }, { apiKey: geminiApiKey.value(), sharp: sharpLib });
+                const d2 = await drift.checkDrift({ original: truth, generated: second.buffer }, { apiKey: geminiApiKey.value(), sharp: sharpLib });
                 driftInfo.retry = d2.checked ? (d2.drift ? "drifted" : "same") : "unchecked";
                 if (d2.drift) { driftInfo.retryIssues = d2.issues || ""; driftFallback = true; }
                 else { rawBuf = second.buffer; rawMime = second.mime; }

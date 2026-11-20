@@ -4857,8 +4857,8 @@ function StyleKitPanel({ products = [] }) {
   };
   // ── One-tap assignment ──
   const assignCategory = async (catKey, kitKey) => {
-    const dflt = SK_CATEGORY_KIT[catKey] || null;
-    try { await set(ref(database, `aiAssistant/styleKit/_routes/categories/${catKey}`), kitKey && kitKey !== dflt ? kitKey : null); }
+    // An explicit pick is stored as picked; "automatic" (empty) clears it back to the default map.
+    try { await set(ref(database, `aiAssistant/styleKit/_routes/categories/${catKey}`), kitKey || null); }
     catch (err) { setMsg(`Couldn't assign: ${err?.message || err}`); }
   };
   const assignProduct = async (pid, kitKey) => {
@@ -4943,9 +4943,9 @@ function StyleKitPanel({ products = [] }) {
           {catRows.map(c => (
             <div key={c.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 2px", borderTop:"1px solid rgba(255,255,255,.05)" }}>
               <span style={{ flex:1, fontSize:12, color:"rgba(255,255,255,.8)" }}>{c.label} <span style={{ color:"rgba(255,255,255,.35)" }}>· {c.n}</span></span>
-              <select value={c.kit || ""} onChange={e => assignCategory(c.key, e.target.value)}
+              <select value={kit._routes?.categories?.[c.key] && defs[kit._routes.categories[c.key]] ? kit._routes.categories[c.key] : ""} onChange={e => assignCategory(c.key, e.target.value)}
                       style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, color:"rgba(255,255,255,.8)", padding:"4px 6px", fontSize:11.5, maxWidth:190 }}>
-                {!c.kit && <option value="">house-style default</option>}
+                <option value="">{SK_CATEGORY_KIT[c.key] ? `automatic (${defs[SK_CATEGORY_KIT[c.key]]?.label || SK_CATEGORY_KIT[c.key]})` : "house-style default"}</option>
                 {kitOptions.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
               </select>
             </div>
