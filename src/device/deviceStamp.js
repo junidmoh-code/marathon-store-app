@@ -23,6 +23,7 @@
 import { serverNowMs } from "../utils/serverTime";
 import { getDeviceIdentity } from "./enrolment";
 import { getDeviceId } from "./deviceId";
+import { getActiveStore, isAwayFromHome } from "../utils/activeStore";
 
 export function deviceStamp(action) {
   const id = getDeviceIdentity() || {};
@@ -32,6 +33,15 @@ export function deviceStamp(action) {
     atMs: serverNowMs(),
   };
   if (action) s.action = String(action).slice(0, 40);
+  // ALL-STORE ACCESS (Junid, 20 Nov 2026): the shop this action counts for
+  // (the active shop at the moment of the action), the person's own shop, and
+  // `away: true` when those differ. Absent for an account with no shop chosen.
+  const a = getActiveStore();
+  if (a.uid) {
+    if (a.activeShop) s.store = a.activeShop;
+    if (a.homeShop) s.homeStore = a.homeShop;
+    if (isAwayFromHome(a)) s.away = true;
+  }
   return s;
 }
 

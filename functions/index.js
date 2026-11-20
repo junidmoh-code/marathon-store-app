@@ -3946,6 +3946,12 @@ exports.wakeHeldChecks = require("./displayChecks/wakeHeldChecks.js").wakeHeldCh
 //   firebase deploy --only functions:completeDisplayCheck
 exports.completeDisplayCheck = require("./displayChecks/completeCheck.js").completeDisplayCheck;
 
+// ─── ALL-STORE ACCESS — logStoreSwitch (audit of every active-shop switch) ─────
+// Junid, 20 Nov 2026. Append-only /store_switch_log/{saDate}/{pushId}; the
+// client never writes that path. IO + pure shaping in storeSwitch/logStoreSwitch.js.
+//   firebase deploy --only functions:logStoreSwitch
+exports.logStoreSwitch = require("./storeSwitch/logStoreSwitch.js").logStoreSwitch;
+
 // ─── STYLE CODE — resolveStyleCode (sneaker intake identity lookup) ───────────
 // Sneakers arrive without boxes, so there is no box barcode. The manufacturer
 // style code on the inside-tongue label is the canonical identity key instead.
