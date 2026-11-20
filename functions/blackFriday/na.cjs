@@ -161,7 +161,12 @@ async function liveRow(db, pid, nowMs, na) {
 }
 
 /** The few New Arrivals fields a row needs — keyed scalars, never the item's generations. */
-async function naFields(db, pid) {
+async function naFields(db, pid, lane = null) {
+  // Lane "new" holds no photo yet (a landed photo moves it to "ready"): two reads instead of six.
+  if (lane === "new") {
+    const [generateRequest, lastAttempt] = await Promise.all([val(db, `${naCore.ITEMS}/${pid}/generateRequest`), val(db, `${naCore.ITEMS}/${pid}/lastAttempt`)]);
+    return { status: "new", generatedUrl: null, currentGen: null, generateRequest, useCurrentPhoto: null, lastAttempt };
+  }
   const f = ["status", "generatedUrl", "currentGen", "generateRequest", "useCurrentPhoto", "lastAttempt"];
   const vals = await Promise.all(f.map((k) => val(db, `${naCore.ITEMS}/${pid}/${k}`)));
   return Object.fromEntries(f.map((k, i) => [k, vals[i]]));
@@ -188,7 +193,7 @@ async function naTab(db, { lanes, items, picks, nowMs, na, underRow = async () =
     const built = (items.main || {})[pid] || (items.under || {})[pid] || (await underRow(pid)) || null;
     const base = built ? { ...built, uploadedAt: uploadedAtOf(pid) } : await liveRow(db, pid, nowMs, na);
     if (!base) return;
-    const f = await naFields(db, pid);
+    const f = await naFields(db, pid, lanes.get(pid));
     if (!f.status || !NEW.includes(f.status)) return;
     rows.push(viewNaRow(pid, base, f, { nowMs, uploadedAt: base.uploadedAt }));
   });
