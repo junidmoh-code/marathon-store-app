@@ -33,7 +33,8 @@ vi.mock("./solvedLogStore", () => ({
   markSolvedUndone: vi.fn(async () => {}),
 }));
 const markMock = vi.fn();
-vi.mock("../concrete/concreteStore", () => ({ markConcreteProduct: (...a) => markMock(...a) }));
+const restoreMock = vi.fn(async () => ({ ok: true, restored: true }));
+vi.mock("../concrete/concreteStore", () => ({ markConcreteProduct: (...a) => markMock(...a), restoreMarathonListing: (...a) => restoreMock(...a) }));
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 const perm = { permRecord: { stockRole: "admin", displayName: "Junid" }, isSuperAdmin: true };
@@ -162,6 +163,7 @@ describe("the Solved tab", () => {
     expect(textOf(tree)).toMatch(/Junid/);
     await act(async () => { await buttonExactly(tree, "Undo").props.onClick(); });
     expect(markMock).toHaveBeenCalledWith("tee1", false);
+    expect(restoreMock).toHaveBeenCalledWith("tee1");
     expect(state().session[0].status).toBe("undone");
     expect(buttonExactly(tree, "Undo")).toBeUndefined();
     expect(textOf(tree)).toMatch(/Undone/);
@@ -194,5 +196,22 @@ describe("fast Solve — the row resolves on the tap, the write follows", () => 
     expect(buttonExactly(tree, "Solve")).toBeTruthy();
     expect(textOf(tree)).toMatch(/Couldn't solve Essentials Tee Olive — nothing changed, retry\. \(PERMISSION_DENIED\)/);
     expect(saveRows).not.toHaveBeenCalled();
+  });
+});
+
+describe("a card still missing somewhere after its write comes back (Sonnet review B1)", () => {
+  it("hidden on the tap, back after the hold when the live list still carries it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { tree, state } = render({ products: [TEE] });
+    await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Solve — ").props.onClick(); });
+    expect(state().resolving.tee1).toBe("done");
+    expect(buttonExactly(tree, "Solve")).toBeUndefined();
+    try {
+      await act(async () => { vi.advanceTimersByTime(8100); });
+    } finally { vi.useRealTimers(); }
+    // STOCK never changed in this test, so the card is still live: it returns.
+    expect(state().resolving.tee1).toBeUndefined();
+    expect(buttonExactly(tree, "Solve")).toBeTruthy();
   });
 });

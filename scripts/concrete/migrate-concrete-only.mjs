@@ -8,6 +8,9 @@
 //   node scripts/concrete/migrate-concrete-only.mjs                 # dry run: counts only
 //   node scripts/concrete/migrate-concrete-only.mjs --commit        # write
 //   node scripts/concrete/migrate-concrete-only.mjs --rollback FILE # put back exactly what FILE recorded
+//     (restores the recorded fields blindly — later human edits to them are
+//     overwritten; a Marathon listing the reconciler already unpublished goes
+//     back to its recorded intent, so "on" republishes it on the next tick)
 //
 // SAFETY: /products is scanned in pages (orderByKey, 400 a page — never one
 // whole-node read). Before writing, every candidate is RE-READ and drift-
@@ -116,6 +119,7 @@ async function main() {
     entries.push({
       pid: p.pid, name: p.name,
       before: { concreteProduct: prod.concreteProduct ?? null, concreteProductSetBy: prod.concreteProductSetBy ?? null, concreteProductSetAt: prod.concreteProductSetAt ?? null, index: idx ?? null },
+      legacy: { by: typeof prod.listOnConcreteSetBy === "string" ? prod.listOnConcreteSetBy : null, at: Number(prod.listOnConcreteSetAt) > 0 ? Number(prod.listOnConcreteSetAt) : null },
       marathonOff: needsMarathonOff(node),
       marathonBefore: pick(node, MARATHON_FIELDS),
       node,
@@ -132,10 +136,13 @@ async function main() {
   let ok = 0, off = 0;
   for (const e of entries) {
     const at = await serverNow();
+    // Who/when CARRIED OVER from the legacy mark when it has them, so the
+    // brand-check state is exactly what it was (a fresh SetAt would re-open
+    // the check on every already-verified product — Sonnet review, PR #952 S2).
     const u = {
       [`products/${e.pid}/concreteProduct`]: true,
-      [`products/${e.pid}/concreteProductSetBy`]: ACTOR,
-      [`products/${e.pid}/concreteProductSetAt`]: at,
+      [`products/${e.pid}/concreteProductSetBy`]: e.legacy.by || ACTOR,
+      [`products/${e.pid}/concreteProductSetAt`]: e.legacy.at || at,
       [`${CONCRETE_INDEX_PATH}/${e.pid}`]: true,
     };
     if (e.marathonOff) {

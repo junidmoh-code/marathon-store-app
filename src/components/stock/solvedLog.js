@@ -121,3 +121,23 @@ export function undoneUpdate(key, { at, by }) {
 
 /** Rows still standing — the siblings an undo must not take shared cells from. */
 export const standing = (entries) => (entries || []).filter((e) => e && e.status !== "undone" && e.kind === "solve");
+
+const KEY_RE = /^[-A-Za-z0-9_]{1,64}$/;
+/**
+ * Is this row safe to undo? null = yes, else the reason. A row read back from
+ * the staff-writable history must only name THIS product's /stock cells at
+ * locations the network knows, and plain request keys (Sonnet review, PR #952).
+ */
+export function undoRecordProblem(u, knownLocs) {
+  if (!u || typeof u.pid !== "string" || !KEY_RE.test(u.pid)) return "no product id";
+  const known = knownLocs instanceof Set ? knownLocs : new Set(knownLocs || []);
+  const locs = arr(u.locs);
+  if (locs.some((l) => typeof l !== "string" || !known.has(l))) return "an unknown location";
+  const own = new Set(locs);
+  for (const p of arr(u.paths)) {
+    const m = /^stock\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(String(p));
+    if (!m || m[2] !== u.pid || !own.has(m[1])) return "a cell that is not this product's";
+  }
+  if (u.firstBatch && arr(u.firstBatch.requestIds).some((id) => !KEY_RE.test(String(id)))) return "a malformed request id";
+  return null;
+}

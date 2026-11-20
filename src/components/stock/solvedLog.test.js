@@ -52,3 +52,19 @@ describe("solved log rows", () => {
     expect(slimPriorOpen({ a: null, b: {}, c: { S: null } })).toEqual({});
   });
 });
+
+import { undoRecordProblem } from "./solvedLog";
+describe("undoRecordProblem — a history row is checked before Undo uses it", () => {
+  const known = ["hub2", "trophy", "marathon-pe", "central"];
+  it("a real row passes", () => {
+    expect(undoRecordProblem(ENTRY, known)).toBeNull();
+  });
+  it("a path outside the product, an unknown location or a bad request id is refused", () => {
+    expect(undoRecordProblem({ ...ENTRY, paths: ["stock/hub2/OTHER/S"] }, known)).toMatch(/not this product/);
+    expect(undoRecordProblem({ ...ENTRY, paths: ["refill_requests/x"] }, known)).toMatch(/not this product/);
+    expect(undoRecordProblem({ ...ENTRY, paths: ["stock/central/p1/S"] }, known)).toMatch(/not this product/);   // not one of its locs
+    expect(undoRecordProblem({ ...ENTRY, locs: ["mars"] }, known)).toMatch(/unknown location/);
+    expect(undoRecordProblem({ ...ENTRY, firstBatch: { requestIds: ["../x"] } }, known)).toMatch(/request id/);
+    expect(undoRecordProblem({ ...ENTRY, pid: "a/b" }, known)).toMatch(/product id/);
+  });
+});

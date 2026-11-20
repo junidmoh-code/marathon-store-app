@@ -19,6 +19,7 @@ import { buildOffRecord, offAuditFields } from "../../src/components/shopify/pub
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 
 export const MARATHON_PUBLISH_PATH = "shopify_publish";
+const BATCH = 25;
 
 /** Live on (or going on to) the Marathon storefront, so an off is needed. */
 export function needsMarathonOff(node) {
@@ -54,19 +55,33 @@ export function concreteOnlyOffFields(node, { at, actor }) {
 export async function enforceConcreteOnlyOnMarathon(db, { nowMs, actor, commit = false, log = () => {} }) {
   const index = (await db.ref(CONCRETE_INDEX_PATH).get()).val() || {};
   const out = { checked: 0, turnedOff: [], skipped: [] };
+  const pids = [];
   for (const pid of Object.keys(index)) {
-    try { assertSafeSegment(pid, "productId"); } catch { out.skipped.push({ pid, why: "unsafe id" }); continue; }
-    out.checked++;
-    const product = (await db.ref(`products/${pid}`).get()).val();
-    if (!isConcreteProduct(product)) { out.skipped.push({ pid, why: "index says Concrete-only but the product record does not" }); continue; }
-    const node = (await db.ref(`${MARATHON_PUBLISH_PATH}/${pid}`).get()).val();
-    if (!needsMarathonOff(node)) continue;
-    if (commit) {
-      const at = await nowMs();
-      await db.ref(`${MARATHON_PUBLISH_PATH}/${pid}`).update(concreteOnlyOffFields(node, { at, actor }));
-      log(`  marathon: ${pid} is Concrete-only — switching its Marathon listing off`);
+    try { assertSafeSegment(pid, "productId"); pids.push(pid); } catch { out.skipped.push({ pid, why: "unsafe id" }); }
+  }
+  // Scoped reads in parallel batches (two per product), never a /products scan:
+  // hundreds of Concrete products must not add minutes to every tick
+  // (Sonnet review, PR #952 S3).
+  for (let i = 0; i < pids.length; i += BATCH) {
+    const batch = pids.slice(i, i + BATCH);
+    const got = await Promise.all(batch.map(async (pid) => {
+      const [product, node] = await Promise.all([
+        db.ref(`products/${pid}`).get().then((s) => s.val()),
+        db.ref(`${MARATHON_PUBLISH_PATH}/${pid}`).get().then((s) => s.val()),
+      ]);
+      return { pid, product, node };
+    }));
+    for (const { pid, product, node } of got) {
+      out.checked++;
+      if (!isConcreteProduct(product)) { out.skipped.push({ pid, why: "index says Concrete-only but the product record does not" }); continue; }
+      if (!needsMarathonOff(node)) continue;
+      if (commit) {
+        const at = await nowMs();
+        await db.ref(`${MARATHON_PUBLISH_PATH}/${pid}`).update(concreteOnlyOffFields(node, { at, actor }));
+        log(`  marathon: ${pid} is Concrete-only — switching its Marathon listing off`);
+      }
+      out.turnedOff.push(pid);
     }
-    out.turnedOff.push(pid);
   }
   return out;
 }

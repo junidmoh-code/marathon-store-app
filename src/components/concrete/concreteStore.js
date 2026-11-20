@@ -59,6 +59,29 @@ export async function markConcreteProduct(productId, on, { liveOnConcrete = null
   return r.ok ? { ok: true } : { ok: false, message: r.message || "Couldn't save — nothing changed." };
 }
 
+/**
+ * Undoing a Concrete mark: if the Marathon reconciler already switched the
+ * Marathon listing off BECAUSE of that mark (lastOff.reasonCode
+ * "concrete_only"), put its intent back to "on". Any other off — a person's,
+ * a refusal — is left alone. Returns { ok, restored, message? }.
+ */
+export async function restoreMarathonListing(productId) {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return { ok: false, restored: false, message: "Not signed in." };
+  try {
+    const node = (await get(ref(database, `shopify_publish/${productId}`))).val();
+    if (!node || node.desiredState !== "off" || node.lastOff?.reasonCode !== "concrete_only") return { ok: true, restored: false };
+    await applyRootUpdate({
+      [`shopify_publish/${productId}/desiredState`]: "on",
+      [`shopify_publish/${productId}/updatedAt`]: serverNowMs(),
+      [`shopify_publish/${productId}/updatedBy`]: uid,
+    });
+    return { ok: true, restored: true };
+  } catch (err) {
+    return { ok: false, restored: false, message: String(err?.message || err) };
+  }
+}
+
 /** Brand Check's one tap. `on` is the state being confirmed. */
 export async function confirmBrand(product, on, { liveOnConcrete = null } = {}) {
   const uid = auth.currentUser?.uid;

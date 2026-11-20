@@ -26,24 +26,35 @@ Helper: `src/utils/concreteListing.js` (`isConcreteProduct`, `buildConcreteUpdat
 `scripts/concrete/migrate-concrete-only.mjs` (dry run by default; `--commit`;
 `--rollback FILE`). Marathon-side enforcement: `scripts/shopify/concreteOnly.mjs`.
 
-## Concrete-only rules (20 Nov 2026) — optional hardening
+## Concrete-only rules (20 Nov 2026) — PASTE THESE
 
-`/products` and `/settings` are already writable by any signed-in staff
-account on the live rules, so nothing below is needed for the app to work.
-These add type checks. Inside `"products" → "$pid"`, next to `styleCode…`:
+`/products` and `/settings` are writable by every signed-in staff account on
+the live rules, so the app works without these. But marking a product
+Concrete-only now takes it OFF marathonclub.co.za, so these `.validate` rules
+let only Junid, Jafer or a stockRole admin CHANGE the mark (a `.write` granted
+at `/products` cannot be narrowed below it; `.validate` can refuse the change).
+Admin SDK scripts bypass rules.
+
+Inside `"products" → "$pid"`, next to `styleCode…`:
 
 ```json
-"concreteProduct":      { ".validate": "newData.isBoolean()" },
+"concreteProduct":      { ".validate": "newData.isBoolean() && (newData.val() === data.val() || auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" },
 "concreteProductSetBy": { ".validate": "newData.isString() && newData.val() === auth.uid" },
-"concreteProductSetAt": { ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000" }
+"concreteProductSetAt": { ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000" },
+"listOnConcrete":       { ".validate": "newData.isBoolean() && (newData.val() === data.val() || auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" }
 ```
+
+(If you already pasted #911's `listOnConcrete` line from block 1 below, replace
+it with this one.)
 
 Inside `"settings"`:
 
 ```json
-"concreteOnlyIndex": { "$pid": { ".validate": "newData.val() === true" } },
+"concreteOnlyIndex": {
+  "$pid": { ".validate": "newData.val() === true && (auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" }
+},
 "missingProductsSolved": {
-  "$id": { ".validate": "newData.hasChildren(['kind', 'pid', 'at', 'by']) && newData.child('at').isNumber() && newData.child('at').val() <= now + 86400000" }
+  "$id": { ".validate": "(newData.hasChildren(['kind', 'pid', 'at', 'by']) || (data.exists() && newData.hasChildren(['status']))) && (!newData.child('at').exists() || (newData.child('at').isNumber() && newData.child('at').val() <= now + 86400000))" }
 }
 ```
 

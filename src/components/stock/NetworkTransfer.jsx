@@ -53,9 +53,9 @@ import { setUpdateBusy } from "../../update/updateChecker";
 import { stampRecord, stampTxn } from "../../device/deviceStamp";
 // CONCRETE-ONLY + THE SOLVED TAB (Junid, 20 Nov 2026).
 import { isConcreteProduct } from "../../utils/concreteListing";
-import { markConcreteProduct } from "../concrete/concreteStore";
+import { markConcreteProduct, restoreMarathonListing } from "../concrete/concreteStore";
 import { concreteSection } from "./missingProductsCore";
-import { buildSolveLogEntry, buildConcreteLogEntry, mergeSolved, standing, normalizeSolvedEntry, newSolvedKey } from "./solvedLog";
+import { buildSolveLogEntry, buildConcreteLogEntry, mergeSolved, standing, normalizeSolvedEntry, newSolvedKey, undoRecordProblem } from "./solvedLog";
 import { useSolvedLog, saveSolvedRows, markSolvedUndone } from "./solvedLogStore";
 import { notePendingUpdate } from "../../offline/pendingWrites";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto";
@@ -64,6 +64,9 @@ import { PrimaryPhoto } from "../shared/PrimaryPhoto";
 // default) — the other section's list is one tap away for a viewer who may
 // see it.
 const HOME_SECTION = 2;
+// How long a just-solved card stays hidden after its write landed while the
+// live list still carries it (the offline mirror's echo measured 1.2–1.5 s).
+const DONE_HOLD_MS = 8000;
 // The Source tab a shop's first-batch request lands on (App.jsx SOURCE_SHOP_TABS).
 // A shop not named here is listed under its own name.
 const SOURCE_TAB_LABEL = { "marathon-pe": "Marathon", trophy: "Trophy" };
@@ -247,6 +250,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const undoInFlight = useRef(new Set());
   const undoSolve = async (u) => {
     if (!canAct || undoUi[u.key]?.busy || undoInFlight.current.has(u.key)) return;
+    // A row read back from the (staff-writable) history is checked first.
+    const bad = undoRecordProblem(u, Object.keys(network.locations || {}));
+    if (bad) { setRow(u.key, { err: `This row cannot be undone safely — it names ${bad}. Nothing was changed.` }); return; }
     undoInFlight.current.add(u.key);
     setRow(u.key, { busy: true, err: null });
     try {
@@ -336,7 +342,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     try {
       const r = await markConcreteProduct(u.pid, false);
       if (!r.ok) { setRow(u.key, { busy: false, err: `Couldn't undo — ${r.message}` }); return; }
-      setRow(u.key, { busy: false, err: null });
+      // If the mark already took it off Marathon, put the Marathon intent back
+      // (only an off the Concrete mark itself caused — Sonnet review, PR #952 S1).
+      const back = await restoreMarathonListing(u.pid);
+      setRow(u.key, { busy: false, err: back.ok ? null : `Back on Marathon's list, but its Marathon listing was not switched back on (${back.message}) — switch it on from the Marathon publishing tab.` });
       await finishUndo(u);
     } finally {
       undoInFlight.current.delete(u.key);
@@ -453,24 +462,40 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // union and its size arithmetic on every stock write. The fallback keeps the
   // component usable on its own; it just isn't the path the app takes.
   // (Senior-architect review, PR #308.)
-  const cardsLive = useMemo(() => {
+  // The list before the chip filter — "is this card still live anywhere on
+  // this screen" is asked of it, never of one chip's slice.
+  const allLive = useMemo(() => (listSection
     // The other section's list is built here, on demand, from the same
     // function (it is not HealthView's to count while that section has no
     // live shop).
-    const all = listSection
-      ? computeMissingProducts({ allStock, products, network, section: listSection, centralFed: cfg })
-      : (allCards || computeMissingProducts({ allStock, products }));
-    return category && category !== "all" ? all.filter((c) => c.group === category) : all;
-  }, [allCards, allStock, products, category, listSection, network, cfg]);
+    ? computeMissingProducts({ allStock, products, network, section: listSection, centralFed: cfg })
+    : (allCards || computeMissingProducts({ allStock, products }))), [allCards, allStock, products, listSection, network, cfg]);
+  const cardsLive = useMemo(
+    () => (category && category !== "all" ? allLive.filter((c) => c.group === category) : allLive),
+    [allLive, category],
+  );
   // RESOLVING (Junid, 20 Nov 2026): a card Junid has just solved or marked
-  // Concrete leaves at once; a "done" entry is dropped as soon as the live list
-  // stops carrying the card itself, so it can never flicker back.
+  // Concrete leaves at once. A "done" entry (the write landed) is dropped as
+  // soon as the live list stops carrying the card — or after DONE_HOLD_MS
+  // whatever happens, so a card that is STILL missing somewhere (one store of
+  // several solved) comes back with what is left (Sonnet review, PR #952 B1).
   const cards = useMemo(() => cardsLive.filter((c) => !resolving[c.pid]), [cardsLive, resolving]);
   useEffect(() => {
-    const live = new Set(cardsLive.map((c) => c.pid));
+    const live = new Set(allLive.map((c) => c.pid));
     const gone = Object.keys(resolving).filter((pid) => resolving[pid] === "done" && !live.has(pid));
     if (gone.length) setResolving((m) => { const n = { ...m }; for (const pid of gone) if (n[pid] === "done") delete n[pid]; return n; });
-  }, [cardsLive]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [allLive, resolving]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const doneTimers = useRef({});
+  useEffect(() => {
+    for (const [pid, st] of Object.entries(resolving)) {
+      if (st !== "done" || doneTimers.current[pid]) continue;
+      doneTimers.current[pid] = setTimeout(() => {
+        delete doneTimers.current[pid];
+        setResolving((m) => { if (m[pid] !== "done") return m; const n = { ...m }; delete n[pid]; return n; });
+      }, DONE_HOLD_MS);
+    }
+  }, [resolving]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { for (const t of Object.values(doneTimers.current)) clearTimeout(t); }, []);
 
   // Typed quantities on a card still in the list, or a move going through,
   // are a job in hand — see Transfer.jsx's transfer-basket for why this is
@@ -1035,17 +1060,23 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const updates = mergeSolveUpdates(parts);
       if (Object.keys(updates).length) {
         await update(ref(database), updates);
-        // The offline mirror shows this device its own write at once.
-        try { notePendingUpdate(updates); } catch { /* the echo is a courtesy */ }
-        // Into the Solved history — AFTER the write landed (solvedLog.js).
-        const at = serverNowMs();
-        const msg = msgs.join(" ");
-        const solvedRows = entries.map((e) => {
-          const log = buildSolveLogEntry(e, { at, by: uid, byName: actorName, photo: card.photo, msg, division });
-          return { ...normalizeSolvedEntry(e.key, log), batch: baseSolveId, log };
-        });
+        // THE WRITE HAS LANDED. Nothing below may report "nothing changed":
+        // a retry would raise the first batch twice (Sonnet review, PR #952 S4).
         setResolving((m) => ({ ...m, [card.pid]: "done" }));
-        await recordSolved(solvedRows);
+        try {
+          // The offline mirror shows this device its own write at once.
+          try { notePendingUpdate(updates); } catch { /* the echo is a courtesy */ }
+          // Into the Solved history — AFTER the write landed (solvedLog.js).
+          const at = serverNowMs();
+          const msg = msgs.join(" ");
+          const solvedRows = entries.map((e) => {
+            const log = buildSolveLogEntry(e, { at, by: uid, byName: actorName, photo: card.photo, msg, division });
+            return { ...normalizeSolvedEntry(e.key, log), batch: baseSolveId, log };
+          });
+          await recordSolved(solvedRows);
+        } catch (e) {
+          setSolved((d) => ({ ...d, [card.pid]: { ok: true, store: ticks[0], sizes: [], msg: `Solved — but it could not be added to the Solved history (${e?.message || "error"}). Do NOT solve it again.` } }));
+        }
       } else {
         // Nothing to write (a central-fed store Central cannot serve): the
         // row comes back and says so.
@@ -1164,10 +1195,16 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // must not vanish.
   const lastBatch = solvedSession[0]?.batch;
   const lastRows = lastBatch ? solvedSession.filter((u) => u.batch === lastBatch && u.status !== "undone") : [];
-  const undoStrip = lastRows.length ? (
+  // Still saving (a slow or offline line): never a silently missing card.
+  const pendingNames = Object.keys(resolving).filter((pid) => resolving[pid] === "pending").map((pid) => byId.get(pid)?.name || pid);
+  const savingLine = pendingNames.length ? (
+    <div style={{ fontSize: 11.5, color: GRAY, margin: "0 2px 8px" }}>Saving {pendingNames.join(", ")}… it comes back here with the reason if the save fails.</div>
+  ) : null;
+  const undoStrip = lastRows.length || savingLine ? (
     <div>
+      {savingLine}
       {lastRows.map((u) => solvedRow(u, { compact: true }))}
-      {onOpenSolved && (
+      {onOpenSolved && lastRows.length > 0 && (
         <button onClick={onOpenSolved} style={{ background: "none", border: "none", color: BLUE_L, fontSize: 11.5, fontWeight: 600, cursor: "pointer", padding: "0 2px 10px", fontFamily: FONT }}>
           Everything solved → Solved tab
         </button>
@@ -1362,7 +1399,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
               // feedback, 2026-08-13). It rides below the row as a small dim
               // text control — subordinate, but a full-size tap target.
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
-              <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: 210 }}>
                 <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setHidePid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!!solveBlocked}
                         title={solveBlocked || undefined}
                         style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: solveBlocked ? "default" : "pointer", opacity: solveBlocked ? 0.4 : 1, fontFamily: FONT }}>

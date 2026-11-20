@@ -5,7 +5,7 @@ import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 
 const mark = vi.fn();
-vi.mock("./concreteStore", () => ({ markConcreteProduct: (...a) => mark(...a), confirmBrand: vi.fn(async () => ({ ok: true })) }));
+vi.mock("./concreteStore", () => ({ markConcreteProduct: (...a) => mark(...a), confirmBrand: vi.fn(async () => ({ ok: true })), restoreMarathonListing: vi.fn(async () => ({ ok: true, restored: false })) }));
 const { default: ConcreteProductsCard } = await import("./ConcreteProductsCard.jsx");
 
 const products = [
