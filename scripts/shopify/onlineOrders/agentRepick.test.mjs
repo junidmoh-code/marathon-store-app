@@ -138,3 +138,53 @@ describe("a line the customer chose to wait for (#2133 line 18 shape)", () => {
     expect(line1(f).source.status).toBe("unavailable");
   });
 });
+
+describe("Jamie's relocate of a line the packer marked Not available / Damaged (Junid, 20 Nov 2026)", () => {
+  // The POS commit's shape (functions/lib/lineUnavailableLogic.js unavailableLine): source { status } only, the record on
+  // line.unavailable, escalation phase "unavailable"; the dead unit was in the basket.
+  const marked = (reason = "not_here", from = { status: "handed", locationId: "hub2", orderKeys: ["ABC"] }) => tee({
+    swappedFrom: undefined, resolution: undefined, routeGen: 0, source: { status: "unavailable" },
+    escalation: { phase: "unavailable", attempts: [{ location: "marathon-pe", action: "packing_check", result: reason === "damaged" ? "unavailable" : "not_found" }] },
+    unavailable: { reason, rid: "r1", gen: 1, at: NOW - 300e3, fromSource: from },
+  });
+  const relocate = (line, over = {}) => ask(1, line, { by: "jamie-relocate", exclude: ["hub2"], ...over });
+  it("goes on a pick at another place, basket tick and dead codes cleared, escalation closed, Not here's source remembered", async () => {
+    const w = world({ lines: [beanie(), marked()], stock: { concrete: { GST: { XXL: { qty: 1 } } } }, repicks: { relocate_1_0: relocate(marked()) } });
+    w.online_orders[2085].basket = { 1: true };
+    w.online_orders[2085].codesIn = { ABC: true };
+    const f = fakeDb(w);
+    await tick(f);
+    expect(reqOf(f, "relocate_1_0")).toMatchObject({ state: REPICK.ORDERED, routedTo: "concrete" });
+    const l = line1(f);
+    expect(l.source).toMatchObject({ status: "display", locationId: "concrete" });
+    expect(l.escalation ?? null).toBeNull();
+    expect(l.relocatedFrom).toMatchObject({ reason: "not_here", from: "hub2" });
+    expect(l.failedPlaces).toHaveProperty("hub2");
+    expect(f.read("online_orders/2085/basket/1") ?? null).toBeNull();
+    expect(f.read("online_orders/2085/codesIn/ABC") ?? null).toBeNull();
+  });
+  it("the same line asked by the order agent (not Jamie's relocate) is still refused", async () => {
+    const f = fakeDb(world({ lines: [beanie(), marked()], stock: { concrete: { GST: { XXL: { qty: 1 } } } }, repicks: { "1_0": ask(1, marked()) } }));
+    await tick(f);
+    expect(reqOf(f, "1_0").state).toBe(REPICK.REFUSED);
+    expect(line1(f).source.status).toBe("unavailable");
+  });
+  it("never once the customer is being asked, never over money; nothing free elsewhere → not_in_stock", async () => {
+    const asked = marked();
+    asked.awaitingCustomer = { since: NOW, by: "jamie" };
+    const f1 = fakeDb(world({ lines: [beanie(), asked], stock: { concrete: { GST: { XXL: { qty: 1 } } } }, repicks: { relocate_1_0: relocate(asked) } }));
+    await tick(f1);
+    expect(reqOf(f1, "relocate_1_0").state).toBe(REPICK.REFUSED);
+    const f2 = fakeDb(world({ lines: [beanie(), marked()], stock: { hub2: { GST: { XXL: { qty: 2 } } } }, repicks: { relocate_1_0: relocate(marked()) } }));
+    await tick(f2);
+    expect(reqOf(f2, "relocate_1_0").state).toBe(REPICK.NOT_IN_STOCK);
+    expect(line1(f2).source.status).toBe("unavailable");
+  });
+  it("pure: relocate passes the unavailable status and the closed escalation only for Jamie's request", () => {
+    const l = marked("damaged");
+    expect(repickBlocker({ line: l, req: relocate(l), enabled: true, order: { basket: { 1: true } }, i: 1 })).toBeNull();
+    expect(repickBlocker({ line: l, req: ask(1, l), enabled: true, order: {}, i: 1 })).toMatch(/not one a place failed/);
+    const live = { ...l, escalation: { phase: "await" } };
+    expect(repickBlocker({ line: live, req: relocate(live), enabled: true, order: {}, i: 1 })).toMatch(/escalation/);
+  });
+});

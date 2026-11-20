@@ -43,6 +43,15 @@ export const REPICK_PATH = "agentRepicks";
 export const STUCK_REPICK_MS = 5 * 60 * 1000;
 // The statuses a place gave when it could not produce the line. Only these are re-picked.
 export const REPICK_LINE = Object.freeze([LINE_STATUS.NOT_FOUND, LINE_STATUS.NO_STOCK, LINE_STATUS.NEEDS_ATTENTION]);
+// OTHER LOCATIONS BEFORE ALTERNATIVES (Junid, 20 Nov 2026): Jamie (src/jimmy/relocateFirst.js in the DM agent) asks for a
+// line the packer marked Not available / Damaged on the POS (source.status "unavailable", the POS's `unavailable` record,
+// escalation phase "unavailable") to be picked again at another place on its route. Only a request from Jamie's relocate
+// may move such a line, and only before the customer is asked about it (the usual blockers below still apply). The unit
+// that failed was written off or flagged for a recount by the POS, so the basket tick and code confirmations of the dead
+// unit are cleared when the line moves; nothing a hub already sent can be "sent twice" (that unit is the failed one).
+export const RELOCATE_BY = "jamie-relocate";
+const RELOCATE_PHASES = new Set(["unavailable", "resolved", "done"]);
+const isRelocate = (req, line) => req?.by === RELOCATE_BY && line?.source?.status === LINE_STATUS.UNAVAILABLE;
 
 const clean = (v) => JSON.parse(JSON.stringify(v ?? null));
 const place = (loc) => PLACE[loc] || loc;
@@ -71,8 +80,11 @@ export function repickBlocker({ line, req, enabled, order = null, i = Number(req
   if ((Number(line.routeGen) || 0) !== (Number(req?.expectRouteGen) || 0)) return "the line was routed again since the agent looked";
   const st = line.source?.status;
   if (req?.expectStatus && st !== req.expectStatus) return `the line is "${st || "unknown"}" now, not "${req.expectStatus}"`;
-  if (!REPICK_LINE.includes(st) && !(st === LINE_STATUS.UNAVAILABLE && customerChoseToWait(order, i, line))) return `the line is "${st || "unknown"}", not one a place failed`;
-  if (line.escalation) return "the line has an escalation under way";
+  const relocate = isRelocate(req, line);
+  // A line of several units: part may be packed, so a relocate of the whole line could send extras (architect review M3).
+  if (relocate && Math.max(1, Number(line.qty) || 1) > 1) return "a line of several units needs a person";
+  if (!REPICK_LINE.includes(st) && !(st === LINE_STATUS.UNAVAILABLE && (relocate || customerChoseToWait(order, i, line)))) return `the line is "${st || "unknown"}", not one a place failed`;
+  if (line.escalation && !(req?.by === RELOCATE_BY && RELOCATE_PHASES.has(String(line.escalation.phase || "")))) return "the line has an escalation under way";
   if (line.awaitingCustomer || line.resolution?.conversation) return "the customer is being asked about this line";
   if (line.escalationOverride && !line.escalationOverride.appliedAt) return "Junid's decision on this line is still being applied";
   if (["unavailable", "resolved"].includes(line.escalationOverride?.kind)) return `Junid decided this line (${line.escalationOverride.kind})`;
@@ -82,7 +94,7 @@ export function repickBlocker({ line, req, enabled, order = null, i = Number(req
   const outcome = line.resolution?.outcome?.kind;
   if (outcome && outcome !== "swap") return `the line was settled (${outcome})`;
   const codes = Array.isArray(line.source?.orderKeys) ? line.source.orderKeys : [];
-  if (order?.basket?.[i] || codes.some((c) => order?.codesIn?.[c] === true)) return "part of this line is already in the basket";
+  if (!relocate && (order?.basket?.[i] || codes.some((c) => order?.codesIn?.[c] === true))) return "part of this line is already in the basket";
   return null;
 }
 
@@ -150,8 +162,9 @@ export async function applyAgentRepicks(ctx, id, order, helpers) {
       }
       const blocked = repickBlocker({ line, req, enabled: ctx.enabled, order: fresh, i });
       if (blocked) { await answer({ state: REPICK.REFUSED, why: blocked }); continue; }
-      // A hub already SENT a unit of this line: a fresh pick would bring it twice.
-      for (const k of Array.isArray(line.source?.orderKeys) ? line.source.orderKeys : []) {
+      // A hub already SENT a unit of this line: a fresh pick would bring it twice. Not for a relocate: the sent unit is the
+      // one the packer found missing or damaged (its source is kept on line.unavailable.fromSource, not line.source).
+      for (const k of isRelocate(req, line) ? [] : Array.isArray(line.source?.orderKeys) ? line.source.orderKeys : []) {
         const rec = await ctx.get(`orders/${k}`);
         if (rec && rec.channel === "online" && String(rec.onlineOrderId) === String(id) && Number(rec.onlineLineIndex) === i && (rec.status === "ready" || rec.status === "collected" || rec.sentSize != null)) {
           await answer({ state: REPICK.REFUSED, why: `${place(rec.hub) || "a hub"} already sent a unit of this line (${k})` });
@@ -203,6 +216,24 @@ export async function applyAgentRepicks(ctx, id, order, helpers) {
         });
         const nextLines = Array.isArray(curOrder.lines) ? [...curOrder.lines] : { ...curOrder.lines };
         nextLines[i] = landedLine;
+        if (isRelocate(req, cur)) {
+          // The dead unit's basket tick and code confirmations go with it; the escalation the POS closed is cleared so the
+          // new pick is an ordinary line again (the POS's record stays on line.unavailable / unavailableRequests).
+          const was = cur.unavailable?.fromSource || {};
+          const deadCodes = Array.isArray(was.orderKeys) ? was.orderKeys : [];
+          landedLine.escalation = null;
+          landedLine.relocatedFrom = clean({ status: LINE_STATUS.UNAVAILABLE, reason: cur.unavailable?.reason ?? null, from: was.locationId ?? null, at: ctx.now });
+          if (cur.unavailable?.reason === "not_here" && was.locationId) landedLine.failedPlaces = { ...(landedLine.failedPlaces || {}), [was.locationId]: Number(cur.unavailable?.at) || ctx.now };
+          const copy = (v) => (Array.isArray(v) ? v.slice() : v && typeof v === "object" ? { ...v } : v);
+          const basket = copy(curOrder.basket);
+          if (basket && typeof basket === "object" && basket[i] != null) { if (Array.isArray(basket)) basket[i] = null; else delete basket[i]; }
+          const codesIn = copy(curOrder.codesIn);
+          if (codesIn && typeof codesIn === "object") for (const c of deadCodes) delete codesIn[c];
+          const next = { ...curOrder, lines: nextLines };
+          if (basket !== undefined) next.basket = basket;
+          if (codesIn !== undefined) next.codesIn = codesIn;
+          return next;
+        }
         return { ...curOrder, lines: nextLines };
       });
       if (!landed.committed || !landed.snapshot.val() || !landedLine) { await answer({ state: REPICK.REFUSED, why: "the line changed, was scanned in or is being packed; not re-picked", checked: plan.checked }); continue; }
