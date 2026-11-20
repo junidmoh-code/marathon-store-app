@@ -81,6 +81,8 @@ export function repickBlocker({ line, req, enabled, order = null, i = Number(req
   const st = line.source?.status;
   if (req?.expectStatus && st !== req.expectStatus) return `the line is "${st || "unknown"}" now, not "${req.expectStatus}"`;
   const relocate = isRelocate(req, line);
+  // A line of several units: part may be packed, so a relocate of the whole line could send extras (architect review M3).
+  if (relocate && Math.max(1, Number(line.qty) || 1) > 1) return "a line of several units needs a person";
   if (!REPICK_LINE.includes(st) && !(st === LINE_STATUS.UNAVAILABLE && (relocate || customerChoseToWait(order, i, line)))) return `the line is "${st || "unknown"}", not one a place failed`;
   if (line.escalation && !(req?.by === RELOCATE_BY && RELOCATE_PHASES.has(String(line.escalation.phase || "")))) return "the line has an escalation under way";
   if (line.awaitingCustomer || line.resolution?.conversation) return "the customer is being asked about this line";
