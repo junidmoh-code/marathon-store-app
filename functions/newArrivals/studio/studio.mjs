@@ -290,9 +290,11 @@ export const SHARED_FINISH = "master-jpeg-q92";
 /** One photo for one product, whatever the card. `look`: a staging kind (staging.cjs) for a product with no
  *  New Arrivals plate; omitted, the product's own category decides (footwear / clothing → generateOne). */
 export async function generate({ item, product, genId, method = "full", provider = "gemini", look = null, input = "photo", placeNote = false, secondRef = null, deps, emit = () => {} }) {
-  const run = (inp) => (look && staging.hasStaging(look)
-    ? generateOther({ item, product, genId, kind: look, input: inp, placeNote, deps, emit })
-    : generateOne({ item, product, genId, method, provider, input: inp, placeNote, secondRef, deps, emit }));
+  // (The retry's drafts get their own names: the first attempt's are already stored and Storage never overwrites.)
+  const runAs = (inp, gid) => (look && staging.hasStaging(look)
+    ? generateOther({ item, product, genId: gid, kind: look, input: inp, placeNote, deps, emit })
+    : generateOne({ item, product, genId: gid, method, provider, input: inp, placeNote, secondRef, deps, emit }));
+  const run = (inp) => runAs(inp, genId);
   // THE ORIGINAL GIVEN BACK (Junid, 20 Nov 2026): when the model hands back the staff photo, the input is cleaned
   // — the product cut out of the staff photo (background removal) and put on plain white — and the SAME request
   // (prompt, plate, model, size) is made ONCE more with that cut-out in place of the raw photo. Never more than once.
@@ -301,8 +303,12 @@ export async function generate({ item, product, genId, method = "full", provider
     if (!e.echo || input === "cutout" || !deps.cutout) throw e;
     try { emit({ type: "status", text: "It gave back the original photo — cleaning the photo and trying once more…" }); } catch { /* view only */ }
     let res;
-    try { res = await run("cutout"); }
-    catch (e2) { e2.wastedUsages = [e.usage || null, ...(e2.wastedUsages || [])]; if (e2.echo || e2.noCutout) e2.echo = true; throw e2; }
+    try { res = await runAs("cutout", `${genId}-cutout`); }
+    catch (e2) {
+      // No clean cut-out could be made: the first answer's refusal stands, and the card is told why.
+      if (e2.noCutout) { e.cutoutFailed = true; throw e; }
+      e2.wastedUsages = [e.usage || null, ...(e2.wastedUsages || [])]; throw e2;
+    }
     return { ...res, echoFallback: { firstDiff: e.diff ?? null }, wastedUsages: [e.usage || null] };
   }
 }
@@ -344,10 +350,45 @@ export async function sourceFor({ deps, originalUrl, input, say = () => {} }) {
   say({ type: "status", text: "Cutting the product out of the photo…" });
   const c = deps.cutout ? await deps.cutout(raw).catch(() => null) : null;
   if (!c?.png) { const e = new StudioRefusal("the product could not be cut out of its photo cleanly"); e.noCutout = true; throw e; }
-  const m = await sharp(c.png).metadata();
+  const solid = await cleanCutout(c.png);
+  const m = await sharp(solid).metadata();
   const pad = Math.round(Math.max(m.width, m.height) * 0.06);
-  const white = await sharp(c.png).flatten({ background: "#ffffff" }).extend({ top: pad, bottom: pad, left: pad, right: pad, background: "#ffffff" }).jpeg({ quality: 92 }).toBuffer();
+  const white = await sharp(solid).flatten({ background: "#ffffff" }).extend({ top: pad, bottom: pad, left: pad, right: pad, background: "#ffffff" }).jpeg({ quality: 92 }).toBuffer();
   return { raw, orig: await forModel(white), cutout: true };
+}
+
+/**
+ * A background-removal matte made fit to send (measured 20 Nov on the Ajax, Tottenham and Real Madrid jerseys):
+ *  · the TAIL: the rows below the lowest solid row (mean alpha 97%+), when they are 4%–20% of the height
+ *    and only partly opaque on average (under 90%) — the display fence showing under a hem — are cut away;
+ *  · semi-transparent product areas (a white shirt's pale panel) are lifted back to solid (alpha × 3);
+ *  · holes the background cannot reach from the edges are filled.
+ * The product's own pixels are kept everywhere it is. → PNG with alpha.
+ */
+export async function cleanCutout(png, { lift = 3, floor = 0.06 } = {}) {
+  const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const w = info.width, h = info.height, N = w * h;
+  const rowMean = (y) => { let l = -1, r = -1; for (let x = 0; x < w; x++) if (data[(y * w + x) * 4 + 3] > 40) { if (l < 0) l = x; r = x; } if (l < 0) return null; let t = 0; for (let x = l; x <= r; x++) t += data[(y * w + x) * 4 + 3]; return t / (r - l + 1) / 2.55; };
+  const means = Array.from({ length: h }, (_, yy) => rowMean(yy));
+  let cut = h, y = h - 1;
+  while (y >= 0 && !(means[y] >= 97)) y--; // the lowest solid row
+  if (y >= 0 && h - 1 - y >= 0.04 * h && h - 1 - y <= 0.2 * h) {
+    const tail = means.slice(y + 1).filter((m) => m !== null);
+    if (tail.length && tail.reduce((t, m) => t + m, 0) / tail.length < 90) cut = y + 1;
+  }
+  const a = new Float32Array(N);
+  for (let i = 0; i < N; i++) a[i] = i >= cut * w ? 0 : Math.min(1, (data[i * 4 + 3] / 255) * lift);
+  const bg = new Uint8Array(N), st = new Int32Array(N); let sp = 0;
+  const push = (i) => { if (!bg[i] && a[i] < floor) { bg[i] = 1; st[sp++] = i; } };
+  for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+  for (let yy = 0; yy < h; yy++) { push(yy * w); push(yy * w + w - 1); }
+  while (sp) { const i = st[--sp], x = i % w; if (x > 0) push(i - 1); if (x < w - 1) push(i + 1); if (i >= w) push(i - w); if (i < N - w) push(i + w); }
+  const out = Buffer.alloc(N * 4);
+  for (let i = 0; i < N; i++) {
+    out[i * 4] = data[i * 4]; out[i * 4 + 1] = data[i * 4 + 1]; out[i * 4 + 2] = data[i * 4 + 2];
+    out[i * 4 + 3] = bg[i] ? 0 : Math.round((a[i] < floor ? 1 : a[i]) * 255);
+  }
+  return sharp(out, { raw: { width: w, height: h, channels: 4 } }).trim({ threshold: 1 }).png().toBuffer().catch(() => sharp(out, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer());
 }
 
 async function secondRefFor({ deps, secondRef }) {

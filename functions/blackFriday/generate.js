@@ -143,7 +143,7 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
     });
   } catch (err) {
     const status = Number(err.status) || 0;
-    const reason = err.echo ? "Failed, tap to retry — the model gave back the original photo, even from the cleaned cut-out, so nothing was charged"
+    const reason = err.echo ? (err.cutoutFailed ? "Failed, tap to retry — the model gave back the original photo and it could not be cut out cleanly to try again, so nothing was charged" : "Failed, tap to retry — the model gave back the original photo, even from the cleaned cut-out, so nothing was charged")
       : err.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
       : err.studioRefusal ? err.message
       : err.refusal ? "Gemini declined to make this photo"

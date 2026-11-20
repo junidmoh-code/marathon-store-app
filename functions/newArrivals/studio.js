@@ -53,7 +53,13 @@ const sha256 = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
 // THE CLEANED INPUT (20 Nov 2026): the product cut out of its staff photo (the background-removal matte the
 // lookbook already uses), for the shared generator's one retry after the model gave back the original photo.
 // Loaded lazily: only a generation that needs it pays for the matte model.
-const cutoutForStudio = (buf) => require("../lib/lookbook-render.cjs").cutout(buf, { edge: 2048 });
+// One matte at a time per instance: the ONNX model is large, and it runs right after a 4K photo (2 GiB, concurrency 3).
+let cutoutQueue = Promise.resolve();
+const cutoutForStudio = (buf) => {
+  const run = cutoutQueue.then(() => require("../lib/lookbook-render.cjs").cutout(buf, { edge: 2048 }));
+  cutoutQueue = run.catch(() => {});
+  return run;
+};
 
 // ── storage ──────────────────────────────────────────────────────────────────
 const downloadUrl = (bucketName, objectPath, token) =>
@@ -316,7 +322,7 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
   } catch (e) {
     // What Junid is told is one of a few fixed sentences; the detail goes to the log only.
     const status = Number(e.status) || 0;
-    const reason = e.echo ? "it gave back the original photo, even from the cleaned cut-out — tap Generate to try again"
+    const reason = e.echo ? (e.cutoutFailed ? "it gave back the original photo, and the product could not be cut out cleanly to try again — tap Generate to try again" : "it gave back the original photo, even from the cleaned cut-out — tap Generate to try again")
       : e.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
       : e.studioRefusal ? e.message
       : e.refusal ? `${who} declined to make this photo`

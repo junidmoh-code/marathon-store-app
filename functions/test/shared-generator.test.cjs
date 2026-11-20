@@ -247,3 +247,20 @@ test("CLEANED INPUT ON REQUEST (Junid, jerseys): the raw staff photo is never se
   assert.deepEqual(w.calls[0].texts.filter((t) => t !== PLACE_NOTE), plain.calls[0].texts, "the New Arrivals prompt otherwise unchanged");
   assert.notEqual(w.calls[0].images.at(-1), plain.calls[0].images.at(-1), "the cut-out, not the staff photo");
 });
+
+test("CLEAN CUT-OUT: a fence tail under the hem is cut, a pale panel and an enclosed hole come back solid; a long see-through shirt is never cut", async () => {
+  const { cleanCutout } = await import("../newArrivals/studio/studio.mjs");
+  const W = 100, H = 200;
+  const make = (alphaAt) => { const b = Buffer.alloc(W * H * 4); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = (y * W + x) * 4; b[i] = 30; b[i + 1] = 40; b[i + 2] = 120; b[i + 3] = alphaAt(x, y); } return sharp(b, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer(); };
+  const alphaRows = async (png) => { const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true }); return { h: info.height, w: info.width, at: (x, y) => data[(y * info.width + x) * 4 + 3] }; };
+  // A shirt (rows 10-169, solid, a hole at its centre, a pale panel) and a fence tail (rows 170-189, ~80% alpha).
+  const shirt = await make((x, y) => (x < 20 || x > 80 ? 0 : y < 10 ? 0 : y < 170 ? ((x > 45 && x < 55 && y > 80 && y < 90) ? 0 : (x > 30 && x < 40 && y > 30 && y < 60 ? 70 : 255)) : y < 190 ? (x % 4 ? 230 : 120) : 0));
+  const out = await alphaRows(await cleanCutout(shirt));
+  assert.ok(out.h <= 162, `the tail is gone (height ${out.h})`);
+  // (Trimmed: x and y are 20 and 10 less than in the input.)
+  assert.equal(out.at(30, 75), 255, "the enclosed hole is filled");
+  assert.ok(out.at(15, 35) >= 200, "the pale panel is lifted back (alpha 70 → 210)");
+  // A see-through shirt from top to bottom (the Tottenham case): the 'tail' would be most of it — never cut.
+  const pale = await make((x, y) => (x < 20 || x > 80 || y < 10 || y > 189 ? 0 : y < 20 ? 255 : 200));
+  assert.ok((await alphaRows(await cleanCutout(pale))).h >= 178);
+});
