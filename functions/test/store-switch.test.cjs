@@ -28,11 +28,12 @@ test("buildSwitchEntry: unknown shops, no-op switches and made-up reasons are re
   assert.equal(buildSwitchEntry({ ...base, data: { from: "trophy", to: "concrete", reason: "because" } }).code, "bad-reason");
 });
 
-test("buildSwitchEntry: a queued line keeps its own SA day; a wild client clock falls back to today", () => {
+test("buildSwitchEntry: a queued line keeps its own SA day (even a week late); a wild client clock falls back to today", () => {
   const base = { uid: "u1", userRec: {}, shopIds: SHOPS, nowMs: NOW, };
   const lateNight = Date.UTC(2026, 10, 19, 21, 30); // 23:30 SAST on the 19th
   assert.equal(buildSwitchEntry({ ...base, data: { from: "concrete", to: "trophy", reason: "daily-reset", clientAtMs: lateNight } }).saDate, "2026-11-19");
-  assert.equal(buildSwitchEntry({ ...base, data: { from: "concrete", to: "trophy", reason: "daily-reset", clientAtMs: NOW - 30 * 86400000 } }).saDate, "2026-11-20");
+  assert.equal(buildSwitchEntry({ ...base, data: { from: "concrete", to: "trophy", reason: "daily-reset", clientAtMs: NOW - 7 * 86400000 } }).saDate, "2026-11-13");
+  assert.equal(buildSwitchEntry({ ...base, data: { from: "concrete", to: "trophy", reason: "daily-reset", clientAtMs: NOW - 60 * 86400000 } }).saDate, "2026-11-20");
 });
 
 test("runLogStoreSwitch appends ONE line under the SA day; nulls are dropped the way RTDB drops them", async () => {

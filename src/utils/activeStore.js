@@ -196,8 +196,10 @@ export function signOutFailed() {
   const id = signOutLineId;
   signOutAudited = false; signOutLineId = null;
   if (!id || !isAwayFromHome(state)) return;
+  const correct = () => { if (isAwayFromHome(state)) audit(state.homeShop, state.activeShop, SWITCH_REASON.SIGN_OUT_FAILED); };
+  if (inFlight.has(id)) { inFlight.get(id).then((ok) => { if (ok) correct(); else unqueue(id); }); return; }
   if (readQueue().some((e) => e.id === id)) { unqueue(id); return; }
-  audit(state.homeShop, state.activeShop, SWITCH_REASON.SIGN_OUT_FAILED);
+  correct();
 }
 
 // Signed out (or the session vanished): forget this account's choice. An

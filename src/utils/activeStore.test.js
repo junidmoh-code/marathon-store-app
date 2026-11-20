@@ -191,9 +191,18 @@ describe("audit delivery", () => {
     expect(log.mock.calls.at(-1)[0]).toMatchObject({ from: "marathon-pe", to: "concrete", reason: "sign-out-failed" });
 
     log.mockClear();
-    log.mockImplementationOnce(() => new Promise(() => {}));   // never answers
+    let answer;
+    log.mockImplementationOnce(() => new Promise((r) => { answer = r; }));   // still in flight
     S.auditSignOut();
     await flush();
+    S.signOutFailed();
+    answer({});                                     // …and then it lands
+    await flush(); await flush();
+    expect(log.mock.calls.at(-1)[0]).toMatchObject({ reason: "sign-out-failed" });
+
+    log.mockClear();
+    log.mockImplementationOnce(async () => { throw Object.assign(new Error("x"), { code: "unavailable" }); });
+    await S.auditSignOut();                         // failed → still queued, unsent
     S.signOutFailed();
     expect(JSON.parse(storage.getItem("mc.activeStore.pendingLog.v1") || "[]").some((e) => e.reason === "sign-out")).toBe(false);
   });

@@ -42,9 +42,11 @@ function buildSwitchEntry({ uid, userRec, data, shopIds, nowMs }) {
   if (!REASONS.includes(d.reason)) return { ok: false, code: "bad-reason" };
   const home = typeof userRec?.destShop === "string" && userRec.destShop ? userRec.destShop : null;
   const clientAtMs = Number.isFinite(d.clientAtMs) ? Math.round(d.clientAtMs) : null;
-  // A queued line is filed under the day it happened (its clientAtMs), unless
-  // that claims a day more than 2 days away from the server's — then today.
-  const dayMs = clientAtMs && Math.abs(nowMs - clientAtMs) < 2 * 86400000 ? clientAtMs : nowMs;
+  // A queued line is filed under the day it happened (its clientAtMs) — so a
+  // resend lands on the same {saDate}/{id} and dedupes — unless that claims a
+  // day more than 30 days from the server's, then today. `at` stays the
+  // server's own time either way.
+  const dayMs = clientAtMs && Math.abs(nowMs - clientAtMs) < 30 * 86400000 ? clientAtMs : nowMs;
   return {
     ok: true,
     saDate: saDateOf(dayMs),
