@@ -24,6 +24,10 @@ export const blackFridayApi = {
   // One section: "main" (13+ on hand) or "under" (Show under 13).
   // → { review: [row], approved: [row], totals, rejected, styles, schedule, plan, postingPaused, meta }
   list: (section = "main") => call("bfCampaignList")({ section }),
+  // FAST OPEN (21 Nov 2026): the server's precomputed list. head → counts + the first page of every tab
+  // (+ selection, brain); pages → more rows of one tab as he scrolls: { tab, from, at, pages: [{ at, rows }] }.
+  head: () => call("bfCampaignList")({ view: "head" }),
+  pages: (tab, from, n = 2) => call("bfCampaignList")({ view: "pages", tab, from, n }),
   // sig: the photo the card showed ("current" or a genId) — a different photo now is refused.
   approve: (pid, section, sig) => set({ action: "approve", pid, section, ...(sig ? { sig } : {}) }),
   reject: (pid, section) => set({ action: "reject", pid, section }),

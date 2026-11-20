@@ -6725,6 +6725,16 @@ exports.insightsRollupSweep = onSchedule(
   exports.bfPhotoSource = require("./blackFriday/sources.js").bfPhotoSource;
   // 360 px list thumbnails for the card (iOS kept throwing the card away for memory, 21 Nov 2026).
   exports.bfThumb = require("./blackFriday/thumbs.js").bfThumb;
+  // The card's precomputed list, kept up to date on every change (fast open on his iPhone, 21 Nov 2026).
+  //   firebase deploy --only functions:bfCardIndexPick,functions:bfCardIndexPhoto,functions:bfCardIndexItem,functions:bfCardIndexRepost,functions:bfCardIndexSent,functions:bfCardIndexNa,functions:bfCardIndexTick
+  const ci = require("./blackFriday/cardIndex.js");
+  exports.bfCardIndexPick = ci.bfCardIndexPick;
+  exports.bfCardIndexPhoto = ci.bfCardIndexPhoto;
+  exports.bfCardIndexItem = ci.bfCardIndexItem;
+  exports.bfCardIndexRepost = ci.bfCardIndexRepost;
+  exports.bfCardIndexSent = ci.bfCardIndexSent;
+  exports.bfCardIndexNa = ci.bfCardIndexNa;
+  exports.bfCardIndexTick = ci.bfCardIndexTick;
 }
 
 // ── ALTERNATIVES: automatic enrichment + per-product profile (2026-10-09) ────

@@ -4,6 +4,7 @@
 // bfCampaignSet   one tap on one product: approve, reject, back to review,
 //                 choose its photo; "Approve all 30+"; approve a category's
 //                 AI look; the schedule (preview, confirm, clear).
+//                 (view "head" / "pages": the precomputed list, cardIndex.js)
 // bfGenerate      (generate.js) one AI photo for one product, on Junid's tap.
 // Server-only node (no database rule): the Admin SDK behind the super-admin gate.
 //
@@ -477,11 +478,25 @@ async function brainDayCat(db, { day, cat }, uid, nowMs) {
   return { ok: true, day, cat };
 }
 
-const bfCampaignList = onCall(callableOpts, async (request) => {
+// FAST OPEN (Junid, 21 Nov 2026): one instance is kept warm (no cold start when he opens the card), and
+// the card reads the precomputed list (cardIndex.js): view "head" = counts + the first page of every tab,
+// view "pages" = more rows of one tab as he scrolls. No view = the whole section computed now (Show under 13).
+const listOpts = { ...callableOpts, minInstances: 1 };
+const bfCampaignList = onCall(listOpts, async (request) => {
   assertJunid(request);
   const db = admin.database();
+  const d = request.data || {};
+  const cardIndex = require("./cardIndex.js");
+  if (d.view === "pages") {
+    try { return await cardIndex.readPages(db, d.tab, d.from, d.n); }
+    catch (e) { throw new HttpsError(e.code === "invalid-argument" ? "invalid-argument" : "internal", e.message); }
+  }
+  if (d.view === "head") {
+    const [h, selection, brain] = await Promise.all([cardIndex.readHead(db), loadSelection(db, request.auth && request.auth.uid), brainView(db)]);
+    return { ...h, selection, brain };
+  }
   const [v, selection, brain] = await Promise.all([
-    list(db, (request.data && request.data.section) || "main", Date.now()),
+    list(db, d.section || "main", Date.now()),
     loadSelection(db, request.auth && request.auth.uid),
     brainView(db),
   ]);
