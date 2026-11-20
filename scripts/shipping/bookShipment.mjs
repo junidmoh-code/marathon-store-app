@@ -103,19 +103,22 @@ async function productsFor(db, order) {
   const raw = Array.isArray(order?.lines) ? order.lines : Object.values(order?.lines ?? {});
   const pids = [...new Set(raw.map((l) => l?.pid ?? l?.productId).filter(Boolean))];
   const out = {};
-  for (const pid of pids) {
+  // All at once (fast booking, 20 Nov 2026): one round trip, not one per product.
+  await Promise.all(pids.map(async (pid) => {
     try {
       const snap = await db.ref(`products/${assertSafeSegment(pid, "productId")}`).get();
       if (snap.exists()) out[pid] = snap.val();
     } catch { /* an unreadable product classifies by its line alone */ }
-  }
+  }));
   return out;
 }
 
 /** Everything up to (not including) the shipment call. Pure apart from rates. */
 export async function planShipment(order, { db, client, products = null }) {
-  const cfg = mergeShippingConfig((await db.ref("config/shipping").get()).val());
-  const lines = orderLines(order, products ?? (await productsFor(db, order)));
+  // The config and the products are read together (fast booking, 20 Nov 2026).
+  const [rawCfg, productMap] = await Promise.all([db.ref("config/shipping").get(), products ?? productsFor(db, order)]);
+  const cfg = mergeShippingConfig(rawCfg.val());
+  const lines = orderLines(order, productMap);
   const parcel = estimateParcel(lines, cfg);
   const { address, missing: addrMissing } = deliveryAddress(order);
   const { contact: baseContact, missing: baseContactMissing } = deliveryContact(order);
@@ -236,7 +239,14 @@ export async function bookShipment(order, deps = {}) {
     return { skipped: true, reason: plan.reason, parcel: plan.parcel ?? null };
   }
 
-  const live = await readLive(db);
+  // The live switch and the order's existence are asked together (fast booking,
+  // 20 Nov 2026); the existence answer is only used on the live path below.
+  const existsField = isExchangeKey(key) ? "exchange/paidAt" : isReshipKey(key) ? "reship/of" : "shopifyGid";
+  const [live, orderExists] = await Promise.all([
+    readLive(db),
+    // A failed read here is not an answer: asked again, alone, on the live path (the dry run never needs it).
+    db.ref(`online_orders/${key}/${existsField}`).get().then((s) => s.exists(), () => null),
+  ]);
   if (!live) {
     log(`bookShipment ${key} DRY RUN (live is off) would POST /shipments ${JSON.stringify(plan.payload)}` +
       (plan.liveBlockers.length ? ` — live would refuse: ${plan.liveBlockers.join(", ")}` : ""));
@@ -257,8 +267,7 @@ export async function bookShipment(order, deps = {}) {
   // shopifyGid is on every ingested order (ref is not, since 2026-10-21 —
   // gating on ref refused every live booking of a new order). An exchange
   // record has no shopifyGid; Jimmy writes it only once paid (exchange.paidAt).
-  const existsField = isExchangeKey(key) ? "exchange/paidAt" : isReshipKey(key) ? "reship/of" : "shopifyGid";
-  if (!(await db.ref(`online_orders/${key}/${existsField}`).get()).exists()) {
+  if (!(orderExists ?? (await db.ref(`online_orders/${key}/${existsField}`).get()).exists())) {
     log(`bookShipment ${key} REFUSED no order at /online_orders/${key}`);
     return { skipped: true, reason: `no order at /online_orders/${key}` };
   }

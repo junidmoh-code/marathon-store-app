@@ -38,6 +38,7 @@
 //     query on a 10-minute cadence (ATTENTION_SWEEP_MS) for everything else.
 // What a tick detects, holds, raises, ships and mails is unchanged; the one
 // timing difference is spelled out at ATTENTION_SWEEP_MS.
+import { hostname } from "node:os";
 import { PUBLISH_PATH, SYNC_PATH, storeNode, STORE, IS_MARATHON, STORES } from "../storeConfig.mjs";
 import {
   ONLINE_ORDERS_PATH, ONLINE_RESERVATIONS_PATH, ONLINE_ORDERS_CONFIG_PATH, PACKING_STORE, orderLabel,
@@ -106,6 +107,17 @@ const isTerminal = (s) => TERMINAL_STATUSES.includes(s);
 // stock use exact reads only and are the part that protects the storefront.
 // So a refused query skips its own phase, says so on every tick, and nothing
 // else changes. Any OTHER error still throws.
+// A second parcel (<id>r1, made by hand) carries no tag of its own: it
+// belongs to its parent's store (CodeRabbit, #911).
+export async function ownsOrderAt(ctx, id, o) {
+  let order = o;
+  if (o && !o.sourceStore && /r\d+$/.test(id)) {
+    const parentStore = await ctx.get(`${ONLINE_ORDERS_PATH}/${id.replace(/r\d+$/, "")}/sourceStore`).catch(() => null);
+    if (parentStore) order = { ...o, sourceStore: parentStore };
+  }
+  return ownsOrder(order);
+}
+
 async function queryEq(ctx, child, value) {
   try {
     const all = (await ctx.db.ref(ONLINE_ORDERS_PATH).orderByChild(child).equalTo(value).get()).val() || {};
@@ -115,14 +127,7 @@ async function queryEq(ctx, child, value) {
     // A second parcel (<id>r1, made by hand) carries no tag of its own: it
     // belongs to its parent's store (CodeRabbit, #911).
     const out = {};
-    for (const [id, o] of Object.entries(all)) {
-      let order = o;
-      if (o && !o.sourceStore && /r\d+$/.test(id)) {
-        const parentStore = await ctx.get(`${ONLINE_ORDERS_PATH}/${id.replace(/r\d+$/, "")}/sourceStore`).catch(() => null);
-        if (parentStore) order = { ...o, sourceStore: parentStore };
-      }
-      if (ownsOrder(order)) out[id] = o;
-    }
+    for (const [id, o] of Object.entries(all)) if (await ownsOrderAt(ctx, id, o)) out[id] = o;
     return out;
   } catch (e) {
     if (!/index not defined/i.test(String(e?.message || e))) throw e;
@@ -279,7 +284,8 @@ export async function runOrdersPoll(deps) {
   if (graphql) {
     const pending = await queryEq(ctx, "fulfilState", "pending");
     for (const [id, order] of Object.entries(pending)) {
-      try { await shipOrder(ctx, id, order); }
+      // Under the ship lock, on a FRESH read (fast-ship.mjs may have shipped it since the query): never twice.
+      try { await shipOrderLocked(ctx, id, order, { owner: "tick" }); }
       catch (e) {
         ctx.summary.errors.push(`${orderLabel(order ?? {}) || id} fulfil: ${String(e?.message || e)}`);
         log(`  ✗ ${orderLabel(order ?? {}) || id} fulfil: ${String(e?.message || e)}`);
@@ -859,6 +865,93 @@ async function syncHolds(ctx, id, order) {
 // Second parcels looked for when a packed order is cancelled on Shopify (<id>r1, r2, …; they are made by hand, rarely).
 const RESHIP_KEYS_CHECKED = 3;
 
+// ── The ship lock (fast courier booking, 20 Nov 2026) ────────────────────────
+// Two processes ship packed orders now: this tick (SHIP, the fallback) and
+// fast-ship.mjs (a listener that ships an order the moment the POS Pack sets
+// it pending, so the waybill is on the packer's screen in seconds instead of
+// the 1–3 minutes a tick takes to come round and get through PULL and KEEP).
+// bookShipment's courierBooking claim already stops a SECOND WAYBILL; this
+// lock stops the second SHIP — without it, the process that lost the claim
+// would read "booking already booking", find no waybill on its stale copy and
+// write "Packed, courier not booked" over the winner's work.
+//
+// One node per order under online_orders_meta (never on the order record the
+// POS writes). Taken by transaction; held while it is younger than the TTL
+// AND, on this machine, its process is alive (a tick SIGKILLed by the runner's
+// 3-minute timeout leaves a lock nobody holds — that must not block the next
+// pack for ten minutes). Released only by the token that took it.
+export const SHIP_LOCKS_PATH = `${META_PATH}/shipLocks`;
+export const SHIP_LOCK_TTL_MS = 10 * 60 * 1000;
+const HOST = (() => { try { return hostname(); } catch { return "unknown"; } })();
+const pidAlive = (pid) => {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e?.code === "EPERM"; }
+};
+/** Is this lock record still held? Pure apart from the injected liveness check. */
+export function shipLockHeld(cur, { nowMs, ttlMs = SHIP_LOCK_TTL_MS, host = HOST, isAlive = pidAlive } = {}) {
+  if (!cur || typeof cur !== "object") return false;
+  const age = nowMs - (Number(cur.at) || 0);
+  if (!(age >= -60_000 && age < ttlMs)) return false; // expired, or a stamp from the far future
+  if (cur.host === host && Number.isInteger(cur.pid) && !isAlive(cur.pid)) return false; // its owner died
+  return true;
+}
+/** → the token when this caller now holds the order's ship lock, null when someone else does. */
+export async function takeShipLock(db, id, { owner, nowMs = Date.now(), ttlMs, host = HOST, pid = process.pid, isAlive } = {}) {
+  const token = `${owner}-${pid}-${nowMs}-${Math.random().toString(36).slice(2, 8)}`;
+  const mine = { owner, host, pid, token, at: nowMs };
+  const res = await db.ref(`${SHIP_LOCKS_PATH}/${assertSafeSegment(id, "order key")}`).transaction((cur) =>
+    (shipLockHeld(cur, { nowMs, ttlMs, host, isAlive }) ? undefined : mine));
+  return res.committed && res.snapshot?.val()?.token === token ? token : null;
+}
+export async function releaseShipLock(db, id, token) {
+  // null on the cold pass (never undefined, which aborts without asking the server).
+  await db.ref(`${SHIP_LOCKS_PATH}/${assertSafeSegment(id, "order key")}`).transaction((cur) =>
+    (cur == null ? null : cur.token === token ? null : undefined));
+}
+
+/**
+ * ONE packed order, outside a tick (fast-ship.mjs): the same shipOrder, under
+ * the same lock, with a context built the way runOrdersPoll builds its own.
+ * An attention it raises ("Packed, courier not booked" / "Shopify not
+ * updated") is emailed by the next tick: the attention sweep is made due now.
+ * → { result, summary }
+ */
+export async function shipPendingOrder(deps, id, snapshot = null, { owner = "fast" } = {}) {
+  const { db, log = () => {} } = deps;
+  const get = async (path) => (await db.ref(path).get()).val();
+  const now = await deps.nowMs();
+  const ctx = { ...deps, log, get, now, touched: new Set(), summary: { ingested: 0, cancelled: 0, flagged: 0, kept: 0, entries: 0, holds: 0, fulfilled: 0, fulfilFailed: 0, mailed: 0, errors: [], missingIndex: new Set() } };
+  const result = await shipOrderLocked(ctx, id, snapshot, { owner });
+  if (ctx.summary.courierFailed || ctx.summary.fulfilFailed) {
+    try { await db.ref(`${META_PATH}/attentionSweepAt`).set(0); }
+    catch (e) { log(`  ⚠ attentionSweepAt not cleared (${String(e?.message || e).slice(0, 120)}) — the email waits for the 10-minute sweep`); }
+  }
+  return { result, summary: ctx.summary };
+}
+
+/**
+ * Ship one order under its ship lock, from a fresh read of the record.
+ * → "shipped" | "locked" (another process is on it) | "not_pending" (already
+ * handled, or not packed). shipOrder's own errors propagate, as before.
+ */
+export async function shipOrderLocked(ctx, id, snapshot, { owner }) {
+  const { db, log } = ctx;
+  const token = await takeShipLock(db, id, { owner, nowMs: ctx.lockClock ? ctx.lockClock() : Date.now(), ...(ctx.lockOpts ?? {}) });
+  if (!token) {
+    log(`  · ${orderLabel(snapshot ?? {}) || id}: being shipped by the other shipper — left to it`);
+    return "locked";
+  }
+  try {
+    const order = (await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).get()).val();
+    if (order?.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return "not_pending";
+    await shipOrder(ctx, id, order);
+    return "shipped";
+  } finally {
+    try { await releaseShipLock(db, id, token); }
+    catch (e) { log(`  ! ${id}: ship lock not released (${String(e?.message || e).slice(0, 120)}) — it lapses when this process ends or in ${SHIP_LOCK_TTL_MS / 60000} min`); }
+  }
+}
+
 // The Courier Guy's public tracking page for a waybill (the link the customer agent sends too).
 export const courierTrackUrl = (waybill) => `https://portal.thecourierguy.co.za/track?ref=${encodeURIComponent(String(waybill))}`;
 
@@ -905,7 +998,11 @@ async function shipOrder(ctx, id, order) {
     log(`  ✓ ${orderLabel(order)}: in-store exchange handed over — no courier, no Shopify order`);
     return;
   }
-  await closeHubOrders(ctx, { ...order, key: id });
+  // The hub orders close WHILE the courier is booked (fast booking, 20 Nov 2026): neither needs the other, and the
+  // waybill is what the packer waits for. Its failure still stops this ship before Shopify, exactly as before (it is
+  // awaited below); the order stays pending, and the retry's booking finds the waybill already there.
+  const closing = closeHubOrders(ctx, { ...order, key: id });
+  closing.catch(() => {}); // observed here so it is never an unhandled rejection; awaited below
   // The order goes to bookShipment WITH its key (the record carries
   // shopifyGid too, which bookShipment can derive the key from — the explicit
   // key removes any doubt). The poll's own db is passed so booking never opens
@@ -973,6 +1070,7 @@ async function shipOrder(ctx, id, order) {
   // Live off: unchanged — the dry run is recorded and Shopify is fulfilled.
   // An earlier tick's booking: on the order, or — if its record write failed
   // ("booked but not recorded") — on the claim, where bookShipment kept it.
+  await closing;
   const booked = order.shipping?.waybill ?? (order.shipping?.courierBooking?.state === "booked" ? order.shipping.courierBooking.waybill ?? null : null);
   const waybill = booking && !booking.skipped
     ? booking.waybill
@@ -1185,8 +1283,9 @@ async function queueCostAlert(ctx, id, order, booking) {
     if (!mail) return;
     // QUEUE FIRST, then mark the order: a failure between the two leaves the
     // email queued (sent) rather than marked-but-never-queued (lost). Ticks
-    // never overlap (reconcile-runner's single-flight lock), so the read-then-
-    // write below cannot race another tick.
+    // never overlap (reconcile-runner's single-flight lock) and the fast path
+    // ships an order only under its ship lock, so the read-then-write below
+    // cannot race another shipper of the same order.
     const markRef = db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/costAlert`);
     if ((await ctx.get(`${ONLINE_ORDERS_PATH}/${id}/shipping/costAlert/waybill`)) === booking.waybill) return;
     await db.ref(`${COST_ALERT_QUEUE}/${costAlertKey(id, booking.waybill)}`).set({ orderId: id, waybill: booking.waybill, subject: mail.subject, text: mail.text, at: ctx.now, attempts: 0 });
@@ -1273,18 +1372,17 @@ const ownsHubOrder = (rec, orderId) => rec && String(rec.onlineOrderId) === Stri
 // and the TV. Idempotent; never touches an out-of-stock or foreign record.
 async function closeHubOrders(ctx, order) {
   const iso = new Date(ctx.now).toISOString();
-  for (const line of linesOf(order)) {
-    for (const key of Array.isArray(line?.source?.orderKeys) ? line.source.orderKeys : []) {
-      await ctx.db.ref(`orders/${key}`).transaction((cur) => {
+  // Every hub order at once (separate records, one transaction each).
+  const keys = linesOf(order).flatMap((line) => (Array.isArray(line?.source?.orderKeys) ? line.source.orderKeys : []));
+  await Promise.all([...new Set(keys)].map((key) =>
+      ctx.db.ref(`orders/${key}`).transaction((cur) => {
         // null on the cold pass (never undefined, which aborts without asking
         // the server); writing null over an absent record changes nothing.
         if (cur == null) return null;
         if (!ownsHubOrder(cur, order.key ?? cur.onlineOrderId) || cur.channel !== "online") return undefined;
         if (cur.status === "collected" || cur.status === "out_of_stock") return undefined;
         return { ...cur, status: "collected", collectedAt: iso, updatedAt: iso };
-      });
-    }
-  }
+      })));
 }
 
 async function refreshEstimate(ctx, id, order) {

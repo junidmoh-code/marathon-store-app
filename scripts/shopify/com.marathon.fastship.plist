@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for fast courier booking (scripts/shopify/fast-ship.mjs), 20 Nov 2026.
+  One long-lived listener on the packed orders waiting to ship
+  (/online_orders fulfilState == "pending"): each is booked with Courier Guy
+  and fulfilled on Shopify the moment the POS Pack writes it — seconds, not the
+  reconciler's next tick. The tick's SHIP stays as the fallback; a per-order
+  ship lock (online_orders_meta/shipLocks) keeps the two from shipping one
+  order twice. KeepAlive restarts it if it dies; ThrottleInterval keeps a crash
+  loop to one start a minute. Runs at all hours (an idle listener downloads
+  nothing). Keys: Shopify from the repo's .env, Courier Guy from
+  ~/.config/marathon/courier.env — never from this file.
+  INSTALL: copy to ~/Library/LaunchAgents, then
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.marathon.fastship.plist
+  Its log: logs/fast-ship.log (one line per order: waybill N s after the Pack).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.fastship</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/shopify/fast-ship.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <!-- The same RTDB service account the Shopify reconciler uses. -->
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <!-- A restart lets a booking in flight finish (the SIGTERM handler waits up to 45 s) instead of the 20 s default kill. -->
+  <key>ExitTimeOut</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-fastship.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-fastship.err.log</string>
+</dict>
+</plist>
