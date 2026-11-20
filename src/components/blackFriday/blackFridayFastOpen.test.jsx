@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "fake-indexeddb/auto";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import BlackFridayScreen, { addPages, fromHead, isComplete, moveCounts, countKeys } from "./BlackFridayScreen";
+import BlackFridayScreen, { addPages, fromHead, isComplete, moveCounts, countKeys, withPatches } from "./BlackFridayScreen";
 import { saveListIdb, loadListIdb } from "./cardState";
 
 const row = (pid, qty, over = {}) => ({ pid, name: `Item ${pid}`, price: 300, qty, sizes: "M-XL", kind: "clothing", big: qty >= 30, na: false, photo: `https://x/${pid}.jpg`, shown: `https://x/${pid}.jpg`,
@@ -65,6 +65,20 @@ describe("fast open: pure helpers", () => {
     // Fewer pages than asked: that tab ended (a patched count can never make it load forever).
     const d3 = addPages({ ...d, counts: { review: 9 } }, { tab: "review", from: 1, at: 7, n: 4, pages: [{ at: 7, rows: [{ pid: "c" }] }] });
     expect(isComplete(d3, "review")).toBe(true);
+  });
+  it("pages from two versions of the list are refused (the card refreshes)", () => {
+    const d = fromHead({ at: 7, pageSize: 1, counts: { review: 5 }, first: { review: [{ pid: "a" }] } });
+    expect(addPages(d, { tab: "review", from: 1, at: 7, n: 2, pages: [{ at: 7, rows: [{ pid: "b" }] }, { at: 8, rows: [{ pid: "c" }] }] })).toBe(null);
+    expect(addPages(d, { tab: "review", from: 1, at: null, n: 2, pages: [], rebuilt: true })).toBe(null);
+  });
+  it("a tap stays as he left it over a list built before it; an older tap is forgotten", () => {
+    const d = fromHead({ at: 10_000, pageSize: 25, counts: { review: 2, approved: 0, big: 2 }, first: { review: [row("a", 45), row("b", 40)] } });
+    const patches = new Map([["a", { row: row("a", 45, { tab: "approved" }), rejected: false, at: 20_000 }], ["b", { row: null, rejected: true, at: 1_000 }]]);
+    const out = withPatches(d, patches, 10_000);
+    expect(out.review.map((r) => r.pid)).toEqual(["b"]);
+    expect(out.approved.map((r) => r.pid)).toEqual(["a"]);
+    expect(out.counts).toMatchObject({ review: 1, approved: 1 });
+    expect([...patches.keys()]).toEqual(["a"]);
   });
   it("a tap moves the counts with the row (tab and block)", () => {
     expect(countKeys(row("a", 45))).toEqual(["review", "big"]);
@@ -156,6 +170,8 @@ describe("fast open: the card", () => {
     const api = fakeApi(server, { head: vi.fn(() => new Promise((ok) => { answer = ok; })) });
     const r = await mount(api);
     expect(byId(r, "sel-p00").props["aria-checked"]).toBe(true); // the device's ticks, before the server answers
+    await act(async () => { await new Promise((ok) => setTimeout(ok, 450)); });
+    expect(api.selSave).not.toHaveBeenCalled(); // never written over the server's copy before it answers
     await act(async () => { answer(await server.head()); });
     await flush();
     expect(byId(r, "sel-p01").props["aria-checked"]).toBe(true); // the server's newer copy
@@ -165,6 +181,27 @@ describe("fast open: the card", () => {
     await act(async () => { await new Promise((ok) => setTimeout(ok, 450)); });
     const last = api.selSave.mock.calls.at(-1)[0];
     expect(Object.keys(last).sort()).toEqual(["p01", "p02", "p05"]);
+  });
+
+  it("a list the server built before a tap never brings the tapped row back", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const server = makeServer(1000);
+      const api = fakeApi(server);
+      const r = await mount(api);
+      await act(async () => { byId(r, "approve-p00").props.onClick(); });
+      await flush();
+      expect(has(r, "approve-p00")).toBe(false);
+      // The server's list changes (built from data before the tap) while it is still rebuilding.
+      server.st.at = 1500;
+      server.st.review = review.filter((x) => x.pid !== "p09");
+      const dirtyHead = server.head;
+      api.head = vi.fn(async () => ({ ...(await dirtyHead()), dirty: true }));
+      await act(async () => { vi.advanceTimersByTime(4100); });
+      await flush();
+      expect(has(r, "approve-p00")).toBe(false); // still approved on the card
+      expect(has(r, "row-p09")).toBe(false);     // the other change came in
+    } finally { vi.useRealTimers(); }
   });
 
   it("when the precomputed list cannot be read, the card falls back to the whole list", async () => {

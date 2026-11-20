@@ -54,7 +54,7 @@ test("a change marks the list dirty and rebuilds it; the row moves to Approved",
   assert.equal(h0.counts.approved, 0);
   await db.ref("bf_campaign_2026/picks/p010").set({ state: "approved", sig: "current", at: 5, section: "main", name: "Item 10", price: 300, kind: "clothing" });
   let clock = h0.at + 100;
-  const r = await ci.changed(db, h0.at + 10, { now: () => (clock += 10) });
+  const r = await ci.changed(db, h0.at + 10, { now: () => (clock += 3000), quietMs: 0 });
   assert.equal(r.built, 1);
   const h1 = await ci.readHead(db);
   assert.equal(h1.counts.approved, 1);
@@ -66,7 +66,7 @@ test("a change marks the list dirty and rebuilds it; the row moves to Approved",
 test("a change already inside a rebuild that started after it is not built again", async () => {
   const db = seed(10);
   const h0 = await ci.readHead(db);
-  const r = await ci.changed(db, h0.at - 1); // the write happened before that build started
+  const r = await ci.changed(db, h0.at - ci.SKEW_MS - 1, { quietMs: 0 }); // the write happened well before that build started
   assert.equal(r.built, 0);
 });
 
@@ -76,11 +76,11 @@ test("while another rebuild holds the lease, a change only marks dirty — and t
   let clock = Date.now() + 1000;
   const lease = await ci.takeLease(db, clock);
   assert.ok(lease);
-  const r = await ci.changed(db, clock + 1);
+  const r = await ci.changed(db, clock + 1, { quietMs: 0 });
   assert.equal(r.busy, true);
   assert.equal(r.built, 0);
   await ci.freeLease(db, lease);
-  const again = await ci.refresh(db, { now: () => (clock += 10) });
+  const again = await ci.refresh(db, { now: () => (clock += 3000), quietMs: 0 });
   assert.equal(again.built, 1);
   assert.equal((await ci.readHead(db)).dirty, false);
 });
@@ -96,4 +96,34 @@ test("a dead rebuild's lease frees itself after LEASE_MS", async () => {
 test("eventMs takes the write's own time", () => {
   assert.equal(ci.eventMs({ time: "2026-11-21T08:00:00.000Z" }), Date.parse("2026-11-21T08:00:00.000Z"));
   assert.ok(Math.abs(ci.eventMs({}) - Date.now()) < 1000);
+});
+
+test("a burst of changes costs one rebuild: the rebuild waits until the writes stop", async () => {
+  const db = seed(10);
+  const h0 = await ci.readHead(db);
+  let clock = h0.at + 10_000;
+  let writes = 0;
+  // Writes keep landing for 3 s of the clock (500 ms apart); the rebuild waits for 2.5 s of quiet.
+  const sleep = async () => { clock += 500; if (writes < 6) { writes++; await db.ref("bf_campaign_2026/cardIndex/dirtyAt").set(clock); } };
+  await db.ref("bf_campaign_2026/cardIndex/dirtyAt").set(clock);
+  const r = await ci.refresh(db, { now: () => clock, sleep });
+  assert.equal(r.built, 1);
+  assert.equal(writes, 6);
+  assert.equal((await ci.readHead(db)).dirty, false);
+});
+
+test("pages read across a rebuild are never mixed: read again, else 'rebuilt'", async () => {
+  const db = seed(80);
+  await ci.readHead(db);
+  const p1 = JSON.parse((await db.ref("bf_campaign_2026/cardIndex/main/pages/review/1").once("value")).val());
+  await db.ref("bf_campaign_2026/cardIndex/main/pages/review/2").set(JSON.stringify({ ...p1, at: p1.at + 1 }));
+  const r = await ci.readPages(db, "review", 1, 2);
+  assert.equal(r.rebuilt, true);
+  assert.deepEqual(r.pages, []);
+});
+
+test("a dirty mark within the clock margin of a rebuild still counts", () => {
+  assert.equal(ci.isDirty(10_000, 9_000), true);
+  assert.equal(ci.isDirty(10_000, 7_000), false);
+  assert.equal(ci.isDirty(null, 0), true);
 });

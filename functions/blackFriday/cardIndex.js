@@ -12,15 +12,16 @@
 //   cardIndex/dirtyAt            the last change seen in the campaign's data
 //   cardIndex/lease              { until } — one rebuild at a time
 // KEPT UP TO DATE BY THE SERVER: a write to picks/{pid}, photos/{pid},
-// items/{section}/{pid}, repost/{pid}, brain/sent/{pid} or a New Arrivals item
-// marks the list dirty and rebuilds it (one at a time; changes that land during
-// a rebuild get one more rebuild). Every 10 minutes bfCardIndexTick rebuilds a
-// dirty or missing list (a lost trigger never leaves it stale for long).
+// items/{section}/{pid}, repost/{pid}, brain/sent/{pid}, posted/{pid} or a New
+// Arrivals status marks the list dirty and rebuilds it once the burst settles
+// (one at a time; changes that land during a rebuild get one more rebuild).
+// Every 10 minutes bfCardIndexTick rebuilds a dirty list, or any list older than
+// 30 minutes (what no trigger watches; a lost trigger).
 // The rows are EXACTLY the rows bfCampaignList computes (list() in
 // blackFriday.js) — this file reads nothing new and changes no campaign data:
 // no generation, captions, posting, approvals or Signal Studio.
 // Deploy BY NAME:
-//   firebase deploy --only functions:bfCampaignList,functions:bfCardIndexPick,functions:bfCardIndexPhoto,functions:bfCardIndexItem,functions:bfCardIndexRepost,functions:bfCardIndexSent,functions:bfCardIndexNa,functions:bfCardIndexTick
+//   firebase deploy --only functions:bfCampaignList,functions:bfCardIndexPick,functions:bfCardIndexPhoto,functions:bfCardIndexItem,functions:bfCardIndexRepost,functions:bfCardIndexSent,functions:bfCardIndexPosted,functions:bfCardIndexNa,functions:bfCardIndexTick
 "use strict";
 
 const { onValueWritten } = require("firebase-functions/v2/database");
@@ -38,7 +39,13 @@ const PAGE = 25;            // rows per page; page 0 of every tab rides in the h
 const PAGES_MAX = 8;        // pages per request
 const LEASE_MS = 120_000;   // a rebuild that died frees the lease after this
 const MAX_ROUNDS = 4;       // rebuilds in a row while changes keep landing
-const STALE_MS = 6 * 60 * 60 * 1000; // the tick rebuilds a clean list this old anyway
+const STALE_MS = 30 * 60 * 1000; // the tick rebuilds a clean list this old anyway (what no trigger watches)
+const QUIET_MS = 2500;      // a rebuild waits until no change has landed for this long (a burst = one rebuild)…
+const QUIET_MAX_MS = 15_000; // …but never longer than this
+const SKEW_MS = 2000;       // a change this close before a rebuild's start counts as not in it (clocks differ)
+/** Is the stored list older than the last change? Pure. */
+const isDirty = (at, dirtyAt) => !at || Number(dirtyAt || 0) >= Number(at) - SKEW_MS;
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const val = async (db, path) => (await db.ref(path).once("value")).val();
 const parse = (s) => { try { return typeof s === "string" ? JSON.parse(s) : null; } catch { return null; } };
@@ -102,22 +109,31 @@ async function freeLease(db, lease) {
  * is picked up by that rebuild: it re-reads dirtyAt after each build and once more after freeing the lease.
  * now: a clock (tests pass their own). → { built: n }
  */
-async function refresh(db, { now = () => Date.now(), force = false } = {}) {
+async function refresh(db, { now = () => Date.now(), force = false, quietMs = QUIET_MS, sleep = sleepMs } = {}) {
   let built = 0;
+  // Wait for a burst (a bulk approve, the 05:00 build) to settle, so it costs one rebuild, not one per write.
+  const settle = async () => {
+    for (let waited = 0; quietMs > 0 && waited < QUIET_MAX_MS; waited += 500) {
+      const d = Number((await val(db, `${IDX}/dirtyAt`)) || 0);
+      if (now() - d >= quietMs) return;
+      await sleep(500);
+    }
+  };
   for (let attempt = 0; attempt < 2; attempt++) {
     const lease = await takeLease(db, now());
     if (!lease) return { built, busy: true };
     try {
       for (let round = 0; round < MAX_ROUNDS; round++) {
         const [at, dirtyAt] = await Promise.all([val(db, `${IDX}/main/at`), val(db, `${IDX}/dirtyAt`)]);
-        if (!(force && built === 0) && at && Number(dirtyAt || 0) < Number(at)) break;
+        if (!(force && built === 0) && !isDirty(at, dirtyAt)) break;
+        await settle();
         await build(db, now());
         built++;
       }
     } finally { await freeLease(db, lease); }
     // A change that came in while the lease was held, after the last check: one more pass.
     const [at, dirtyAt] = await Promise.all([val(db, `${IDX}/main/at`), val(db, `${IDX}/dirtyAt`)]);
-    if (!at || Number(dirtyAt || 0) >= Number(at)) continue;
+    if (isDirty(at, dirtyAt)) continue;
     break;
   }
   return { built };
@@ -139,7 +155,7 @@ async function readHead(db) {
     h = parse(head);
     if (!h) throw new Error("the card's list is being made — try again in a moment");
   }
-  return { ...h, dirty: Number(dirtyAt || 0) >= Number(h.at || 0) };
+  return { ...h, dirty: isDirty(h.at, dirtyAt) };
 }
 
 /** Pages [from, from + n) of one tab. → { tab, from, at, pages: [{ at, rows }] } (a missing page = past the end). */
@@ -147,9 +163,15 @@ async function readPages(db, tab, from, n) {
   if (!TABS.includes(tab)) throw Object.assign(new Error("Which tab?"), { code: "invalid-argument" });
   const f = Math.max(0, Math.floor(Number(from) || 0));
   const k = Math.max(1, Math.min(PAGES_MAX, Math.floor(Number(n) || 1)));
-  const raw = await Promise.all(Array.from({ length: k }, (_, i) => val(db, `${IDX}/main/pages/${tab}/${f + i}`)));
-  const pages = raw.map(parse).filter(Boolean);
-  return { tab, from: f, at: pages.length ? pages[0].at : null, pages };
+  // The pages are separate reads: a rebuild between them would mix two versions. Read again once; still
+  // mixed → "rebuilt" (the card refreshes). A missing page ends the run (past the end of the tab).
+  for (let tryNo = 0; tryNo < 2; tryNo++) {
+    const raw = await Promise.all(Array.from({ length: k }, (_, i) => val(db, `${IDX}/main/pages/${tab}/${f + i}`)));
+    const pages = [];
+    for (const r of raw) { const p = parse(r); if (!p) break; pages.push(p); }
+    if (pages.every((p) => p.at === (pages[0] && pages[0].at))) return { tab, from: f, at: pages.length ? pages[0].at : null, pages };
+  }
+  return { tab, from: f, at: null, pages: [], rebuilt: true };
 }
 
 // ── what keeps it up to date ────────────────────────────────────────────────
@@ -165,17 +187,19 @@ const bfCardIndexPhoto = onChange(`/${core.ROOT}/photos/{pid}`);
 const bfCardIndexItem = onChange(`/${core.ROOT}/items/{section}/{pid}`);
 const bfCardIndexRepost = onChange(`/${core.ROOT}/repost/{pid}`);
 const bfCardIndexSent = onChange(`/${core.ROOT}/brain/sent/{pid}`);
-// The New Arrivals tab is the New Arrivals queue: a new upload, a status or a photo there changes it.
+const bfCardIndexPosted = onChange(`/${core.ROOT}/posted/{pid}`);
+// The New Arrivals tab is the New Arrivals queue: a new upload or a status change there changes it (a new
+// New Arrivals photo with no status change shows within STALE_MS, or at once after his own Generate).
 const bfCardIndexNa = onChange("/new_arrivals/items/{pid}/status");
 const bfCardIndexTick = onSchedule({ schedule: "every 10 minutes", region: "europe-west1", memory: "512MiB", timeoutSeconds: 300, retryCount: 0 }, async () => {
   const db = admin.database();
   const [at, dirtyAt] = await Promise.all([val(db, `${IDX}/main/at`), val(db, `${IDX}/dirtyAt`)]);
   const old = !at || Date.now() - Number(at) > STALE_MS;
-  if (old || Number(dirtyAt || 0) >= Number(at || 0)) await refresh(db, { force: old });
+  if (old || isDirty(at, dirtyAt)) await refresh(db, { force: old });
 });
 
 module.exports = {
-  bfCardIndexPick, bfCardIndexPhoto, bfCardIndexItem, bfCardIndexRepost, bfCardIndexSent, bfCardIndexNa, bfCardIndexTick,
+  bfCardIndexPick, bfCardIndexPhoto, bfCardIndexItem, bfCardIndexRepost, bfCardIndexSent, bfCardIndexPosted, bfCardIndexNa, bfCardIndexTick,
   readHead, readPages,
-  _internals: { eventMs, splitView, approvedInBlocks, build, refresh, changed, takeLease, freeLease, readHead, readPages, PAGE, PAGES_MAX, TABS, IDX },
+  _internals: { isDirty, SKEW_MS, eventMs, splitView, approvedInBlocks, build, refresh, changed, takeLease, freeLease, readHead, readPages, PAGE, PAGES_MAX, TABS, IDX },
 };

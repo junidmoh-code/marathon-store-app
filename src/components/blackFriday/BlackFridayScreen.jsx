@@ -44,7 +44,7 @@ const SAVE_MS = 400;         // the selection is saved this long after the last 
 const BOTTOM_ROOM = 64 + 80; // bar + toast: the last row always stays clear of both
 const BACK_REFRESH_MS = 60 * 1000;    // back after this long: one quiet check of the server's list (changed rows only)
 const MORE_AHEAD_PX = 1500;  // the next rows are fetched when the end of the loaded ones is this close
-const SOON_TRIES = 3;        // after a tap: re-check the server's list this many times while it is still being rebuilt
+const SOON_TRIES = 6;        // after a tap: re-check the server's list this many times while it is still being rebuilt
 const rand = (n) => `R${(Number(n) || 0).toFixed(2)}`;
 const price = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2)}`);
 
@@ -316,7 +316,7 @@ export function fromHead(h) {
 export function addPages(d, res) {
   if (!d || !res) return d;
   if (d.full) return d;
-  if (res.pages && res.pages.length && res.at !== d.indexAt) return null;
+  if (res.rebuilt || (res.pages || []).some((p) => p.at !== d.indexAt)) return null;
   const tab = res.tab;
   if (!TABS3.includes(tab) || ((d.pages && d.pages[tab]) || 0) !== res.from) return d;
   const have = new Set(rowsOf(d, tab).map((r) => r.pid));
@@ -338,6 +338,39 @@ export function moveCounts(counts, old, row) {
   for (const k of countKeys(old)) c[k] = Math.max(0, (Number(c[k]) || 0) - 1);
   for (const k of countKeys(row)) c[k] = (Number(c[k]) || 0) + 1;
   return c;
+}
+
+/**
+ * A product's new row (after a tap) put in its tab — or taken out (rejected). Pure. The tab and block counts
+ * move with it when its old row was on the card. always: put it in even when its old row is not loaded yet
+ * (a tap re-applied over a list the server built before the tap).
+ */
+export function applyRow(d, pid, row, rejected, { always = false } = {}) {
+  if (!d) return d;
+  const nas = d.newArrivals || [];
+  const old = [...nas, ...(d.review || []), ...(d.approved || [])].find((x) => x.pid === pid);
+  if (!old && !always) return d;
+  const rest = (list) => (list || []).filter((x) => x.pid !== pid);
+  const review = rest(d.review), approved = rest(d.approved), newArrivals = rest(nas);
+  if (!rejected && row) (row.tab === "approved" ? approved : row.tab === "newArrivals" ? newArrivals : review).push(row);
+  const order = (l) => l.sort((x, y) => (Number(y.big) - Number(x.big)) || (y.qty - x.qty) || String(x.name).localeCompare(String(y.name)));
+  newArrivals.sort((x, y) => (y.uploadedAt || 0) - (x.uploadedAt || 0));
+  return { ...d, newArrivals, review: order(review), approved: order(approved), ...(d.counts && old ? { counts: moveCounts(d.counts, old, rejected ? null : row) } : {}) };
+}
+const PATCH_SKEW_MS = 2000;
+/**
+ * The taps the server's list may not hold yet, put back over it: a tap made after (or just before) the list
+ * was built stays as he left it; an older one is in the list and is forgotten. patches: Map pid → { row,
+ * rejected, at }. Pure on d; prunes patches.
+ */
+export function withPatches(d, patches, builtAt) {
+  if (!d || !patches || !patches.size) return d;
+  let out = d;
+  for (const [pid, p] of [...patches]) {
+    if (builtAt && p.at + PATCH_SKEW_MS < builtAt) { patches.delete(pid); continue; }
+    out = applyRow(out, pid, p.row, p.rejected, { always: true });
+  }
+  return out;
 }
 
 // Every product in all blocks, drawn only while it is near the screen (a virtualised list on the page's own scroll).
@@ -525,21 +558,24 @@ export default function BlackFridayScreen({ api, onExit }) {
   const ticket = useRef(0);
   // Every re-read is QUIET: the rows are replaced in place and the screen stays on the same row.
   const keepAnchor = useRef(null);
+  const patches = useRef(new Map()); // taps the server's list may not hold yet (withPatches)
   const swapIn = (d) => { keepAnchor.current = visibleAnchor(); setMain(d); setError(null); };
   // The whole main view computed now (bfCampaignList, no view): after an action whose answer carries no row
   // (bulk, Approve all 30+, Undo, a new photo), on ↻, and when the precomputed list cannot be read.
   const loadFull = useCallback(() => {
     const t = ++ticket.current;
+    const asked = serverNowMs();
     return api.list("main").then((d) => {
       if (t !== ticket.current) return null;
-      swapIn({ ...d, full: true });
+      for (const [pid, p] of [...patches.current]) if (p.at < asked) patches.current.delete(pid); // computed after those taps
+      swapIn(withPatches({ ...d, full: true }, patches.current, null));
       return null;
     }, (e) => { if (t === ticket.current) setError(e?.message || String(e)); return null; });
   }, [api]); // eslint-disable-line react-hooks/exhaustive-deps
   // The precomputed list: the head (counts + first page of each tab). On a refresh, the pages that were on
   // the card come back too and swap in one go; when the server's list has not changed, no rows are read.
   // → the head (or null).
-  const load = useCallback(({ force = false } = {}) => {
+  const load = useCallback(({ force = false, again = false } = {}) => {
     if (!useIndex) return loadFull();
     const t = ++ticket.current;
     return api.head().then(async (h) => {
@@ -566,13 +602,13 @@ export default function BlackFridayScreen({ api, onExit }) {
             const res = await api.pages(tb, from, n);
             if (t !== ticket.current) return h;
             const nx = addPages(next, { ...res, n });
-            if (nx === null) break; // rebuilt meanwhile: the rest comes in as he scrolls
+            if (nx === null) { if (!again) return load({ force, again: true }); break; } // rebuilt meanwhile: once more
             next = nx;
           }
         }
       }
       if (t !== ticket.current) return h;
-      swapIn(next);
+      swapIn(withPatches(next, patches.current, h.at));
       return h;
     }).catch(() => (t === ticket.current ? loadFull() : null));
   }, [api, useIndex, loadFull]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -586,9 +622,9 @@ export default function BlackFridayScreen({ api, onExit }) {
     try {
       const from = (d.pages && d.pages[tb]) || 0;
       const res = await api.pages(tb, from, n);
-      const next = addPages(mainRef.current, { ...res, n });
-      if (next === null) { await load(); return; }
-      if (next !== mainRef.current) setMain(next);
+      const added = addPages(mainRef.current, { ...res, n });
+      if (added === null) { await load(); return; }
+      if (added !== mainRef.current) setMain(withPatches(added, patches.current, added.indexAt));
     } catch (e) { setNote(e?.message || String(e)); }
     finally { loadingMore.current[tb] = false; }
   }, [api, useIndex, load]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -621,8 +657,7 @@ export default function BlackFridayScreen({ api, onExit }) {
   const loadSoon = useCallback((tries = 0) => {
     clearTimeout(soonTimer.current);
     soonTimer.current = setTimeout(() => {
-      const before = mainRef.current && mainRef.current.indexAt;
-      Promise.resolve(load()).then((h) => { if (useIndex && h && h.dirty && h.at === before && tries < SOON_TRIES) loadSoon(tries + 1); });
+      Promise.resolve(load()).then((h) => { if (useIndex && h && h.dirty && tries < SOON_TRIES) loadSoon(tries + 1); });
     }, TAP_REFRESH_MS);
   }, [load, useIndex]);
   useEffect(() => () => clearTimeout(soonTimer.current), []);
@@ -662,6 +697,7 @@ export default function BlackFridayScreen({ api, onExit }) {
       const saved = pickedSel ? pickedSel.sigs : null;
       if (!saved || !Object.keys(saved).length) return;
       const m = tickRows(main, saved);
+      fromRestore.current = m;
       setSelected(m);
       setSelectMode(true);
       // Back on the tab that holds the ticks (a recovered selection is shown on To review) — unless the card
@@ -681,6 +717,10 @@ export default function BlackFridayScreen({ api, onExit }) {
         setSelected(tickRows(main, sv.sigs));
         setSelectMode(true);
         if (sv.label) setSelLabel(sv.label);
+      } else if (selected.size && api.selSave) {
+        // The phone's ticks are the newer: now they go to the server.
+        pendingSel.current = { sigs: Object.fromEntries([...selected.values()].map((r) => [r.pid, sigOfRow(r)])), label: selLabel };
+        flushSel();
       }
     }
   }, [main]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -688,20 +728,11 @@ export default function BlackFridayScreen({ api, onExit }) {
 
   // A tap answers with the product's new row: it moves between tabs (or leaves, if rejected) at once.
   const patch = (pid, row, rejected) => {
-    const fix = (d) => {
-      if (!d) return d;
-      const nas = d.newArrivals || [];
-      const old = [...nas, ...d.review, ...d.approved].find((x) => x.pid === pid);
-      if (!old) return d;
-      const rest = (list) => list.filter((x) => x.pid !== pid);
-      const review = rest(d.review), approved = rest(d.approved), newArrivals = rest(nas);
-      if (!rejected && row) (row.tab === "approved" ? approved : row.tab === "newArrivals" ? newArrivals : review).push(row);
-      const order = (l) => l.sort((x, y) => (Number(y.big) - Number(x.big)) || (y.qty - x.qty) || String(x.name).localeCompare(String(y.name)));
-      newArrivals.sort((x, y) => (y.uploadedAt || 0) - (x.uploadedAt || 0));
-      return { ...d, newArrivals, review: order(review), approved: order(approved), ...(d.counts ? { counts: moveCounts(d.counts, old, rejected ? null : row) } : {}) };
-    };
+    const fix = (d) => applyRow(d, pid, row, rejected);
     // A list read already on its way predates this tap: it must not bring the row back (review, PR #945).
     ticket.current++; underTicket.current++;
+    // Kept until the server's precomputed list holds it (a list built before the tap never undoes it).
+    patches.current.set(pid, { row, rejected: !!rejected, at: serverNowMs() });
     setMain(fix); setUnder(fix);
   };
   const run = async (fn, { reload = false, undo = null } = {}) => {
@@ -824,15 +855,21 @@ export default function BlackFridayScreen({ api, onExit }) {
       if (!pendingSel.current) { pendingSel.current = p; saveTimer.current = setTimeout(flushSel, 5000); }
     });
   }, [api]);
+  const fromRestore = useRef(null); // the ticks put back from the phone (that very Map): not his change
   useEffect(() => {
     if (!restored.current || !api.selSave) return undefined;
+    // Ticks put back from the phone are never written over the server's copy before it has answered (it may
+    // be newer). His own next tick is saved as always.
+    // (Also drops a save armed in the same first pass, before the ticks were put back.)
+    if (selected === fromRestore.current && !serverSelSeen.current) { clearTimeout(saveTimer.current); pendingSel.current = null; return undefined; }
     setSelSaved(false);
     pendingSel.current = { sigs: Object.fromEntries([...selected.values()].map((r) => [r.pid, sigOfRow(r)])), label: selected.size ? selLabel : null };
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSel, SAVE_MS);
     return undefined;
   }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => () => { clearTimeout(saveTimer.current); }, []);
+  // Leaving the card (←) with a tick not yet sent: sent now.
+  useEffect(() => () => { flushSel(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const generate = async (r) => {
     setGens((x) => ({ ...x, [r.pid]: "Starting…" }));
     // A New Arrival's photo is made by New Arrivals' own studio, on the New Arrivals item.
@@ -989,7 +1026,7 @@ export default function BlackFridayScreen({ api, onExit }) {
         {d && (
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <div data-testid="totals" style={{ fontSize: 13, color: "#dfe7ff", flex: 1 }}>To review {t.review} · Approved {t.approved} · AI spend {rand(t.spentZar)}</div>
+              <div data-testid="totals" style={{ fontSize: 13, color: "#dfe7ff", flex: 1 }}>To review {t.review} · Approved {t.approved} · AI spend {rand(t.spentZar)}{d.cached && <span data-testid="updating" style={{ color: GRAY, fontSize: 11 }}> · updating…</span>}</div>
               <button data-testid="select-toggle" aria-pressed={selectMode} onClick={() => { setSelectMode(!selectMode); clearSel(); }} style={{ ...(selectMode ? bBlue : bGray), padding: "6px 12px", fontSize: 12 }}>{selectMode ? "Done" : "Select"}</button>
             </div>
             <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
