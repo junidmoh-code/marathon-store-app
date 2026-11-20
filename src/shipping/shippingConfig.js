@@ -184,6 +184,37 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
     ],
   },
 
+  // ── DOOR-TO-LOCKER (Junid, 20 Nov 2026: "every Courier Guy booking is
+  // door-to-locker") ───────────────────────────────────────────────────────
+  // "locker": collected from our door, delivered to the Courier Guy locker
+  // nearest the customer's address (scripts/shipping/lockerDelivery.mjs).
+  // "door": the old door-to-door booking, exactly as before. Changed at
+  // /config/shipping/deliveryMode, no deploy needed; anything but "door" is
+  // "locker".
+  deliveryMode: "locker",
+  locker: {
+    // EVERY parcel is declared as one shoe (Junid: "34 x 23 x 13 cm, 1.5 kg;
+    // do not estimate from the order's lines"). Courier Guy measures at
+    // collection and re-rates; the difference lands on the order at
+    // shipping/adjustment (scripts/shipping/reconcile.mjs).
+    parcel: { lengthCm: 34, widthCm: 23, heightCm: 13, kg: 1.5 },
+    // The nearest locker must be near enough to be "the customer's locker":
+    // further than this from the address, nothing is booked and Junid decides
+    // (never a silent door-to-door). maxTownKm applies when the street was
+    // not found on the map, so "nearest" is measured from the postal code's
+    // point (or, failing that, the town centre).
+    maxKm: 30,
+    maxTownKm: 20,
+    // The nearest lockers tried, in order, until one prices.
+    tryLockers: 3,
+    // An order of N pairs of shoes is N one-shoe parcels, each its own
+    // shipment to the same locker. Above this many a person books it.
+    maxParcels: 10,
+    // Also ask the door-to-door price (one more /rates call, books nothing)
+    // and keep it on the booking as shipping.doorQuote.
+    doorQuote: true,
+  },
+
   // The service the estimator NAMES for a door collection. bookShipment
   // books the cheapest door service actually quoted, excluding these.
   doorServiceCode: "ECO",

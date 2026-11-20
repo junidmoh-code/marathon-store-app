@@ -292,6 +292,14 @@ until the next ship of that order replaces it. Marathon only: Concrete orders
 still ship on the Concrete tick (a second instance with SHOPIFY_STORE=concrete
 would work, logging to logs/fast-ship-concrete.log, but none is installed).
 
+**Door-to-locker (Junid, 20 Nov 2026).** The booking is door-to-locker for
+every order: the Courier Guy locker nearest the customer, one shoe-sized
+parcel per shipment, the locker written to `shipping/deliveryLocker` for Jamie.
+No locker near the address = "Packed, courier not booked" with the reason,
+never door-to-door. Switch: `/config/shipping/deliveryMode` (`"door"` = the old
+booking). docs/COURIER-GUY.md "Door-to-locker" has the rules; the bench below
+prints the plan (the locker, its quotes, the door-to-door price).
+
 `node scripts/shopify/fast-ship.mjs --bench=<orderKey>` times one real order
 through the ship with nothing written (overlay database), real rates, a
 simulated create and Shopify mutations refused.

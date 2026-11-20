@@ -1029,6 +1029,7 @@ async function shipOrder(ctx, id, order) {
       // poll; a missing key throws here and is caught below.
       client: ctx.courier ?? (ctx.courierClient ??= createCourierClient({ maxAttempts: 2, timeoutMs: 15_000 })),
       ...(ctx.courierLog ? { log: ctx.courierLog } : {}), // default: logs/courier.log
+      ...(ctx.geocoder ? { geocoder: ctx.geocoder } : {}), // door-to-locker: the address → map point (tests inject)
     });
   } catch (e) {
     booking = { skipped: true, error: String(e?.message || e).slice(0, 300) };
@@ -1046,8 +1047,8 @@ async function shipOrder(ctx, id, order) {
       log(`  ! ${orderLabel(order)}: courier booking not recorded — ${String(e?.message || e).slice(0, 200)}`);
     }
   }
-  // OVER THE R300 CEILING (Junid, 6 Nov 2026): not booked; Junid gets ONE
-  // WhatsApp line with the cheaper option. Queued once per order (the first wins);
+  // OVER THE CEILING (Junid, 6 Nov 2026), or NO LOCKER NEAR THE ADDRESS (door-to-locker, 20 Nov 2026: never a
+  // silent door-to-door): not booked; Junid gets ONE WhatsApp line with the cheaper option / the reason. Queued once per order (the first wins);
   // the courier-recon runner sends it through Jamie (scripts/shipping/courier-recon.mjs).
   if (booking?.junidLine) {
     try {

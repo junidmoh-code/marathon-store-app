@@ -6,8 +6,20 @@
 // line: bookings, our quotes vs invoiced, overpaid.
 //
 //   reconcileOrder   pure: an order + TCG's shipment → the invoiced record, the
+//                    ADJUSTMENT (billed minus booked, whatever its size), the
 //                    diff (if > 5%) and the measurement sample (if TCG
 //                    dimensioned the parcel)
+//
+// THE ADJUSTMENT (Junid, 20 Nov 2026: every parcel is declared as one shoe;
+// "Courier Guy measures at collection and adjusts the bill; record any
+// adjustment per order so I can see it"). Every reconciled order gets
+//   /online_orders/{id}/shipping/adjustment = { booked (charged at booking), billed, diff, pct,
+//       declared [l,w,h,kg], measured [l,w,h,kg] | null, chargedKg, waybills, at }
+// (diff = billed − booked, rand; a split order's shipments added up, each in
+// `parts`), and every adjustment that is not zero is also listed at
+//   /shipping_recon/adjustments/{orderId}
+// so they can be read without the orders:
+//   node scripts/shipping/courier-recon.mjs --adjustments
 //   learnCalibration pure: the samples of one parcel class → the new factor,
 //                    or null. DOWN ONLY: Junid's rule is "no multiplier or
 //                    safety margin that inflates size", so a class TCG keeps
@@ -96,7 +108,37 @@ export function reconcileOrder(orderId, order, shipment, now) {
   const sample = current && dv && mv && cls
     ? { orderId, waybill, class: cls, ratio: round2(mv / dv), implied: round2((mv / dv) * (num(declaredP.calibrationFactor) ?? 1)), at }
     : null;
-  return { invoiced, diff, sample };
+  // Billed against booked, always (not only beyond 5%): what Courier Guy's own measuring changed. "Booked" is what
+  // Courier Guy CHARGED when the shipment was made (shipping.cost); only a booking with no recorded charge falls
+  // back to the quote, and says so (bookedFrom).
+  const charged = num(s.cost);
+  const booked = charged ?? quoted;
+  const adjustment = booked !== null && rand !== null
+    ? { booked, bookedFrom: charged !== null ? "charge" : "quote", billed: rand, diff: round2(rand - booked), pct: booked ? Math.round(((rand - booked) / booked) * 1000) / 10 : null, declared, measured, chargedKg: invoiced.chargedKg, waybills: [waybill].filter(Boolean), at: now }
+    : null;
+  return { invoiced, diff, sample, adjustment };
+}
+
+/** The shipments of an order's booking: several for a split (shipping.shipments), else the one. Pure. */
+export function shipmentsOf(shipping) {
+  const s = shipping ?? {};
+  const list = (Array.isArray(s.shipments) ? s.shipments : Object.values(s.shipments ?? {})).filter((m) => m && (m.trackingReference || m.waybill));
+  if (list.length > 1) return list.map((m, i) => ({ ref: m.trackingReference || m.waybill, waybill: m.waybill ?? m.trackingReference, quoted: num(m.quoted) ?? num(m.cost), cost: num(m.cost), index: i }));
+  const ref = s.trackingReference || s.waybill;
+  return ref ? [{ ref, waybill: s.waybill ?? ref, quoted: null, cost: null, index: 0 }] : [];
+}
+
+/** Pure. The per-shipment results of a split → one invoiced record and one adjustment for the order. */
+export function combineParts(parts, now) {
+  const sum = (f) => round2(parts.reduce((t, p) => t + (f(p) ?? 0), 0));
+  const rand = sum((p) => p.invoiced.rand);
+  const quoted = sum((p) => p.invoiced.quoted);
+  const booked = sum((p) => p.adjustment?.booked ?? p.invoiced.quoted);
+  const rows = parts.map((p) => ({ waybill: p.waybill, booked: p.adjustment?.booked ?? p.invoiced.quoted, billed: p.invoiced.rand, diff: p.adjustment?.diff ?? null, measured: p.invoiced.measured, chargedKg: p.invoiced.chargedKg }));
+  return {
+    invoiced: { rand, quoted, service: parts[0].invoiced.service, parts: rows, at: now },
+    adjustment: { booked, bookedFrom: parts.every((p) => p.adjustment?.bookedFrom === "charge") ? "charge" : "quote", billed: rand, diff: round2(rand - booked), pct: booked ? Math.round(((rand - booked) / booked) * 1000) / 10 : null, waybills: parts.map((p) => p.waybill), parts: rows, at: now },
+  };
 }
 
 const median = (xs) => {
@@ -193,7 +235,7 @@ export function weeklyLine(shipments, weekStartMs, { createdBy = "marathon-pos" 
  * order never stops the others, and nothing here books or cancels.
  */
 export async function runReconcile({ db, client, sendJunid, now = Date.now(), log = () => {} }) {
-  const out = { reconciled: 0, diffs: 0, learned: [], lines: 0, weekly: null };
+  const out = { reconciled: 0, diffs: 0, adjusted: 0, learned: [], lines: 0, weekly: null };
 
   // 1. Delivered waybills not yet reconciled. THE OPEN SET: the poller adds
   // every live booking to /shipping_recon/open/{orderId} (poll.mjs); the very
@@ -223,16 +265,30 @@ export async function runReconcile({ db, client, sendJunid, now = Date.now(), lo
       continue;
     }
     try {
-      const res = await client.getShipments({ tracking_reference: ref });
-      // Exactly this waybill, never "the first one TCG listed".
-      const shipment = (res?.shipments ?? []).find((x) => x.short_tracking_reference === ref || x.custom_tracking_reference === ref);
-      if (!shipment) continue;
-      const r = reconcileOrder(id, order, shipment, now);
-      if (!r) continue;
-      const writes = { [`online_orders/${id}/shipping/invoiced`]: r.invoiced };
-      const key = String(s.waybill || ref).replace(/[^A-Za-z0-9_-]/g, "-");
-      if (r.diff) { writes[`${RECON_PATH}/diffs/${key}`] = r.diff; out.diffs++; log(`recon ${id} ${key} quoted R${r.diff.quoted} invoiced R${r.diff.invoiced} (${Math.round(r.diff.share * 100)}%)`); }
-      if (r.sample) writes[`${RECON_PATH}/samples/${r.sample.class.replace(/[^A-Za-z0-9_-]/g, "_")}/${key}`] = r.sample;
+      // One shipment, or every shipment of a split: the order is reconciled once ALL are delivered and invoiced.
+      const parts = [];
+      for (const m of shipmentsOf(s)) {
+        const res = await client.getShipments({ tracking_reference: m.ref });
+        // Exactly this waybill, never "the first one TCG listed".
+        const shipment = (res?.shipments ?? []).find((x) => x.short_tracking_reference === m.ref || x.custom_tracking_reference === m.ref);
+        const view = m.quoted === null ? order
+          : { shipping: { ...s, waybill: m.waybill, cost: m.cost, priced: { ...(s.priced ?? {}), quoted: m.quoted }, parcel: { ...(s.parcel ?? {}), parcels: [s.parcel?.parcels?.[m.index] ?? s.parcel?.parcels?.[0]].filter(Boolean) } } };
+        const r = shipment ? reconcileOrder(id, view, shipment, now) : null;
+        if (!r) { parts.length = 0; break; }
+        parts.push({ ...r, waybill: m.waybill });
+      }
+      if (!parts.length) continue;
+      const whole = parts.length > 1 ? combineParts(parts, now) : parts[0];
+      const writes = { [`online_orders/${id}/shipping/invoiced`]: whole.invoiced };
+      if (whole.adjustment) {
+        writes[`online_orders/${id}/shipping/adjustment`] = whole.adjustment;
+        if (Math.abs(whole.adjustment.diff) >= 0.01) { writes[`${RECON_PATH}/adjustments/${id}`] = { orderId: id, ...whole.adjustment }; out.adjusted++; }
+      }
+      for (const r of parts) {
+        const key = String(r.waybill || ref).replace(/[^A-Za-z0-9_-]/g, "-");
+        if (r.diff) { writes[`${RECON_PATH}/diffs/${key}`] = r.diff; out.diffs++; log(`recon ${id} ${key} quoted R${r.diff.quoted} invoiced R${r.diff.invoiced} (${Math.round(r.diff.share * 100)}%)`); }
+        if (r.sample) writes[`${RECON_PATH}/samples/${r.sample.class.replace(/[^A-Za-z0-9_-]/g, "_")}/${key}`] = r.sample;
+      }
       writes[`${RECON_PATH}/open/${id}`] = null;
       await db.ref().update(JSON.parse(JSON.stringify(writes)));
       out.reconciled++;

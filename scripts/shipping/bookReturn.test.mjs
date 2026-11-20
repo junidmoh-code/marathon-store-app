@@ -159,7 +159,7 @@ describe("bookReturn", () => {
     expect((await bookReturn(KEY, deps(db({ exchange: unpaid }), fakeClient()))).reason).toMatch(/no paid exchange/);
   });
   it("refuses a quote over the ceiling", async () => {
-    const rates = { rates: [{ rate: 400, service_level: { code: "L2DL - ECO" } }] };
+    const rates = { rates: [{ rate: 600, service_level: { code: "L2DL - ECO" } }] }; // over the R500 ceiling (raised from R300, 20 Nov 2026)
     const client = fakeClient({ rates });
     const out = await bookReturn(KEY, deps(db(), client));
     expect(out).toMatchObject({ skipped: true, refused: true });

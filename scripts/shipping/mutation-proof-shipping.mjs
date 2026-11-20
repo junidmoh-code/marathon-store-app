@@ -27,6 +27,8 @@ const CHOOSE = "src/shipping/chooseService.js";
 const CARD = "src/components/admin/ShippingCard.jsx";
 const REC = "scripts/shipping/reconcile.mjs";
 const ORDER = "src/shipping/orderShipment.js";
+const LOCKER = "scripts/shipping/lockerDelivery.mjs";
+const REBOOK = "scripts/shipping/rebook-locker.mjs";
 const TESTS = ["src/shipping", "scripts/shipping", "src/components/admin/ShippingCard.gate.test.jsx"];
 
 const CHILD_ENV = {
@@ -70,6 +72,44 @@ const MUTATIONS = [
     from: "  if (key) s = s.split(key).join(\"[REDACTED]\");\n", to: "\n" },
   { id: "C3", file: CLIENT, guard: "a 4xx is not retried",
     from: "if (res.status >= 500 && attempt < attempts) {", to: "if (res.status >= 400 && attempt < attempts) {" },
+
+  // ── DOOR-TO-LOCKER (Junid, 20 Nov 2026) ──────────────────────────────────
+  { id: "D1", file: BOOK, guard: "deliveryMode \"door\" restores door-to-door",
+    from: "const toLocker = cfg.deliveryMode !== \"door\";", to: "const toLocker = true;" },
+  { id: "D2", file: LOCKER, guard: "a locker beyond the distance limit is never booked (no locker → refused, never door)",
+    from: "l.km <= limit && !avoid.has(l.id)", to: "l.km <= limit * 1000 && !avoid.has(l.id)" },
+  { id: "D3", file: LOCKER, guard: "the spend ceiling blocks a door-to-locker booking quoted above it",
+    from: "rate.rate > ceiling) {", to: "rate.rate > ceiling * 1000) {" },
+  { id: "D4", file: LOCKER, guard: "an order of N pairs is N one-shoe parcels",
+    from: "return Math.max(1, pairs);", to: "return 1;" },
+  { id: "D5", file: LOCKER, guard: "the CHEAPEST door-to-locker service is booked",
+    from: "(!best || r.rate < best.rate ? r : best)", to: "(!best || r.rate > best.rate ? r : best)" },
+  { id: "D6", file: BOOK, guard: "every parcel of a split is its own shipment",
+    from: "for (let i = made.length; i < payloads.length; i++) {", to: "for (let i = made.length; i < Math.min(payloads.length, 1); i++) {" },
+  { id: "D7", file: BOOK, guard: "cancelling a split cancels every shipment",
+    from: "for (const r of refs) { await client.cancelShipment(r); cancelled.push(r); }", to: "for (const r of refs.slice(0, 1)) { await client.cancelShipment(r); cancelled.push(r); }" },
+  { id: "D8", file: REBOOK, guard: "a collected parcel is never rebooked",
+    from: "if (!UNCOLLECTED.test(status)) return", to: "if (false) return" },
+  { id: "D9", file: REBOOK, guard: "rebook-locker is a dry run unless --book AND live",
+    from: "  if (!book || !live) {", to: "  if (false) {" },
+  { id: "D10", file: LOCKER, guard: "the shipment carries the delivery pickup point",
+    from: "    delivery_pickup_point_id: found.locker.id,\n", to: "" },
+  { id: "D11", file: REC, guard: "the billed-vs-booked adjustment is billed minus booked",
+    from: "billed: rand, diff: round2(rand - booked), pct: booked ? Math.round(((rand - booked) / booked) * 1000) / 10 : null, declared", to: "billed: rand, diff: 0, pct: booked ? Math.round(((rand - booked) / booked) * 1000) / 10 : null, declared" },
+  { id: "D15", file: BOOK, guard: "a half-booked split is never finished as a different plan (mode switched, locker changed)",
+    from: "if (partial && (plan.locker?.id !== partial.locker.id || payloads.length < partial.shipments.length)) {", to: "if (false) {" },
+  { id: "D16", file: BOOK, guard: "a checkpoint that could not be written holds the claim (no blind re-book of parcel 1)",
+    from: "state: ambiguous || !kept ? \"unknown\" : \"failed\"", to: "state: ambiguous ? \"unknown\" : \"failed\"" },
+  { id: "D17", file: LOCKER, guard: "no customer mobile number, no locker booking (the PIN goes by SMS)",
+    from: "if (!str(contact?.mobile_number)) blockers.push(", to: "if (false) blockers.push(" },
+  { id: "D18", file: REBOOK, guard: "one rebook at a time per order",
+    from: "(cur && now() - Number(cur.at) < REBOOK_LOCK_MS ? undefined :", to: "(false ? undefined :" },
+  { id: "D12", file: LOCKER, guard: "an address placed only by its town gets the tighter limit",
+    from: "const limit = byStreet ? pos(lk.maxKm, 30) : pos(lk.maxTownKm, 20);", to: "const limit = pos(lk.maxKm, 30);" },
+  { id: "D13", file: LOCKER, guard: "every parcel is declared as one shoe, never the estimate",
+    from: "    parcels: [tcgParcel(shoe)],\n    service_level_code: rate.code,", to: "    parcels: (estimate?.parcels ?? []).map((p) => tcgParcel(p)),\n    service_level_code: rate.code," },
+  { id: "D14", file: BOOK, guard: "a split interrupted mid-way books only the rest on retry",
+    from: "const made = partial ? [...partial.shipments] : [];", to: "const made = [];" },
 
   // ── THE ESTIMATOR ────────────────────────────────────────────────────────
   { id: "E1", file: EST, guard: "chargeable = max(actual, volumetric)",

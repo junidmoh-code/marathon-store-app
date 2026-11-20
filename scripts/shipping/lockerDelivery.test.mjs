@@ -1,0 +1,671 @@
+// DOOR-TO-LOCKER (Junid, 20 Nov 2026) — fakes only, never the network.
+// Every booking: our door → the Courier Guy locker nearest the customer, one
+// shoe-sized parcel per shipment. /config/shipping/deliveryMode "door" is the
+// old booking, unchanged.
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { bookShipment, cancelShipment, planShipment } from "./bookShipment.mjs";
+import { lockerParcelCount, oneShoe, placeAddress, NO_CODE_NOTE } from "./lockerDelivery.mjs";
+import { rebookLocker, UNCOLLECTED } from "./rebook-locker.mjs";
+import { reconcileOrder, runReconcile, shipmentsOf } from "./reconcile.mjs";
+import { adjustmentLines } from "./courier-recon.mjs";
+import { DEFAULT_SHIPPING_CONFIG } from "../../src/shipping/shippingConfig.js";
+import { fakeDb } from "./fakeDb.testutil.mjs";
+import doorCpt from "./fixtures/rates-door-capetown.json";
+
+const CONTACT = { name: "The Marathon", mobile_number: "0310000000", email: "" };
+const NOW = 1_700_000_000_000;
+const AT = { lat: -26.3165, lng: 26.8227 };
+const point = (id, name, lat, lng, over = {}) => ({
+  pickup_point_id: id, pickup_point_provider: "tcg-locker", name, type: "locker", lat, lng,
+  address: { street_address: "1 Van Riebeeck St", city: "Ventersdorp" }, description: "Opposite KFC", trading_hours: "Mon – Sun: All day",
+  available_compartment_sizes: ["V4-L", "V4-S", "V4-M"], is_hidden: false, status: "online", ...over,
+});
+const NEAR = point("RVM01240", "Astron Energy Ventersdorp", -26.3209, 26.8156); // ~0.9 km
+const SECOND = point("CG648", "MBT N14 Ventersdorp", -26.3259, 26.7888); // ~3.5 km
+const FAR = point("CG900", "Potchefstroom Mall", -26.715, 27.097); // ~52 km
+const d2l = (m = 130.31, l = 192.72) => ({ rates: [
+  { rate: l, service_level: { code: "D2LL - ECO", name: "Door to locker large" }, charged_weight: 3 },
+  { rate: m, service_level: { code: "D2LM - ECO", name: "Door to locker medium" }, charged_weight: 3, base_rate: { charge: m } },
+] });
+
+function fakeClient({ points = [NEAR, SECOND, FAR], lockerRates = d2l(), createErrors = {}, statuses = {} } = {}) {
+  const calls = [];
+  let n = 0;
+  return {
+    calls,
+    of: (name) => calls.filter((c) => c[0] === name).map((c) => c[1]),
+    shipmentCalls: () => calls.filter((c) => c[0] === "createShipment" || c[0] === "cancelShipment"),
+    getRates: async (body) => { calls.push(["getRates", body]); return body.delivery_pickup_point_id ? (typeof lockerRates === "function" ? lockerRates(body) : lockerRates) : doorCpt; },
+    getPickupPoints: async (q) => { calls.push(["getPickupPoints", q]); return { pickup_points: points }; },
+    getShipments: async (q) => { calls.push(["getShipments", q]); return { shipments: [{ short_tracking_reference: q.tracking_reference, status: statuses[q.tracking_reference] ?? "collection-assigned" }] }; },
+    createShipment: async (body) => {
+      calls.push(["createShipment", body]);
+      n++;
+      if (createErrors[n]) throw createErrors[n];
+      return { id: 1000 + n, short_tracking_reference: `WB${n}`, service_level_code: body.service_level_code, rate: 130.31 };
+    },
+    cancelShipment: async (ref) => { calls.push(["cancelShipment", ref]); return { ok: true }; },
+  };
+}
+
+const ORDER = (over = {}) => ({
+  key: "1001", orderNumber: 2257, shopifyGid: "gid://shopify/Order/1001",
+  lines: [{ category: "Footwear", subcategory: "Sneakers", name: "Runner", size: "9", qty: 1 }],
+  shipping: { address: { street: "12 Carmichael Street", suburb: "None", city: "Ventersdorp", province: "North West", zip: "2710" } },
+  customer: { name: "A Customer", phone: "0820000000", email: "a@example.com" },
+  ...over,
+});
+const PAIRS = (qty) => ORDER({ lines: [{ category: "Footwear", subcategory: "Sneakers", name: "Runner", size: "9", qty }] });
+// NO deliveryMode in the node: the code's default is door-to-locker.
+const db = (live, cfg = {}, extra = {}) => fakeDb({
+  config: { shipping: { ...(live === undefined ? {} : { live }), collectionContact: CONTACT, ...cfg } },
+  online_orders: { 1001: ORDER() },
+  ...extra,
+});
+const geo = (at = AT, from = "12 Carmichael Street, None, Ventersdorp, 2710") => { const g = vi.fn(async () => (at ? { ...at, from } : null)); return g; };
+const deps = (d, client, { geocoder = geo(), logs = [] } = {}) => ({ db: d, client, geocoder, log: (l) => logs.push(l), now: () => NOW });
+
+let fetchSpy;
+beforeEach(() => { fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => { throw new Error("NETWORK IS FORBIDDEN IN TESTS"); }); });
+afterEach(() => fetchSpy.mockRestore());
+
+describe("the default is door-to-locker", () => {
+  it("the code's default mode is locker, the parcel one shoe: 34 × 23 × 13 cm, 1.5 kg", () => {
+    expect(DEFAULT_SHIPPING_CONFIG.deliveryMode).toBe("locker");
+    expect(oneShoe(DEFAULT_SHIPPING_CONFIG)).toEqual({ kind: "oneShoe", lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.5 });
+    expect(DEFAULT_SHIPPING_CONFIG.maxChargeRand).toBe(500);
+  });
+
+  it("dry run: the normal payload plus the delivery pickup point, the one-shoe parcel, the cheapest locker service; nothing created", async () => {
+    const client = fakeClient();
+    const res = await bookShipment(ORDER(), deps(db(false), client));
+    expect(client.shipmentCalls()).toEqual([]);
+    expect(res.dryRun).toEqual({
+      collection_address: expect.objectContaining({ code: "4001" }),
+      collection_contact: CONTACT,
+      // the customer's own address stays on the shipment
+      delivery_address: expect.objectContaining({ street_address: "12 Carmichael Street", city: "Ventersdorp", code: "2710" }),
+      delivery_pickup_point_id: "RVM01240",
+      delivery_pickup_point_provider: "tcg-locker",
+      delivery_contact: { name: "A Customer", mobile_number: "0820000000", email: "a@example.com" },
+      parcels: [{ parcel_description: "Retail", submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 13, submitted_weight_kg: 1.5 }],
+      service_level_code: "D2LM - ECO",
+      customer_reference: "#2257",
+      customer_reference_name: "Order no.",
+      mute_notifications: false,
+    });
+    expect(res.dryRun).not.toHaveProperty("collection_pickup_point_id");
+    expect(res.quote).toEqual({ mode: "door_to_locker", code: "D2LM - ECO", rate: 130.31 });
+    expect(res.deliveryLocker).toMatchObject({ id: "RVM01240", name: "Astron Energy Ventersdorp" });
+    expect(res.doorQuote).toEqual({ code: "ECO", rate: 100 });
+    // the /rates call that priced it carried the pickup point and the one-shoe parcel
+    const priced = client.of("getRates").find((b) => b.delivery_pickup_point_id);
+    expect(priced).toMatchObject({ delivery_pickup_point_id: "RVM01240", delivery_pickup_point_provider: "tcg-locker", parcels: [expect.objectContaining({ submitted_length_cm: 34, submitted_weight_kg: 1.5 })] });
+  });
+
+  it("the parcel is NEVER estimated from the lines: thirty bags are still one shoe, and size never refuses", async () => {
+    const client = fakeClient();
+    const order = ORDER({ lines: [{ category: "Accessories", subcategory: "Bags", qty: 30 }] });
+    const d = db(true);
+    const res = await bookShipment(order, deps(d, client));
+    expect(res.waybill).toBe("WB1");
+    expect(client.of("createShipment")).toHaveLength(1);
+    expect(client.of("createShipment")[0].parcels).toEqual([{ parcel_description: "Retail", submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 13, submitted_weight_kg: 1.5 }]);
+  });
+
+  it("live: books D2L once and records the locker, the waybills, the door quote and the no-code fact on the order", async () => {
+    const d = db(true);
+    const client = fakeClient();
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(client.of("createShipment")).toHaveLength(1);
+    expect(client.of("createShipment")[0]).toMatchObject({ delivery_pickup_point_id: "RVM01240", delivery_pickup_point_provider: "tcg-locker", service_level_code: "D2LM - ECO" });
+    const s = d.root.online_orders["1001"].shipping;
+    expect(s).toMatchObject({
+      provider: "courier_guy", shipmentId: 1001, waybill: "WB1", trackingReference: "WB1", service: "D2LM - ECO", cost: 130.31,
+      deliveryMode: "locker", waybills: ["WB1"], doorQuote: { code: "ECO", rate: 100 },
+      priced: { quoted: 130.31, mode: "door_to_locker" },
+      courierBooking: { state: "booked" }, bookedAt: NOW,
+    });
+    expect(s.deliveryLocker).toEqual({
+      id: "RVM01240", provider: "tcg-locker", name: "Astron Energy Ventersdorp", address: "1 Van Riebeeck St, Ventersdorp",
+      hours: "Mon – Sun: All day", description: "Opposite KFC", km: expect.any(Number),
+      placedBy: "street", smsTo: "0820000000", hasCollectionCode: false, collectionCodeNote: NO_CODE_NOTE,
+    });
+    expect(s.deliveryLocker.km).toBeLessThan(2);
+    // a fixed declaration, not an estimate: no rule version, so reconcile never learns the parcel table from it
+    expect(s.parcel).toMatchObject({ declaredAs: "one_shoe", parcelCount: 1, parcels: [{ lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.5 }] });
+    expect(s.parcel.ruleVersion).toBeUndefined();
+    expect(s.quotes.map((q) => q.code)).toEqual(["ECO", "D2LM - ECO", "D2LL - ECO"]);
+    expect(res.waybill).toBe("WB1");
+  });
+
+  it("the cheapest service the API returns is booked (nothing excluded unless config says so)", async () => {
+    const client = fakeClient({ lockerRates: d2l(210, 150) });
+    expect((await bookShipment(ORDER(), deps(db(false), client))).dryRun.service_level_code).toBe("D2LL - ECO");
+    const client2 = fakeClient({ lockerRates: d2l(210, 150) });
+    expect((await bookShipment(ORDER(), deps(db(false, { excludeServiceCodes: ["D2LL - ECO"] }), client2))).dryRun.service_level_code).toBe("D2LM - ECO");
+  });
+
+  it("the nearest locker that PRICES wins: one Courier Guy quotes nothing for is passed over", async () => {
+    const client = fakeClient({ lockerRates: (b) => (b.delivery_pickup_point_id === "RVM01240" ? { rates: null } : d2l()) });
+    const res = await bookShipment(ORDER(), deps(db(false), client));
+    expect(res.deliveryLocker.id).toBe("CG648");
+    expect(res.dryRun.delivery_pickup_point_id).toBe("CG648");
+  });
+
+  it("a hidden, offline or too-small locker is never chosen", async () => {
+    const client = fakeClient({ points: [point("H1", "Hidden", -26.3166, 26.8228, { is_hidden: true }), point("O1", "Offline", -26.3166, 26.8228, { status: "offline" }), point("S1", "Small only", -26.3166, 26.8228, { available_compartment_sizes: ["V4-S", "V4-XS"] }), SECOND] });
+    expect((await bookShipment(ORDER(), deps(db(false), client))).deliveryLocker.id).toBe("CG648");
+  });
+
+  it("exchanges and second parcels go door-to-locker too", async () => {
+    const ex = { key: "exchange-1789-1793333411004", shopifyName: "#1789-EX", exchange: { paidAt: 1793333411004, contactPhone: "27600000000" }, lines: ORDER().lines, shipping: ORDER().shipping, customer: { name: "A Customer" } };
+    const d = fakeDb({ config: { shipping: { live: true, collectionContact: CONTACT } }, online_orders: { [ex.key]: ex, "1001r1": { reship: { of: "1001" } } } });
+    const client = fakeClient();
+    const res = await bookShipment(ex, deps(d, client));
+    expect(res).toMatchObject({ waybill: "WB1", deliveryMode: "locker", deliveryLocker: { id: "RVM01240", smsTo: "27600000000" } });
+    expect(client.of("createShipment")[0]).toMatchObject({ customer_reference: "#1789-EX", delivery_pickup_point_id: "RVM01240" });
+    const re = await bookShipment({ ...ORDER(), key: "1001r1", reship: { of: "1001" } }, deps(d, client));
+    expect(re).toMatchObject({ waybill: "WB2", deliveryMode: "locker" });
+  });
+});
+
+describe("deliveryMode \"door\" restores door-to-door exactly", () => {
+  it("no map lookup, no locker list, no pickup point, the estimated parcel, the door service", async () => {
+    const client = fakeClient();
+    const geocoder = geo();
+    const d = db(true, { deliveryMode: "door" });
+    const res = await bookShipment(ORDER(), deps(d, client, { geocoder }));
+    expect(geocoder).not.toHaveBeenCalled();
+    expect(client.of("getPickupPoints")).toEqual([]);
+    expect(client.calls.map((c) => c[0])).toEqual(["getRates", "createShipment"]);
+    const sent = client.of("createShipment")[0];
+    expect(sent).not.toHaveProperty("delivery_pickup_point_id");
+    expect(sent.service_level_code).toBe("ECO");
+    expect(sent.parcels).toEqual([{ parcel_description: "Retail", submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 13, submitted_weight_kg: 1.2 }]);
+    expect(Object.keys(res).sort()).toEqual(["bookedAt", "cost", "parcel", "priced", "provider", "quotes", "service", "shipmentId", "trackingReference", "waybill"]);
+    expect(res.priced.mode).toBe("door");
+    expect(res.parcel.ruleVersion).toBe(4);
+    expect(d.root.online_orders["1001"].shipping).not.toHaveProperty("deliveryLocker");
+  });
+
+  it("door mode still refuses a parcel no box fits; locker mode does not", async () => {
+    const bags = ORDER({ lines: [{ category: "Accessories", subcategory: "Bags", qty: 30 }] });
+    expect((await bookShipment(bags, deps(db(true, { deliveryMode: "door" }), fakeClient()))).reason).toMatch(/no standard box fits/);
+  });
+});
+
+describe("no locker → refused with the reason, NEVER a silent door-to-door", () => {
+  const expectNothingBooked = (client, d) => {
+    expect(client.shipmentCalls()).toEqual([]);
+    expect(d.root.online_orders["1001"].shipping?.waybill).toBeUndefined();
+    expect(d.root.online_orders["1001"].shipping?.courierBooking).toBeUndefined();
+  };
+
+  it("the nearest locker is too far: \"no Courier Guy locker within 30 km of Ventersdorp\", one line for Junid", async () => {
+    const client = fakeClient({ points: [FAR] });
+    const d = db(true);
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(res).toMatchObject({ skipped: true, noLocker: true });
+    expect(res.reason).toMatch(/^no Courier Guy locker within 30 km of Ventersdorp \(the nearest, Potchefstroom Mall, is 5\d(\.\d)? km away\)$/);
+    expect(res.junidLine).toMatch(/^#2257: no Courier Guy locker within 30 km of Ventersdorp .* Not booked \(door-to-locker only\)\. Book it in the portal, or name a locker on the order \(online_orders\/1001\/shipping\/lockerChoice\/id\) and press Retry on the POS\.$/);
+    expectNothingBooked(client, d);
+    // no door-to-door booking was even priced as a fallback service
+    expect(res.dryRun).toBeUndefined();
+  });
+
+  it("the distance is config: /config/shipping/locker/maxKm 60 books the 52 km locker", async () => {
+    const client = fakeClient({ points: [FAR] });
+    const res = await bookShipment(ORDER(), deps(db(true, { locker: { maxKm: 60 } }), client));
+    expect(res).toMatchObject({ waybill: "WB1", deliveryLocker: { id: "CG900" } });
+  });
+
+  it("only the town could be placed: the tighter town limit (20 km) applies and the reason says so", async () => {
+    const mid = point("CG777", "Twenty-five away", -26.541, 26.8227); // ~25 km
+    const client = fakeClient({ points: [mid] });
+    const d = db(true);
+    const res = await bookShipment(ORDER(), deps(d, client, { geocoder: geo(AT, "Ventersdorp, 2710") }));
+    expect(res.reason).toMatch(/no Courier Guy locker within 20 km of Ventersdorp .*; only the town could be placed on the map/);
+    expectNothingBooked(client, d);
+    // by its street the same locker is inside the 30 km limit
+    expect((await bookShipment(ORDER(), deps(db(true), fakeClient({ points: [mid] })))).waybill).toBe("WB1");
+  });
+
+  it("no locker at all near the address", async () => {
+    const client = fakeClient({ points: [] });
+    const d = db(true);
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(res.reason).toBe("no Courier Guy locker within 30 km of Ventersdorp");
+    expectNothingBooked(client, d);
+  });
+
+  it("the address cannot be placed on the map: refused, no locker asked for, no line to Junid (the map service being down looks the same)", async () => {
+    const client = fakeClient();
+    const d = db(true);
+    const res = await bookShipment(ORDER(), deps(d, client, { geocoder: geo(null) }));
+    expect(res).toMatchObject({ skipped: true, noLocker: true });
+    expect(res.reason).toMatch(/no Courier Guy locker could be chosen for Ventersdorp: the address could not be placed on the map/);
+    expect(res.junidLine).toBeUndefined();
+    expect(client.of("getPickupPoints")).toEqual([]);
+    expectNothingBooked(client, d);
+  });
+
+  it("Courier Guy quotes no service to any near locker: refused", async () => {
+    const client = fakeClient({ lockerRates: { rates: null } });
+    const d = db(true);
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(res.reason).toMatch(/Courier Guy quoted no door-to-locker service to the lockers near Ventersdorp/);
+    expectNothingBooked(client, d);
+  });
+
+  it("a rates lookup that FAILS on the town retry is a failed lookup (retry later), not \"no service\"", async () => {
+    let n = 0;
+    const client = fakeClient({ points: [NEAR], lockerRates: () => { if (++n === 1) return { rates: null }; throw Object.assign(new Error("HTTP 503"), { status: 503 }); } });
+    const res = await bookShipment(ORDER(), deps(db(true), client));
+    expect(res.reason).toMatch(/no door-to-locker rate \(HTTP 503\)/);
+    expect(res.noLocker).toBeUndefined();
+    expect(res.junidLine).toBeUndefined();
+    expect(client.shipmentCalls()).toEqual([]);
+  });
+
+  it("no customer mobile number: not booked live (the locker PIN is sent by SMS), named in a dry run", async () => {
+    const emailOnly = ORDER({ customer: { name: "A Customer", email: "a@example.com" } });
+    const client = fakeClient();
+    const d = db(true);
+    expect((await bookShipment(emailOnly, deps(d, client))).reason).toBe("no customer mobile number (the locker PIN is sent by SMS)");
+    expectNothingBooked(client, d);
+    expect((await bookShipment(emailOnly, deps(db(false), fakeClient()))).liveBlockers).toEqual(["no customer mobile number (the locker PIN is sent by SMS)"]);
+    // door-to-door never needed one
+    expect((await bookShipment(emailOnly, deps(db(true, { deliveryMode: "door" }), fakeClient()))).waybill).toBe("WB1");
+  });
+
+  it("with live off the refusal carries no line for Junid", async () => {
+    const res = await bookShipment(ORDER(), deps(db(false), fakeClient({ points: [FAR] })));
+    expect(res).toMatchObject({ skipped: true, noLocker: true });
+    expect(res.junidLine).toBeUndefined();
+  });
+});
+
+describe("the R500 ceiling, per shipment", () => {
+  it("a locker quote over R500 is refused live as before, with the one line; named in a dry run", async () => {
+    const client = fakeClient({ lockerRates: d2l(620, 700) });
+    const d = db(true);
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(res.reason).toBe("quote R620.00 is over the R500 ceiling");
+    expect(res.junidLine).toMatch(/#2257: Courier Guy quotes R620\.00 \(D2LM - ECO.*over the R500 ceiling, not booked/);
+    expect(client.shipmentCalls()).toEqual([]);
+    expect((await bookShipment(ORDER(), deps(db(false), fakeClient({ lockerRates: d2l(620, 700) })))).liveBlockers).toEqual(["quote R620.00 is over the R500 ceiling"]);
+  });
+
+  it("three parcels at R130.31 each (R390.93 together) are each under the ceiling: booked", async () => {
+    const res = await bookShipment(PAIRS(3), deps(db(true, { maxChargeRand: 200 }), fakeClient()));
+    expect(res.waybills).toEqual(["WB1", "WB2", "WB3"]);
+  });
+});
+
+describe("a split: N one-shoe parcels, each its own shipment to the SAME locker", () => {
+  it("one parcel per pair of shoes, never fewer than one; a person's count wins", () => {
+    expect(lockerParcelCount({}, { parcels: [{ pairs: 0 }] })).toBe(1);
+    expect(lockerParcelCount({}, { parcels: [{ pairs: 1 }] })).toBe(1);
+    expect(lockerParcelCount({}, { parcels: [{ pairs: 3 }] })).toBe(3);
+    expect(lockerParcelCount({ shipping: { lockerParcels: 2 } }, { parcels: [{ pairs: 1 }] })).toBe(2);
+  });
+
+  it("three pairs: three creates to one locker, every waybill and the total cost recorded, the first as shipping.waybill", async () => {
+    const d = db(true);
+    const client = fakeClient();
+    const res = await bookShipment(PAIRS(3), deps(d, client));
+    const sent = client.of("createShipment");
+    expect(sent).toHaveLength(3);
+    expect(new Set(sent.map((b) => b.delivery_pickup_point_id))).toEqual(new Set(["RVM01240"]));
+    for (const b of sent) expect(b.parcels).toEqual([{ parcel_description: "Retail", submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 13, submitted_weight_kg: 1.5 }]);
+    expect(sent.map((b) => b.customer_reference)).toEqual(["#2257 (1/3)", "#2257 (2/3)", "#2257 (3/3)"]);
+    const s = d.root.online_orders["1001"].shipping;
+    expect(s).toMatchObject({ waybill: "WB1", shipmentId: 1001, waybills: ["WB1", "WB2", "WB3"], cost: 390.93, priced: { quoted: 390.93 }, courierBooking: { state: "booked" } });
+    expect(s.shipments.map((m) => [m.waybill, m.shipmentId, m.cost])).toEqual([["WB1", 1001, 130.31], ["WB2", 1002, 130.31], ["WB3", 1003, 130.31]]);
+    expect(s.parcel).toMatchObject({ parcelCount: 3 });
+    expect(s.partial).toBeUndefined();
+    expect(res.waybills).toHaveLength(3);
+    // ONE claim for the order: a second call books nothing more
+    expect((await bookShipment({ ...PAIRS(3), shipping: s }, deps(d, client))).reason).toBe("already booked");
+    expect(client.of("createShipment")).toHaveLength(3);
+  });
+
+  it("more parcels than locker.maxParcels goes to a person", async () => {
+    const client = fakeClient();
+    const res = await bookShipment(PAIRS(11), deps(db(true), client));
+    expect(res.reason).toMatch(/needs 11 locker parcels, more than the 10 booked automatically/);
+    expect(client.shipmentCalls()).toEqual([]);
+  });
+
+  it("a later parcel that fails keeps the booked ones; the retry books ONLY the rest, to the same locker", async () => {
+    const d = db(true);
+    const bad = Object.assign(new Error("HTTP 400 invalid"), { status: 400 });
+    const client = fakeClient({ createErrors: { 2: bad } });
+    await expect(bookShipment(PAIRS(3), deps(d, client))).rejects.toThrow(/400/);
+    let s = d.root.online_orders["1001"].shipping;
+    expect(s.waybill).toBeUndefined(); // not "booked": the order is held as courier not booked
+    expect(s.courierBooking).toMatchObject({ state: "failed", booked: ["WB1"] });
+    expect(s.partial).toMatchObject({ count: 3, locker: { id: "RVM01240" }, shipments: [{ waybill: "WB1" }] });
+    // the retry: the nearest locker has changed meanwhile, the split still goes to the first one
+    const client2 = fakeClient({ points: [SECOND, NEAR] });
+    const res = await bookShipment({ ...PAIRS(3), shipping: { ...PAIRS(3).shipping, ...s } }, deps(d, client2));
+    expect(client2.of("createShipment")).toHaveLength(2);
+    expect(client2.of("createShipment").every((b) => b.delivery_pickup_point_id === "RVM01240")).toBe(true);
+    expect(res.waybills).toEqual(["WB1", "WB1", "WB2"].map((w, i) => (i === 0 ? "WB1" : `WB${i}`)));
+    s = d.root.online_orders["1001"].shipping;
+    expect(s.partial).toBeUndefined();
+    expect(s.courierBooking.state).toBe("booked");
+  });
+
+  it("a half-booked split is never finished as a different plan: the mode switched to door books nothing and keeps the checkpoint", async () => {
+    const d = db(true);
+    const client = fakeClient({ createErrors: { 2: Object.assign(new Error("HTTP 400 invalid"), { status: 400 }) } });
+    await expect(bookShipment(PAIRS(3), deps(d, client))).rejects.toThrow(/400/);
+    d.root.config.shipping.deliveryMode = "door";
+    const client2 = fakeClient();
+    const res = await bookShipment({ ...PAIRS(3), shipping: { ...PAIRS(3).shipping, ...d.root.online_orders["1001"].shipping } }, deps(d, client2));
+    expect(res.skipped).toBe(true);
+    expect(res.reason).toMatch(/a split is half booked \(WB1 to locker RVM01240\) and can no longer be finished as planned/);
+    expect(client2.shipmentCalls()).toEqual([]);
+    const s = d.root.online_orders["1001"].shipping;
+    expect(s.partial).toMatchObject({ shipments: [{ waybill: "WB1" }] });
+    expect(s.waybill).toBeUndefined();
+  });
+
+  it("booked parcels whose checkpoint cannot be written hold the claim as unknown, even on a 4xx (no blind re-book of parcel 1)", async () => {
+    const d = db(true);
+    const failing = { ...d, ref: (p) => (String(p).endsWith("/shipping/partial") ? { ...d.ref(p), set: async () => { throw new Error("write denied"); } } : d.ref(p)) };
+    const client = fakeClient({ createErrors: { 2: Object.assign(new Error("HTTP 400 invalid"), { status: 400 }) } });
+    await expect(bookShipment(PAIRS(2), deps(failing, client))).rejects.toThrow(/400/);
+    expect(d.root.online_orders["1001"].shipping.courierBooking).toMatchObject({ state: "unknown", booked: ["WB1"] });
+    const again = await bookShipment({ ...PAIRS(2), shipping: { ...PAIRS(2).shipping, ...d.root.online_orders["1001"].shipping } }, deps(d, client));
+    expect(again.reason).toBe("booking already unknown");
+    expect(client.of("createShipment")).toHaveLength(2);
+  });
+
+  it("a lost response mid-split holds the claim as unknown (never re-booked blind)", async () => {
+    const d = db(true);
+    const client = fakeClient({ createErrors: { 2: Object.assign(new Error("HTTP 502"), { status: 502 }) } });
+    await expect(bookShipment(PAIRS(2), deps(d, client))).rejects.toThrow();
+    expect(d.root.online_orders["1001"].shipping.courierBooking).toMatchObject({ state: "unknown", booked: ["WB1"] });
+    const again = await bookShipment({ ...PAIRS(2), shipping: { ...PAIRS(2).shipping, ...d.root.online_orders["1001"].shipping } }, deps(d, client));
+    expect(again.reason).toBe("booking already unknown");
+    expect(client.of("createShipment")).toHaveLength(2);
+  });
+
+  it("cancelShipment cancels every shipment of a split; a dry run cancels none", async () => {
+    const d = db(true);
+    const client = fakeClient();
+    await bookShipment(PAIRS(3), deps(d, client));
+    const booked = { ...PAIRS(3), shipping: d.root.online_orders["1001"].shipping };
+    const dry = fakeClient();
+    expect((await cancelShipment(booked, deps(db(false), dry))).dryRun).toEqual({ tracking_references: ["WB1", "WB2", "WB3"] });
+    expect(dry.shipmentCalls()).toEqual([]);
+    await cancelShipment(booked, deps(d, client));
+    expect(client.of("cancelShipment")).toEqual(["WB1", "WB2", "WB3"]);
+    expect(d.root.online_orders["1001"].shipping.courierBooking.state).toBe("cancelled");
+  });
+});
+
+describe("THE DRY-RUN GUARD, door-to-locker — nothing reaches createShipment / cancelShipment unless live === true", () => {
+  const NOT_LIVE = [undefined, false, null, "true", "yes", 1, 0, {}, []];
+  const ORDERS = [
+    ["one shoe", ORDER()],
+    ["split", PAIRS(4)],
+    ["booked split", ORDER({ shipping: { ...ORDER().shipping, provider: "courier_guy", waybill: "WB1", trackingReference: "WB1", shipments: [{ waybill: "WB1" }, { waybill: "WB2" }], deliveryLocker: { id: "RVM01240" } } })],
+    ["partial", ORDER({ shipping: { ...ORDER().shipping, partial: { count: 2, locker: { id: "RVM01240" }, shipments: [{ waybill: "WB1", shipmentId: 1 }] } } })],
+    ["no locker", ORDER({ shipping: { address: { street: "1 Far Road", city: "Nowhere", zip: "0001" } } })],
+  ];
+  for (const live of NOT_LIVE) {
+    for (const [name, order] of ORDERS) {
+      it(`live=${JSON.stringify(live)} · ${name}: book, cancel and rebook make no shipment call and write nothing`, async () => {
+        const client = fakeClient(name === "no locker" ? { points: [FAR] } : {});
+        const d = db(live, {}, { online_orders: { 1001: order } });
+        await bookShipment(order, deps(d, client)).catch(() => {});
+        await cancelShipment(order, deps(d, client)).catch(() => {});
+        await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW }).catch(() => {});
+        expect(client.shipmentCalls()).toEqual([]);
+        expect(d.writes).toEqual([]);
+      });
+    }
+  }
+});
+
+describe("a locker a person chose (shipping/lockerChoice, lockerAvoid)", () => {
+  it("lockerChoice books that locker instead of the nearest, whatever its distance", async () => {
+    const order = ORDER({ shipping: { ...ORDER().shipping, lockerChoice: { id: "CG900", by: "rebook" } } });
+    const res = await bookShipment(order, deps(db(false), fakeClient()));
+    expect(res.deliveryLocker).toMatchObject({ id: "CG900", chosenBy: "rebook" });
+  });
+  it("a chosen locker that is not online near the address is refused", async () => {
+    const order = ORDER({ shipping: { ...ORDER().shipping, lockerChoice: { id: "NOPE1" } } });
+    const res = await bookShipment(order, deps(db(false), fakeClient()));
+    expect(res.reason).toMatch(/locker NOPE1 is not among the online Courier Guy lockers near Ventersdorp/);
+  });
+  it("lockerAvoid passes over the named locker", async () => {
+    const order = ORDER({ shipping: { ...ORDER().shipping, lockerAvoid: ["RVM01240"] } });
+    expect((await bookShipment(order, deps(db(false), fakeClient()))).deliveryLocker.id).toBe("CG648");
+  });
+});
+
+describe("rebook-locker: cancel the uncollected shipment and book the same parcel(s) to another locker", () => {
+  async function bookedWorld(order = ORDER(), live = true) {
+    const d = db(true, {}, { online_orders: { 1001: order } });
+    await bookShipment(order, deps(d, fakeClient()));
+    if (!live) d.root.config.shipping.live = false;
+    d.writes.length = 0;
+    return d;
+  }
+
+  it("the statuses before collection", () => {
+    for (const s of ["submitted", "collection-assigned", "collection-unassigned"]) expect(UNCOLLECTED.test(s)).toBe(true);
+    for (const s of ["collected", "at-hub", "in-transit", "out-for-delivery", "delivered", "cancelled", ""]) expect(UNCOLLECTED.test(s)).toBe(false);
+  });
+
+  it("the default is a dry run: the nearest OTHER locker is priced, nothing cancelled, nothing written", async () => {
+    const d = await bookedWorld();
+    const client = fakeClient();
+    const out = await rebookLocker("1001", { db: d, client, geocoder: geo(), now: () => NOW });
+    expect(out).toMatchObject({ ok: true, dryRun: true, from: { id: "RVM01240", waybills: ["WB1"] }, to: { id: "CG648" }, quote: { code: "D2LM - ECO", rate: 130.31 }, shipments: 1 });
+    expect(client.shipmentCalls()).toEqual([]);
+    expect(d.writes).toEqual([]);
+  });
+
+  it("--book with live on: checks it is uncollected, cancels, keeps the old booking, books the named locker", async () => {
+    const d = await bookedWorld();
+    const client = fakeClient();
+    const out = await rebookLocker("1001", { db: d, client, lockerId: "CG900", book: true, geocoder: geo(), now: () => NOW + 5 });
+    expect(out).toMatchObject({ ok: true, to: { id: "CG900" } });
+    expect(client.calls.map((c) => c[0]).filter((c) => ["getShipments", "cancelShipment", "createShipment"].includes(c))).toEqual(["getShipments", "cancelShipment", "createShipment"]);
+    expect(client.of("cancelShipment")).toEqual(["WB1"]);
+    expect(client.of("createShipment")[0]).toMatchObject({ delivery_pickup_point_id: "CG900", parcels: [expect.objectContaining({ submitted_length_cm: 34 })] });
+    const s = d.root.online_orders["1001"].shipping;
+    expect(s).toMatchObject({ waybill: "WB1", deliveryLocker: { id: "CG900", chosenBy: "rebook" }, courierBooking: { state: "booked" }, lockerChoice: { id: "CG900" } });
+    expect(s.cancelledAt).toBeUndefined();
+    expect(Object.values(s.rebooks)[0]).toMatchObject({ waybills: ["WB1"], deliveryLocker: { id: "RVM01240" } });
+    expect(s.address).toEqual(ORDER().shipping.address);
+    expect(d.root.shipping_recon.open["1001"]).toBe(NOW + 5);
+  });
+
+  it("a split is rebooked whole: every shipment cancelled, the same number booked again", async () => {
+    const d = await bookedWorld(PAIRS(2));
+    const client = fakeClient();
+    const out = await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW + 5 });
+    expect(out.ok).toBe(true);
+    expect(client.of("cancelShipment")).toEqual(["WB1", "WB2"]);
+    expect(client.of("createShipment")).toHaveLength(2);
+    expect(d.root.online_orders["1001"].shipping.deliveryLocker.id).toBe("CG648");
+  });
+
+  it("--parcels books it again as more one-shoe parcels (Courier Guy refused it as too big for one)", async () => {
+    const d = await bookedWorld();
+    const client = fakeClient();
+    const out = await rebookLocker("1001", { db: d, client, lockerId: "RVM01240", parcels: 2, book: true, geocoder: geo(), now: () => NOW + 5 });
+    expect(out.ok).toBe(true);
+    expect(client.of("createShipment")).toHaveLength(2);
+    expect(d.root.online_orders["1001"].shipping.waybills).toHaveLength(2);
+  });
+
+  it("one rebook at a time: a second run while one holds the lock changes nothing; the lock is released after", async () => {
+    const d = await bookedWorld();
+    d.root.online_orders["1001"].shipping.rebooking = { at: NOW };
+    const client = fakeClient();
+    const out = await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW + 1000 });
+    expect(out.reason).toMatch(/another rebook of this order is running/);
+    expect(client.shipmentCalls()).toEqual([]);
+    // a stale lock (a run that died) is taken over, and a finished run leaves none behind
+    const done = await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW + 11 * 60_000 });
+    expect(done.ok).toBe(true);
+    expect(d.root.online_orders["1001"].shipping.rebooking).toBeUndefined();
+  });
+
+  it("the replacement is pinned to the locker that was priced: it is recorded as the order's chosen locker", async () => {
+    const d = await bookedWorld();
+    await rebookLocker("1001", { db: d, client: fakeClient(), book: true, geocoder: geo(), now: () => NOW + 5 });
+    expect(d.root.online_orders["1001"].shipping).toMatchObject({ lockerChoice: { id: "CG648", by: "rebook" }, deliveryLocker: { id: "CG648" } });
+  });
+
+  it("already collected: refused, nothing cancelled", async () => {
+    const d = await bookedWorld();
+    const client = fakeClient({ statuses: { WB1: "collected" } });
+    const out = await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW });
+    expect(out).toMatchObject({ ok: false });
+    expect(out.reason).toMatch(/WB1 is "collected" at Courier Guy/);
+    expect(client.shipmentCalls()).toEqual([]);
+    expect(d.writes).toEqual([]);
+  });
+
+  it("the new locker cannot be booked: refused BEFORE anything is cancelled", async () => {
+    const d = await bookedWorld();
+    const client = fakeClient({ points: [NEAR] }); // no other locker near
+    const out = await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW });
+    expect(out.ok).toBe(false);
+    expect(out.reason).toMatch(/the new locker cannot be booked: no Courier Guy locker within 30 km/);
+    expect(client.shipmentCalls()).toEqual([]);
+  });
+
+  it("the new booking fails after the cancel: said plainly, and running it again books only (nothing more is cancelled)", async () => {
+    const d = await bookedWorld();
+    const bad = Object.assign(new Error("HTTP 400 locker full"), { status: 400 });
+    const client = fakeClient({ createErrors: { 1: bad } });
+    const failed = await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW + 5 });
+    expect(failed).toMatchObject({ ok: false, cancelled: true });
+    expect(failed.reason).toMatch(/the old booking is CANCELLED but the new one failed \(HTTP 400 locker full/);
+    let s = d.root.online_orders["1001"].shipping;
+    expect(s.waybill).toBeUndefined();
+    expect(Object.values(s.rebooks)[0]).toMatchObject({ waybills: ["WB1"] });
+    // again: a dry run first, then for real
+    const client2 = fakeClient();
+    expect(await rebookLocker("1001", { db: d, client: client2, geocoder: geo(), now: () => NOW + 9 })).toMatchObject({ ok: true, dryRun: true, resume: true, to: { id: "CG648" } });
+    const out = await rebookLocker("1001", { db: d, client: client2, book: true, geocoder: geo(), now: () => NOW + 9 });
+    expect(out).toMatchObject({ ok: true, resumed: true, to: { id: "CG648" } });
+    expect(client2.of("cancelShipment")).toEqual([]);
+    expect(client2.of("createShipment")).toHaveLength(1);
+    s = d.root.online_orders["1001"].shipping;
+    expect(s).toMatchObject({ provider: "courier_guy", waybill: "WB1", deliveryLocker: { id: "CG648" }, courierBooking: { state: "booked" } });
+  });
+
+  it("--book with live off is still a dry run; an order with no locker booking is refused", async () => {
+    const d = await bookedWorld(ORDER(), false);
+    const client = fakeClient();
+    expect(await rebookLocker("1001", { db: d, client, book: true, geocoder: geo(), now: () => NOW })).toMatchObject({ ok: true, dryRun: true });
+    expect(client.shipmentCalls()).toEqual([]);
+    const plain = db(true, {}, { online_orders: { 1001: ORDER({ shipping: { ...ORDER().shipping, provider: "courier_guy", waybill: "OLD1" } }) } });
+    expect((await rebookLocker("1001", { db: plain, client, book: true, geocoder: geo() })).reason).toMatch(/not door-to-locker/);
+    expect((await rebookLocker("KQZ", { db: plain, client })).reason).toMatch(/not an \/online_orders key/);
+  });
+});
+
+describe("the billed-vs-booked adjustment, on the order", () => {
+  // runReconcile writes its fan-out through db.ref() (the root).
+  const rooted = (d) => ({ ...d, ref: (p) => d.ref(p ?? "") });
+  const delivered = (ref, rate, parcel = {}) => ({ short_tracking_reference: ref, status: "delivered", has_been_invoiced: true, rate, charged_weight: 6, service_level_code: "D2LM - ECO", delivered_date: "2026-11-24T09:00:00Z",
+    parcels: [{ has_been_dimensioned: true, actual_length_cm: 36, actual_width_cm: 30, actual_height_cm: 22, actual_weight_kg: 2.4, ...parcel }] });
+  const shoe = { kind: "oneShoe", lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.5 };
+  const booked = (over = {}) => ({ provider: "courier_guy", waybill: "WB1", trackingReference: "WB1", cost: 130.31, priced: { quoted: 130.31, mode: "door_to_locker" }, bookedAt: NOW, parcel: { declaredAs: "one_shoe", parcels: [shoe] }, ...over });
+
+  it("reconcileOrder: billed − booked with what was declared and what Courier Guy measured; a one-shoe declaration never teaches the parcel table", () => {
+    const r = reconcileOrder("1001", { shipping: booked() }, delivered("WB1", 192.72), NOW);
+    expect(r.adjustment).toEqual({ booked: 130.31, bookedFrom: "charge", billed: 192.72, diff: 62.41, pct: 47.9, declared: [34, 23, 13, 1.5], measured: [36, 30, 22, 2.4], chargedKg: 6, waybills: ["WB1"], at: NOW });
+    expect(r.sample).toBe(null);
+    expect(reconcileOrder("1001", { shipping: booked() }, delivered("WB1", 130.31), NOW).adjustment).toMatchObject({ diff: 0, pct: 0 });
+    // "booked" is what Courier Guy CHARGED at booking, not the quote: quoted 130.31, charged 150, billed 150 → no adjustment
+    expect(reconcileOrder("1001", { shipping: booked({ cost: 150 }) }, delivered("WB1", 150), NOW).adjustment).toMatchObject({ booked: 150, bookedFrom: "charge", diff: 0 });
+    // no recorded charge: the quote, and the record says so
+    expect(reconcileOrder("1001", { shipping: booked({ cost: null }) }, delivered("WB1", 150), NOW).adjustment).toMatchObject({ booked: 130.31, bookedFrom: "quote", diff: 19.69 });
+  });
+
+  it("runReconcile writes shipping/adjustment on the order and lists a non-zero one at /shipping_recon/adjustments/<order>", async () => {
+    const d = fakeDb({ shipping_recon: { seededAt: 1, open: { 1001: NOW, 1002: NOW } }, online_orders: { 1001: { shipping: booked() }, 1002: { shipping: booked({ waybill: "WB9", trackingReference: "WB9" }) } } });
+    const client = { getShipments: async (q) => ({ shipments: q.tracking_reference ? [delivered(q.tracking_reference, q.tracking_reference === "WB1" ? 192.72 : 130.31)] : [] }) };
+    const out = await runReconcile({ db: rooted(d), client, sendJunid: async () => true, now: NOW });
+    expect(out).toMatchObject({ reconciled: 2, adjusted: 1 });
+    expect(d.root.online_orders["1001"].shipping.adjustment).toMatchObject({ booked: 130.31, billed: 192.72, diff: 62.41, measured: [36, 30, 22, 2.4] });
+    expect(d.root.online_orders["1001"].shipping.invoiced).toMatchObject({ rand: 192.72, quoted: 130.31 });
+    expect(d.root.shipping_recon.adjustments).toEqual({ 1001: expect.objectContaining({ orderId: "1001", diff: 62.41, waybills: ["WB1"] }) });
+    // billed exactly as booked: recorded on the order as zero, not listed
+    expect(d.root.online_orders["1002"].shipping.adjustment).toMatchObject({ diff: 0 });
+    expect(d.root.shipping_recon.open ?? {}).toEqual({});
+    expect(adjustmentLines(Object.values(d.root.shipping_recon.adjustments)).join("\n")).toMatch(/order 1001 {2}WB1 {2}booked R130\.31 {2}billed R192\.72 {2}\+R62\.41 {2}measured 36x30x22 cm 2\.4 kg\n1 adjusted order\(s\), net \+R62\.41/);
+  });
+
+  it("a split is reconciled once EVERY shipment is delivered and invoiced, added up, each in parts", async () => {
+    const split = booked({ cost: 260.62, priced: { quoted: 260.62 }, waybills: ["WB1", "WB2"], shipments: [{ waybill: "WB1", trackingReference: "WB1", cost: 130.31, quoted: 130.31 }, { waybill: "WB2", trackingReference: "WB2", cost: 130.31, quoted: 130.31 }], parcel: { declaredAs: "one_shoe", parcels: [shoe, shoe] } });
+    expect(shipmentsOf(split).map((m) => m.ref)).toEqual(["WB1", "WB2"]);
+    const d = fakeDb({ shipping_recon: { seededAt: 1, open: { 1001: NOW } }, online_orders: { 1001: { shipping: split } } });
+    let second = { ...delivered("WB2", 130.31), status: "in-transit" };
+    const client = { getShipments: async (q) => ({ shipments: q.tracking_reference === "WB1" ? [delivered("WB1", 192.72)] : q.tracking_reference === "WB2" ? [second] : [] }) };
+    expect((await runReconcile({ db: rooted(d), client, sendJunid: async () => true, now: NOW })).reconciled).toBe(0);
+    expect(d.root.online_orders["1001"].shipping.adjustment).toBeUndefined();
+    second = delivered("WB2", 130.31);
+    expect((await runReconcile({ db: rooted(d), client, sendJunid: async () => true, now: NOW })).reconciled).toBe(1);
+    expect(d.root.online_orders["1001"].shipping.adjustment).toMatchObject({ booked: 260.62, billed: 323.03, diff: 62.41, waybills: ["WB1", "WB2"], parts: [{ waybill: "WB1", diff: 62.41 }, { waybill: "WB2", diff: 0 }] });
+    expect(d.root.shipping_recon.diffs.WB1).toMatchObject({ waybill: "WB1", invoiced: 192.72 });
+  });
+});
+
+describe("placeAddress: the street, else the postal code's own point, else the town", () => {
+  const ADDRESS = { street_address: "12 Carmichael Street", local_area: "", city: "Soweto", code: "1804" };
+  const hit = (lat, lon) => ({ ok: true, json: async () => [{ lat: String(lat), lon: String(lon) }] });
+  const wait = async () => {};
+
+  it("a street on the map is used as it is: no second lookup", async () => {
+    const fetchImpl = vi.fn();
+    const at = await placeAddress(ADDRESS, { fetchImpl, wait, base: async () => ({ lat: -26.25, lng: 27.9, from: "12 Carmichael Street, Soweto, 1804" }) });
+    expect(at).toMatchObject({ lat: -26.25, by: "street" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("a street the map does not know is placed by its postal code, not the town's centre", async () => {
+    const fetchImpl = vi.fn(async () => hit(-26.262, 27.9175));
+    const at = await placeAddress(ADDRESS, { fetchImpl, wait, base: async () => ({ lat: -26.223, lng: 27.89, from: "Soweto, 1804" }) });
+    expect(at).toEqual({ lat: -26.262, lng: 27.9175, from: "postal code 1804", by: "postcode" });
+    expect(fetchImpl.mock.calls[0][0]).toMatch(/countrycodes=za&limit=1&postalcode=1804$/);
+  });
+
+  it("no postal-code point (or the lookup fails): the town's; nothing at all: null", async () => {
+    const town = async () => ({ lat: -26.223, lng: 27.89, from: "Soweto, 1804" });
+    expect(await placeAddress(ADDRESS, { fetchImpl: async () => ({ ok: true, json: async () => [] }), wait, base: town })).toMatchObject({ lat: -26.223, by: "town" });
+    expect(await placeAddress(ADDRESS, { fetchImpl: async () => { throw new Error("down"); }, wait, base: town })).toMatchObject({ by: "town" });
+    expect(await placeAddress({ ...ADDRESS, code: "" }, { fetchImpl: async () => { throw new Error("never"); }, wait, base: async () => null })).toBe(null);
+  });
+
+  it("the booking records how the address was placed, and a postal-code placement gets the tighter limit", async () => {
+    const res = await bookShipment(ORDER(), deps(db(false), fakeClient(), { geocoder: async () => ({ ...AT, from: "postal code 2710", by: "postcode" }) }));
+    expect(res.deliveryLocker.placedBy).toBe("postcode");
+    const mid = point("CG777", "Twenty-five away", -26.541, 26.8227);
+    const far = await bookShipment(ORDER(), deps(db(false), fakeClient({ points: [mid] }), { geocoder: async () => ({ ...AT, from: "postal code 2710", by: "postcode" }) }));
+    expect(far.reason).toMatch(/within 20 km of Ventersdorp .*; only the postal code could be placed on the map/);
+  });
+});
+
+describe("planShipment in locker mode is rates and lookups only", () => {
+  it("never calls a shipment endpoint, whatever live says", async () => {
+    const client = fakeClient();
+    const plan = await planShipment(PAIRS(2), { db: db(true), client, geocoder: geo() });
+    expect(plan).toMatchObject({ ok: true, locker: { id: "RVM01240" }, doorQuote: { code: "ECO" } });
+    expect(plan.payloads).toHaveLength(2);
+    expect(client.shipmentCalls()).toEqual([]);
+  });
+});

@@ -111,6 +111,8 @@ async function bench(key) {
   await rdb.ref(`${ONLINE_ORDERS_PATH}/${key}`).set({ ...rest, shipping: shippingKept, status: ORDER_STATUS.PACKED, fulfilState: "pending", fulfil: { state: "pending", attempts: 0, requestedAt: packAt }, pack: { ...(real.pack || {}), at: packAt } });
   const benchCourier = {
     getRates: async (body) => { const r = await courier.getRates(body); mark("rates answered"); return r; },
+    // Door-to-locker: the lockers near the customer (a read; books nothing).
+    getPickupPoints: async (q) => { const r = await courier.getPickupPoints(q); mark("lockers answered"); return r; },
     // SIMULATED: no request is sent. 450 ms is the median measured create (logs/courier.log, 19–20 Nov).
     createShipment: async () => { mark("create (simulated) sent"); await new Promise((r) => setTimeout(r, 450)); mark("create (simulated) answered"); return { id: 0, short_tracking_reference: "BENCH0", service_level_code: "BENCH", charged_amount: 0 }; },
     cancelShipment: async () => { throw new Error("bench: never cancels"); },
@@ -119,10 +121,12 @@ async function bench(key) {
     if (/^\s*mutation\b/.test(query) || opts?.mutation) { mark("Shopify mutation refused (bench)"); throw new Error("bench: Shopify mutation refused"); }
     const r = await shopifyGraphql(query, variables, opts); mark("Shopify read answered"); return r;
   };
+  const planned = { shipping: null, booking: null };
   const watched = {
     ref: (path) => {
       const r = rdb.ref(path);
-      if (path === `${ONLINE_ORDERS_PATH}/${key}/shipping`) return { ...r, update: async (v) => { await r.update(v); mark("waybill written (overlay)"); } };
+      if (path === `${ONLINE_ORDERS_PATH}/${key}/shipping`) return { ...r, update: async (v) => { planned.shipping = v; await r.update(v); mark("waybill written (overlay)"); } };
+      if (path === `${ONLINE_ORDERS_PATH}/${key}/shipping/booking`) return { ...r, set: async (v) => { planned.booking = v; await r.set(v); } };
       return r;
     },
   };
@@ -130,6 +134,13 @@ async function bench(key) {
   mark("seen");
   await shipper.consider(key, { ...rest, status: ORDER_STATUS.PACKED, fulfilState: "pending" });
   mark("ship finished");
+  // What the booking would have been (what the ship wrote to the overlay, never the live database).
+  const p = planned.shipping ?? planned.booking ?? {};
+  const lk = p.deliveryLocker ?? null;
+  const d2l = (p.quotes ?? []).filter((q) => q.mode === "door_to_locker").map((q) => `${q.code} R${q.rate}`).join(" | ");
+  console.log(lk
+    ? `\nplan: DOOR-TO-LOCKER to ${lk.name} (${lk.id}, ${lk.km} km, placed by the ${lk.placedBy}), ${(p.waybills ?? []).length || p.shipments || 1} shipment(s); locker quotes ${d2l || "?"}; door-to-door would be ${p.doorQuote ? `${p.doorQuote.code} R${p.doorQuote.rate}` : "not quoted"}`
+    : `\nplan: NOT door-to-locker (${p.reason ?? p.priced?.mode ?? p.quote?.mode ?? "no booking recorded"})`);
   console.log(`\nbench ${real.shopifyName ?? key} (nothing written, nothing booked):`);
   for (const [what, ms] of marks) console.log(`  ${String(ms).padStart(6)} ms  ${what}`);
   process.exit(0);

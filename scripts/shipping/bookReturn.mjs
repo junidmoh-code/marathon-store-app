@@ -80,23 +80,33 @@ export async function geocode(address, { fetchImpl = globalThis.fetch } = {}) {
   return null;
 }
 
-/** The nearest Courier Guy locker the parcel fits, online and listed. → { id, provider, name, address, hours, description, km } | null */
-export async function nearestLocker(client, at, size) {
+const lockerShape = ({ p, d }) => {
+  const a = p.address || {};
+  return {
+    id: p.pickup_point_id, provider: p.pickup_point_provider || "tcg-locker", name: str(p.name),
+    address: (str(a.street_address) && str(a.street_address).toLowerCase().includes(str(a.city).toLowerCase()) ? str(a.street_address) : [a.street_address, a.city].map(str).filter(Boolean).join(", ")) || str(a.entered_address),
+    hours: str(p.trading_hours), description: str(p.description), km: Number.isFinite(d) ? Math.round(d * 10) / 10 : null,
+  };
+};
+
+/** Every Courier Guy locker the parcel fits near `at`, online and listed, nearest first. → [{ id, provider, name, address, hours, description, km }] */
+export async function nearestLockers(client, at, size) {
   const res = await client.getPickupPoints({ lat: at.lat, lng: at.lng, order_closest: "true", type: "locker" });
   const list = (Array.isArray(res) ? res : res?.pickup_points) || [];
-  const ok = list
+  return list
     .filter((p) => p?.pickup_point_id && p.type === "locker" && !p.is_hidden && (p.status == null || p.status === "online") && fitsCompartment(p, size))
     .map((p) => ({ p, d: Number.isFinite(Number(p.lat)) ? km(at, { lat: Number(p.lat), lng: Number(p.lng) }) : Infinity }))
-    .sort((a, b) => a.d - b.d);
-  const best = ok[0];
-  if (!best) return null;
-  const a = best.p.address || {};
-  return {
-    id: best.p.pickup_point_id, provider: best.p.pickup_point_provider || "tcg-locker", name: str(best.p.name),
-    address: (str(a.street_address) && str(a.street_address).toLowerCase().includes(str(a.city).toLowerCase()) ? str(a.street_address) : [a.street_address, a.city].map(str).filter(Boolean).join(", ")) || str(a.entered_address),
-    hours: str(best.p.trading_hours), description: str(best.p.description), km: Number.isFinite(best.d) ? Math.round(best.d * 10) / 10 : null,
-  };
+    .sort((a, b) => a.d - b.d)
+    .map(lockerShape);
 }
+
+/** The nearest Courier Guy locker the parcel fits, online and listed. → { id, provider, name, address, hours, description, km } | null */
+export async function nearestLocker(client, at, size) {
+  return (await nearestLockers(client, at, size))[0] ?? null;
+}
+
+/** Was the address placed by its street (true) or only by its suburb/town (false)? */
+export const placedByStreet = (address, at) => at?.from === "address" || at?.from === tryLabels(address)[0];
 
 const finiteOrNull = (n) => (Number.isFinite(Number(n)) ? Number(n) : null);
 const plain = (v) => JSON.parse(JSON.stringify(v ?? null));
