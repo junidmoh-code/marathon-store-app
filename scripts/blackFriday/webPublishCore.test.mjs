@@ -179,6 +179,12 @@ describe("publishOne — the publisher card's steps", () => {
     expect((await publishOne(PID, deps(db).d, { web: { s: "fail", pubAt: T - RETRY_MAX_MS - 10 } })).outcome).toBe("published");
   });
 
+  it("a refusal the reconciler says a new publish fixes (photo failed processing) is retried after 30 minutes", async () => {
+    const node = { state: "blocked", desiredState: "off", blockedReason: "media: a photo FAILED processing on Shopify — the product must not ship without it; publishing again retries it", condition: EXCELLENT, cleanName: "Sneaker white", photos: [APP, GAL] };
+    expect((await publishOne(PID, deps(world({ node })).d, { web: { s: "fail", pubAt: T - 10 } })).outcome).toBe("failed");
+    expect((await publishOne(PID, deps(world({ node })).d, { web: { s: "fail", pubAt: T - RETRY_MS - 10 } })).outcome).toBe("published");
+  });
+
   it("the app photo follows even when the list already leads with the approved photo", async () => {
     const db = world({ pick: pickOf({ sig: "g1795000000000" }), photo: genPhoto, node: { state: "awaiting", photos: [GEN, APP], media: [{ id: "a1", type: "photo", url: GEN }, { id: "a2", type: "photo", url: APP }] } });
     expect((await publishOne(PID, deps(db).d)).outcome).toBe("published");

@@ -223,7 +223,11 @@ export async function publishOne(pid, deps, { web = null } = {}) {
   // The website refused a publish WE wrote: the same name and the same photos would be refused again.
   // Only a change (a new suggested name, a different photo list) is worth a new try — or, for a refusal
   // whose cause lies outside (stock, a rule since fixed), one more try every RETRY_MAX_MS.
-  if (refusedOurs && !viaProposal && !changed && !(await deps.now() - Number(web.pubAt) > RETRY_MAX_MS)) {
+  // A refusal the reconciler itself says a new publish fixes (a photo that failed processing on Shopify) is
+  // retried after RETRY_MS.
+  const sinceOurs = refusedOurs ? (await deps.now()) - Number(web.pubAt) : 0;
+  const retryable = /publishing again retries it/i.test(blocked || "");
+  if (refusedOurs && !viaProposal && !changed && !(sinceOurs > (retryable ? RETRY_MS : RETRY_MAX_MS))) {
     return { pid, outcome: "failed", why: blocked };
   }
   if (changed || !node?.media) {
