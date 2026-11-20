@@ -18,6 +18,8 @@ const ORDER_FIELDS = `
       variant { id barcode product { id } }
       discountedUnitPriceAfterAllDiscountsSet { shopMoney { amount } }
       originalUnitPriceSet { shopMoney { amount } }
+      originalTotalSet { shopMoney { amount } }
+      discountAllocations { allocatedAmountSet { shopMoney { amount } } }
     }
   }`;
 

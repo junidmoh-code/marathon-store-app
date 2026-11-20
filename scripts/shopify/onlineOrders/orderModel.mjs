@@ -70,6 +70,55 @@ export function totalsOf(node) {
   });
 }
 
+// ── One line = one unit (Junid, 20 Nov 2026) ────────────────────────────────
+// A Shopify item of quantity N becomes N app lines of qty 1, each with the same
+// shopifyLineItemId plus `unit` (1..N) and `units` (N), so every unit is picked,
+// found / not found, requested, offered alternatives and credited on its own.
+// Anything that counts per Shopify line item (the fulfil, a refund) sums the
+// lines that share the id (partialFulfil.mjs packedLineItems).
+
+/** Split `totalCents` over `n` units so they sum back exactly: the first (total mod n) units carry the extra cent. */
+export function allocateCents(totalCents, n) {
+  const count = Math.max(1, Math.floor(Number(n) || 1));
+  const total = Math.round(Number(totalCents) || 0);
+  const base = Math.floor(total / count);
+  const extra = total - base * count;
+  return Array.from({ length: count }, (_, k) => base + (k < extra ? 1 : 0));
+}
+
+/** Units of a Shopify line item still on the order (a removed unit is not one). */
+export const itemQty = (item) => Number(item?.currentQuantity ?? item?.quantity) || 1;
+
+/**
+ * What the customer paid for the whole Shopify line, after every discount, in
+ * cents: the original line total less its discount allocations (line and
+ * order level) when Shopify gave both and no unit was removed; otherwise the
+ * discounted unit price × units.
+ */
+export function lineTotalCents(item) {
+  const qty = itemQty(item);
+  const unit = cents(item?.discountedUnitPriceAfterAllDiscountsSet ?? item?.originalUnitPriceSet);
+  const allocs = item?.discountAllocations;
+  const removed = item?.quantity != null && item?.currentQuantity != null && Number(item.quantity) !== Number(item.currentQuantity);
+  if (item?.originalTotalSet && Array.isArray(allocs) && !removed) {
+    const off = allocs.reduce((s, a) => s + cents(a?.allocatedAmountSet), 0);
+    const total = cents(item.originalTotalSet) - off;
+    // A total that disagrees with the unit price by more than a cent per unit is not trusted.
+    if (total >= 0 && Math.abs(total - unit * qty) <= qty) return total;
+  }
+  return unit * qty;
+}
+
+/** Routed pieces → one piece per unit (qty 1 each), same place and status, in order. */
+export function unitPieces(pieces) {
+  const out = [];
+  for (const p of pieces || []) {
+    const n = Math.max(1, Math.floor(Number(p?.qty) || 1));
+    for (let k = 0; k < n; k++) out.push({ ...p, qty: 1 });
+  }
+  return out;
+}
+
 /**
  * One app line from a routed piece.
  *   item      the Shopify line item node
@@ -77,7 +126,7 @@ export function totalsOf(node) {
  *             the variant is not in /shopify_sync
  *   piece     { qty, locationId, status } from routeLine (absent when unresolved)
  */
-export function buildLine({ index, item, resolved, piece }) {
+export function buildLine({ index, item, resolved, piece, unit = null, units = null, unitPriceCents = null }) {
   const base = {
     lineId: `l${index}`,
     shopifyLineItemId: item.id,
@@ -85,12 +134,14 @@ export function buildLine({ index, item, resolved, piece }) {
     // Kept so a Resolve can look the line up again without Shopify.
     productGid: item.variant?.product?.id || null,
     title: [item.title, item.variantTitle].filter(Boolean).join(" — ") || "Item",
-    unitPriceCents: cents(item.discountedUnitPriceAfterAllDiscountsSet ?? item.originalUnitPriceSet),
+    unitPriceCents: unitPriceCents ?? cents(item.discountedUnitPriceAfterAllDiscountsSet ?? item.originalUnitPriceSet),
+    // Which unit of a quantity-N Shopify item this line is (absent for N = 1).
+    ...(Number(units) > 1 ? { unit: Number(unit), units: Number(units) } : {}),
   };
   if (!resolved?.pid) {
     return compact({
       ...base,
-      qty: Number(item.currentQuantity ?? item.quantity) || 1,
+      qty: unit != null ? 1 : itemQty(item),
       source: { status: LINE_STATUS.UNRESOLVED },
       reason: resolved?.reason || "This Shopify item is not linked to a product in the app",
     });
@@ -109,6 +160,20 @@ export function buildLine({ index, item, resolved, piece }) {
     isFootwear: !!resolved.isFootwear,
     source: compact({ locationId: piece.locationId, status: piece.status }),
   });
+}
+
+/**
+ * Every app line of one Shopify item, one per unit. `pieces` is routeLine's
+ * answer for the item (absent for an unresolved item); `startIndex` is where
+ * the first line lands in the order's lines array.
+ */
+export function buildItemLines({ startIndex, item, resolved, pieces }) {
+  const n = itemQty(item);
+  const prices = allocateCents(lineTotalCents(item), n);
+  const units = resolved?.pid ? unitPieces(pieces) : Array.from({ length: n }, () => null);
+  return units.map((piece, k) => buildLine({
+    index: startIndex + k, item, resolved, piece, unit: k + 1, units: n, unitPriceCents: prices[k] ?? prices[prices.length - 1],
+  }));
 }
 
 export function buildOrder({ node, lines, nowMs, store = "marathon" }) {

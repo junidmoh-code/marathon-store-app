@@ -48,7 +48,7 @@ import { stockSizeKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from ".
 import { productIsFootwear } from "../../../src/utils/footwearLine.js";
 import { availableAt, routeLines, ROUTED_LOCATIONS, STRIP_SHOPS } from "./routing.mjs";
 import {
-  isIngestible, buildLine, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
+  isIngestible, buildLine, buildItemLines, unitPieces, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
   displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder } from "./shopifyOrders.mjs";
@@ -364,13 +364,12 @@ async function buildIngestedOrder(ctx, id, node) {
     routable.map((x) => ({ key: `${x.r.pid}|${x.r.sizeKey}`, qty: Number(x.item.currentQuantity ?? x.item.quantity) || 1, isFootwear: x.r.isFootwear })),
     available,
   );
+  // ONE LINE PER UNIT (Junid, 20 Nov 2026): an item of quantity N becomes N lines of qty 1.
   const lines = [];
   let k = 0;
   items.forEach((item, i) => {
     const r = resolved[i];
-    if (!r.pid) { lines.push(buildLine({ index: lines.length, item, resolved: r })); return; }
-    for (const piece of routed[k]) lines.push(buildLine({ index: lines.length, item, resolved: r, piece }));
-    k++;
+    lines.push(...buildItemLines({ startIndex: lines.length, item, resolved: r, pieces: r.pid ? routed[k++] : null }));
   });
   return buildOrder({ node, lines, nowMs: ctx.now, store: STORE.key });
 }
@@ -662,11 +661,19 @@ async function maintainOrder(ctx, id, order) {
       // The POS "Order it now" record (who tapped, when) stays on the line, and
       // so does escalationGen: the line's next escalation must raise NEW
       // request keys, never adopt a request an earlier chain left behind.
-      const keep = { ...(old.orderNow ? { orderNow: old.orderNow } : {}), ...(Number(old.escalationGen) > 0 ? { escalationGen: Number(old.escalationGen) } : {}) };
+      const keep = { ...(old.orderNow ? { orderNow: old.orderNow } : {}), ...(Number(old.escalationGen) > 0 ? { escalationGen: Number(old.escalationGen) } : {}),
+        // Which unit of its Shopify item the line is, and the line it was split from, stay with it.
+        ...(old.units > 1 ? { unit: old.unit, units: old.units } : {}), ...(old.splitFrom != null ? { splitFrom: old.splitFrom } : {}) };
       if (!r.pid) { changed.set(i, { ...buildLine({ index: i, item, resolved: r }), lineId: old.lineId, routeGen: gen, ...keep }); return; }
-      const pieces = routed[k++];
+      // One line per unit: a line still carrying qty > 1 (an order from before
+      // 20 Nov 2026) comes back as qty-1 lines, the extra units appended.
+      const pieces = unitPieces(routed[k++]);
+      const total = pieces.length;
       pieces.forEach((piece, n) => {
-        const line = { ...buildLine({ index: n === 0 ? i : before.length + appended.length, item, resolved: r, piece }), routeGen: gen };
+        const unitOf = n === 0
+          ? (old.units > 1 ? { unit: old.unit, units: old.units } : total > 1 ? { unit: 1, units: total } : {})
+          : { unit: n + 1, units: total, splitFrom: i };
+        const line = { ...buildLine({ index: n === 0 ? i : before.length + appended.length, item, resolved: r, piece, unitPriceCents: Number(old.unitPriceCents) || 0 }), ...unitOf, routeGen: gen };
         if (n === 0) changed.set(i, { ...line, lineId: old.lineId, ...keep });
         else appended.push(line);
       });

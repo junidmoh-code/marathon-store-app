@@ -154,6 +154,8 @@ describe("ingest", () => {
     ]);
     expect(lineAt(f, 2)).toMatchObject({ barcode: "6001", isFootwear: false, unitPriceCents: 25000, photoUrl: "https://x/tee.jpg" });
     expect(lineAt(f, 0)).toMatchObject({ isFootwear: true });
+    // ONE LINE PER UNIT: each ×2 item is two qty-1 lines on the same Shopify line item, numbered.
+    expect(o.lines.map((l) => [l.shopifyLineItemId.split("/").pop(), l.unit, l.units])).toEqual([["1", 1, 2], ["1", 2, 2], ["2", 1, 2], ["2", 2, 2]]);
     expect(f.read("online_reservations/SNK/8/9001")).toMatchObject({ qty: 2, ref: "#1801", locs: { hub1: 1, hub2: 1 } });
     expect(f.read("online_reservations/TEE/M/9001")).toMatchObject({ qty: 2, locs: { "marathon-pe": 1, hub2: 1 } });
     // The reconciler is told: both products' markers moved.
@@ -191,14 +193,14 @@ describe("ingest", () => {
     const f = fakeDb(world());
     const sh = shopify({ orders: [shopifyOrder({ lineItems: { nodes: [shopifyOrder().lineItems.nodes[1]] } })] });
     await runOrdersPoll({ ...deps(f, sh).deps, displayFeedEnabled: async (shop) => shop !== "marathon-pe" });
-    expect(order(f).lines.map((l) => [l.qty, l.source.locationId])).toEqual([[2, "hub2"]]);
+    expect(order(f).lines.map((l) => [l.qty, l.source.locationId])).toEqual([[1, "hub2"], [1, "hub2"]]);
   });
 
   it("other orders' holds count against availability", async () => {
     const f = fakeDb(world({ online_reservations: { SNK: { 8: { other: { qty: 1, ref: "WEB-1", locs: { hub1: 1 } } } } } }));
     const sh = shopify({ orders: [shopifyOrder({ lineItems: { nodes: [shopifyOrder().lineItems.nodes[0]] } })] });
     await runOrdersPoll(deps(f, sh).deps);
-    expect(order(f).lines.map((l) => [l.qty, l.source.locationId])).toEqual([[2, "hub2"]]);
+    expect(order(f).lines.map((l) => [l.qty, l.source.locationId])).toEqual([[1, "hub2"], [1, "hub2"]]);
   });
 
   it("an unresolvable variant never drops: needs_attention, one email, stamped", async () => {
@@ -224,11 +226,50 @@ describe("ingest", () => {
     const f = fakeDb(world({ stock: {} }));
     const sh = shopify({ orders: [shopifyOrder({ lineItems: { nodes: [shopifyOrder().lineItems.nodes[1]] } })] });
     await runOrdersPoll(deps(f, sh).deps);
-    expect(order(f).lines).toHaveLength(1);
+    // One line per unit: the ×2 item waits as two qty-1 lines.
+    expect(order(f).lines).toHaveLength(2);
     expect(lineAt(f, 0).source).toEqual({ status: "no_stock" });
+    expect(lineAt(f, 1)).toMatchObject({ qty: 1, unit: 2, units: 2, source: { status: "no_stock" } });
     expect(order(f).attention.kind).toBe("no_stock");
     expect(f.read("online_reservations/TEE/M/9001")).toMatchObject({ qty: 2 });
     expect(f.read("online_reservations/TEE/M/9001").locs).toBeUndefined();
+  });
+});
+
+describe("one line per unit (Junid, 20 Nov 2026)", () => {
+  const tee3 = () => ({ ...shopifyOrder().lineItems.nodes[1], quantity: 3, currentQuantity: 3,
+    originalTotalSet: { shopMoney: { amount: "750.00" } },
+    discountAllocations: [{ allocatedAmountSet: { shopMoney: { amount: "0.01" } } }] });
+
+  it("a ×3 item is three qty-1 lines: own place, own hub order or strip entry, prices summing to the line total", async () => {
+    const f = fakeDb(world({ config: { onlineOrders: { enabled: true } } }));
+    const sh = shopify({ orders: [shopifyOrder({ lineItems: { nodes: [tee3()] } })] });
+    await runOrdersPoll(deps(f, sh).deps);
+    const o = order(f);
+    expect(o.lines.map((l) => [l.qty, l.unit, l.units, l.source.locationId, l.source.status, l.unitPriceCents])).toEqual([
+      [1, 1, 3, "marathon-pe", "display", 25000],
+      [1, 2, 3, "hub2", "pick", 25000],
+      [1, 3, 3, "hub2", "pick", 24999],
+    ]);
+    expect(new Set(o.lines.map((l) => l.shopifyLineItemId)).size).toBe(1);
+    // Each hub unit is its own line's hub order (unit 0 of that line), never unit 2 of line 1.
+    const recs = f.read("orders");
+    expect(Object.values(recs).map((r) => [r.onlineLineIndex, r.onlineUnit]).sort()).toEqual([[1, 0], [2, 0]]);
+    expect(o.lines[1].source.orderKeys).toHaveLength(1);
+    expect(o.lines[2].source.orderKeys).toHaveLength(1);
+    expect(f.read("displayChecks_active/marathon-pe/online__9001__0")).toMatchObject({ qty: 1, saleCount: 1, lineIndex: 0 });
+    expect(f.read("online_reservations/TEE/M/9001")).toMatchObject({ qty: 3, locs: { "marathon-pe": 1, hub2: 2 } });
+  });
+
+  it("one hub unit sent, the other not: only that unit's line is handed", async () => {
+    const f = fakeDb(world({ config: { onlineOrders: { enabled: true } } }));
+    const sh = shopify({ orders: [shopifyOrder({ lineItems: { nodes: [tee3()] } })] });
+    await runOrdersPoll(deps(f, sh).deps);
+    const [k1] = order(f).lines[1].source.orderKeys;
+    await f.db.ref(`orders/${k1}/status`).set("ready");
+    await runOrdersPoll(deps(f, shopify()).deps);
+    expect(lineAt(f, 1).source.status).toBe("handed");
+    expect(lineAt(f, 2).source.status).toBe("pick");
   });
 });
 
