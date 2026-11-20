@@ -46,7 +46,9 @@ test("New Arrivals tab: the past 20 days, in stock, newest first, upload date on
   assert.deepEqual(v.newArrivals.map((r) => r.pid), [NEW1, NEW2, GEN, NEWMAIN]);
   assert.equal(v.newArrivals[0].uploadedAt, Number(NEW1.slice(1)));
   assert.equal(v.newArrivals.find((r) => r.pid === NEW2).kind, "headwear", "the build's kind rule");
-  assert.equal(v.newArrivals.find((r) => r.pid === NEW2).canGenerate, false, "New Arrivals' generator frames footwear and clothing only");
+  // Generate on EVERY row (Junid, 20 Nov): a kind New Arrivals' studio cannot frame goes to Black Friday's Generate.
+  assert.equal(v.newArrivals.find((r) => r.pid === NEW2).canGenerate, true);
+  assert.equal(v.newArrivals.find((r) => r.pid === NEW2).naStudio, false, "New Arrivals' studio frames footwear and clothing only");
   assert.equal(v.newArrivals.find((r) => r.pid === GEN).shown, "https://x/gen.jpg", "its New Arrivals AI photo");
   assert.ok(!v.review.some((r) => r.pid === NEWMAIN), "new and 13+: only under New Arrivals");
   assert.deepEqual(v.review.map((r) => r.pid), ["a"]);
