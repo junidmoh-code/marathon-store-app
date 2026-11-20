@@ -281,6 +281,17 @@ describe("drain — the queue and the card's status", () => {
     expect(await read(db, `${WEB}/${PID}`)).toEqual(first);
   });
 
+  it("a list of products: one already settled (off the queue) is not looked at again and takes no slot", async () => {
+    const db = world({ node: { state: "live", liveState: "on", desiredState: "on", condition: EXCELLENT, cleanName: "x" } });
+    await db.ref(`${QUEUE}/${PID}`).set({ approvedAt: T - 50 });
+    const { d } = deps(db);
+    expect((await drain(d, { pids: [PID], force: true })).results.map((r) => r.outcome)).toEqual(["live"]);
+    expect(await read(db, `${QUEUE}/${PID}`)).toBeNull();
+    const again = await drain(d, { pids: [PID], force: true });
+    expect(again.results).toHaveLength(0);
+    expect(again.queued).toBe(0);
+  });
+
   it("entryFor maps each outcome to the card's three words", () => {
     expect(entryFor({ outcome: "live" })).toEqual({ s: "live" });
     expect(entryFor({ outcome: "published" })).toEqual({ s: "pub" });

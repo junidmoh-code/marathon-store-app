@@ -311,7 +311,11 @@ export async function drain(deps, { max = MAX_PUBLISH_PER_RUN, maxAttempts = MAX
   const { db, log = () => {} } = deps;
   const out = { off: false, queued: 0, results: [], published: 0, named: 0 };
   if ((await val(db, SWITCH_OFF)) === true) { out.off = true; return out; }
-  const queue = pids ? Object.fromEntries(await Promise.all(pids.map(async (pid) => [pid, (await val(db, `${QUEUE}/${pid}`)) || {}]))) : ((await val(db, QUEUE)) || {});
+  // Given pids: only those still queued — a product already settled (live / out of stock / gone) left
+  // the queue and is not looked at again, so it never takes an attempt slot from one still waiting.
+  const queue = pids
+    ? Object.fromEntries((await Promise.all(pids.map(async (pid) => [pid, await val(db, `${QUEUE}/${pid}`)]))).filter(([, q]) => q))
+    : ((await val(db, QUEUE)) || {});
   out.queued = Object.keys(queue).length;
   if (!out.queued) return out;
   const t = await deps.now();
