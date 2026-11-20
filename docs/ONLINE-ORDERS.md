@@ -91,8 +91,21 @@ item first, as for any exchange. Not collected by `holdUntil`: Jamie sets `relea
 { lineId: "l0", shopifyLineItemId, variantId, pid, size, sizeKey, qty, title,
   photoUrl, barcode, category, isFootwear, unitPriceCents,
   source: { locationId, status, entryKey?, handedAt?, handedBy? },
-  reason? }
+  unit?, units?, splitFrom?, reason? }
 ```
+
+**One line = one unit** (Junid, 20 Nov 2026). `qty` is always 1: a Shopify
+item of quantity N becomes N lines, each with the same `shopifyLineItemId`,
+`unit` 1..N and `units` N (both absent when N = 1), and its own
+`unitPriceCents` — the line's total after every discount shared out in whole
+cents so the units sum back exactly (`orderModel.mjs` `buildItemLines`). Each
+unit is picked, found / not found, requested, offered alternatives and credited
+on its own. Anything that counts per Shopify line item sums the lines that share
+its id (`partialFulfil.mjs` `packedLineItems`; Jamie's `fulfilPacked.js`), so a
+left-out unit lowers that item's fulfil by one. Orders pulled in before the rule
+were split by `migrate-split-units.mjs` without re-indexing: line i stayed as
+unit 1 and the other units were appended (`splitFrom: i`); their hub orders were
+re-pointed (`onlineLineIndex`) and the order carries `unitSplit`.
 
 `source.status`:
 
@@ -175,8 +188,8 @@ anything else     → marathon-pe → trophy                                    
 nothing           → { locationId: null, status: "no_stock" }  order needs_attention
 ```
 
-A quantity is never split inside one line: qty 2 with one at PE becomes two
-lines (PE ×1, then the next location ×1). Footwear that neither hub holds is
+Every unit is its own line (above): qty 2 with one at PE becomes two lines
+(PE ×1, then the next location ×1), and qty 2 both at PE is two PE lines. Footwear that neither hub holds is
 `no_stock` rather than a pick sent to an empty hub.
 
 A shop whose own Display Checks switch is off is never routed to: it could
