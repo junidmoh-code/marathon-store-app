@@ -167,8 +167,9 @@ test("NO GENERATE PATH HAS ITS OWN MODEL, PROMPT, SIZE OR FINISHING: both callab
   const studioSrc = read("newArrivals/studio/studio.mjs");
   assert.doesNotMatch(studioSrc, /imageSize\s*:\s*["'`]/, "the shared generator takes its size from generation.json");
   assert.doesNotMatch(studioSrc, /deps\.finish|deps\.lossless|toCanvas\(/, "no caller-supplied or plate-sized finishing");
-  assert.equal((studioSrc.match(/await toMaster\(/g) || []).length, 2, "generateOne and generateOther both finish with toMaster");
-  assert.equal((studioSrc.match(/imageSize: generation\.imageSize/g) || []).length, 2, "generateOne and generateOther both ask generation.imageSize");
+  // generateOne, generateOther and (Style Kit Catalogue, 20 Nov 2026) generateKit: the same finishing, the same size.
+  assert.equal((studioSrc.match(/await toMaster\(/g) || []).length, 3, "generateOne, generateOther and generateKit all finish with toMaster");
+  assert.equal((studioSrc.match(/imageSize: generation\.imageSize/g) || []).length, 3, "generateOne, generateOther and generateKit all ask generation.imageSize");
 });
 
 // The fake RTDB stores a ServerValue.increment as its sentinel: read its amount.

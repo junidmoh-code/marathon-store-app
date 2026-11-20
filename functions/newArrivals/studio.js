@@ -44,7 +44,8 @@ const examplesLock = require("./studio/config/examples.lock.json");
 let modsP = null;
 const mods = () => (modsP ||= Promise.all([
   import("./studio/studio.mjs"), import("./studio/gemini-stream.mjs"), import("./studio/record.mjs"), import("./studio/compose.mjs"), import("./studio/split.mjs"), import("./studio/openai-image.mjs"),
-]).then(([studio, gemini, record, compose, split, openai]) => ({ studio, gemini, record, compose, split, openai }))
+  import("./studio/kit.mjs"),
+]).then(([studio, gemini, record, compose, split, openai, kit]) => ({ studio, gemini, record, compose, split, openai, kit }))
   .catch((e) => { modsP = null; throw e; }));
 
 const val = async (db, path) => (await db.ref(path).once("value")).val();
@@ -274,7 +275,7 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
   if (method !== undefined && method !== null && !core.METHODS.includes(method)) throw new HttpsError("invalid-argument", "Method is full or split.");
   if (provider !== undefined && provider !== null && !core.PROVIDERS.includes(provider)) throw new HttpsError("invalid-argument", "Provider is gemini or openai.");
   pid = String(pid);
-  const { studio, gemini, record, compose, split, openai } = await mods();
+  const { studio, gemini, record, compose, split, openai, kit: kitMod } = await mods();
   const now = deps.now || (() => Date.now());
   const t0 = now();
   const product = await val(db, `products/${pid}`);
@@ -313,6 +314,8 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
         upload: (p, buf, mime) => uploadImmutable(bucket, p, buf, mime),
         now,
         log: (m) => console.warn(`newArrivalsStudio: ${pid} — ${m}`),
+        // The Style Kit Catalogue + the drift check (studio/kit.mjs) — the same two deps Black Friday passes.
+        ...(deps.kit === true ? kitMod.studioKitDeps({ db, apiKey: deps.apiKey, fetchBytes: deps.fetchBytes || fetchBytes, log: (m) => console.warn(`newArrivalsStudio: ${pid} — ${m}`) }) : (deps.kit || {})),
         // The split method: Gemini makes the product only; code places it on the plate.
         split: split.splitGenerate,
         cutout: deps.cutout || cutoutForStudio,
@@ -430,7 +433,7 @@ const newArrivalsStudio = onCall(
     const emit = request.acceptsStreaming && response ? (ev) => { response.sendChunk(ev); } : () => {};
     const d = request.data || {};
     return studioGenerate(admin.database(), { pid: d.pid, method: d.method, provider: d.provider }, request.auth?.uid,
-      { bucket: admin.storage().bucket(BUCKET), apiKey: geminiApiKey.value(), openaiKey: openaiApiKey.value() }, emit);
+      { bucket: admin.storage().bucket(BUCKET), apiKey: geminiApiKey.value(), openaiKey: openaiApiKey.value(), kit: true }, emit);
   },
 );
 

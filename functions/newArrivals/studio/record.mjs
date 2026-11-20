@@ -107,6 +107,10 @@ export function generationEntry(res, { at, cost, model, reason, code = null, dra
     plate: res.kind ? `junid-${res.kind}` : null, kind: res.kind || null,
     // What Junid should know about this one (e.g. Split could not place it).
     ...(res.note ? { note: res.note } : {}),
+    // The Style Kit that drove it (Catalogue, 20 Nov 2026), the drift check's answer, and the cut-out fallback.
+    ...(res.styleKit ? { styleKit: res.styleKit } : {}),
+    ...(res.drift ? { drift: res.drift } : {}),
+    ...(res.driftFallback ? { driftFallback: res.driftFallback } : {}),
     // Footwear: placed on the fixed plate by code (true) or kept as Gemini made it (false); Gemini's own photo beside it.
     ...(res.corrected !== undefined ? { corrected: !!res.corrected } : {}),
     ...(res.uncorrected?.url ? { uncorrected: { url: res.uncorrected.url, path: res.uncorrected.path || null } } : {}),

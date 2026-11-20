@@ -290,27 +290,162 @@ export const SHARED_FINISH = "master-jpeg-q92";
 /** One photo for one product, whatever the card. `look`: a staging kind (staging.cjs) for a product with no
  *  New Arrivals plate; omitted, the product's own category decides (footwear / clothing → generateOne). */
 export async function generate({ item, product, genId, method = "full", provider = "gemini", look = null, input = "photo", placeNote = false, secondRef = null, deps, emit = () => {} }) {
+  // THE STYLE KIT CATALOGUE (Junid, 20 Nov 2026): the kit for this product's catalogue category. A dedicated
+  // kit with enabled reference photos (Caps, Perfumes, Bags, a sub-category …) drives the photo (generateKit);
+  // a product that falls through to the house-style default keeps the request below, unchanged.
+  let kit = null;
+  if (deps.styleKitFor) {
+    try { const k = await deps.styleKitFor(product || { categoryKey: item.categoryKey, name: item.name }, item.pid); if (k?.dedicated && k.refs?.length) kit = k; }
+    catch (e) { deps.log?.(`the Style Kit could not be read (${String(e.message).slice(0, 80)}) — using the house look`); }
+  }
   // (The retry's drafts get their own names: the first attempt's are already stored and Storage never overwrites.)
-  const runAs = (inp, gid) => (look && staging.hasStaging(look)
-    ? generateOther({ item, product, genId: gid, kind: look, input: inp, placeNote, deps, emit })
-    : generateOne({ item, product, genId: gid, method, provider, input: inp, placeNote, secondRef, deps, emit }));
-  const run = (inp) => runAs(inp, genId);
+  const runAs = (inp, gid) => (kit
+    ? generateKit({ item, product, genId: gid, kit, input: inp, placeNote, deps, emit })
+    : look && staging.hasStaging(look)
+      ? generateOther({ item, product, genId: gid, kind: look, input: inp, placeNote, deps, emit })
+      : generateOne({ item, product, genId: gid, method, provider, input: inp, placeNote, secondRef, deps, emit }));
   // THE ORIGINAL GIVEN BACK (Junid, 20 Nov 2026): when the model hands back the staff photo, the input is cleaned
   // — the product cut out of the staff photo (background removal) and put on plain white — and the SAME request
   // (prompt, plate, model, size) is made ONCE more with that cut-out in place of the raw photo. Never more than once.
-  try { return await run(input); }
-  catch (e) {
-    if (!e.echo || input === "cutout" || !deps.cutout) throw e;
-    try { emit({ type: "status", text: "It gave back the original photo — cleaning the photo and trying once more…" }); } catch { /* view only */ }
-    let res;
-    try { res = await runAs("cutout", `${genId}-cutout`); }
-    catch (e2) {
-      // No clean cut-out could be made: the first answer's refusal stands, and the card is told why.
-      if (e2.noCutout) { e.cutoutFailed = true; throw e; }
-      e2.wastedUsages = [e.usage || null, ...(e2.wastedUsages || [])]; throw e2;
+  const attempt = async (gid) => {
+    try { return await runAs(input, gid); }
+    catch (e) {
+      if (!e.echo || input === "cutout" || !deps.cutout) throw e;
+      try { emit({ type: "status", text: "It gave back the original photo — cleaning the photo and trying once more…" }); } catch { /* view only */ }
+      let res;
+      try { res = await runAs("cutout", `${gid}-cutout`); }
+      catch (e2) {
+        // No clean cut-out could be made: the first answer's refusal stands, and the card is told why.
+        if (e2.noCutout) { e.cutoutFailed = true; throw e; }
+        e2.wastedUsages = [e.usage || null, ...(e2.wastedUsages || [])]; throw e2;
+      }
+      return { ...res, echoFallback: { firstDiff: e.diff ?? null }, wastedUsages: [e.usage || null] };
     }
-    return { ...res, echoFallback: { firstDiff: e.diff ?? null }, wastedUsages: [e.usage || null] };
+  };
+  const first = withKit(await attempt(genId), kit);
+  return driftGuard({ first, again: async () => withKit(await attempt(`${genId}-drift`), kit), item, product, deps, emit });
+}
+
+/** Stamp which Style Kit made the photo on its result (and so on the record). Pure. */
+function withKit(res, kit) {
+  return kit ? { ...res, styleKit: { kit: kit.kit, label: kit.label, refs: kit.refIds?.length ?? kit.refs.length } } : res;
+}
+
+// ── THE DRIFT GUARD (Junid, 20 Nov 2026) ────────────────────────────────────
+// Every generated photo is compared with the ORIGINAL staff photo. Drifted (a different colour, logo, shape or
+// product) → ONE more generation; drifted again → the product cut out of its own photo, on white. The check
+// that cannot run is never a drift; the guard can never lose a photo that was made.
+export const DRIFT_NOTE = "The generated photo changed the product twice, so this is the product cut out of its own photo — tap Regenerate to try again.";
+export async function driftGuard({ first, again, item, product, deps, emit = () => {} }) {
+  if (!deps.driftCheck || !first?.generated?.url) return first;
+  const say = (text) => { try { emit({ type: "status", text }); } catch { /* view only */ } };
+  let raw;
+  try { raw = (await deps.fetchBytes(originalUrlOf(item, product))).buffer; } catch { return first; }
+  const check = async (res) => {
+    try { return await deps.driftCheck(raw, (await deps.fetchBytes(res.generated.url)).buffer); }
+    catch (e) { return { checked: false, drift: false, issues: String(e.message || e).slice(0, 80) }; }
+  };
+  const tag = (d) => (d.checked ? (d.drift ? "drifted" : "same") : "unchecked");
+  say("Checking the product against the original photo…");
+  const d1 = await check(first);
+  if (!d1.drift) return { ...first, drift: { first: tag(d1) } };
+  deps.log?.(`the photo drifted from the original (${d1.issues}) — trying once more`);
+  say("The product changed in the photo — trying once more…");
+  const wasted1 = [...(first.wastedUsages || []), first.usage || null];
+  let second;
+  try { second = await again(); }
+  catch (e) {
+    // The retry failed outright: fall back to the cut-out rather than show a drifted product.
+    second = null; deps.log?.(`the drift retry failed (${String(e.message).slice(0, 80)})`);
   }
+  if (second) {
+    const d2 = await check(second);
+    if (!d2.drift) return { ...second, drift: { first: "drifted", issues: d1.issues || "", retry: tag(d2) }, wastedUsages: [...wasted1, ...(second.wastedUsages || [])] };
+    d1.retryIssues = d2.issues || "";
+  }
+  say("It changed the product again — using the product cut out of its own photo…");
+  const base = second || first;
+  try {
+    const up = await cutoutResult({ raw, item, deps });
+    const wasted = second ? [...wasted1, ...(second.wastedUsages || []), second.usage || null] : wasted1;
+    // usage null: every paid image above is in wastedUsages, so the caller still counts what was spent.
+    const out = { ...base, generated: up, usage: null, driftFallback: "cutout", note: DRIFT_NOTE, draftFiles: [],
+      drift: { first: "drifted", issues: d1.issues || "", ...(second ? { retry: "drifted", retryIssues: d1.retryIssues || "" } : { retry: "failed" }) }, wastedUsages: wasted };
+    delete out.uncorrected; delete out.corrected; // the cut-out is not a corrected generation
+    return out;
+  } catch (e) {
+    // No clean cut-out: keep the generated photo (it was paid for) and say plainly that it drifted.
+    deps.log?.(`no cut-out for the drift fallback (${String(e.message).slice(0, 80)})`);
+    return { ...base, drift: { first: "drifted", issues: d1.issues || "", retry: second ? "drifted" : "failed", fallback: "no-cutout" },
+      note: "The check says this photo may not match the real product (colour, logo or shape) and no clean cut-out could be made — check it by eye.", ...(second ? { wastedUsages: [...wasted1, ...(second.wastedUsages || [])] } : {}) };
+  }
+}
+
+/** The product cut out of the staff photo, on white, at full resolution — stored like any generated photo. */
+async function cutoutResult({ raw, item, deps }) {
+  if (!deps.cutout) throw new Error("no cut-out tool");
+  const c = await deps.cutout(raw);
+  if (!c?.png) throw new Error("the product could not be cut out cleanly");
+  const solid = await cleanCutout(c.png);
+  const m = await sharp(solid).metadata();
+  const pad = Math.round(Math.max(m.width, m.height) * 0.08);
+  const out = await sharp(solid).flatten({ background: "#ffffff" }).extend({ top: pad, bottom: pad, left: pad, right: pad, background: "#ffffff" })
+    .jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer();
+  return withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${deps.now()}.jpg`, out, "image/jpeg"));
+}
+
+/**
+ * A product whose catalogue category has its OWN Style Kit (Caps, Perfumes, Bags, Sunglasses, a sub-category …):
+ * one image call with the kit's locked prompt, the real product photo (and its box, outside clothing) and the
+ * kit's first 6 enabled reference photos — the references set scene, angle, lighting and framing only. Same
+ * model, size and finishing (toMaster: full resolution, JPEG q92) as every other shared generation.
+ */
+export const KIT_REFS_LABEL = "STYLE REFERENCES — copy ONLY the scene, backdrop, camera angle, lighting and framing from these. The products in them are DIFFERENT items: never copy their design, colour, logo or shape. The product in the result comes only from the PRODUCT photo above:";
+export async function generateKit({ item, product, genId, kit, input = "photo", placeNote = false, deps, emit = () => {} }) {
+  const say = (ev) => { try { emit(ev); } catch { /* the card's view never affects the generation */ } };
+  const { generation } = deps;
+  const model = generation.imageModel;
+  const originalUrl = originalUrlOf(item, product);
+  if (!originalUrl) throw new StudioRefusal("the product has no photo to work from");
+  say({ type: "status", text: `Reading the original photo… (Style Kit: ${kit.label})` });
+  const { raw, orig } = await sourceFor({ deps, originalUrl, input, say });
+  let box = null;
+  if (kit.promptFamily !== "clothing" && product?.photoBoxUrl) {
+    try { box = await forModel((await withRetries(() => deps.fetchBytes(product.photoBoxUrl), { tries: 2 })).buffer); }
+    catch (e) { deps.log?.(`its own box photo could not be read (${String(e.message).slice(0, 80)})`); }
+  }
+  const refsJ = await Promise.all(kit.refs.map((b) => forModel(b)));
+  const name = product?.name || item.name || "";
+  const promptText = [kit.prompt, name ? `The product is: ${name}.` : "", deps.conditionClause].filter(Boolean).join("\n\n");
+  const parts = [
+    textPart(promptText),
+    ...(placeNote ? [textPart("The PRODUCT photo below is a cut-out on plain white, NOT a finished photo: place this exact item in the reference scene.")] : []),
+    textPart("PRODUCT — the real item to photograph:"), imagePart(orig),
+    ...(box ? [textPart("PRODUCT'S BOX — reproduce this exact box:"), imagePart(box)] : []),
+    textPart(KIT_REFS_LABEL), ...refsJ.map((r) => imagePart(r)),
+  ];
+  const rm = await sharp(kit.refs[0]).metadata().catch(() => ({}));
+  const frame = rm.width && rm.height ? { width: rm.width, height: rm.height } : { width: 1, height: 1 };
+  const imageConfig = { aspectRatio: closestAspect(frame.width, frame.height), imageSize: generation.imageSize };
+  say({ type: "status", text: "Gemini is working…" });
+  const gen = await deps.image(model, parts, imageConfig, { onEvent: (ev) => { if (ev && ev.type === "thought" && ev.text) say({ type: "thought", text: ev.text }); } });
+  await refuseEcho({ out: gen.buffer, raw, sent: orig, plate: null, usage: gen.usage });
+  say({ type: "status", text: "Finishing the photo…" });
+  let generated, gm = {};
+  try {
+    gm = await sharp(gen.buffer).metadata().catch(() => ({}));
+    if (!gm.width || !gm.height) throw new Error("the image model's answer was not a readable image");
+    // THE ONE FINISHING STEP: full resolution, JPEG q92, cropped (never stretched) to the asked frame.
+    const out = await toMaster(gen.buffer, { width: RATIOS[imageConfig.aspectRatio] * 1000, height: 1000 });
+    const stamp = deps.now();
+    generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}.jpg`, out, "image/jpeg"));
+  } catch (e) { e.paid = true; e.usage = gen.usage || null; throw e; }
+  return {
+    generated, kind: `kit-${kit.kit}`, method: "full", provider: "gemini", model, input,
+    sourceUrl: sourcePhoto.currentSourceUrl(item.pid, product, item),
+    promptVersion: `stylekit-${kit.kit}`, layersUsed: [], box: box ? { mode: "own", brand: null, source: "own" } : null, draftFiles: [], usage: gen.usage || null, measurements: null,
+    trace: { promptText, request: gen.request || null, usage: gen.usage || null, requestMs: gen.requestMs ?? null, resolution: gm.width ? { width: gm.width, height: gm.height } : null, styleKit: { kit: kit.kit, refIds: kit.refIds || [] } },
+  };
 }
 
 // ── THE CLEANED INPUT AND THE ECHO CHECK (20 Nov 2026) ──────────────────────

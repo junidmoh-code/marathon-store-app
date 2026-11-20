@@ -161,6 +161,8 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
         image: e.atModelCall(db, deps.image || ((m, p, c, o) => gemini.streamImage(m, p, c, { ...o, apiKey: deps.apiKey }))),
         cutout: deps.cutout || e.cutout,
         upload, now, log: (m) => console.warn(`bfGenerate: ${pid} — ${m}`),
+        // The Style Kit Catalogue + the drift check (studio/kit.mjs) — the same two deps New Arrivals passes.
+        ...(deps.kit === true ? mods.kit.studioKitDeps({ db, apiKey: deps.apiKey, fetchBytes: deps.fetchBytes || e.fetchBytes, log: (m) => console.warn(`bfGenerate: ${pid} — ${m}`) }) : (deps.kit || {})),
       },
     });
   } catch (err) {
@@ -199,6 +201,7 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
     costZar: Number.isFinite(cost.zar) ? cost.zar : null, costEstimated: !!cost.estimated,
     ...(final || {}), ...(res.note ? { note: res.note } : {}),
     ...(source ? { fromSrc: source.id, fromSrcKind: source.src } : {}),
+    ...(res.styleKit ? { styleKit: res.styleKit } : {}), ...(res.drift ? { drift: res.drift } : {}), ...(res.driftFallback ? { driftFallback: res.driftFallback } : {}),
   };
   for (const [k, v] of Object.entries(gen)) if (v === null || v === undefined) delete gen[k];
   const ref = db.ref(`${core.ROOT}/photos/${pid}`);
@@ -232,7 +235,7 @@ const bfGenerateFn = onCall(
     const d = request.data || {};
     const e = await engine();
     return bfGenerate(admin.database(), { pid: d.pid, section: d.section, input: d.input === "cutout" ? "cutout" : "photo", place: d.place === true, secondRefUrl: typeof d.secondRefUrl === "string" ? d.secondRefUrl : null }, request.auth.uid,
-      { bucket: admin.storage().bucket(e.BUCKET), apiKey: geminiApiKey.value(), naRow: (pid) => naRow(admin.database(), pid) }, emit);
+      { bucket: admin.storage().bucket(e.BUCKET), apiKey: geminiApiKey.value(), naRow: (pid) => naRow(admin.database(), pid), kit: true }, emit);
   },
 );
 
