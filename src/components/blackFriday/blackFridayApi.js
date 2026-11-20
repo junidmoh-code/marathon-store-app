@@ -5,7 +5,9 @@ import { httpsCallable } from "firebase/functions";
 import { functions, auth, app } from "../../firebase";
 import { streamCallable } from "../newArrivals/studioStream";
 
-const call = (name) => async (data) => (await httpsCallable(functions, name)(data)).data;
+const call = (name, opts) => async (data) => (await httpsCallable(functions, name, opts)(data)).data;
+// A full-resolution photo over a phone connection, or a web search: up to 3 minutes.
+const source = call("bfPhotoSource", { timeout: 180_000 });
 const set = call("bfCampaignSet");
 
 export const blackFridayApi = {
@@ -17,7 +19,14 @@ export const blackFridayApi = {
   reject: (pid, section) => set({ action: "reject", pid, section }),
   // Back to To review: undo a rejection, or take back an approval.
   reset: (pid) => set({ action: "reset", pid }),
-  use: (pid, use, genId = null, section) => set({ action: "use", pid, use, section, ...(genId ? { genId } : {}) }),
+  // Choose the photo a product shows: "current" (app: true = the APP photo again, and Generate starts from it
+  // again) or "generated" with a genId (an AI photo or one of his own). approve: true (Approved tab) approves it too.
+  use: (pid, use, genId = null, section, { app = false, approve = false } = {}) => set({ action: "use", pid, use, section, ...(genId ? { genId } : {}), ...(app ? { app: true } : {}), ...(approve ? { approve: true } : {}) }),
+  // JUNID'S OWN PHOTO (20 Nov 2026), only on his tap: Replace photo (a photo from his iPhone, full resolution,
+  // base64) and Find online (up to 6 candidates; the one he taps is stored). Either becomes the product's source.
+  photoUpload: (pid, imageBase64) => source({ action: "upload", pid, imageBase64 }),
+  findOnline: (pid) => source({ action: "search", pid }),
+  pickOnline: (pid, c) => source({ action: "pick", pid, imageUrl: c.imageUrl, pageUrl: c.pageUrl || null, site: c.site || null }),
   // sigs: { pid: sig } of the 30+ rows the card shows in To review.
   approveBig: (sigs) => set({ action: "approveBig", sigs }),
   approveStyle: (kind) => set({ action: "approveStyle", kind }),

@@ -12,6 +12,14 @@
 // the small "Rejected (n)" link at the bottom. Grouping into albums happens
 // only when posting. NOTHING POSTS until Junid confirms a schedule ("Schedule
 // posting" on the Approved tab). Only the STOCK price is ever shown.
+// JUNID, 20 NOV 2026: Generate / Regenerate on EVERY product in all three tabs,
+// whatever its kind. "Replace photo" (his iPhone's picker, full resolution) and
+// "Find online" (up to 6 photos of this exact product from the web, nothing
+// used until he taps one) make that photo the product's source on the card;
+// Generate then starts from it. Tap a product's photo to swipe through every
+// photo it has (the app photo is always kept) and pick the one it posts with.
+// A product with no stock price (R0) shows "No price, set price first" instead
+// of Approve, and an approved one with no price is held back from posting.
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { setUpdateBusy } from "../../update/updateChecker";
 import { FONT, BG, GLASS, GREEN, GRAY, AMBER, RED, BLUE_L, bGreen, bGray, bBlue } from "../stock/ui";
@@ -35,23 +43,139 @@ const price = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number
 export function rowActions(r) {
   const na = r.tab === "newArrivals";
   const review = r.tab === "review" || na;
-  // An approved New Arrival's photo is the one New Arrivals approved: no photo switching here (Back to review first).
-  if (r.tab === "approved" && r.src === "na") return { approve: false, approveDisabled: false, reject: true, backToReview: true, useCurrent: false, useCurrentPrimary: false, useAi: false, generate: false, regenerate: false, approveLook: false };
-  const canGen = r.canGenerate !== false;
+  const noPrice = !!r.noPrice;
+  // A New Arrival with no Black Friday photo chosen: its buttons are New Arrivals' own.
+  const naOwn = na && !r.bfPhoto && !r.srcId;
+  // The photo the row shows is not his own photo yet: "Use current photo" switches to it (= the replaced one).
+  const toSource = !!r.srcId && r.sig !== r.srcId;
   return {
-    approve: review,
+    // NO PRICE, NO APPROVE (Junid, 20 Nov): the row says "No price, set price first" instead.
+    approve: review && !noPrice,
     approveDisabled: !!r.generating,
+    noPrice,
     reject: true,
     backToReview: !review,
-    // A New Arrival: "Use current photo" approves it with the app's photo (New Arrivals' own button).
-    useCurrent: na ? true : r.use === "generated" || !r.styleApproved,
-    useCurrentPrimary: na ? !r.generatedUrl : !r.styleApproved && r.use !== "generated",
-    useAi: !na && r.use === "current" && !!r.generatedUrl,
-    generate: review && canGen && !r.generations,
-    regenerate: review && canGen && r.generations > 0,
-    approveLook: !na && !r.styleApproved && r.generations > 0,
+    // naOwn: "Use current photo" approves it with the app's photo (New Arrivals' own button). With his own photo
+    // on the card it is THAT photo. On the Approved tab, photos are switched from the photo viewer (tap the photo).
+    useCurrent: review && (toSource || (!r.srcId && (naOwn ? !noPrice : r.use === "generated"))),
+    useCurrentPrimary: review && (toSource || (naOwn && !r.generatedUrl)),
+    useAi: review && !!r.aiGenId && r.sig !== r.aiGenId && !naOwn,
+    // GENERATE ON EVERY ROW (Junid, 20 Nov): every tab, every kind — no category gate.
+    generate: !r.generations,
+    regenerate: r.generations > 0,
+    replace: true,
+    findOnline: true,
   };
 }
+
+/** The id of the photo the row shows, as the photo viewer names them ("app", "na", or a photo id). Pure. */
+export function shownId(r) {
+  if (r.tab === "newArrivals" && !r.bfPhoto) return r.generatedUrl ? "na" : "app";
+  if (r.src === "na" && r.tab === "approved") return r.shown === r.photo ? "app" : "na";
+  return r.use === "generated" && r.sig && r.sig !== "current" ? r.sig : "app";
+}
+
+const SOURCE_BADGE = { upload: "YOURS", web: "WEB" };
+/**
+ * The photo he picked, as base64 at FULL resolution: a JPEG, PNG or WebP exactly as the phone gave it; any
+ * other format (HEIC from Files, …) decoded by the browser and re-encoded as a JPEG at the same size.
+ */
+export async function photoToBase64(file) {
+  const asIs = /^image\/(jpe?g|png|webp)$/i.test(file.type || "") || (!file.type && /\.(jpe?g|png|webp)$/i.test(file.name || ""));
+  let blob = file;
+  if (!asIs) {
+    const bmp = await createImageBitmap(file);
+    const c = document.createElement("canvas");
+    c.width = bmp.width; c.height = bmp.height;
+    c.getContext("2d").drawImage(bmp, 0, 0);
+    blob = await new Promise((ok, no) => c.toBlob((b) => (b ? ok(b) : no(new Error("That photo could not be read — choose a JPEG or PNG."))), "image/jpeg", 0.95));
+  }
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/** Every photo a product has, one per screen width — swipe (or the arrows) — and "Use this photo". */
+export function PhotoViewer({ r, busy, onUse, onClose }) {
+  const items = r.gallery && r.gallery.length ? r.gallery : (r.shown ? [{ id: "app", url: r.shown, label: "Photo" }] : []);
+  const showing = shownId(r);
+  const strip = useRef(null);
+  const [i, setI] = useState(() => Math.max(0, items.findIndex((g) => g.id === showing)));
+  useEffect(() => { const el = strip.current; if (el && el.clientWidth) el.scrollLeft = i * el.clientWidth; }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const go = (n) => { const k = Math.max(0, Math.min(items.length - 1, n)); setI(k); const el = strip.current; if (el && el.scrollTo) el.scrollTo({ left: k * el.clientWidth, behavior: "smooth" }); };
+  const g = items[i] || null;
+  const na = r.tab === "newArrivals";
+  // What "Use this photo" does for the photo on screen (null = nothing to do).
+  const use = !g || g.id === showing ? null
+    : g.id === "app" && na ? { label: r.noPrice ? null : "Approve with this photo", kind: "naApp" }
+    : g.id === "na" ? (na ? { label: "Use this photo", kind: "naBack" } : null)
+    : { label: r.tab === "approved" ? "Use this photo (approves it)" : "Use this photo", kind: g.id === "app" ? "app" : "gen" };
+  return (
+    <div data-testid="viewer" onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.9)", zIndex: 60, display: "flex", flexDirection: "column" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", alignItems: "center", gap: 8, padding: "calc(10px + env(safe-area-inset-top)) 12px 8px" }}>
+        <div style={{ flex: 1, fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</div>
+        <button data-testid="viewer-close" onClick={onClose} style={{ ...bGray, minHeight: 36, padding: "0 12px" }} aria-label="Close">✕</button>
+      </div>
+      <div ref={strip} data-testid="viewer-strip" onClick={(e) => e.stopPropagation()} onScroll={(e) => { const el = e.currentTarget; if (el.clientWidth) setI(Math.round(el.scrollLeft / el.clientWidth)); }}
+        style={{ flex: 1, display: "flex", overflowX: "auto", scrollSnapType: "x mandatory", WebkitOverflowScrolling: "touch", scrollbarWidth: "none" }}>
+        {items.map((x) => (
+          <div key={x.id} style={{ flex: "0 0 100%", scrollSnapAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", padding: 8, boxSizing: "border-box" }}>
+            <img src={x.url} alt={x.label} draggable={false} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", ...NO_CALLOUT }} />
+          </div>
+        ))}
+      </div>
+      <div onClick={(e) => e.stopPropagation()} style={{ padding: "8px 12px calc(12px + env(safe-area-inset-bottom))", display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button data-testid="viewer-prev" disabled={i === 0} onClick={() => go(i - 1)} style={{ ...bGray, minHeight: 40, padding: "0 14px" }} aria-label="Previous photo">‹</button>
+          <div data-testid="viewer-label" style={{ flex: 1, textAlign: "center", fontSize: 13 }}>
+            {g ? g.label : ""} · {i + 1}/{items.length}{g && g.id === showing ? " · showing" : ""}
+            {g && g.pageUrl && <div style={{ fontSize: 11, color: GRAY, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.pageUrl}</div>}
+          </div>
+          <button data-testid="viewer-next" disabled={i >= items.length - 1} onClick={() => go(i + 1)} style={{ ...bGray, minHeight: 40, padding: "0 14px" }} aria-label="Next photo">›</button>
+        </div>
+        {use && use.label && <button data-testid="viewer-use" disabled={busy} onClick={() => onUse(r, g, use.kind)} style={{ ...bGreen, minHeight: 48, fontSize: 15 }}>{use.label}</button>}
+      </div>
+    </div>
+  );
+}
+
+/** "Find online": up to 6 photos of this product from the web, with the site under each. Nothing is used until he taps one. */
+export function FindOnline({ r, state, onPick, onClose }) {
+  const { loading, error, result, picking } = state || {};
+  return (
+    <div data-testid="find" onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 60, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ ...GLASS, background: "#151924", width: "100%", maxWidth: 560, maxHeight: "88vh", overflowY: "auto", padding: 14, borderRadius: "16px 16px 0 0", paddingBottom: "max(14px, env(safe-area-inset-bottom))" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 1, fontSize: 14, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Find online · {r.name}</div>
+          <button data-testid="find-close" onClick={onClose} style={{ ...bGray, minHeight: 36, padding: "0 12px" }} aria-label="Close">✕</button>
+        </div>
+        {loading && <div data-testid="find-loading" style={{ color: GRAY, fontSize: 13, padding: "24px 0", textAlign: "center" }}>Searching the web for this exact product… (about 20 seconds)</div>}
+        {error && <div data-testid="find-error" style={{ color: RED, fontSize: 13 }}>{error}</div>}
+        {result && <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>Searched: {result.query}. Tap the photo to use — nothing is used until you tap one.</div>}
+        {result && !result.candidates.length && <div data-testid="find-none" style={{ color: AMBER, fontSize: 13 }}>No photos of this product were found online. Try Replace photo instead.</div>}
+        {result && result.candidates.length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {result.candidates.map((c, k) => (
+              <button key={c.imageUrl} data-testid={`cand-${k}`} disabled={!!picking} onClick={() => onPick(r, c)} style={{ background: "#0b0d12", border: `2px solid ${picking === c.imageUrl ? BLUE_L : "rgba(255,255,255,.08)"}`, borderRadius: 10, padding: 0, overflow: "hidden", color: "#fff", textAlign: "left", cursor: "pointer" }}>
+                <div style={{ aspectRatio: "1 / 1", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <img src={c.thumb || c.imageUrl} alt={`From ${c.site}`} referrerPolicy="no-referrer" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                </div>
+                <div style={{ padding: "4px 6px", fontSize: 11 }}>
+                  <div data-testid={`cand-site-${k}`} style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.site}</div>
+                  <div style={{ color: GRAY }}>{picking === c.imageUrl ? "Saving at full size…" : `${c.width}×${c.height}`}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+        {/* Google requires its search suggestions to be shown with results grounded on Google Search. */}
+        {result && result.entryPoint && <iframe title="Google Search suggestions" data-testid="find-google" sandbox="allow-popups allow-popups-to-escape-sandbox" srcDoc={result.entryPoint} style={{ width: "100%", height: 64, border: "none", marginTop: 10, background: "transparent" }} />}
+      </div>
+    </div>
+  );
+}
+
 const dayLabel = (ms) => (ms ? new Date(ms).toLocaleDateString("en-ZA", { day: "numeric", month: "short", timeZone: "Africa/Johannesburg" }) : "");
 
 // Long-press (iPhone Safari, Chrome, a mouse held down): 500 ms opens the quick popup.
@@ -94,11 +218,13 @@ function Row({ r, busy, gen, on, selectMode, selected }) {
     <div data-testid={`row-${r.pid}`} {...press} onClick={() => { if (selectMode && !wasLong()) on.toggle(r); }}
       style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,.06)", ...NO_CALLOUT, ...(selectMode ? { cursor: "pointer", background: selected ? "rgba(74,127,255,.18)" : "transparent" } : {}) }}>
       {selectMode && <div data-testid={`sel-${r.pid}`} aria-checked={!!selected} role="checkbox" style={{ flex: "0 0 22px", alignSelf: "center", width: 22, height: 22, borderRadius: 6, border: `2px solid ${selected ? BLUE_L : GRAY}`, background: selected ? BLUE_L : "transparent", color: "#000", textAlign: "center", lineHeight: "18px", fontWeight: 800 }}>{selected ? "✓" : ""}</div>}
-      <div style={{ position: "relative", width: 72, height: 96, flex: "0 0 72px", borderRadius: 8, overflow: "hidden", background: "#0b0d12", ...NO_CALLOUT }}>
+      <button type="button" data-testid={`thumb-${r.pid}`} aria-label={`Photos of ${r.name}`} onClick={(e) => { if (selectMode) return; e.stopPropagation(); on.gallery(r); }}
+        style={{ position: "relative", width: 72, height: 96, flex: "0 0 72px", borderRadius: 8, overflow: "hidden", background: "#0b0d12", border: "none", padding: 0, cursor: selectMode ? "inherit" : "pointer", pointerEvents: selectMode ? "none" : "auto", ...NO_CALLOUT }}>
         {r.shown && <img src={r.shown} alt={r.name} loading="lazy" draggable={false} onContextMenu={(e) => e.preventDefault()} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", pointerEvents: "none", ...NO_CALLOUT }} />}
-        {r.use === "generated" && <span style={{ position: "absolute", top: 3, right: 3, background: BLUE_L, color: "#000", borderRadius: 5, padding: "0 4px", fontSize: 9, fontWeight: 700 }}>AI</span>}
+        {r.use === "generated" && <span data-testid={`badge-${r.pid}`} style={{ position: "absolute", top: 3, right: 3, background: SOURCE_BADGE[r.shownFrom] ? AMBER : BLUE_L, color: "#000", borderRadius: 5, padding: "0 4px", fontSize: 9, fontWeight: 700 }}>{SOURCE_BADGE[r.shownFrom] || "AI"}</span>}
+        {(r.gallery || []).length > 1 && <span style={{ position: "absolute", bottom: 3, left: 3, background: "rgba(0,0,0,.65)", color: "#fff", borderRadius: 5, padding: "0 4px", fontSize: 9 }}>{r.gallery.length} photos</span>}
         {gen && <div data-testid={`gen-${r.pid}`} style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 4, fontSize: 10, textAlign: "center" }}>{gen}</div>}
-      </div>
+      </button>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</div>
         <div style={{ fontSize: 12, color: "#dfe7ff" }}>{price(r.price)} · {r.qty ? `${r.qty} on hand` : "stock checked at posting"}{r.na && !r.uploadedAt ? " · New" : ""}</div>
@@ -111,12 +237,14 @@ function Row({ r, busy, gen, on, selectMode, selected }) {
         {r.repostQueued && <div data-testid={`repost-queued-${r.pid}`} style={{ fontSize: 11, color: BLUE_L }}>Repost queued for the next slot</div>}
         {!selectMode && <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
           {a.approve && <button data-testid={`approve-${r.pid}`} disabled={busy || a.approveDisabled} onClick={() => on.approve(r)} style={{ ...bGreen, padding: "4px 10px", fontSize: 11, minHeight: 28 }}>Approve</button>}
+          {a.noPrice && <span data-testid={`noprice-${r.pid}`} style={{ alignSelf: "center", color: AMBER, fontSize: 11, fontWeight: 700, padding: "0 4px" }}>No price, set price first</span>}
           {a.backToReview && <button data-testid={`back-${r.pid}`} disabled={busy} onClick={() => on.reset(r)} style={sm}>Back to review</button>}
           <button data-testid={`reject-${r.pid}`} disabled={busy} onClick={() => on.reject(r)} style={{ ...sm, color: RED }}>Reject</button>
           {a.useCurrent && <button data-testid={`use-current-${r.pid}`} disabled={busy} onClick={() => on.use(r, "current")} style={a.useCurrentPrimary ? { ...bBlue, padding: "4px 8px", fontSize: 11, minHeight: 28 } : sm}>Use current photo</button>}
           {a.useAi && <button data-testid={`use-ai-${r.pid}`} disabled={busy} onClick={() => on.use(r, "generated")} style={sm}>Use AI photo</button>}
-          {(a.generate || a.regenerate) && <button data-testid={`generate-${r.pid}`} disabled={!!gen || r.generating} onClick={() => on.generate(r)} style={r.styleApproved && a.generate ? { ...bBlue, padding: "4px 8px", fontSize: 11, minHeight: 28 } : sm}>{a.regenerate ? "Regenerate" : "Generate"}</button>}
-          {a.approveLook && <button data-testid={`look-${r.pid}`} disabled={busy} onClick={() => on.approveLook(r)} style={sm}>Approve the AI look for {KIND[r.kind] || r.kind}</button>}
+          {(a.generate || a.regenerate) && <button data-testid={`generate-${r.pid}`} disabled={!!gen || r.generating} onClick={() => on.generate(r)} style={a.generate ? { ...bBlue, padding: "4px 8px", fontSize: 11, minHeight: 28 } : sm}>{a.regenerate ? "Regenerate" : "Generate"}{r.srcId ? " from your photo" : ""}</button>}
+          {a.replace && <button data-testid={`replace-${r.pid}`} disabled={!!gen} onClick={() => on.replace(r)} style={sm}>Replace photo</button>}
+          {a.findOnline && <button data-testid={`find-${r.pid}`} disabled={!!gen} onClick={() => on.findOnline(r)} style={sm}>Find online</button>}
         </div>}
       </div>
     </div>
@@ -207,6 +335,10 @@ export default function BlackFridayScreen({ api, onExit }) {
   const [selected, setSelected] = useState(() => new Map()); // pid → row
   const [toast, setToast] = useState(null); // { text, undo }
   const [quick, setQuick] = useState(null); // the long-pressed row
+  const [viewer, setViewer] = useState(null); // the row whose photos are open
+  const [find, setFind] = useState(null); // { r, loading, error, result, picking }
+  const fileRef = useRef(null);
+  const replaceFor = useRef(null); // the row a picked photo is for
   const [progress, setProgress] = useState(null); // "Approving 230/574" while a bulk action runs
   const [selSaved, setSelSaved] = useState(true); // false while a save is pending or failed
   const [selLabel, setSelLabel] = useState(null); // e.g. "Recovered selection": shown on its own, pre-ticked
@@ -310,7 +442,9 @@ export default function BlackFridayScreen({ api, onExit }) {
   const generate = async (r) => {
     setGens((x) => ({ ...x, [r.pid]: "Starting…" }));
     // A New Arrival's photo is made by New Arrivals' own studio, on the New Arrivals item.
-    const make = r.tab === "newArrivals" && api.generateNa ? (pid, _s, o) => api.generateNa(pid, o) : api.generate;
+    // Every other row (any kind, or one with his own photo / a Black Friday photo): Black Friday's Generate —
+    // the same shared generator. r.naStudio is set by the server.
+    const make = r.tab === "newArrivals" && r.naStudio && api.generateNa ? (pid, _s, o) => api.generateNa(pid, o) : api.generate;
     try { await make(r.pid, r.section, { onEvent: (ev) => { if (ev && ev.text) setGens((x) => ({ ...x, [r.pid]: String(ev.text).slice(0, 80) })); } }); }
     catch (e) { setNote(`${r.name}: ${e?.message || String(e)}`); }
     setGens((x) => { const n = { ...x }; delete n[r.pid]; return n; });
@@ -321,14 +455,57 @@ export default function BlackFridayScreen({ api, onExit }) {
     approve: (r) => run(() => api.approve(r.pid, r.section, sigOfRow(r)), { undo: (x) => (x && x.undo ? { text: `Approved ${r.name}`, reverse: undoWith(x.undo) } : null) }),
     reject: (r) => run(() => api.reject(r.pid, r.section), { undo: (x) => (x && x.undo ? { text: `Rejected ${r.name}`, reverse: undoWith(x.undo) } : null) }),
     reset: (r) => run(() => api.reset(r.pid)),
-    // A New Arrival: "Use current photo" approves it with the app's photo, as on the New Arrivals card (with Undo).
-    use: (r, use) => (r.tab === "newArrivals" && use === "current"
-      ? run(() => api.approve(r.pid, r.section, "current"), { undo: (x) => (x && x.undo ? { text: `Approved ${r.name} (current photo)`, reverse: undoWith(x.undo) } : null) })
-      : run(() => api.use(r.pid, use, use === "generated" ? r.genId : null, r.section))),
+    use: (r, use) => {
+      // With his own photo on the card, "Use current photo" is THAT photo (= the replaced one); on a New Arrival it approves it.
+      if (use === "current" && r.srcId && r.sig !== r.srcId) {
+        if (r.tab === "newArrivals") return run(async () => { const u = await api.use(r.pid, "generated", r.srcId, r.section); if (u && u.ok === false) return u; return api.approve(r.pid, r.section, r.srcId); }, { undo: (x) => (x && x.undo ? { text: `Approved ${r.name} (your photo)`, reverse: undoWith(x.undo) } : null) });
+        return run(() => api.use(r.pid, "generated", r.srcId, r.section));
+      }
+      // A New Arrival: "Use current photo" approves it with the app's photo, as on the New Arrivals card (with Undo).
+      if (r.tab === "newArrivals" && use === "current") return run(() => api.approve(r.pid, r.section, "current"), { undo: (x) => (x && x.undo ? { text: `Approved ${r.name} (current photo)`, reverse: undoWith(x.undo) } : null) });
+      return run(() => api.use(r.pid, use, use === "generated" ? (r.aiGenId || r.genId) : null, r.section));
+    },
     generate,
-    approveLook: (r) => run(() => api.approveStyle(r.kind), { reload: true }),
+    gallery: (r) => setViewer(r),
+    // Replace photo: the iPhone's own picker (Photo Library, Take Photo, Choose File).
+    replace: (r) => { replaceFor.current = r; if (fileRef.current) { fileRef.current.value = ""; fileRef.current.click(); } },
+    findOnline: (r) => {
+      setFind({ r, loading: true });
+      api.findOnline(r.pid).then((res) => setFind((f) => (f && f.r.pid === r.pid ? { r, result: res } : f)), (e) => setFind((f) => (f && f.r.pid === r.pid ? { r, error: e?.message || String(e) } : f)));
+    },
     toggle: (r) => setSelected((m) => { const n = new Map(m); if (n.has(r.pid)) n.delete(r.pid); else n.set(r.pid, r); return n; }),
     longPress: (r) => setQuick(r),
+  };
+  const uploadPicked = async (file) => {
+    const r = replaceFor.current;
+    replaceFor.current = null;
+    if (!r || !file) return;
+    setGens((x) => ({ ...x, [r.pid]: "Uploading your photo…" }));
+    try {
+      const b64 = await photoToBase64(file);
+      const res = await api.photoUpload(r.pid, b64);
+      setNote(res && res.kept ? `${r.name}: your photo is saved — it is approved with another photo, so tap its photo to switch.` : null);
+    } catch (e) { setNote(`${r.name}: ${e?.message || String(e)}`); }
+    setGens((x) => { const n = { ...x }; delete n[r.pid]; return n; });
+    load(); if (showUnder) loadUnder();
+  };
+  const pickOnline = async (r, c) => {
+    setFind((f) => (f ? { ...f, picking: c.imageUrl } : f));
+    try {
+      const res = await api.pickOnline(r.pid, c);
+      setFind(null);
+      setNote(res && res.kept ? `${r.name}: the photo from ${c.site} is saved — it is approved with another photo, so tap its photo to switch.` : null);
+      load(); if (showUnder) loadUnder();
+    } catch (e) { setFind((f) => (f ? { ...f, picking: null, error: e?.message || String(e) } : f)); }
+  };
+  const useFromViewer = (r, g, kind) => {
+    setViewer(null);
+    const approved = r.tab === "approved";
+    const undoOf = (text) => (x) => (x && x.undo ? { text, reverse: undoWith(x.undo) } : null);
+    if (kind === "naApp") return run(async () => { if (r.bfPhoto || r.srcId) { const u = await api.use(r.pid, "current", null, r.section, { app: true }); if (u && u.ok === false) return u; } return api.approve(r.pid, r.section, "current"); }, { undo: undoOf(`Approved ${r.name} (app photo)`) });
+    if (kind === "naBack") return run(() => api.use(r.pid, "current", null, r.section, { app: true }));
+    if (kind === "app") return run(() => api.use(r.pid, "current", null, r.section, { app: true, approve: approved }), { undo: approved ? undoOf(`Approved ${r.name} with the app photo`) : null });
+    return run(() => api.use(r.pid, "generated", g.id, r.section, { approve: approved }), { undo: approved ? undoOf(`Approved ${r.name} with ${g.label}`) : null });
   };
   // ── multi-select ───────────────────────────────────────────────────────────
   const picked = [...selected.values()];
@@ -372,7 +549,7 @@ export default function BlackFridayScreen({ api, onExit }) {
   // Generate for every selected product: queued, two at a time; AI spend updates as each lands.
   const bulkGenerate = async () => {
     // Never the same product twice: skip any already queued or being made.
-    const queue = picked.filter((r) => !gens[r.pid] && !r.generating && r.canGenerate !== false);
+    const queue = picked.filter((r) => !gens[r.pid] && !r.generating);
     clearSel();
     setGens((g) => ({ ...g, ...Object.fromEntries(queue.map((r) => [r.pid, "Queued…"])) }));
     const worker = async () => { while (queue.length) { await generate(queue.shift()); } };
@@ -388,7 +565,9 @@ export default function BlackFridayScreen({ api, onExit }) {
   const underRows = showUnder && under && tab === "review" ? under.review.map(sec("under")) : [];
   const big = tab === "review" ? mainRows.filter((r) => r.big) : [], mid = tab === "review" ? mainRows.filter((r) => !r.big) : [];
   const naRows = tab === "newArrivals" ? mainRows : [];
-  const apprNa = tab === "approved" ? mainRows.filter((r) => r.na) : [], apprNormal = tab === "approved" ? mainRows.filter((r) => !r.na) : [];
+  // Approved with no price: held back from posting, listed on their own (Junid, 20 Nov).
+  const apprNoPrice = tab === "approved" ? mainRows.filter((r) => r.noPrice) : [];
+  const apprNa = tab === "approved" ? mainRows.filter((r) => r.na && !r.noPrice) : [], apprNormal = tab === "approved" ? mainRows.filter((r) => !r.na && !r.noPrice) : [];
   const bigToReview = d ? d.review.filter((r) => r.big).length : 0;
   const nReview = t.review ?? 0;
   const nApproved = d?.approved.length || 0;
@@ -432,6 +611,7 @@ export default function BlackFridayScreen({ api, onExit }) {
             {tab === "newArrivals" && naRows.length === 0 && <div data-testid="na-empty" style={{ color: GRAY, fontSize: 13, margin: "10px 0" }}>No New Arrivals waiting — everything uploaded in the past 20 days has been approved or rejected.</div>}
             <Block testid="block-na" title="New Arrivals · past 20 days, newest first" rows={naRows} {...shared} />
             {tab === "approved" && <div data-testid="approved-split" style={{ fontSize: 12, color: "#dfe7ff", margin: "0 0 8px" }}>New Arrivals {apprNa.length} · Normal {apprNormal.length} — every slot posts approved New Arrivals first.</div>}
+            <Block testid="block-noprice" title="No price — not posting until a price is set (then Back to review and approve again)" rows={apprNoPrice} {...shared} />
             <Block testid="block-appr-na" title="New Arrivals" rows={apprNa} {...shared} />
             <Block testid="block-appr-normal" title="Normal" rows={apprNormal} {...shared} />
             <Block testid="block-big" title="30+ on hand" rows={big} {...shared}>
@@ -457,12 +637,15 @@ export default function BlackFridayScreen({ api, onExit }) {
           <div onClick={(e) => e.stopPropagation()} style={{ ...GLASS, background: "#151924", width: "100%", maxWidth: 520, padding: 16, borderRadius: "16px 16px 0 0", paddingBottom: "max(16px, env(safe-area-inset-bottom))" }}>
             <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{quick.name}</div>
             <div style={{ display: "flex", gap: 10 }}>
-              {quick.canGenerate !== false && (quick.tab === "review" || quick.tab === "newArrivals") && <button data-testid="quick-generate" disabled={!!gens[quick.pid] || quick.generating} onClick={() => { const r = quick; setQuick(null); generate(r); }} style={{ ...bBlue, flex: 1, minHeight: 56, fontSize: 16 }}>{quick.generations ? "Regenerate" : "Generate"}</button>}
-              {(quick.tab === "review" || quick.tab === "newArrivals") && <button data-testid="quick-approve" disabled={busy || quick.generating} onClick={() => { const r = quick; setQuick(null); on.approve(r); }} style={{ ...bGreen, flex: 1, minHeight: 56, fontSize: 16 }}>Approve</button>}
+              {<button data-testid="quick-generate" disabled={!!gens[quick.pid] || quick.generating} onClick={() => { const r = quick; setQuick(null); generate(r); }} style={{ ...bBlue, flex: 1, minHeight: 56, fontSize: 16 }}>{quick.generations ? "Regenerate" : "Generate"}</button>}
+              {(quick.tab === "review" || quick.tab === "newArrivals") && !quick.noPrice && <button data-testid="quick-approve" disabled={busy || quick.generating} onClick={() => { const r = quick; setQuick(null); on.approve(r); }} style={{ ...bGreen, flex: 1, minHeight: 56, fontSize: 16 }}>Approve</button>}
             </div>
           </div>
         </div>
       )}
+      <input ref={fileRef} data-testid="replace-input" type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => uploadPicked(e.target.files && e.target.files[0])} />
+      {viewer && <PhotoViewer r={viewer} busy={busy} onUse={useFromViewer} onClose={() => setViewer(null)} />}
+      {find && <FindOnline r={find.r} state={find} onPick={pickOnline} onClose={() => setFind(null)} />}
       {toast && (
         <div data-testid="toast" style={{ position: "fixed", left: 12, right: 12, bottom: `calc(${selectMode && selected.size ? BAR_H : 0}px + env(safe-area-inset-bottom) + 16px)`, margin: "0 auto", maxWidth: 520, background: "#232a3b", border: "1px solid rgba(255,255,255,.12)", borderRadius: 12, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, zIndex: 40, boxShadow: "0 6px 24px rgba(0,0,0,.4)" }}>
           <div style={{ flex: 1, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{toast.text}</div>
@@ -478,7 +661,7 @@ export default function BlackFridayScreen({ api, onExit }) {
           {tab === "approved"
             ? <button data-testid="bulk-repost" disabled={busy} onClick={bulkRepost} style={{ ...bGreen, padding: "8px 10px", fontSize: 12 }}>Repost</button>
             : <button data-testid="bulk-approve" disabled={busy} onClick={bulkApprove} style={{ ...bGreen, padding: "8px 10px", fontSize: 12 }}>{selLabel ? "Approve all" : "Approve"}</button>}
-          {tab !== "approved" && <button data-testid="bulk-generate" disabled={busy || !picked.some((r) => !gens[r.pid] && !r.generating && r.canGenerate !== false)} onClick={bulkGenerate} style={{ ...bBlue, padding: "8px 10px", fontSize: 12 }}>Generate</button>}
+          {<button data-testid="bulk-generate" disabled={busy || !picked.some((r) => !gens[r.pid] && !r.generating)} onClick={bulkGenerate} style={{ ...bBlue, padding: "8px 10px", fontSize: 12 }}>Generate</button>}
           <button data-testid="bulk-reject" disabled={busy} onClick={bulkReject} style={{ ...bGray, padding: "8px 10px", fontSize: 12, color: RED }}>Reject</button>
           <button data-testid="bulk-clear" onClick={clearSel} style={{ ...bGray, padding: "8px 10px", fontSize: 12 }}>Clear</button>
         </div>
