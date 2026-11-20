@@ -34,6 +34,7 @@ import { isSuperAdmin as isSuperAdminEmail } from "../config/superAdmins";
 import { revokeBeforeSignOut } from "../push/registerPush";
 import { effectiveStoreIds } from "../utils/stores";
 import Login from "./Login";
+import { packerRedirectUrl } from "../utils/packerRedirect";
 import EnrolmentGate from "../device/EnrolmentGate";
 import {
   deviceGateVerdict, deviceTypeHint, identityFrom, isLiveEnrolment, knownRequired, readSessionClaims,
@@ -227,6 +228,12 @@ export default function AuthGate({ children, renderTv }) {
   });
   if (gate === "loading") return <LoadingScreen />;
   if (gate === "code") return <EnrolmentGate enrol={enrolWithCode} signIn={signInWithDeviceToken} />;
+  // The online packer works in the POS, never here (Junid, 20 Nov 2026; src/utils/packerRedirect.js).
+  const toPos = packerRedirectUrl(permRecord, isSuperAdmin);
+  if (toPos) {
+    if (typeof window !== "undefined") window.location.replace(toPos);
+    return <div style={{ padding: 24, fontSize: 18 }}>Opening the POS for website orders… <a href={toPos}>Tap here if it doesn't open.</a></div>;
+  }
   const permissions   = Array.isArray(permRecord?.permissions) ? permRecord.permissions : [];
   // Fail closed for scoped users on a read error (super-admin still bypasses).
   const storeIds      = permReadError ? effectiveStoreIds({ storeIds: [] }, isSuperAdmin)
