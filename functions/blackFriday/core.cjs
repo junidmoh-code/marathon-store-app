@@ -20,6 +20,7 @@
 // AN APPROVAL IS OF A PHOTO: picks.sig = "current" or the generation id
 // approved; a new photo makes the product wait again.
 "use strict";
+const captionLib = require("./caption.cjs");
 
 const sched = require("./schedule.cjs");
 
@@ -37,10 +38,9 @@ const KIND_LABEL = Object.freeze({ sneakers: "Sneakers", clothing: "Clothing", h
 
 const priceLabel = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2)}`);
 const priceKey = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2).replace(".", "_")}`);
-const sizesPhrase = (t) => (t === "one size" ? "one size" : `sizes ${t}`);
+/** The album's caption, as it will be sent (Junid, 20 Nov): "R750" / "Available sizes: 6, 7, 8, …". items: [{ sizes: "6-11" | [..] }]. Pure. */
 function captionPreview(price, items) {
-  const lines = items.map((it, i) => `${i + 1}. ${String(it.name || "").trim()} — ${sizesPhrase(it.sizes)}`);
-  return [`BLACK FRIDAY 🔥 ${priceLabel(price)} EACH`, ...lines, "Message us to order."].join("\n");
+  return captionLib.caption(price, items.flatMap((it) => (Array.isArray(it.sizes) ? it.sizes : it.sizes === "one size" ? [] : captionLib.splitSizesText(it.sizes))));
 }
 
 function sigOf(photo) {
