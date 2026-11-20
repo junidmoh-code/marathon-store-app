@@ -18,7 +18,11 @@ describe("HealthView wiring — the partition is downstream and the lists don't 
     // while HiddenProducts must get the FULL card list — the join that labels
     // rows STILL MISSING vs NO LONGER MISSING needs cards the main list no
     // longer shows.
-    expect(HEALTH).toMatch(/<NetworkTransfer[^>]*cards=\{missingVisible\}/);
+    // (20 Nov 2026: it gets the hidden-partitioned set BEFORE the "resolving"
+    // filter — NetworkTransfer hides just-solved cards itself and needs the
+    // live list to know when the card has really gone.)
+    expect(HEALTH).toMatch(/<NetworkTransfer[^>]*cards=\{missingVisibleAll\}/);
+    expect(HEALTH).toMatch(/const \{ visible: missingVisibleAll \} = useMemo\(\s*\(\) => partitionHidden\(missingProductCards \|\| \[\], hiddenMap\)/);
     expect(HEALTH).toMatch(/<HiddenProducts[^>]*cards=\{missingProductCards \|\| \[\]\}/);
   });
   it("chips and the headline count are built from the visible set", () => {
@@ -29,7 +33,8 @@ describe("HealthView wiring — the partition is downstream and the lists don't 
     // pickActiveTab only knows the visible chips; without the special case,
     // selecting "hidden" would silently fall back to Clothing and the
     // entrance would appear dead.
-    expect(HEALTH).toMatch(/missingTab === "hidden" \? "hidden" : pickActiveTab\(chips, missingTab\)/);
+    // (20 Nov 2026: the Solved tab is the same kind of non-chip tab.)
+    expect(HEALTH).toMatch(/missingTab === "hidden" \|\| missingTab === "solved" \? missingTab : pickActiveTab\(chips, missingTab\)/);
   });
   it("the entrance is the unlabelled HoldSpot in the chip row, and the Hidden chip only shows once open", () => {
     expect(HEALTH).toMatch(/<HoldSpot onTrigger=\{\(\) => setMissingTab\("hidden"\)\} \/>/);

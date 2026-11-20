@@ -51,6 +51,12 @@ import { firstBatchEligible, buildFirstBatchSolveUpdate, trustExistingEmptyUpdat
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 import { setUpdateBusy } from "../../update/updateChecker";
 import { stampRecord, stampTxn } from "../../device/deviceStamp";
+// CONCRETE-ONLY + THE SOLVED TAB (Junid, 20 Nov 2026).
+import { isConcreteProduct } from "../../utils/concreteListing";
+import { markConcreteProduct } from "../concrete/concreteStore";
+import { concreteSection } from "./missingProductsCore";
+import { buildSolveLogEntry, buildConcreteLogEntry, mergeSolved, standing, normalizeSolvedEntry, newSolvedKey } from "./solvedLog";
+import { useSolvedLog, saveSolvedRows, markSolvedUndone } from "./solvedLogStore";
 
 // The section whose list HealthView hands this screen (computeMissingProducts'
 // default) — the other section's list is one tap away for a viewer who may
@@ -89,10 +95,14 @@ const destChip = (on) => ({
 // one — the same count-disagrees-with-list class of bug this tab was just fixed
 // for. One subscription, one snapshot, and one less full-tree listener.
 // (Codex review, PR #308.) HealthView is the only renderer of this component.
-export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null, targetsSettled = false, targetsError = false, undoables: undoablesProp = null, setUndoables: setUndoablesProp = null }) {
+export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null, targetsSettled = false, targetsError = false, view = "list", solvedSession: solvedSessionProp = null, setSolvedSession: setSolvedSessionProp = null, resolving: resolvingProp = null, setResolving: setResolvingProp = null, onOpenSolved = null }) {
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canAct = ["store", "warehouse", "admin"].includes(actorRole);
+  // Marking Concrete-only is Junid's / a stockRole admin's (the mark IS the
+  // brand check — concreteStore.canVerifyBrand's identities).
+  const canMarkConcrete = isSuperAdmin || permRecord?.stockRole === "admin";
+  const actorName = permRecord?.displayName || permRecord?.username || null;
 
   // THE NETWORK REGISTRY: every store, hub, section and name on this screen.
   const { registry: network, sections: mySections } = useMySections();
@@ -184,25 +194,56 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const [solveBusy, setSolveBusy] = useState(null);
   const [solved, setSolved] = useState({});         // pid → {store, sizes, msg, ok}
 
-  // ── SOLVE UNDO — this session's solves, each reversible while safe ─────────
-  // A solved card leaves the list the moment its seed lands, so the undo
-  // affordance cannot live on the card: each successful solve is recorded
-  // and rendered as a strip above the list. The record and every guard rule
-  // live in solveUndo.js. The list itself is OWNED BY HealthView and passed
-  // down, so a glance at the Sneakers or Hidden chip — which unmounts this
-  // component — cannot silently drop a fresh undo (Sonnet substitute review,
-  // PR #361); the local fallback only serves standalone use.
-  const [localUndoables, setLocalUndoables] = useState([]);
-  const undoables = undoablesProp ?? localUndoables;
-  const setUndoables = setUndoablesProp ?? setLocalUndoables;
-  // In-flight keys in a ref: the render-closure `u.busy` is stale under a
+  // ── SOLVED — every solve and Concrete mark, each reversible while safe ─────
+  // (Junid, 20 Nov 2026.) A solved card leaves the list the moment Junid taps,
+  // so its Undo cannot live on the card. Every action is recorded twice:
+  //   • the SESSION list (owned by HealthView, so a glance at the Sneakers or
+  //     Hidden chip — which unmounts this component — cannot drop a fresh
+  //     undo; Sonnet substitute review, PR #361), and
+  //   • the saved history /settings/missingProductsSolved (solvedLog.js), which
+  //     the Solved tab pages through, newest first.
+  // The main list shows only the LAST action (one confirm may be several
+  // stores); everything else lives in the Solved tab. Every guard rule lives
+  // in solveUndo.js, unchanged.
+  const [localSession, setLocalSession] = useState([]);
+  const solvedSession = solvedSessionProp ?? localSession;
+  const setSolvedSession = setSolvedSessionProp ?? setLocalSession;
+  // RESOLVING: cards hidden the moment their action was tapped (pid → "pending"
+  // while the write is in flight, "done" once it landed — kept hidden until the
+  // live list stops carrying the card, so it never flickers back). Owned by
+  // HealthView too, so the chip counts drop with the card.
+  const [localResolving, setLocalResolving] = useState({});
+  const resolving = resolvingProp ?? localResolving;
+  const setResolving = setResolvingProp ?? setLocalResolving;
+  const solvedLog = useSolvedLog(true);
+  const solvedAll = useMemo(() => mergeSolved(solvedLog.entries, solvedSession), [solvedLog.entries, solvedSession]);
+  // The rows still standing: the siblings an undo must not take shared cells from.
+  const undoables = useMemo(() => standing(solvedAll), [solvedAll]);
+  // Busy / error per row, by key.
+  const [undoUi, setUndoUi] = useState({});
+  const setRow = (key, patch) => setUndoUi((m) => ({ ...m, [key]: { ...(m[key] || {}), ...patch } }));
+  // A row fully undone: the saved row says so (best effort — the session row
+  // says so regardless), the card may return, and its stale banner clears.
+  const finishUndo = async (u) => {
+    setSolvedSession((l) => {
+      const hit = l.some((x) => x.key === u.key);
+      return hit ? l.map((x) => (x.key === u.key ? { ...x, status: "undone" } : x)) : [...l, { ...u, status: "undone" }];
+    });
+    setResolving((m) => { const n = { ...m }; delete n[u.pid]; return n; });
+    setSolved((d) => { const n = { ...d }; delete n[u.pid]; return n; });
+    if (u.saved !== false) {
+      try { await markSolvedUndone(u.key, { at: serverNowMs(), by: auth.currentUser?.uid }); }
+      catch { /* the session row already says Undone; the saved row just keeps "done" */ }
+    }
+  };
+  // In-flight keys in a ref: the render-closure `busy` is stale under a
   // double-tap, and two overlapping undos of one entry would race their own
   // reads (Kimi substitute review, PR #361).
   const undoInFlight = useRef(new Set());
   const undoSolve = async (u) => {
-    if (!canAct || u.busy || undoInFlight.current.has(u.key)) return;
+    if (!canAct || undoUi[u.key]?.busy || undoInFlight.current.has(u.key)) return;
     undoInFlight.current.add(u.key);
-    setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: true, err: null } : x)));
+    setRow(u.key, { busy: true, err: null });
     try {
       // Engine guard first: any CURRENT lock on a seeded size that was not in
       // the solve-time snapshot means the engine has raised work on the seed —
@@ -224,7 +265,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         }));
         const fbBlockers = firstBatchUndoBlockers({ liveRequests: liveFb, storeLabel: LOC_LABEL[u.store] });
         if (fbBlockers.length) {
-          setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: fbBlockers[0] } : x)));
+          setRow(u.key, { busy: false, err: fbBlockers[0] });
           return;
         }
       }
@@ -235,7 +276,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const ownPaths = undoablePaths(u, undoables);
       const blockers = solveUndoBlockers({ paths: ownPaths, openByLoc, priorOpenByLoc: u.priorOpen, ownRunId: u.firstBatch ? firstBatchRunId(u.firstBatch.solveId) : null });
       if (blockers.length) {
-        setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: blockers[0] } : x)));
+        setRow(u.key, { busy: false, err: blockers[0] });
         return;
       }
       // Cancel the shop's open requests FIRST, with the solve_undone reason:
@@ -265,20 +306,72 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const results = await Promise.all(ownPaths.map((p) => runTransaction(ref(database, p), undoCellTxn)));
       const kept = ownPaths.filter((p, i) => !results[i].committed);
       if (kept.length || stood.length) {
-        const standing = stood.length ? ` Central had already started on size${stood.length === 1 ? "" : "s"} ${stood.map(sizeLabel).join(", ")} — ${stood.length === 1 ? "that request stands" : "those requests stand"}.` : "";
-        setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `${ownPaths.length - kept.length} of ${ownPaths.length} seeded cells removed — the rest took real stock or counts since the solve and were kept. Use Adjust for those.${standing}` } : x)));
+        const standingMsg = stood.length ? ` Central had already started on size${stood.length === 1 ? "" : "s"} ${stood.map(sizeLabel).join(", ")} — ${stood.length === 1 ? "that request stands" : "those requests stand"}.` : "";
+        setRow(u.key, { busy: false, err: `${ownPaths.length - kept.length} of ${ownPaths.length} seeded cells removed — the rest took real stock or counts since the solve and were kept. Use Adjust for those.${standingMsg}` });
       } else {
-        // Fully undone: the entry leaves the strip (the card reappearing IS
-        // the feedback), and the stale "Solved ✓" banner is cleared so the
+        // Fully undone: the row reads Undone (the card reappearing IS the
+        // feedback), and the stale "Solved ✓" banner is cleared so the
         // returning card offers Solve again, not last week's success message.
-        setUndoables((l) => l.filter((x) => x.key !== u.key));
-        setSolved((d) => { const n = { ...d }; delete n[u.pid]; return n; });
+        setRow(u.key, { busy: false, err: null });
+        await finishUndo(u);
       }
     } catch (e) {
-      setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `Couldn't undo — nothing changed, retry. (${e?.message || "error"})` } : x)));
+      setRow(u.key, { busy: false, err: `Couldn't undo — nothing changed, retry. (${e?.message || "error"})` });
     } finally {
       undoInFlight.current.delete(u.key);
     }
+  };
+  // Undo a Concrete mark: the product returns to Marathon (and to Marathon's
+  // list). It does NOT republish it on marathonclub.co.za — that stays a
+  // person's call on the Marathon publishing tab.
+  const undoConcrete = async (u) => {
+    if (!canMarkConcrete || undoInFlight.current.has(u.key)) return;
+    undoInFlight.current.add(u.key);
+    setRow(u.key, { busy: true, err: null });
+    try {
+      const r = await markConcreteProduct(u.pid, false);
+      if (!r.ok) { setRow(u.key, { busy: false, err: `Couldn't undo — ${r.message}` }); return; }
+      setRow(u.key, { busy: false, err: null });
+      await finishUndo(u);
+    } finally {
+      undoInFlight.current.delete(u.key);
+    }
+  };
+  const undoEntry = (u) => (u.kind === "concrete" ? undoConcrete(u) : undoSolve(u));
+  // Record actions in the session list now and in the saved history after
+  // (best effort, AFTER the action committed — a refused log write must never
+  // fail a Solve; solvedLog.js). A row that did not save says so.
+  const recordSolved = async (rows) => {
+    if (!rows.length) return;
+    setSolvedSession((l) => [...rows, ...l]);
+    try {
+      await saveSolvedRows(rows);
+    } catch (e) {
+      const keys = new Set(rows.map((r) => r.key));
+      setSolvedSession((l) => l.map((x) => (keys.has(x.key) ? { ...x, saved: false, saveErr: String(e?.message || e) } : x)));
+    }
+  };
+
+  // ── CONCRETE — one tap, the row moves to the Concrete division ─────────────
+  // Sets concreteProduct through the ONE helper (concreteListing.js). The row
+  // leaves the Marathon list at once; the product appears in the Concrete
+  // division's list (missingProductsCore.listedInSection). A refused write
+  // brings the row back and says why in red.
+  const markConcrete = async (card) => {
+    if (!canMarkConcrete || resolving[card.pid]) return;
+    setResolving((m) => ({ ...m, [card.pid]: "pending" }));
+    setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; });
+    const r = await markConcreteProduct(card.pid, true);
+    if (!r.ok) {
+      setResolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: null, sizes: [], msg: `Not marked Concrete — ${r.message}` } }));
+      return;
+    }
+    setResolving((m) => ({ ...m, [card.pid]: "done" }));
+    const at = serverNowMs();
+    const key = newSolvedKey(at);
+    const log = buildConcreteLogEntry({ pid: card.pid, name: card.name, photo: card.photo, at, by: auth.currentUser?.uid, byName: actorName, division: divisionOf(card) });
+    await recordSolved([{ ...log, key, batch: key, log }]);
   };
 
   // The engine config, LIVE (onValue, not the one-shot get this used to do).
@@ -355,7 +448,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // union and its size arithmetic on every stock write. The fallback keeps the
   // component usable on its own; it just isn't the path the app takes.
   // (Senior-architect review, PR #308.)
-  const cards = useMemo(() => {
+  const cardsLive = useMemo(() => {
     // The other section's list is built here, on demand, from the same
     // function (it is not HealthView's to count while that section has no
     // live shop).
@@ -364,6 +457,15 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       : (allCards || computeMissingProducts({ allStock, products }));
     return category && category !== "all" ? all.filter((c) => c.group === category) : all;
   }, [allCards, allStock, products, category, listSection, network, cfg]);
+  // RESOLVING (Junid, 20 Nov 2026): a card Junid has just solved or marked
+  // Concrete leaves at once; a "done" entry is dropped as soon as the live list
+  // stops carrying the card itself, so it can never flicker back.
+  const cards = useMemo(() => cardsLive.filter((c) => !resolving[c.pid]), [cardsLive, resolving]);
+  useEffect(() => {
+    const live = new Set(cardsLive.map((c) => c.pid));
+    const gone = Object.keys(resolving).filter((pid) => resolving[pid] === "done" && !live.has(pid));
+    if (gone.length) setResolving((m) => { const n = { ...m }; for (const pid of gone) if (n[pid] === "done") delete n[pid]; return n; });
+  }, [cardsLive]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Typed quantities on a card still in the list, or a move going through,
   // are a job in hand — see Transfer.jsx's transfer-basket for why this is
@@ -375,10 +477,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const typed = Object.keys(edits).some((k) => live.has(k.split("|")[0]) && !done[k.split("|")[0]]);
     // A solve, an undo or a bulk hide still writing is a job in hand too.
     // (CodeRabbit, PR #640.)
-    const undoBusy = (undoables || []).some((u) => u?.busy);
+    const undoBusy = Object.values(undoUi).some((x) => x?.busy);
     setUpdateBusy("network-transfer", typed || busyPid != null || solveBusy != null || undoBusy || !!bulkBusy || hideBusy != null);
     return () => setUpdateBusy("network-transfer", false);
-  }, [cards, edits, busyPid, done, solveBusy, undoables, bulkBusy, hideBusy]);
+  }, [cards, edits, busyPid, done, solveBusy, undoUi, bulkBusy, hideBusy]);
   // Selection reconciled against the RENDERED list (`cards`, not the allCards
   // prop): a selected card that resolves out mid-select — or that the
   // standalone-fallback path computed locally, where allCards is null — must
@@ -579,7 +681,16 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // sentence that says why and cannot be ticked (solveSections.solveBlocks).
   // The card's division — the list it is on — is the only block offered.
   const divisionOf = (card) => cardSection(card, network);
-  const blocksFor = (card) => solveBlocks({ network, sections: [divisionOf(card)].filter((s) => mySections.includes(s)), source: card.source, product: byId.get(card.pid), productId: card.pid, engineConfig: cfg });
+  // CONCRETE-ONLY rows (Junid, 20 Nov 2026) — and ONLY those — show BOTH
+  // divisions' stores: a Concrete product is handled by the Concrete division
+  // but Junid may still send it to Marathon locations. Each store keeps its
+  // own division's routing (its own hub). Every other row keeps today's wall.
+  const solveSectionsFor = (card) => {
+    const home = divisionOf(card);
+    const secs = isConcreteProduct(byId.get(card.pid)) && home === concreteSection(network) ? [home, ...[1, 2].filter((x) => x !== home)] : [home];
+    return secs.filter((x) => mySections.includes(x));
+  };
+  const blocksFor = (card) => solveBlocks({ network, sections: solveSectionsFor(card), source: card.source, product: byId.get(card.pid), productId: card.pid, engineConfig: cfg });
   const tickableStores = (card) => blocksFor(card).flatMap((b) => b.stores).filter((st) => !st.blocked).map((st) => st.id);
   // HUB PRESENCE (the hard precondition — firstBatchCore.hub2PresenceSignals),
   // judged at the STORE'S OWN hub. From the /stock node this screen already
@@ -761,7 +872,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // ONE DIVISION PER SOLVE — the list's own. A tick from the other division
     // (or a hub across the wall) is refused here, whatever the panel offered.
     const division = divisionOf(card);
-    const stray = ticks.find((st) => sectionOfStore(st) !== division || (!cfAt(card, st) && sectionOfStore(hubOf(card, st) || st) !== division));
+    // A Concrete-only row may tick the other division's stores too (see
+    // solveSectionsFor) — each still routed through a hub of ITS OWN section.
+    const allowed = new Set(solveSectionsFor(card));
+    const stray = ticks.find((st) => !allowed.has(sectionOfStore(st)) || (!cfAt(card, st) && sectionOfStore(hubOf(card, st) || st) !== sectionOfStore(st)));
     if (stray) {
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: stray, sizes: [], msg: `Not solved — ${LOC_LABEL[stray] || stray} is not in ${sectionName(network, division)}. Solve from the "Missing from ${sectionName(network, sectionOfStore(stray))}" list instead.` } }));
       return;
@@ -818,7 +932,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const msgs = [];
       for (const line of plan.lines) {
         const { store, hub, sizes } = line;
-        const key = many ? `${card.pid}_${now}_${store}` : `${card.pid}_${now}`;
+        // The row's key in the Solved history (chronological, and unique per
+        // store, so two shops of one confirm are two rows).
+        const key = newSolvedKey(serverNowMs());
         const direct = cfAt(card, store);
         // CENTRAL-FED with nothing Central can send: nothing to write — the
         // sizes stay on "Missing from" until Central has them.
@@ -888,7 +1004,14 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const updates = mergeSolveUpdates(parts);
       if (Object.keys(updates).length) {
         await update(ref(database), updates);
-        setUndoables((l) => [...entries, ...l]);
+        // Into the Solved history — AFTER the write landed (solvedLog.js).
+        const at = serverNowMs();
+        const msg = msgs.join(" ");
+        const rows = entries.map((e) => {
+          const log = buildSolveLogEntry(e, { at, by: uid, byName: actorName, photo: card.photo, msg, division });
+          return { ...normalizeSolvedEntry(e.key, log), batch: baseSolveId, log };
+        });
+        await recordSolved(rows);
       }
       setSolved((d) => ({ ...d, [card.pid]: { ok: true, store: ticks[0], sizes: plan.lines[0]?.sizes || [], msg: msgs.join(" ") } }));
     } catch (e) {
@@ -949,26 +1072,83 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     setBusyPid(null);
   };
 
-  // The undo strip renders in BOTH branches — solving the last card empties
-  // the list, and that is exactly when its undo must not vanish.
-  const undoStrip = undoables.map((u) => (
-    <div key={u.key} style={{ ...GLASS, padding: "9px 12px", marginBottom: 8, fontSize: 12.5 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ flex: 1, color: "rgba(255,255,255,.75)" }}>
-          {u.firstBatch
-            ? <>Solved — <b style={{ color: "#fff" }}>{u.name}</b>: {u.firstBatch.units} unit{u.firstBatch.units === 1 ? "" : "s"} requested from Central for {LOC_LABEL[u.store]} ({LOC_LABEL[u.locs[0]]}'s batch follows)</>
-            : <>Solved — <b style={{ color: "#fff" }}>{u.name}</b> now carried at {LOC_LABEL[u.store]}{u.locs.length > 1 && u.locs[0] !== u.store ? ` (via ${LOC_LABEL[u.locs[0]]})` : ""}</>}
-        </span>
-        {canAct && (
-          <button onClick={() => undoSolve(u)} disabled={u.busy}
-                  style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.4)", color: AMBER, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>
-            {u.busy ? "…" : "Undo"}
-          </button>
-        )}
+  // ── ONE ROW OF THE SOLVED HISTORY — where it went, who, when, and Undo ─────
+  // "Where it went", lower-case so it reads after the name: "…: 4 units
+  // requested from Central for Marathon PE" / "… now carried at Trophy".
+  const whereText = (u) => {
+    if (u.kind === "concrete") return ": made Concrete-only — moved to the Concrete division's list";
+    if (u.firstBatch) return `: ${u.firstBatch.units} unit${u.firstBatch.units === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[u.store] || u.store}${u.locs[0] && u.locs[0] !== u.store ? ` (${LOC_LABEL[u.locs[0]] || u.locs[0]}'s batch follows)` : ""}`;
+    return ` now carried at ${LOC_LABEL[u.store] || u.store}${u.locs.length > 1 && u.locs[0] !== u.store ? ` (via ${LOC_LABEL[u.locs[0]] || u.locs[0]})` : ""}`;
+  };
+  const whenText = (at) => {
+    if (!at) return "";
+    const d = new Date(at);
+    return d.toLocaleString("en-ZA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  };
+  const canUndo = (u) => (u.kind === "concrete" ? canMarkConcrete : canAct);
+  const solvedRow = (u, { compact = false } = {}) => {
+    const ui = undoUi[u.key] || {};
+    const p = byId.get(u.pid);
+    const undone = u.status === "undone";
+    return (
+      <div key={u.key} data-solved-key={u.key} style={{ ...GLASS, padding: "9px 12px", marginBottom: 8, fontSize: 12.5, opacity: undone ? 0.55 : 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {!compact && (
+            <div style={{ width: 44, height: 44, borderRadius: 9, overflow: "hidden", flexShrink: 0, background: "rgba(60,110,255,.1)" }}>
+              {(p?.photoUrl || u.photo) && <img src={p?.photoUrl || u.photo} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+            </div>
+          )}
+          <span style={{ flex: 1, minWidth: 0, color: "rgba(255,255,255,.75)" }}>
+            {u.kind === "concrete" ? "Concrete — " : "Solved — "}<b style={{ color: "#fff" }}>{u.name}</b>{whereText(u)}
+            {!compact && <span style={{ display: "block", fontSize: 11, color: GRAY, marginTop: 2 }}>{[u.byName, whenText(u.at)].filter(Boolean).join(" · ")}{undone ? " · Undone" : ""}</span>}
+          </span>
+          {!undone && canUndo(u) && (
+            <button onClick={() => undoEntry(u)} disabled={!!ui.busy}
+                    style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.4)", color: AMBER, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>
+              {ui.busy ? "…" : "Undo"}
+            </button>
+          )}
+        </div>
+        {ui.err && <div style={{ fontSize: 11.5, color: RED, lineHeight: 1.4, marginTop: 6 }}>{ui.err}</div>}
+        {u.saved === false && <div style={{ fontSize: 11, color: AMBER, lineHeight: 1.4, marginTop: 6 }}>Not saved to the Solved history ({u.saveErr || "write refused"}) — Undo works until you leave Inventory Health.</div>}
       </div>
-      {u.err && <div style={{ fontSize: 11.5, color: RED, lineHeight: 1.4, marginTop: 6 }}>{u.err}</div>}
+    );
+  };
+
+  // THE LAST ACTION — the only undo on the main list (one confirm may be
+  // several stores, so it is every row of the newest batch still standing).
+  // Everything older lives in the Solved tab. It renders in BOTH branches —
+  // solving the last card empties the list, and that is exactly when its undo
+  // must not vanish.
+  const lastBatch = solvedSession[0]?.batch;
+  const lastRows = lastBatch ? solvedSession.filter((u) => u.batch === lastBatch && u.status !== "undone") : [];
+  const undoStrip = lastRows.length ? (
+    <div>
+      {lastRows.map((u) => solvedRow(u, { compact: true }))}
+      {onOpenSolved && (
+        <button onClick={onOpenSolved} style={{ background: "none", border: "none", color: BLUE_L, fontSize: 11.5, fontWeight: 600, cursor: "pointer", padding: "0 2px 10px", fontFamily: FONT }}>
+          Everything solved → Solved tab
+        </button>
+      )}
     </div>
-  ));
+  ) : null;
+
+  // ── THE SOLVED TAB ─────────────────────────────────────────────────────────
+  if (view === "solved") {
+    return (
+      <>
+        <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginBottom: 10 }}>
+          Everything solved or marked Concrete from Missing Products, newest first. Undo reverses exactly what that action wrote.
+        </div>
+        {solvedLog.error && <div style={{ fontSize: 11.5, color: AMBER, marginBottom: 8 }}>Couldn't read the saved history ({solvedLog.error}) — showing this visit's actions only.</div>}
+        {!solvedAll.length && <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>{solvedLog.settled ? "Nothing solved yet." : "Loading…"}</div>}
+        {solvedAll.map((u) => solvedRow(u))}
+        {solvedLog.hasMore && (
+          <button onClick={solvedLog.loadMore} style={{ ...destChip(false), display: "block", margin: "6px auto 0" }}>Show older</button>
+        )}
+      </>
+    );
+  }
 
   // WHICH SECTION'S LIST — only when this viewer has more than one to look at.
   const sectionSwitch = sectionChoices.length > 1 ? (
@@ -1150,6 +1330,16 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                         style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
                   {open ? "Close" : "Move manually"}
                 </button>
+                {/* CONCRETE (Junid, 20 Nov 2026): one tap makes it Concrete-only —
+                    it leaves this Marathon list and appears in the Concrete
+                    division's. Junid / a stockRole admin only. */}
+                {canMarkConcrete && divisionOf(card) !== concreteSection(network) && !isConcreteProduct(byId.get(card.pid)) && (
+                  <button onClick={() => markConcrete(card)} disabled={!!resolving[card.pid]}
+                          title="Concrete-only — sold on the Concrete website only; handled by the Concrete division"
+                          style={{ background: "rgba(229,229,229,.08)", border: "1px solid rgba(229,229,229,.35)", color: "#E5E5E5", borderRadius: 10, padding: "7px 10px", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
+                    Concrete
+                  </button>
+                )}
               </div>
               {canAct && (
                 <button onClick={() => { setHidePid(hOpen ? null : card.pid); setSolvePid(null); setOpenPid(null); }}

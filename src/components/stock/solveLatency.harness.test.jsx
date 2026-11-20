@@ -39,6 +39,13 @@ vi.mock("firebase/database", () => ({
   set: async () => { await sleep(WRITE_MS); },
   serverTimestamp: () => ({ ".sv": "timestamp" }),
 }));
+// The Solved history (solvedLogStore.js) stands in for an in-memory one:
+// these tests are about the Solve's own writes, which it never shares.
+vi.mock("./solvedLogStore", () => ({
+  useSolvedLog: () => ({ entries: [], settled: true, error: null, hasMore: false, loadMore: () => {} }),
+  saveSolvedRows: vi.fn(async () => {}),
+  markSolvedUndone: vi.fn(async () => {}),
+}));
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1", displayName: "Junid" } } }));
 vi.mock("../PermissionsContext", () => ({ usePermissions: () => ({ permRecord: { stockRole: "admin", displayName: "Junid" }, isSuperAdmin: true, user: { uid: "u1", email: "x@y" } }) }));

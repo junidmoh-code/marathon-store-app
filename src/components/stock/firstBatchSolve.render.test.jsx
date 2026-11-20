@@ -25,6 +25,13 @@ vi.mock("firebase/database", () => ({
 const abortPaths = new Set();
 const txnPaths = [];
 const txnOutcome = (path, fn) => { txnPaths.push(path); return abortPaths.has(path) ? { committed: false } : { committed: true, snapshot: { val: () => fn(null) } }; };
+// The Solved history (solvedLogStore.js) stands in for an in-memory one:
+// these tests are about the Solve's own writes, which it never shares.
+vi.mock("./solvedLogStore", () => ({
+  useSolvedLog: () => ({ entries: [], settled: true, error: null, hasMore: false, loadMore: () => {} }),
+  saveSolvedRows: vi.fn(async () => {}),
+  markSolvedUndone: vi.fn(async () => {}),
+}));
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 const perm = { permRecord: { stockRole: "warehouse" }, isSuperAdmin: false };

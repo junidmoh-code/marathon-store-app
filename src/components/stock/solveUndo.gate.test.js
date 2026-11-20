@@ -20,12 +20,16 @@ describe("solve → undo wiring", () => {
     // under the SAME non-empty guard with the SAME exact paths, and the
     // records are added to the list only after the ONE merged write landed.
     expect(NETWORK).toContain("if (Object.keys(updates).length) entries.push({ key, pid: card.pid, name: card.name, store, locs, paths: Object.keys(updates), priorOpen });");
-    // a single-store confirm keeps the key it always had
-    expect(NETWORK).toContain("const key = many ? `${card.pid}_${now}_${store}` : `${card.pid}_${now}`;");
+    // Each store's record is a row of the Solved history (20 Nov 2026): a
+    // chronological key, one per store.
+    expect(NETWORK).toContain("const key = newSolvedKey(serverNowMs());");
     const start = NETWORK.indexOf("const updates = mergeSolveUpdates(parts);");
     expect(start).toBeGreaterThan(-1);
     const block = NETWORK.slice(start, NETWORK.indexOf("setSolved", start));
-    expect(block).toMatch(/if \(Object\.keys\(updates\)\.length\) \{\s+await update\(ref\(database\), updates\);\s+setUndoables\(\(l\) => \[\.\.\.entries, \.\.\.l\]\);\s+\}/);
+    // The records are added only AFTER the one merged write landed, and the
+    // history write is a separate, later call (a refused log never fails a Solve).
+    expect(block).toMatch(/if \(Object\.keys\(updates\)\.length\) \{\s+await update\(ref\(database\), updates\);[\s\S]*await recordSolved\(rows\);\s+\}/);
+    expect(block.indexOf("await update(ref(database), updates)")).toBeLessThan(block.indexOf("await recordSolved(rows)"));
   });
   it("the prior-lock snapshot is read BEFORE the seed write — identity, never clocks", () => {
     // A lock's createdAt is its scan's START time, so clock comparison
@@ -74,7 +78,10 @@ describe("solve → undo wiring", () => {
   });
   it("an aborted cell is reported, a full undo clears the stale Solved banner and leaves the strip", () => {
     expect(NETWORK).toMatch(/const kept = ownPaths\.filter\(\(p, i\) => !results\[i\]\.committed\)/);
-    expect(NETWORK).toMatch(/setUndoables\(\(l\) => l\.filter\(\(x\) => x\.key !== u\.key\)\)/);
+    // A full undo marks the row Undone (session + saved history) — it stays
+    // in the Solved tab as a record — and clears the stale Solved banner.
+    expect(NETWORK).toMatch(/await finishUndo\(u\);/);
+    expect(NETWORK).toMatch(/x\.key === u\.key \? \{ \.\.\.x, status: "undone" \} : x/);
     expect(NETWORK).toMatch(/setSolved\(\(d\) => \{ const n = \{ \.\.\.d \}; delete n\[u\.pid\]; return n; \}\);/);
   });
   it("double-tap cannot race two undos of one entry — in-flight keys live in a ref", () => {
@@ -84,19 +91,24 @@ describe("solve → undo wiring", () => {
   it("the engine guard reads the scoped per-product open node, never the whole tree", () => {
     expect(NETWORK).toMatch(/refill_engine\/open\/\$\{loc\}\/\$\{u\.pid\}/);
   });
-  it("the undo strip survives the empty list — solving the last card is when it matters most", () => {
+  it("the last action's undo survives the empty list — solving the last card is when it matters most", () => {
     const start = NETWORK.indexOf("if (!cards.length) {");
     const block = NETWORK.slice(start, NETWORK.indexOf("\n  }", start));
     expect(block).toMatch(/\{undoStrip\}/);
   });
   it("undo is canAct-gated like every other write on this screen", () => {
-    expect(NETWORK).toMatch(/if \(!canAct \|\| u\.busy \|\| undoInFlight\.current\.has\(u\.key\)\) return;/);
+    expect(NETWORK).toMatch(/if \(!canAct \|\| undoUi\[u\.key\]\?\.busy \|\| undoInFlight\.current\.has\(u\.key\)\) return;/);
+    // …and undoing a Concrete mark is Junid's / an admin's, like the mark.
+    expect(NETWORK).toMatch(/if \(!canMarkConcrete \|\| undoInFlight\.current\.has\(u\.key\)\) return;/);
   });
   it("the undoables list is OWNED by HealthView — a glance at Sneakers/Hidden cannot drop a fresh undo", () => {
     // NetworkTransfer unmounts on those chips; its local state would die with
     // it. HealthView persists for the whole Inventory Health visit.
-    expect(HEALTH).toMatch(/const \[solveUndoables, setSolveUndoables\] = useState\(\[\]\)/);
-    expect(HEALTH).toMatch(/<NetworkTransfer[^>]*undoables=\{solveUndoables\} setUndoables=\{setSolveUndoables\}/);
-    expect(NETWORK).toMatch(/const undoables = undoablesProp \?\? localUndoables;/);
+    // (20 Nov 2026: the session list is the Solved rows of this visit.)
+    expect(HEALTH).toMatch(/const \[solvedSession, setSolvedSession\] = useState\(\[\]\)/);
+    expect(HEALTH).toMatch(/<NetworkTransfer[^>]*solvedSession=\{solvedSession\} setSolvedSession=\{setSolvedSession\}/);
+    expect(NETWORK).toMatch(/const solvedSession = solvedSessionProp \?\? localSession;/);
+    // The siblings an undo spares are every row still standing — saved or session.
+    expect(NETWORK).toMatch(/const undoables = useMemo\(\(\) => standing\(solvedAll\), \[solvedAll\]\);/);
   });
 });

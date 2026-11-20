@@ -281,11 +281,15 @@ export default function HealthView({ products = [], onExit }) {
   // owner directive 2026-08-05), and a stale per-type selection persisted from
   // the old per-subcategory row ("bags", "watches", …) falls back the same way.
   const [missingTab, setMissingTab] = useState(null);
-  // Solve-undo records live HERE, not in NetworkTransfer: a glance at the
-  // Sneakers or Hidden chip unmounts that component, and a fresh undo for a
-  // mistaken solve must survive exactly that glance. HealthView persists for
-  // the whole Inventory Health visit. (Sonnet substitute review, PR #361.)
-  const [solveUndoables, setSolveUndoables] = useState([]);
+  // This visit's Solved rows (solves + Concrete marks) live HERE, not in
+  // NetworkTransfer: a glance at the Sneakers or Hidden chip unmounts that
+  // component, and a fresh undo for a mistaken solve must survive exactly that
+  // glance. HealthView persists for the whole Inventory Health visit. (Sonnet
+  // substitute review, PR #361.) The saved history is solvedLog.js.
+  const [solvedSession, setSolvedSession] = useState([]);
+  // Cards Junid has just solved / marked Concrete, hidden at once (pid →
+  // "pending" | "done") — here so the chip counts drop with the card.
+  const [resolving, setResolving] = useState({});
   const exceptions = useStockExceptions();
   // Units the hold lane parked in stock/in_transit that the hourly sweep could
   // NOT land by itself (a deleted product, a phantom line) — the one place
@@ -445,10 +449,11 @@ export default function HealthView({ products = [], onExit }) {
   // (loading or unreadable) fails open to "nothing hidden". Hiding changes
   // NOTHING the engine or the scan reads — a hidden product still refills.
   const hiddenMap = useHiddenMissingProducts();
-  const { visible: missingVisible } = useMemo(
+  const { visible: missingVisibleAll } = useMemo(
     () => partitionHidden(missingProductCards || [], hiddenMap),
     [missingProductCards, hiddenMap],
   );
+  const missingVisible = useMemo(() => missingVisibleAll.filter((c) => !resolving[c.pid]), [missingVisibleAll, resolving]);
   // Clothing AND perfume cards (2026-08-13) — everything the NetworkTransfer
   // list renders. Named for what it is NOT (sneakers), because the headline sum
   // below adds the sneaker list on top and must count every card exactly once.
@@ -534,7 +539,7 @@ export default function HealthView({ products = [], onExit }) {
         // (tapping a chip) drops back to chip-world and the Hidden chip
         // disappears again.
         const chips = buildChips(missingVisible, missingSneakerCards.length);
-        const activeTab = missingTab === "hidden" ? "hidden" : pickActiveTab(chips, missingTab);
+        const activeTab = missingTab === "hidden" || missingTab === "solved" ? missingTab : pickActiveTab(chips, missingTab);
         return (
           <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts ?? "—"} onBack={back}>
             <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
@@ -549,6 +554,18 @@ export default function HealthView({ products = [], onExit }) {
                   {label} ({n})
                 </button>
               ))}
+              {/* SOLVED (Junid, 20 Nov 2026): everything solved or marked
+                  Concrete, newest first, with Undo — the growing undo strip
+                  moved here off the main list. */}
+              <button onClick={() => setMissingTab("solved")}
+                style={{
+                  padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+                  border: activeTab === "solved" ? "1px solid rgba(74,222,128,.5)" : "1px solid rgba(255,255,255,.1)",
+                  background: activeTab === "solved" ? "rgba(74,222,128,.12)" : "rgba(255,255,255,.03)",
+                  color: activeTab === "solved" ? "#4ADE80" : "rgba(255,255,255,.45)",
+                }}>
+                Solved
+              </button>
               {/* Once OPEN the hidden tab announces itself — the discretion is
                   about the entrance, not about pretending the screen you are
                   on doesn't exist. Leaving via any chip hides it again. */}
@@ -573,7 +590,7 @@ export default function HealthView({ products = [], onExit }) {
               ? <HiddenProducts products={products} cards={missingProductCards || []} hiddenMap={hiddenMap} />
               : activeTab === "sneakers"
               ? <MissingFootwear products={products} />
-              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingVisible} targets={allTargetsRaw} targetsSettled={targetsState.settled} targetsError={targetsState.error} undoables={solveUndoables} setUndoables={setSolveUndoables} />}
+              : <NetworkTransfer products={products} category={activeTab === "solved" ? "all" : activeTab} view={activeTab === "solved" ? "solved" : "list"} allStock={allStock} cards={missingVisibleAll} targets={allTargetsRaw} targetsSettled={targetsState.settled} targetsError={targetsState.error} solvedSession={solvedSession} setSolvedSession={setSolvedSession} resolving={resolving} setResolving={setResolving} onOpenSolved={() => setMissingTab("solved")} />}
           </DetailShell>
         );
       }

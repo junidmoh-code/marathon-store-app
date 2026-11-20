@@ -27,6 +27,7 @@ import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
 import { FOOTWEAR_CATEGORY_KEYS } from "../../utils/footwearLine.js";
 
 import { sectionOf, locationName } from "../../utils/networkRegistry";
+import { isConcreteProduct } from "../../utils/concreteListing.js";
 import { net, storeIds, solveHubsOfSection, centralId, liveSections } from "./sectionRouting";
 import { centralFedPerSize, centralFedIsClothing, centralFedSizes } from "./centralFed";
 import { decodedCellKey } from "../../utils/sizeKey";
@@ -134,6 +135,18 @@ export function inFootwearGroup(p) {
 // (A stock node with no product record is not admitted — same as before.)
 export const admitsMissingProduct = (p) => !!p && !inFootwearGroup(p);
 
+// ── CONCRETE-ONLY PRODUCTS (Junid, 20 Nov 2026) ──────────────────────────────
+// A product marked concreteProduct (src/utils/concreteListing.js) is handled by
+// the Concrete division: it is NEVER listed as missing from any other
+// division, and is listed (and solvable) in the Concrete division's list. The
+// Concrete division is whichever section the registry puts the "concrete"
+// store in (Section 1 on the seed). Ordinary products are untouched.
+// This changes only WHICH LIST a product appears in — no target, policy or
+// request logic reads it.
+export const concreteSection = (network) => sectionOf(net(network), "concrete") || 1;
+export const listedInSection = (product, section, network) =>
+  !isConcreteProduct(product) || section === concreteSection(network);
+
 // The stranded-card list. `allStock` is { loc: { pid: { sizeKey: cell } } } and
 // `products` is an array of catalogue records. `section` (default 2) is the
 // section the list is for; `network` is the registry (default: the current
@@ -180,6 +193,8 @@ export function computeMissingProducts({ allStock, products, network, section, c
     // arrival ever follows, so nothing would auto-reactivate: the exact
     // "seed, vanish, never refill" divergence the mirror comments warn about.
     if (isDeactivated(p)) continue;
+    // Concrete-only: the Concrete division's list alone (see above).
+    if (!listedInSection(p, sec, N)) continue;
     // This product's hubs in this section (Hub 2 for every Section 2 product).
     const hubs = solveHubsOfSection(N, sec, p, pid);
     const ce = sumAt(central, pid);
@@ -237,7 +252,7 @@ function addCentralFedCards({ out, N, sec, central, allStock, byId, centralFed, 
   const pids = new Set([...Object.keys(allStock?.[central] || {}), ...fedStores.flatMap((s) => Object.keys(allStock?.[s] || {}))]);
   for (const pid of pids) {
     const p = byId.get(pid);
-    if (!admitsMissingProduct(p) || isDeactivated(p) || !centralFedIsClothing(p)) continue;
+    if (!admitsMissingProduct(p) || isDeactivated(p) || !centralFedIsClothing(p) || !listedInSection(p, sec, N)) continue;
     for (const store of fedStores) {
       const declared = centralFedSizes(p);
       const perSize = centralFedPerSize(centralFed, N, store);
