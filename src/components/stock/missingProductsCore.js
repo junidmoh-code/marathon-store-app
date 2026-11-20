@@ -182,6 +182,14 @@ export function computeMissingProducts({ allStock, products, network, section, c
   // product can be mapped to another hub of the section).
   const sectionHubs = solveHubsOfSection(N, sec, null, null);
   const pids = new Set([...Object.keys(allStock?.[central] || {}), ...sectionHubs.flatMap((h) => Object.keys(allStock?.[h] || {}))]);
+  // CONCRETE-ONLY STOCK SITTING IN ANOTHER DIVISION'S HUB (CodeRabbit, PR
+  // #952): it is off Marathon's list, so the Concrete list must show it or it
+  // would be invisible. Only Concrete-only products are added from those hubs.
+  const isConcreteList = sec === concreteSection(N);
+  const foreignHubs = isConcreteList
+    ? [1, 2].filter((x) => x !== sec).flatMap((x) => solveHubsOfSection(N, x, null, null))
+    : [];
+  for (const h of foreignHubs) for (const pid of Object.keys(allStock?.[h] || {})) if (isConcreteProduct(byId.get(pid))) pids.add(pid);
   for (const pid of pids) {
     const p = byId.get(pid);
     // Everything outside the footwear group — clothing, perfume, and (since
@@ -205,13 +213,24 @@ export function computeMissingProducts({ allStock, products, network, section, c
       const h = hubs.find((x) => sumAt(x, pid) > 0);
       if (h) { source = h; kind = `Only in ${locationName(N, h)}`; }
     }
+    // …from another division's hub: the card's source is that hub, and only
+    // that hub's own division's shops can take it (the wall — a Concrete-only
+    // row offers both divisions, and the Concrete shops show why they cannot).
+    let foreignMissing = null;
+    if (!source && isConcreteList && isConcreteProduct(p) && !carriedDownstream && !hubs.some((h) => carries(h, pid))) {
+      const h = foreignHubs.find((x) => sumAt(x, pid) > 0);
+      if (h) {
+        const hubStores = storeIds(N, { section: sectionOf(N, h) });
+        if (!hubStores.some((st) => carries(st, pid))) { source = h; kind = `Only in ${locationName(N, h)}`; foreignMissing = hubStores; }
+      }
+    }
     if (!source) continue;
     const sizes = Object.entries(allStock[source]?.[pid] || {})
       .map(([size, c]) => ({ size, avail: Math.max(Number(c?.qty) || 0, 0) }))
       .filter((s) => s.avail > 0)
       .sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
     if (!sizes.length) continue;
-    const missing = source === central ? [...hubs, ...STORES].filter((l) => !carries(l, pid)) : STORES;
+    const missing = foreignMissing || (source === central ? [...hubs, ...STORES].filter((l) => !carries(l, pid)) : STORES);
     const group = groupOf(p);
     out.push({
       pid, name: p?.name || pid, photo: p?.photoUrl, source, kind, sizes, missing,

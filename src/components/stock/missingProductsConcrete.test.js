@@ -27,6 +27,14 @@ describe("Concrete-only products and the division lists", () => {
     expect(listedInSection({ ...LEGACY, concreteProduct: false }, 2)).toBe(true);
     expect(listedInSection(LEGACY, 2)).toBe(false);
   });
+  it("Concrete-only stock sitting only in Hub 2 is shown on the Concrete list (source Hub 2, Marathon's shops)", () => {
+    const stock = { hub2: { c1: { S: cell(2) }, t9: { S: cell(5) } } };
+    const T9 = { id: "t9", name: "Ordinary", productType: "clothing", sizes: ["S"] };
+    const cards = computeMissingProducts({ allStock: stock, products: [PANT, T9], section: 1 });
+    expect(cards.map((c) => c.pid)).toEqual(["c1"]);          // never an ordinary Hub 2 product
+    expect(cards[0]).toMatchObject({ source: "hub2", missing: ["marathon-pe", "trophy"] });
+    expect(computeMissingProducts({ allStock: stock, products: [PANT, T9] }).map((c) => c.pid)).toEqual(["t9"]);
+  });
   it("ordinary products are byte-for-byte what they were in both lists", () => {
     const before = computeMissingProducts({ allStock: STOCK, products: [TEE] });
     const after = computeMissingProducts({ allStock: STOCK, products: ALL }).filter((c) => c.pid === "t1");

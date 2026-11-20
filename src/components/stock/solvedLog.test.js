@@ -38,6 +38,8 @@ describe("solved log rows", () => {
   it("newest first; a session row never doubles a saved one", () => {
     const a = { key: "a", at: 1 }, b = { key: "b", at: 3 }, c = { key: "c", at: 2 };
     expect(mergeSolved([a, b], [b, c]).map((x) => x.key)).toEqual(["b", "c", "a"]);
+    // undone on another device (saved) beats this session's "done"
+    expect(mergeSolved([{ key: "b", at: 3, status: "undone" }], [{ key: "b", at: 3, status: "done", batch: "x" }])[0]).toMatchObject({ status: "undone", batch: "x" });
   });
   it("keys sort by time", () => {
     const k1 = newSolvedKey(AT, () => 0.9), k2 = newSolvedKey(AT + 1, () => 0.1);

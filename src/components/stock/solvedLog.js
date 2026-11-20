@@ -98,16 +98,20 @@ export function normalizeSolvedEntry(key, raw) {
   return e;
 }
 
-/** Newest first, de-duplicated by key (a session-only row never doubles a saved one). */
+/**
+ * Newest first, de-duplicated by key (a session row never doubles a saved
+ * one). A row Undone in EITHER copy stays Undone — another device may have
+ * undone a saved solve this session still holds as done (CodeRabbit, PR #952).
+ */
 export function mergeSolved(saved, session) {
-  const seen = new Set();
-  const out = [];
+  const byKey = new Map();
   for (const e of [...(session || []), ...(saved || [])]) {
-    if (!e || seen.has(e.key)) continue;
-    seen.add(e.key);
-    out.push(e);
+    if (!e) continue;
+    const had = byKey.get(e.key);
+    if (!had) { byKey.set(e.key, e); continue; }
+    if (e.status === "undone" && had.status !== "undone") byKey.set(e.key, { ...had, status: "undone", undoneAt: e.undoneAt, undoneBy: e.undoneBy });
   }
-  return out.sort((a, b) => (b.at || 0) - (a.at || 0) || (a.key < b.key ? 1 : -1));
+  return [...byKey.values()].sort((a, b) => (b.at || 0) - (a.at || 0) || (a.key < b.key ? 1 : -1));
 }
 
 /** The update that marks a row undone. */

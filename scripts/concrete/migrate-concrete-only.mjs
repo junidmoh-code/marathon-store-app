@@ -145,8 +145,21 @@ async function main() {
       [`products/${e.pid}/concreteProductSetAt`]: e.legacy.at || at,
       [`${CONCRETE_INDEX_PATH}/${e.pid}`]: true,
     };
+    // THE FLAG FIRST, AS A CAS: set only while the product still has NO
+    // concreteProduct value — a decision someone made after the snapshot
+    // (true or false) wins, and then nothing else for this product is
+    // written: no index, no Marathon change (CodeRabbit, PR #952).
+    const cas = await db.ref(`products/${e.pid}/concreteProduct`).transaction((cur) => (cur === null || cur === undefined ? true : undefined));
+    if (!cas.committed) { console.log(`  drift: ${e.pid} got a concreteProduct value after the snapshot — left exactly as it is`); continue; }
+    delete u[`products/${e.pid}/concreteProduct`];
     if (e.marathonOff) {
-      for (const [k, v] of Object.entries(concreteOnlyOffFields(e.node, { at, actor: ACTOR }))) u[`${MARATHON_PUBLISH_PATH}/${e.pid}/${k}`] = v;
+      // The Marathon off as its own transaction on the live node, so a
+      // concurrent off record is merged, never lost.
+      await db.ref(`${MARATHON_PUBLISH_PATH}/${e.pid}`).transaction((cur) => {
+        if (cur === null) return cur;
+        if (!needsMarathonOff(cur)) return;
+        return { ...cur, ...concreteOnlyOffFields(cur, { at, actor: ACTOR }) };
+      });
     }
     await db.ref().update(u);
     const [cp, idx, ds] = await Promise.all([

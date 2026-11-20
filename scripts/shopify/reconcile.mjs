@@ -1440,6 +1440,18 @@ for (const { pid, want } of capped) {
       results.push({ pid, ok: true, note: "cancelled mid-run — created/reconciled but NOT published, confirmed off" });
       continue;
     }
+    // MARATHON, LAST MOMENT: a product marked Concrete-only while this run was
+    // applying it never goes public on Marathon (CodeRabbit, PR #952). The
+    // product is re-read here, before publishablePublish and the collection
+    // join; a refusal takes down anything drift left visible.
+    if (IS_MARATHON) {
+      const lateProduct = (await db.ref(`products/${pid}`).get()).val();
+      if (isConcreteProduct(lateProduct)) {
+        const down = await failSafeUnpublish(gid);
+        await refuse(pid, "Concrete-only — it sells on the Concrete website only; publish it from the Concrete tab", { tookDown: down });
+        continue;
+      }
+    }
     // Photos are editable while a publish sits pending — a set saved after
     // this run built its media plan must not go live under the OLD plan.
     // Leave the intent unconsumed; the next run rebuilds the plan from the

@@ -55,7 +55,19 @@ export async function markProducts(productIds, on, { verify = false, liveOnConcr
 export async function markConcreteProduct(productId, on, { liveOnConcrete = null } = {}) {
   const uid = auth.currentUser?.uid;
   if (!uid) return { ok: false, message: "Not signed in — nothing was saved." };
-  const r = await setConcreteProduct(applyRootUpdate, { productIds: [productId], on, uid, nowMs: serverNowMs(), verify: true, liveOnConcrete });
+  // UNMARKING: whether it is live on Concrete is asked of ITS node, now — a
+  // page-load set that failed or has not answered must not read as "not live"
+  // (CodeRabbit, PR #952). If even this read is refused (the #911 rules not
+  // pasted), the Concrete reconciler's unmarked-product backstop still turns
+  // the listing off on its next tick.
+  let live = liveOnConcrete;
+  if (!on) {
+    try {
+      const node = (await get(ref(database, `${CONCRETE_PUBLISH_PATH}/${productId}`))).val();
+      if (node?.state === "live") live = new Set([...(live || []), productId]);
+    } catch { /* see above */ }
+  }
+  const r = await setConcreteProduct(applyRootUpdate, { productIds: [productId], on, uid, nowMs: serverNowMs(), verify: true, liveOnConcrete: live });
   return r.ok ? { ok: true } : { ok: false, message: r.message || "Couldn't save — nothing changed." };
 }
 

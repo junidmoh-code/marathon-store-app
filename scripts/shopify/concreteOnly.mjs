@@ -77,7 +77,15 @@ export async function enforceConcreteOnlyOnMarathon(db, { nowMs, actor, commit =
       if (!needsMarathonOff(node)) continue;
       if (commit) {
         const at = await nowMs();
-        await db.ref(`${MARATHON_PUBLISH_PATH}/${pid}`).update(concreteOnlyOffFields(node, { at, actor }));
+        // A TRANSACTION on the node: the off record is merged into the log as
+        // it stands at commit time, so a concurrent off record is never lost
+        // (CodeRabbit, PR #952); an intent that went off meanwhile is left be.
+        const r = await db.ref(`${MARATHON_PUBLISH_PATH}/${pid}`).transaction((cur) => {
+          if (cur === null) return cur;          // cold-cache first pass: retried with the server value
+          if (!needsMarathonOff(cur)) return;    // abort — nothing to do any more
+          return { ...cur, ...concreteOnlyOffFields(cur, { at, actor }) };
+        });
+        if (!r?.committed) continue;
         log(`  marathon: ${pid} is Concrete-only — switching its Marathon listing off`);
       }
       out.turnedOff.push(pid);
