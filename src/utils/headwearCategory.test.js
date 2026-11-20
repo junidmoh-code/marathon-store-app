@@ -93,11 +93,17 @@ describe("buildNewProduct — the creation path that produced the bad records", 
 describe("headwearRenamePatch", () => {
   const legacyOf = (k) => legacyFor(TAXONOMY_SEED, k);
   it("re-files a one-size product renamed to a headwear name", () => {
-    expect(headwearRenamePatch({ sizes: ["_"], categoryKey: "chains-bracelets" }, "Nike cap white", legacyOf))
-      .toEqual({ categoryKey: "caps-beanies", category: "Clothing", subcategory: "Caps & Hats", productType: "clothing" });
+    expect(headwearRenamePatch({ sizes: ["_"], categoryKey: "chains-bracelets", productType: "clothing" }, "Nike cap white", legacyOf))
+      .toEqual({ categoryKey: "caps-beanies", category: "Clothing", subcategory: "Caps & Hats" });
   });
   it("uses the seed triple when no registry is handed in", () => {
-    expect(headwearRenamePatch({ sizes: ["_"], categoryKey: "bags" }, "Nike beanie")).toEqual({ categoryKey: "caps-beanies", category: "Clothing", subcategory: "Caps & Hats", productType: "clothing" });
+    expect(headwearRenamePatch({ sizes: ["_"], categoryKey: "bags", productType: "clothing" }, "Nike beanie")).toEqual({ categoryKey: "caps-beanies", category: "Clothing", subcategory: "Caps & Hats" });
+  });
+  it("never changes productType (that has its own manager-gated toggle)", () => {
+    expect(headwearRenamePatch({ sizes: ["_"], categoryKey: "bags", productType: "sneaker" }, "Nike beanie")).toBe(null);
+  });
+  it("a registry that refuses the key means no correction", () => {
+    expect(headwearRenamePatch({ sizes: ["_"], categoryKey: "bags", productType: "clothing" }, "Nike beanie", () => null)).toBe(null);
   });
   it("never touches a sized product (that is the collapse's job) or a correct key", () => {
     expect(headwearRenamePatch({ sizes: ["M"], categoryKey: "chains-bracelets" }, "Nike cap white")).toBe(null);

@@ -36,7 +36,7 @@
 import { createRequire } from "module";
 import { writeFileSync, readFileSync, statSync } from "fs";
 import { hostname, tmpdir, homedir } from "os";
-import { join } from "path";
+import { join, resolve as resolvePath } from "path";
 import { setServerTimeOffsetMs, serverNowIso } from "../src/utils/serverTime.js";
 import {
   applyMovementAdmin, planStep1, planStep2, step2Done, planStep3, verifyProduct,
@@ -55,12 +55,25 @@ const app = admin.initializeApp({
 const db = admin.database();
 
 const EXECUTE = process.argv.includes("--execute");
-const ONLY = (process.argv.find((a) => a.startsWith("--only=")) || "").slice(7).split(",").filter(Boolean);
+// --only: absent = full scope; present = a non-empty list of product ids, or abort
+// (an empty or malformed operand must never widen to everything).
+const ONLY_ARG = process.argv.find((a) => a === "--only" || a.startsWith("--only="));
+const ONLY = ONLY_ARG ? ONLY_ARG.slice(7).split(",").map((x) => x.trim()).filter(Boolean) : [];
+if (ONLY_ARG && (!ONLY.length || ONLY.some((x) => !/^[A-Za-z0-9_-]+$/.test(x)))) {
+  console.error(`ABORT: --only needs a comma-separated list of product ids (got ${JSON.stringify(ONLY_ARG)}). Nothing was started.`);
+  process.exit(1);
+}
 const CAPS = "caps-beanies";
 const isOneSizeP = (p) => Array.isArray(p?.sizes) && p.sizes.length === 1 && String(p.sizes[0]) === "_";
 const keyOf = (p) => (typeof p?.categoryKey === "string" ? p.categoryKey.trim() : "");
-const isInScope = (p) => !!p && !p.mergedInto && keyOf(p) === CAPS && !!normalHeadwearKind(p.name) && !isOneSizeP(p);
-const SNAP = process.env.SNAPSHOT_PATH || join(homedir(), `caps-beanies-collapse-rollback-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+const isInScope = (p) => !!p && !p.mergedInto && keyOf(p) === CAPS && !!normalHeadwearKind(p.name)
+  && Array.isArray(p.sizes) && p.sizes.length > 0 && !isOneSizeP(p);
+const SNAP_RAW = process.env.SNAPSHOT_PATH || join(homedir(), `caps-beanies-collapse-rollback-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+const SNAP = resolvePath(SNAP_RAW);
+if (process.env.REPORT_JSON && resolvePath(process.env.REPORT_JSON) === SNAP) {
+  console.error("ABORT: REPORT_JSON and SNAPSHOT_PATH are the same file — the report would overwrite the rollback. Nothing was started.");
+  process.exit(1);
+}
 
 // The locations under /stock and /stock_targets, listed shallowly once.
 let STOCK_LOCS = [];
@@ -104,7 +117,9 @@ async function locksFor(pids) {
   return out;
 }
 // The ledger over the recent window only, by its ts index (the recency gate's question).
-const recentMovements = (nowMs) => db.ref("stock_movements").orderByChild("ts").startAt(new Date(nowMs - 2 * 3600e3).toISOString()).once("value").then((s) => s.val() || {});
+// Window = the recency gate's own window (at least 2h), so a longer
+// RECENT_ACTIVITY_MINUTES is never asked a question the query cannot answer.
+const recentMovements = (nowMs) => db.ref("stock_movements").orderByChild("ts").startAt(new Date(nowMs - Math.max(2 * 3600e3, RECENT_ACTIVITY_MS)).toISOString()).once("value").then((s) => s.val() || {});
 
 // ── TIMING KNOBS — VALIDATED, NOT COERCED, AND BEFORE THE LOCK ──────────────
 // `Number(process.env.X || default)` turns a typo into silence. On a staleness
@@ -284,7 +299,9 @@ function hasPrivilegedCredential(app) {
   // single-path transaction is a real compare-and-set and is exactly the right
   // primitive here — Step 2 needs a multi-path update and so cannot use one,
   // but a lock is one path. (Kimi review of the lock delta, PR #343.)
-  const LOCK = "_migrations/capsBeaniesSizedCollapse/runLock";
+  // THE HEADWEAR COLLAPSE'S OWN LOCK, shared: both scripts can select the same
+// caps-beanies product, so they must never run at the same time.
+  const LOCK = "_migrations/headwearOneSizeCollapse/runLock";
   let lockHeld = false;
   if (EXECUTE) {
     const mine = { startedAt: nowIso, pid: process.pid, host: hostname(), releasedAt: null };
@@ -596,6 +613,12 @@ function hasPrivilegedCredential(app) {
     }
     if (Object.keys(expectedDelta).length) {
       console.log(`  ${pid} resuming an interrupted pair — totals SHOULD rise by ${Object.entries(expectedDelta).map(([l, n]) => `${l}+${n}`).join(" ")} (the earlier run's debit is already in the baseline)`);
+    }
+    // THE PAUSE, RE-CHECKED AT THE WRITE: the startup check alone would let a
+    // product be collapsed after someone resumed the engine mid-run.
+    if ((await io.read("receiving_session/active")) !== true) {
+      results.push({ pid, name, status: "GATED", detail: ["refill engine no longer paused (receiving_session.active is not true) — stopped before writing"] });
+      break;
     }
     const totalsBeforeProduct = {};
     for (const [loc, bySize] of Object.entries(freshCells)) {

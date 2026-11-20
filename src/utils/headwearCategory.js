@@ -79,9 +79,15 @@ export function headwearRenamePatch(product, newName, legacyOf) {
   if (!fixKey) return null;
   const sizes = Array.isArray(product && product.sizes) ? product.sizes.map(String) : [];
   if (!(sizes.length === 1 && sizes[0] === "_")) return null;
-  const legacy = (typeof legacyOf === "function" && legacyOf(fixKey)) || CAPS_BEANIES_LEGACY_SEED;
+  // A supplied registry that refuses the key (retired / misconfigured) means
+  // no correction; the seed only stands in when no registry was handed in.
+  const legacy = typeof legacyOf === "function" ? legacyOf(fixKey) : CAPS_BEANIES_LEGACY_SEED;
+  if (!legacy) return null;
+  // productType is NEVER changed by a rename: it has its own manager-gated
+  // toggle (setProductType + typeLog). A one-size record whose type differs
+  // from what Caps & Beanies writes is left for that toggle, not re-filed here.
+  if ((product.productType ?? null) !== (legacy.productType ?? null)) return null;
   const patch = { categoryKey: fixKey, category: legacy.category };
   if (legacy.subcategory != null) patch.subcategory = legacy.subcategory;
-  if (legacy.productType != null) patch.productType = legacy.productType;
   return patch;
 }

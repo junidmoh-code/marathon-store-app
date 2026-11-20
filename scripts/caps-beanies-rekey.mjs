@@ -16,8 +16,9 @@
 // still sized is reported for the one-size collapse instead (a key change must
 // never strand a size). Fitted caps and visors are never in scope.
 //
-// GUARDED, per product: a FRESH by-key re-read; a drift check (name, key and
-// sizes still what the plan was built from); the rollback snapshot written to
+// GUARDED, per product: a drift check (name, key and sizes still what the plan
+// was built from) evaluated INSIDE a per-product transaction, so it holds at
+// the instant of the write; the rollback snapshot written to
 // disk and READ BACK before any write; one multi-path update per product; then
 // a post-verify read. --execute performs the writes; without it nothing is
 // written but the snapshot.
@@ -48,16 +49,33 @@ const FIELDS = ["categoryKey", "category", "subcategory", "productType"];
 const isOneSize = (p) => Array.isArray(p?.sizes) && p.sizes.length === 1 && String(p.sizes[0]) === "_";
 const pick = (p) => Object.fromEntries(FIELDS.map((f) => [f, p?.[f] ?? null]));
 
+// THE CONDITIONAL WRITE. A read followed by update() leaves a window in which
+// an edit (say, to fitted-caps with sizes ["57"]) would be overwritten. A
+// per-product transaction checks the expected state against the value it
+// commits: `expect(cur)` returns a drift reason (abort) or null (write).
+// The first local call may see null (cold cache); returning null then is a
+// no-op the server rejects and re-runs with the real value.
+async function conditionalSet(pid, expect, fields) {
+  let why = null;
+  const res = await db.ref(`products/${pid}`).transaction((cur) => {
+    if (cur === null) return null;
+    why = expect(cur);
+    if (why) return;   // abort
+    const next = { ...cur };
+    for (const [f, v] of Object.entries(fields)) { if (v === null) delete next[f]; else next[f] = v; }
+    return next;
+  }, undefined, false);
+  return res.committed && res.snapshot.exists() ? null : (why || "product no longer exists");
+}
+
 async function rollback() {
   const snap = JSON.parse(readFileSync(ROLLBACK, "utf8"));
   console.log(`ROLLBACK from ${ROLLBACK} (${Object.keys(snap.products).length} products) — ${EXECUTE ? "EXECUTE" : "dry run"}`);
   for (const [pid, { before, after }] of Object.entries(snap.products)) {
-    const live = await read(`products/${pid}`);
-    const now = pick(live);
-    if (JSON.stringify(now) !== JSON.stringify(after)) { console.log(`  SKIP ${pid}: changed since the fix ${JSON.stringify(now)}`); continue; }
-    const upd = Object.fromEntries(FIELDS.map((f) => [`products/${pid}/${f}`, before[f]]));
-    console.log(`  ${pid} → ${JSON.stringify(before)}`);
-    if (EXECUTE) await db.ref().update(upd);
+    const changed = (cur) => JSON.stringify(pick(cur)) !== JSON.stringify(after) ? `changed since the fix ${JSON.stringify(pick(cur))}` : null;
+    if (!EXECUTE) { const live = await read(`products/${pid}`); console.log(`  ${pid} → ${JSON.stringify(before)} ${changed(live) || ""}`); continue; }
+    const why = await conditionalSet(pid, changed, before);
+    console.log(`  ${why ? `SKIP ${pid}: ${why}` : `${pid} → ${JSON.stringify(before)}`}`);
   }
   process.exit(0);
 }
@@ -97,20 +115,17 @@ if (!EXECUTE) { console.log("  DRY RUN — nothing written except the rollback s
 
 const results = [];
 for (const r of plan) {
-  // FRESH re-read by key + drift check: name, every field this write replaces, sizes.
-  const live = await read(`products/${r.pid}`);
-  const drift = !live ? "product no longer exists"
-    : live.mergedInto ? "merged since the plan"
+  // Drift check INSIDE the write: name, every field this write replaces, sizes.
+  const drift = (live) => live.mergedInto ? "merged since the plan"
     : live.name !== r.name ? `renamed to ${JSON.stringify(live.name)}`
     : JSON.stringify(pick(live)) !== JSON.stringify(r.before) ? `fields changed: ${JSON.stringify(pick(live))}`
     : !isOneSize(live) ? `sizes now ${JSON.stringify(live.sizes)}` : null;
-  if (drift) { results.push({ ...r, status: "SKIPPED (drift)", detail: drift }); continue; }
-  const upd = {};
-  for (const f of FIELDS) upd[`products/${r.pid}/${f}`] = r.after[f];
-  await db.ref().update(upd);
+  const pre = await read(`products/${r.pid}`);
+  const why = await conditionalSet(r.pid, drift, r.after);
+  if (why) { results.push({ ...r, status: "SKIPPED (drift)", detail: why }); continue; }
   const post = await read(`products/${r.pid}`);
   const ok = JSON.stringify(pick(post)) === JSON.stringify(r.after) && isOneSize(post) && post.name === r.name
-    && post.styleCodeNormalised === live.styleCodeNormalised;
+    && post.styleCodeNormalised === pre?.styleCodeNormalised;
   results.push({ ...r, status: ok ? "DONE" : "VERIFY-FAILED", detail: ok ? "" : JSON.stringify(pick(post)) });
 }
 for (const r of results) console.log(`  ${r.status.padEnd(16)} ${r.pid}  ${r.name}  ${r.detail || ""}`);
