@@ -1,5 +1,11 @@
 // ─── BLACK FRIDAY 2026 — Junid's card (v3, 19 Nov evening) ───────────────────
-// One row per product. Two tabs: To review and Approved. MAIN = 13 or more on
+// One row per product. Three tabs: New Arrivals, To review and Approved.
+// NEW ARRIVALS (20 Nov) = the New Arrivals queue itself (past 20 days, any
+// quantity, no paper bags): its taps are New Arrivals' own approvals, so
+// approving here or on the New Arrivals card is ONE approval; its photos are
+// made by New Arrivals' own studio. Approved splits New Arrivals / Normal and
+// keeps every product after posting ("Posted n× · last …"); Repost queues the
+// ticked ones for the next slot — nothing reposts by itself. MAIN = 13 or more on
 // hand: every 30+ product first (with "Approve all 30+"), then 13–29. "Show
 // under 13" adds the rest. Per product: Approve, Reject, Use current photo,
 // Generate / Regenerate. Reject removes it (and it stays rejected); undo from
@@ -27,20 +33,26 @@ const price = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number
  * safe default, with Generate still there.
  */
 export function rowActions(r) {
-  const review = r.tab === "review";
+  const na = r.tab === "newArrivals";
+  const review = r.tab === "review" || na;
+  // An approved New Arrival's photo is the one New Arrivals approved: no photo switching here (Back to review first).
+  if (r.tab === "approved" && r.src === "na") return { approve: false, approveDisabled: false, reject: true, backToReview: true, useCurrent: false, useCurrentPrimary: false, useAi: false, generate: false, regenerate: false, approveLook: false };
+  const canGen = r.canGenerate !== false;
   return {
     approve: review,
     approveDisabled: !!r.generating,
     reject: true,
     backToReview: !review,
-    useCurrent: r.use === "generated" || !r.styleApproved,
-    useCurrentPrimary: !r.styleApproved && r.use !== "generated",
-    useAi: r.use === "current" && !!r.generatedUrl,
-    generate: !r.generations,
-    regenerate: r.generations > 0,
-    approveLook: !r.styleApproved && r.generations > 0,
+    // A New Arrival: "Use current photo" approves it with the app's photo (New Arrivals' own button).
+    useCurrent: na ? true : r.use === "generated" || !r.styleApproved,
+    useCurrentPrimary: na ? !r.generatedUrl : !r.styleApproved && r.use !== "generated",
+    useAi: !na && r.use === "current" && !!r.generatedUrl,
+    generate: review && canGen && !r.generations,
+    regenerate: review && canGen && r.generations > 0,
+    approveLook: !na && !r.styleApproved && r.generations > 0,
   };
 }
+const dayLabel = (ms) => (ms ? new Date(ms).toLocaleDateString("en-ZA", { day: "numeric", month: "short", timeZone: "Africa/Johannesburg" }) : "");
 
 // Long-press (iPhone Safari, Chrome, a mouse held down): 500 ms opens the quick popup.
 const LONG_PRESS_MS = 500;
@@ -89,11 +101,14 @@ function Row({ r, busy, gen, on, selectMode, selected }) {
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</div>
-        <div style={{ fontSize: 12, color: "#dfe7ff" }}>{price(r.price)} · {r.qty} on hand{r.na ? " · New" : ""}</div>
+        <div style={{ fontSize: 12, color: "#dfe7ff" }}>{price(r.price)} · {r.qty ? `${r.qty} on hand` : "stock checked at posting"}{r.na && !r.uploadedAt ? " · New" : ""}</div>
+        {r.uploadedAt && <div data-testid={`uploaded-${r.pid}`} style={{ fontSize: 11, color: GRAY }}>Uploaded {dayLabel(r.uploadedAt)}</div>}
         <div style={{ fontSize: 11, color: GRAY, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.sizes}</div>
         {r.changedSinceApproval && <div style={{ fontSize: 11, color: AMBER }}>Photo changed — approve again</div>}
         {r.failed && !gen && !r.generating && <button data-testid={`failed-${r.pid}`} onClick={(e) => { e.stopPropagation(); on.generate(r); }} title={r.failed.reason} style={{ background: "none", border: "none", padding: 0, color: RED, fontSize: 11, textAlign: "left", cursor: "pointer", textDecoration: "underline" }}>Failed, tap to retry</button>}
-        {r.posted && <div style={{ fontSize: 11, color: GREEN }}>Posted</div>}
+        {r.postedN > 0 ? <div data-testid={`posted-${r.pid}`} style={{ fontSize: 11, color: GREEN }}>Posted {r.postedN}× · last {dayLabel(r.postedLast)}</div>
+          : r.posted ? <div style={{ fontSize: 11, color: GREEN }}>Posted</div> : null}
+        {r.repostQueued && <div data-testid={`repost-queued-${r.pid}`} style={{ fontSize: 11, color: BLUE_L }}>Repost queued for the next slot</div>}
         {!selectMode && <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
           {a.approve && <button data-testid={`approve-${r.pid}`} disabled={busy || a.approveDisabled} onClick={() => on.approve(r)} style={{ ...bGreen, padding: "4px 10px", fontSize: 11, minHeight: 28 }}>Approve</button>}
           {a.backToReview && <button data-testid={`back-${r.pid}`} disabled={busy} onClick={() => on.reset(r)} style={sm}>Back to review</button>}
@@ -181,7 +196,8 @@ export default function BlackFridayScreen({ api, onExit }) {
   const [main, setMain] = useState(null);
   const [under, setUnder] = useState(null);
   const [showUnder, setShowUnder] = useState(false);
-  const [tab, setTab] = useState("review");
+  // Opens on New Arrivals when any are waiting, else on To review.
+  const [tabPicked, setTab] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null);
@@ -197,6 +213,9 @@ export default function BlackFridayScreen({ api, onExit }) {
   const [onlySel, setOnlySel] = useState(false);
   const restored = useRef(false); // the saved selection has been put back (never saved over before that)
   const toastTimer = useRef(null);
+  const tab = tabPicked || (main && main.newArrivals && main.newArrivals.length ? "newArrivals" : "review");
+  // Chosen once, on the first load: approving the last New Arrival never flips the screen to another tab.
+  useEffect(() => { if (main && !tabPicked) setTab(tab); }, [main]); // eslint-disable-line react-hooks/exhaustive-deps
   // Every Approve, Reject and bulk action: a toast with Undo for 6 seconds that fully reverses it.
   const showToast = (text, undo) => {
     clearTimeout(toastTimer.current);
@@ -222,11 +241,15 @@ export default function BlackFridayScreen({ api, onExit }) {
     restored.current = true;
     const saved = main.selection && main.selection.sigs ? main.selection.sigs : null;
     if (!saved || !Object.keys(saved).length) return;
-    const rows = new Map([...(main.review || []), ...(main.approved || [])].map((r) => [r.pid, { ...r, section: "main" }]));
+    const rows = new Map([...(main.newArrivals || []), ...(main.review || []), ...(main.approved || [])].map((r) => [r.pid, { ...r, section: "main" }]));
     const m = new Map();
     for (const [pid, sig] of Object.entries(saved)) m.set(pid, { ...(rows.get(pid) || { pid, name: pid }), sig });
     setSelected(m);
     setSelectMode(true);
+    // Back on the tab that holds the ticks (a recovered selection is shown on To review).
+    const naPids = new Set((main.newArrivals || []).map((r) => r.pid));
+    const allNa = [...m.keys()].every((pid) => naPids.has(pid));
+    setTab(allNa ? "newArrivals" : (main.approved || []).some((r) => m.has(r.pid)) && ![...m.keys()].some((pid) => (main.review || []).some((r) => r.pid === pid) || naPids.has(pid)) ? "approved" : "review");
     if (main.selection.label) { setSelLabel(main.selection.label); setOnlySel(true); }
     else setNote(`${m.size} selected — your selection was kept`);
   }, [main]);
@@ -236,13 +259,15 @@ export default function BlackFridayScreen({ api, onExit }) {
   const patch = (pid, row, rejected) => {
     const fix = (d) => {
       if (!d) return d;
-      const inThis = [...d.review, ...d.approved].some((x) => x.pid === pid);
+      const nas = d.newArrivals || [];
+      const inThis = [...nas, ...d.review, ...d.approved].some((x) => x.pid === pid);
       if (!inThis) return d;
       const rest = (list) => list.filter((x) => x.pid !== pid);
-      const review = rest(d.review), approved = rest(d.approved);
-      if (!rejected && row) (row.tab === "approved" ? approved : review).push(row);
+      const review = rest(d.review), approved = rest(d.approved), newArrivals = rest(nas);
+      if (!rejected && row) (row.tab === "approved" ? approved : row.tab === "newArrivals" ? newArrivals : review).push(row);
       const order = (l) => l.sort((x, y) => (Number(y.big) - Number(x.big)) || (y.qty - x.qty) || String(x.name).localeCompare(String(y.name)));
-      return { ...d, review: order(review), approved: order(approved) };
+      newArrivals.sort((x, y) => (y.uploadedAt || 0) - (x.uploadedAt || 0));
+      return { ...d, newArrivals, review: order(review), approved: order(approved) };
     };
     setMain(fix); setUnder(fix);
   };
@@ -284,7 +309,9 @@ export default function BlackFridayScreen({ api, onExit }) {
   }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
   const generate = async (r) => {
     setGens((x) => ({ ...x, [r.pid]: "Starting…" }));
-    try { await api.generate(r.pid, r.section, { onEvent: (ev) => { if (ev && ev.text) setGens((x) => ({ ...x, [r.pid]: String(ev.text).slice(0, 80) })); } }); }
+    // A New Arrival's photo is made by New Arrivals' own studio, on the New Arrivals item.
+    const make = r.tab === "newArrivals" && api.generateNa ? (pid, _s, o) => api.generateNa(pid, o) : api.generate;
+    try { await make(r.pid, r.section, { onEvent: (ev) => { if (ev && ev.text) setGens((x) => ({ ...x, [r.pid]: String(ev.text).slice(0, 80) })); } }); }
     catch (e) { setNote(`${r.name}: ${e?.message || String(e)}`); }
     setGens((x) => { const n = { ...x }; delete n[r.pid]; return n; });
     load(); if (showUnder) loadUnder();
@@ -294,7 +321,10 @@ export default function BlackFridayScreen({ api, onExit }) {
     approve: (r) => run(() => api.approve(r.pid, r.section, sigOfRow(r)), { undo: (x) => (x && x.undo ? { text: `Approved ${r.name}`, reverse: undoWith(x.undo) } : null) }),
     reject: (r) => run(() => api.reject(r.pid, r.section), { undo: (x) => (x && x.undo ? { text: `Rejected ${r.name}`, reverse: undoWith(x.undo) } : null) }),
     reset: (r) => run(() => api.reset(r.pid)),
-    use: (r, use) => run(() => api.use(r.pid, use, use === "generated" ? r.genId : null, r.section)),
+    // A New Arrival: "Use current photo" approves it with the app's photo, as on the New Arrivals card (with Undo).
+    use: (r, use) => (r.tab === "newArrivals" && use === "current"
+      ? run(() => api.approve(r.pid, r.section, "current"), { undo: (x) => (x && x.undo ? { text: `Approved ${r.name} (current photo)`, reverse: undoWith(x.undo) } : null) })
+      : run(() => api.use(r.pid, use, use === "generated" ? r.genId : null, r.section))),
     generate,
     approveLook: (r) => run(() => api.approveStyle(r.kind), { reload: true }),
     toggle: (r) => setSelected((m) => { const n = new Map(m); if (n.has(r.pid)) n.delete(r.pid); else n.set(r.pid, r); return n; }),
@@ -337,11 +367,12 @@ export default function BlackFridayScreen({ api, onExit }) {
     load(); if (showUnder) loadUnder();
   };
   const bulkApprove = () => bulk({ ing: "Approving", ed: "Approved", button: "Approve", call: (part) => api.approveMany(Object.fromEntries(part.map((r) => [r.pid, sigOfRow(r)]))) });
+  const bulkRepost = () => bulk({ ing: "Queuing", ed: "Queued for repost", button: "Repost", call: (part) => api.repost(part.map((r) => r.pid)).then((r) => (r && r.ok ? { ...r, undo: {} } : r)) });
   const bulkReject = () => bulk({ ing: "Rejecting", ed: "Rejected", button: "Reject", call: (part) => api.rejectMany(part.map((r) => r.pid)) });
   // Generate for every selected product: queued, two at a time; AI spend updates as each lands.
   const bulkGenerate = async () => {
     // Never the same product twice: skip any already queued or being made.
-    const queue = picked.filter((r) => !gens[r.pid] && !r.generating);
+    const queue = picked.filter((r) => !gens[r.pid] && !r.generating && r.canGenerate !== false);
     clearSel();
     setGens((g) => ({ ...g, ...Object.fromEntries(queue.map((r) => [r.pid, "Queued…"])) }));
     const worker = async () => { while (queue.length) { await generate(queue.shift()); } };
@@ -350,15 +381,18 @@ export default function BlackFridayScreen({ api, onExit }) {
 
   const d = main;
   const t = d?.totals || {};
-  const allMain = d ? (tab === "review" ? d.review : d.approved).map(sec("main")) : [];
+  const allMain = d ? (tab === "newArrivals" ? (d.newArrivals || []) : tab === "review" ? d.review : d.approved).map(sec("main")) : [];
   // The recovered selection on its own: only its rows, so mistakes are easy to untick.
   const mainRows = onlySel && selLabel && selected.size ? allMain.filter((r) => selected.has(r.pid)) : allMain;
   // The Approved tab comes from the main view, which already carries every under-13 approval.
   const underRows = showUnder && under && tab === "review" ? under.review.map(sec("under")) : [];
-  const big = mainRows.filter((r) => r.big), mid = mainRows.filter((r) => !r.big);
+  const big = tab === "review" ? mainRows.filter((r) => r.big) : [], mid = tab === "review" ? mainRows.filter((r) => !r.big) : [];
+  const naRows = tab === "newArrivals" ? mainRows : [];
+  const apprNa = tab === "approved" ? mainRows.filter((r) => r.na) : [], apprNormal = tab === "approved" ? mainRows.filter((r) => !r.na) : [];
   const bigToReview = d ? d.review.filter((r) => r.big).length : 0;
   const nReview = t.review ?? 0;
   const nApproved = d?.approved.length || 0;
+  const nNew = t.newArrivals ?? (d?.newArrivals || []).length;
   const shared = { busy, gens, on, selectMode, selected };
   return (
     // Bottom padding: the selection bar and the Undo toast never cover the last row.
@@ -378,10 +412,11 @@ export default function BlackFridayScreen({ api, onExit }) {
               <button data-testid="select-toggle" aria-pressed={selectMode} onClick={() => { setSelectMode(!selectMode); clearSel(); }} style={{ ...(selectMode ? bBlue : bGray), padding: "6px 12px", fontSize: 12 }}>{selectMode ? "Done" : "Select"}</button>
             </div>
             <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-              <button data-testid="tab-review" aria-pressed={tab === "review"} onClick={() => { setTab("review"); clearSel(); }} style={{ ...(tab === "review" ? bBlue : bGray), flex: 1 }}>To review ({nReview})</button>
-              <button data-testid="tab-approved" aria-pressed={tab === "approved"} onClick={() => { setTab("approved"); clearSel(); }} style={{ ...(tab === "approved" ? bBlue : bGray), flex: 1 }}>Approved ({nApproved})</button>
+              <button data-testid="tab-new" aria-pressed={tab === "newArrivals"} onClick={() => { setTab("newArrivals"); clearSel(); }} style={{ ...(tab === "newArrivals" ? bBlue : bGray), flex: 1, padding: "8px 4px", fontSize: 13 }}>New Arrivals ({nNew})</button>
+              <button data-testid="tab-review" aria-pressed={tab === "review"} onClick={() => { setTab("review"); clearSel(); }} style={{ ...(tab === "review" ? bBlue : bGray), flex: 1, padding: "8px 4px", fontSize: 13 }}>To review ({nReview})</button>
+              <button data-testid="tab-approved" aria-pressed={tab === "approved"} onClick={() => { setTab("approved"); clearSel(); }} style={{ ...(tab === "approved" ? bBlue : bGray), flex: 1, padding: "8px 4px", fontSize: 13 }}>Approved ({nApproved})</button>
             </div>
-            {selLabel && selected.size > 0 && tab === "review" && (
+            {selLabel && selected.size > 0 && (tab === "review" || tab === "newArrivals") && (
               <div data-testid="recovered" style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, padding: "8px 10px", borderRadius: 10, background: "rgba(74,127,255,.14)", border: `1px solid ${BLUE_L}` }}>
                 <div style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{selLabel} ({selected.size}) <span style={{ display: "block", fontSize: 11, fontWeight: 400, color: GRAY }}>All ticked. Untick any mistakes, then Approve all.</span></div>
                 <button data-testid="recovered-toggle" onClick={() => setOnlySel(!onlySel)} style={{ ...bGray, padding: "6px 10px", fontSize: 12 }}>{onlySel ? "Show all" : "Show only these"}</button>
@@ -394,13 +429,18 @@ export default function BlackFridayScreen({ api, onExit }) {
                 <BrainPanel brain={d.brain} api={api} busy={busy} run={run} />
               </div>
             )}
+            {tab === "newArrivals" && naRows.length === 0 && <div data-testid="na-empty" style={{ color: GRAY, fontSize: 13, margin: "10px 0" }}>No New Arrivals waiting — everything uploaded in the past 20 days has been approved or rejected.</div>}
+            <Block testid="block-na" title="New Arrivals · past 20 days, newest first" rows={naRows} {...shared} />
+            {tab === "approved" && <div data-testid="approved-split" style={{ fontSize: 12, color: "#dfe7ff", margin: "0 0 8px" }}>New Arrivals {apprNa.length} · Normal {apprNormal.length} — every slot posts approved New Arrivals first.</div>}
+            <Block testid="block-appr-na" title="New Arrivals" rows={apprNa} {...shared} />
+            <Block testid="block-appr-normal" title="Normal" rows={apprNormal} {...shared} />
             <Block testid="block-big" title="30+ on hand" rows={big} {...shared}>
               {tab === "review" && bigToReview > 0 && <button data-testid="approve-big" disabled={busy} onClick={() => run(() => api.approveBig(Object.fromEntries(d.review.filter((x) => x.big).map((x) => [x.pid, sigOfRow(x)]))), { reload: true, undo: (x) => (x && x.pids && x.pids.length ? { text: `Approved ${x.pids.length} with 30+`, reverse: undoWith(x.undo || {}) } : null) })} style={{ ...bGreen, padding: "6px 10px", fontSize: 12 }}>Approve all 30+ ({bigToReview})</button>}
             </Block>
             <Block testid="block-mid" title="13–29 on hand" rows={mid} {...shared} />
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "8px 0" }}>
+            {tab === "review" && <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "8px 0" }}>
               <input data-testid="show-under" type="checkbox" checked={showUnder} onChange={(e) => { setShowUnder(e.target.checked); clearSel(); }} /> Show under 13{t.underReview != null ? ` (${t.underReview} to review)` : d.meta.under ? ` (${d.meta.under})` : ""}
-            </label>
+            </label>}
             {showUnder && !under && <div style={{ color: GRAY, fontSize: 12 }}>Loading…</div>}
             <Block testid="block-under" title="Under 13" rows={underRows} {...shared} />
             {d.rejected.length > 0 && (
@@ -417,8 +457,8 @@ export default function BlackFridayScreen({ api, onExit }) {
           <div onClick={(e) => e.stopPropagation()} style={{ ...GLASS, background: "#151924", width: "100%", maxWidth: 520, padding: 16, borderRadius: "16px 16px 0 0", paddingBottom: "max(16px, env(safe-area-inset-bottom))" }}>
             <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{quick.name}</div>
             <div style={{ display: "flex", gap: 10 }}>
-              <button data-testid="quick-generate" disabled={!!gens[quick.pid] || quick.generating} onClick={() => { const r = quick; setQuick(null); generate(r); }} style={{ ...bBlue, flex: 1, minHeight: 56, fontSize: 16 }}>{quick.generations ? "Regenerate" : "Generate"}</button>
-              {quick.tab === "review" && <button data-testid="quick-approve" disabled={busy || quick.generating} onClick={() => { const r = quick; setQuick(null); on.approve(r); }} style={{ ...bGreen, flex: 1, minHeight: 56, fontSize: 16 }}>Approve</button>}
+              {quick.canGenerate !== false && (quick.tab === "review" || quick.tab === "newArrivals") && <button data-testid="quick-generate" disabled={!!gens[quick.pid] || quick.generating} onClick={() => { const r = quick; setQuick(null); generate(r); }} style={{ ...bBlue, flex: 1, minHeight: 56, fontSize: 16 }}>{quick.generations ? "Regenerate" : "Generate"}</button>}
+              {(quick.tab === "review" || quick.tab === "newArrivals") && <button data-testid="quick-approve" disabled={busy || quick.generating} onClick={() => { const r = quick; setQuick(null); on.approve(r); }} style={{ ...bGreen, flex: 1, minHeight: 56, fontSize: 16 }}>Approve</button>}
             </div>
           </div>
         </div>
@@ -435,8 +475,10 @@ export default function BlackFridayScreen({ api, onExit }) {
       {selectMode && selected.size > 0 && (
         <div data-testid="select-bar" style={{ position: "fixed", left: 0, right: 0, bottom: 0, height: `calc(${BAR_H}px + env(safe-area-inset-bottom))`, boxSizing: "border-box", background: "#11151f", borderTop: "1px solid rgba(255,255,255,.1)", display: "flex", alignItems: "center", gap: 6, padding: "0 12px", paddingBottom: "env(safe-area-inset-bottom)", zIndex: 30 }}>
           <div data-testid="select-count" style={{ fontSize: 13, fontWeight: 700, flex: 1 }}>{progress || `${selected.size} selected`}{!progress && !selSaved && <span data-testid="sel-saving" style={{ display: "block", fontSize: 10, fontWeight: 400, color: GRAY }}>saving…</span>}</div>
-          <button data-testid="bulk-approve" disabled={busy} onClick={bulkApprove} style={{ ...bGreen, padding: "8px 10px", fontSize: 12 }}>{selLabel ? "Approve all" : "Approve"}</button>
-          <button data-testid="bulk-generate" disabled={busy || !picked.some((r) => !gens[r.pid] && !r.generating)} onClick={bulkGenerate} style={{ ...bBlue, padding: "8px 10px", fontSize: 12 }}>Generate</button>
+          {tab === "approved"
+            ? <button data-testid="bulk-repost" disabled={busy} onClick={bulkRepost} style={{ ...bGreen, padding: "8px 10px", fontSize: 12 }}>Repost</button>
+            : <button data-testid="bulk-approve" disabled={busy} onClick={bulkApprove} style={{ ...bGreen, padding: "8px 10px", fontSize: 12 }}>{selLabel ? "Approve all" : "Approve"}</button>}
+          {tab !== "approved" && <button data-testid="bulk-generate" disabled={busy || !picked.some((r) => !gens[r.pid] && !r.generating && r.canGenerate !== false)} onClick={bulkGenerate} style={{ ...bBlue, padding: "8px 10px", fontSize: 12 }}>Generate</button>}
           <button data-testid="bulk-reject" disabled={busy} onClick={bulkReject} style={{ ...bGray, padding: "8px 10px", fontSize: 12, color: RED }}>Reject</button>
           <button data-testid="bulk-clear" onClick={clearSel} style={{ ...bGray, padding: "8px 10px", fontSize: 12 }}>Clear</button>
         </div>

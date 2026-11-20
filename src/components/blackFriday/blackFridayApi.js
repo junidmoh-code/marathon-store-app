@@ -34,6 +34,16 @@ export const blackFridayApi = {
   // The posting brain: Pause / resume, and a slot moved to another time (null = back to the brain's time).
   brainPause: (paused) => set({ action: "brainPause", paused: paused === true }),
   brainSlot: (day, i, at) => set({ action: "brainSlot", day, i, at: at || null }),
+  // Repost: approved products go to the next slot again ({ pids }). Nothing reposts by itself.
+  repost: (pids) => set({ action: "repost", pids }),
+  // A New Arrival's photo is made by New Arrivals' own studio (the same generator, the same item the
+  // New Arrivals card shows) — so its photo and its approval are one.
+  generateNa: (pid, { onEvent = null } = {}) => streamCallable({
+    url: `https://europe-west1-${app.options.projectId}.cloudfunctions.net/newArrivalsStudio`,
+    data: { pid },
+    getToken: () => auth.currentUser?.getIdToken(),
+    onChunk: onEvent,
+  }),
   // One AI photo (streams { type: "status" | "thought" } while it works).
   generate: (pid, section, { onEvent = null } = {}) => streamCallable({
     url: `https://europe-west1-${app.options.projectId}.cloudfunctions.net/bfGenerate`,

@@ -35,7 +35,7 @@ test("MAIN: one row per product, every 30+ product first in one block, then 13â€
   const v = await _internals.list(seed());
   assert.deepEqual(v.review.map((r) => [r.pid, r.qty, r.big]), [["a", 45, true], ["b", 31, true], ["c", 20, false], ["d", 13, false]]);
   assert.equal(v.approved.length, 0);
-  assert.deepEqual(v.totals, { review: 4, underReview: 2, approved: 0, rejected: 0, spentZar: 0 });
+  assert.deepEqual(v.totals, { review: 4, underReview: 2, approved: 0, rejected: 0, spentZar: 0, newArrivals: 0, approvedNa: 0, approvedNormal: 0 });
   assert.equal(v.meta.paperBags, 53);
   assert.equal(v.schedule, null);
   assert.equal(JSON.stringify(v).includes("retail"), false);
@@ -64,7 +64,7 @@ test("Approve moves a product to Approved; Reject removes it from the list; reje
   assert.deepEqual(v.review.map((x) => x.pid), ["a", "b"]);
   assert.deepEqual(v.approved.map((x) => x.pid), ["c"]);
   assert.deepEqual(v.rejected.map((x) => [x.pid, x.name]), [["d", "Hoodie D"]]);
-  assert.deepEqual(v.totals, { review: 2, underReview: 2, approved: 1, rejected: 1, spentZar: 0 });
+  assert.deepEqual(v.totals, { review: 2, underReview: 2, approved: 1, rejected: 1, spentZar: 0, newArrivals: 0, approvedNa: 0, approvedNormal: 1 });
   await tap(db, { action: "reset", pid: "d" }, 7000);
   v = await _internals.list(db);
   assert.ok(v.review.some((x) => x.pid === "d"), "undo brings it back to To review");
@@ -125,7 +125,7 @@ test("counts include only products in the campaign now (idx); under-13 approvals
   await db.ref("bf_campaign_2026/items/main/a").remove();
   await db.ref("bf_campaign_2026/meta/main").set(3);
   const v = await _internals.list(db);
-  assert.deepEqual(v.totals, { review: 3, underReview: 1, approved: 1, rejected: 0, spentZar: 0 });
+  assert.deepEqual(v.totals, { review: 3, underReview: 1, approved: 1, rejected: 0, spentZar: 0, newArrivals: 0, approvedNa: 0, approvedNormal: 1 });
   assert.deepEqual(v.rejected, [], "no ghost in Rejected (n)");
   assert.deepEqual(v.approved.map((x) => x.pid), ["u"], "the under-13 approval is on the Approved tab");
   assert.ok(!v.review.some((x) => x.pid === "u"));

@@ -6658,11 +6658,13 @@ exports.insightsRollupSweep = onSchedule(
 // ─── BLACK FRIDAY 2026 — Junid's approve card (the Mac mini posts) ──────────
 // /bf_campaign_2026 is server-only (no client rule): the card goes through these
 // callables, plus bfGenerate (one Gemini photo per tap). See functions/blackFriday/core.cjs.
-//   firebase deploy --only functions:bfCampaignList,functions:bfCampaignSet,functions:bfGenerate
+//   firebase deploy --only functions:bfCampaignList,functions:bfCampaignSet,functions:bfNaMirror,functions:bfGenerate
 {
   const bf = require("./blackFriday/blackFriday.js");
   exports.bfCampaignList = bf.bfCampaignList;
   exports.bfCampaignSet = bf.bfCampaignSet;
+  // A tap on the New Arrivals card mirrors into the Black Friday pick (one approval).
+  exports.bfNaMirror = bf.bfNaMirror;
   exports.bfGenerate = require("./blackFriday/generate.js").bfGenerate;
 }
 
