@@ -194,7 +194,7 @@ over it. Use it for orders pulled in while staff still rang web sales by hand.
 `goLiveAtMs` (set once, first run — older orders are never pulled in),
 `cursorMs` (updated_at window, re-read 10 min behind), `retry/{orderId}` (an
 order that failed is parked and fetched by id every tick; the cursor never
-waits for it), `lastRunAt`, `attentionSweepAt` (when the all-orders attention
+waits for it), `shipLocks/{orderId}` (the ship lock, fast booking above), `lastRunAt`, `attentionSweepAt` (when the all-orders attention
 query last ran clean; it runs about every 10 to 12 minutes and stays due while
 any attention email is unsent. Orders a tick handles are checked every tick).
 
@@ -249,11 +249,34 @@ return flow, which credits the cell the ledger says each line came from.
 
 ### The waybill on the card
 
-The Mac mini books Courier Guy on its first tick after the Pack and writes
-`shipping.waybill` only for a LIVE booking. The card shows that waybill LARGE
+The Mac mini books Courier Guy the moment the Pack lands (fast booking, 20 Nov
+2026, below) — or, if that listener is down, on the poller's next tick — and
+writes `shipping.waybill` only for a LIVE booking. The card shows that waybill LARGE
 until Done; otherwise it says why there is none: `DRY RUN (the live switch was
 off)` (`shipping.booking {skipped, dryRun}`), `not booked (reason)`, or
 `booking…` (packed, the tick has not run yet).
+
+### Fast booking (20 Nov 2026)
+
+`scripts/shopify/fast-ship.mjs` (launchd `com.marathon.fastship`, all hours)
+listens on `fulfilState == "pending"` — what the Pack and its Retry write — and
+ships each packed order at once with the tick's own `shipOrder`
+(`poll.mjs shipPendingOrder`): same booking, service choice, locker/door rule,
+address, Shopify fulfilment and failure states. Before: Pack → waybill median
+73 s, p90 123 s (259 orders, 6–20 Nov; the tick had to come round, then get
+through PULL and KEEP). After: about 2 s (rates ~0.6 s + create ~0.4 s + a
+handful of database round trips). The tick's SHIP is unchanged as the fallback.
+
+Never twice: both shippers take `online_orders_meta/shipLocks/{orderId}`
+(transaction; held while under 10 min old and, on the same machine, while its
+process lives; released by its own token) and re-read the order before
+shipping. Under that, `shipping/courierBooking` still refuses a second waybill.
+An attention the fast path raises sets `attentionSweepAt` to 0, so the next
+tick emails it.
+
+`node scripts/shopify/fast-ship.mjs --bench=<orderKey>` times one real order
+through the ship with nothing written (overlay database), real rates, a
+simulated create and Shopify mutations refused.
 
 ## Attention and email
 
