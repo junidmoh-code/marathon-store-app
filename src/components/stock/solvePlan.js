@@ -33,6 +33,7 @@
 
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { locationName } from "../../utils/networkRegistry";
+import { effectivePolicyFor } from "./seatingCore";
 
 // Is the engine's rule-based targeting on at this destination? A BYTE-FOR-BYTE
 // mirror of ruleTargetsEnabled() in refill-engine.cjs, including its fail-safe:
@@ -198,10 +199,30 @@ const isGarbledEntry = (entry) => isMapEntry(entry) && entry.target !== undefine
 const mapUsable = (cat, entry) => cat.perSize === true
   && Object.values(entry.sizes).some((row) => row && typeof row === "object" && posTarget(row.target));
 
-export function categoryPolicyLocs(policy, categoryKey) {
-  if (typeof categoryKey !== "string" || !categoryKey) return [];
-  const cat = policy && typeof policy === "object" && !Array.isArray(policy) ? policy[categoryKey] : null;
-  if (!cat || typeof cat !== "object" || Array.isArray(cat)) return [];
+// ── WHICH ENTRY SPEAKS FOR A KEY — the engine's own resolution (Junid, 20 Nov
+// 2026). This used to index `policy[categoryKey]` with the RAW field. The
+// engine resolves through policyCategoryKey (the key TRIMMED; a key-less
+// legacy Footwear/Sneakers record is "sneakers") and then effectivePolicyFor
+// (the category's own entry; with NO own entry, an armed policy group that
+// names it; an own entry that is present but garbled arms nothing and consults
+// no group). Two divergences followed: a padded key (" caps-beanies") armed in
+// the engine and greyed here, and a grouped category resolved in the engine
+// and nothing here. Callers pass the effective key (productTaxonomy
+// effectiveCategoryKey, the browser twin of policyCategoryKey); the trim here
+// is the backstop. Groups are consulted only when the caller hands them in.
+// Pinned against the engine by solvePlan.engineParity.test.js.
+function entryFor(policy, categoryKey, policyGroups) {
+  const key = typeof categoryKey === "string" ? categoryKey.trim() : "";
+  if (!key) return null;
+  const categoryPolicy = policy && typeof policy === "object" && !Array.isArray(policy) ? policy : undefined;
+  const eff = effectivePolicyFor({ categoryPolicy, policyGroups }, key);
+  const cat = eff ? eff.entry : null;
+  return cat && typeof cat === "object" && !Array.isArray(cat) ? cat : null;
+}
+
+export function categoryPolicyLocs(policy, categoryKey, policyGroups) {
+  const cat = entryFor(policy, categoryKey, policyGroups);
+  if (!cat) return [];
   return Object.entries(cat)
     .filter(([loc, entry]) => loc !== "perSize" && entry && typeof entry === "object" && !Array.isArray(entry)
       && !isGarbledEntry(entry)
@@ -209,10 +230,9 @@ export function categoryPolicyLocs(policy, categoryKey) {
     .map(([loc]) => loc);
 }
 
-export function categoryRun({ policy, categoryKey, sizes, unitsAnywhere }) {
-  if (typeof categoryKey !== "string" || !categoryKey) return {};
-  const cat = policy && typeof policy === "object" && !Array.isArray(policy) ? policy[categoryKey] : null;
-  if (!cat || typeof cat !== "object" || Array.isArray(cat)) return {};
+export function categoryRun({ policy, policyGroups, categoryKey, sizes, unitsAnywhere }) {
+  const cat = entryFor(policy, categoryKey, policyGroups);
+  if (!cat) return {};
   const at = typeof unitsAnywhere === "function" ? unitsAnywhere : () => 0;
   const out = {};
   for (const [loc, entry] of Object.entries(cat)) {
@@ -263,9 +283,9 @@ export function categoryRun({ policy, categoryKey, sizes, unitsAnywhere }) {
 // FIRST (and only where the kill switch is on), the category policy NEXT (it
 // survives the kill switch, like the explicit rows it generalises), explicit
 // rows LAST so they win.
-export function resolvedRun({ std, subRun, subcategory, sizes, targets, pid, ruleBasedTargets, categoryPolicy, categoryKey, unitsAnywhere }) {
+export function resolvedRun({ std, subRun, subcategory, sizes, targets, pid, ruleBasedTargets, categoryPolicy, policyGroups, categoryKey, unitsAnywhere }) {
   const base = effectiveStandard({ std, subRun, subcategory, sizes });
-  const catRun = categoryRun({ policy: categoryPolicy, categoryKey, sizes, unitsAnywhere });
+  const catRun = categoryRun({ policy: categoryPolicy, policyGroups, categoryKey, sizes, unitsAnywhere });
   // A location can be reachable through an explicit row alone — or through the
   // category policy alone (a mapped perfume has no run at all) — so the
   // location set is the union of all three sources.

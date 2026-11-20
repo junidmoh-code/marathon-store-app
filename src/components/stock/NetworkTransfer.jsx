@@ -40,6 +40,7 @@ import { solveOn, sectionName, trustedCellsOnly } from "../../utils/networkRegis
 import { trustStamp, cellTrusted } from "./stockTrust";
 import { centralId, isCentral, storeIds, solveHubFor, solveHubsOfSection } from "./sectionRouting";
 import { engineConfigView } from "./policyTemplate";
+import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
 import { solveBlocks, allocationOrder, planSectionSolve, mergeSolveUpdates, undoablePaths } from "./solveSections";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
@@ -451,7 +452,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       // the same config subscription as every other switch on this screen.
       // unitsAnywhere feeds the per-size dead-size test from the same decoded
       // allStock map the coverage estimate reads.
-      categoryPolicy: pcfg?.categoryPolicy, categoryKey: byId.get(pid)?.categoryKey,
+      // The EFFECTIVE key (trimmed; legacy sneaker → "sneakers") and the
+      // policy groups — the engine's own resolution (policyCategoryKey +
+      // effectivePolicyFor), so a padded or grouped key cannot grey a card
+      // the engine is refilling. (Junid, 20 Nov 2026 — solvePlan.js entryFor.)
+      categoryPolicy: pcfg?.categoryPolicy, policyGroups: pcfg?.policyGroups, categoryKey: effectiveCategoryKey(byId.get(pid)),
       unitsAnywhere: (sz) => Object.keys(allStock || {}).reduce((t, loc) => t + qtyAt(loc, pid, sz), 0),
     });
   };
