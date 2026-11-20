@@ -43,7 +43,10 @@ const naMod = () => (naP ||= require("../newArrivals/newArrivals.js"));
 async function ledger(db, pid, pick) {
   const r = core.approvalRecord(pid, pick);
   if (!r || !r.at) return;
-  await db.ref(`${core.ROOT}/approvals/${pid}/${r.at}`).set(r);
+  // Written once: a later write for the same approval never rewrites the record.
+  const ref = db.ref(`${core.ROOT}/approvals/${pid}/${r.at}`);
+  if ((await ref.once("value")).val()) return;
+  await ref.set(r);
 }
 
 /** One section, read narrowly: that section's products and the small decision nodes (never `decisions`). */
@@ -78,8 +81,10 @@ async function list(db, section = "main", nowMs = Date.now()) {
 async function naStatus(db, pid, nowMs) {
   const status = await val(db, `${naCore.ITEMS}/${pid}/status`);
   if (!status) return null;
-  if (String(pid) >= naCore.windowStartKey(nowMs)) return status;
   const pick = await val(db, `${core.ROOT}/picks/${pid}`);
+  // A decision made on the Black Friday card before (not mirrored) stays a Black Friday decision: its taps go the old way.
+  if (pick && pick.state && pick.src !== "na") return null;
+  if (String(pid) >= naCore.windowStartKey(nowMs)) return status;
   return pick && pick.src === "na" ? status : null;
 }
 const naRefusal = (r) => (r && r.skipped && r.skipped[0] && r.skipped[0].why) || (r && r.why) || "not saved";
@@ -188,7 +193,7 @@ async function tap(db, { action, pid, section, use, genId, sig }, uid, nowMs) {
     await revTransaction(db.ref(`${core.ROOT}/photos/${pid}`), core.useMutator({ use, genId: genId || null }, out), out);
   } else if (action === "approve") {
     const photo = await val(db, `${core.ROOT}/photos/${pid}`);
-    if (sig !== undefined && sig !== null && sig !== "current" && !core.GEN_RE.test(String(sig))) throw new HttpsError("invalid-argument", "Which photo?");
+    if (sig !== undefined && sig !== null && !core.SIG_OK(sig)) throw new HttpsError("invalid-argument", "Which photo?");
     await revTransaction(pickRef, core.approveMutator({ item, section: sec, photo, uid, nowMs, seenSig: sig || null }, out), out);
   } else if (action === "reject") {
     await revTransaction(pickRef, core.rejectMutator({ item, section: sec, uid, nowMs }, out), out);
@@ -246,7 +251,7 @@ async function many(db, action, list, uid, nowMs) {
   for (const [pid, sig] of entries) {
     if (!core.PID_RE.test(String(pid))) throw new HttpsError("invalid-argument", "Which product?");
     if (action === "approve" && (sig === null || sig === "")) throw new HttpsError("invalid-argument", "Approve needs the photo the card showed.");
-    if (sig !== null && sig !== "current" && !core.GEN_RE.test(String(sig))) throw new HttpsError("invalid-argument", "Which photo?");
+    if (sig !== null && !core.SIG_OK(sig)) throw new HttpsError("invalid-argument", "Which photo?");
   }
   const done = [], refused = [], undo = {};
   for (let i = 0; i < entries.length; i += CHUNK) {
@@ -291,7 +296,7 @@ async function saveSelection(db, uid, sigs, nowMs, label = null) {
   if (entries.length > MANY_MAX) throw new HttpsError("invalid-argument", "Too many at once.");
   for (const [pid, sig] of entries) {
     if (!core.PID_RE.test(String(pid))) throw new HttpsError("invalid-argument", "Which product?");
-    if (sig !== "current" && !core.GEN_RE.test(String(sig))) throw new HttpsError("invalid-argument", "Which photo?");
+    if (!core.SIG_OK(sig)) throw new HttpsError("invalid-argument", "Which photo?");
   }
   if (!entries.length) { await db.ref(selPath(uid)).remove(); return { ok: true, saved: 0 }; }
   // label: a selection put back for him (e.g. "Recovered selection") keeps its name while he works through it.

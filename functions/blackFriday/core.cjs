@@ -27,6 +27,8 @@ const sched = require("./schedule.cjs");
 const ROOT = "bf_campaign_2026";
 const PID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const GEN_RE = /^g\d{10,16}$/;
+// A photo the card showed: "current", a generation id, or "na" (a New Arrival's main AI photo).
+const SIG_OK = (s) => s === "current" || s === "na" || GEN_RE.test(String(s));
 const KIND_RE = /^[a-z][a-z0-9-]{0,30}$/;
 const SECTIONS = Object.freeze(["main", "under"]);
 const BIG_QTY = 30;            // "Approve all 30+": the first block of MAIN
@@ -310,7 +312,7 @@ function planAlbums(albums, schedule, nowMs, prevPlan = null, posted = {}) {
 }
 
 module.exports = {
-  ROOT, PID_RE, GEN_RE, KIND_RE, SECTIONS, BIG_QTY, ALBUM_MAX, CAPTION_MAX, ESTABLISHED_STYLES, KIND_LABEL,
+  ROOT, PID_RE, GEN_RE, SIG_OK, KIND_RE, SECTIONS, BIG_QTY, ALBUM_MAX, CAPTION_MAX, ESTABLISHED_STYLES, KIND_LABEL,
   priceLabel, priceKey, captionPreview, sigOf, isApproved, isRejected, postedFor,
   viewItem, postingOf, orderRows, viewSection, totalsOf, planView, approvalRecord,
   approveMutator, rejectMutator, resetMutator, restoreMutator, useMutator, withRev,

@@ -149,3 +149,26 @@ test("mirrorPick is pure: approved / skipped / back to new, and a Black Friday a
   assert.deepEqual(naLib.mirrorPick("p1", { status: "new" }, facts, appr, { inWindow: true }), { name: "X" });
   assert.equal(naLib.kindOf({ categoryKey: "chains-bracelets", name: "Beanie black" }), "headwear");
 });
+
+test("architect review: an approval from before the campaign is never mirrored, even for a product in the 20-day window", () => {
+  const p = naLib.mirrorPick("p1", { status: "done", approvedAt: naLib.CAMPAIGN_START_MS - 1, generatedUrl: "https://g" }, { price: 1 }, null, { inWindow: true });
+  assert.equal(p, undefined);
+});
+test("architect review: a Black Friday approval made before (not mirrored) is taken back the old way", async () => {
+  const db = world();
+  await db.ref(`bf_campaign_2026/picks/${NEWMAIN}`).set({ state: "approved", sig: "current", shown: photo(NEWMAIN), at: 5, section: "main", price: 300, kind: "clothing", name: "New Tee" });
+  const r = await tap(db, { action: "reset", pid: NEWMAIN });
+  assert.equal(r.ok, true);
+  assert.equal(r.noop, false);
+  assert.equal((await read(db, `bf_campaign_2026/picks/${NEWMAIN}`)).state, undefined);
+  assert.equal(await read(db, `new_arrivals/items/${NEWMAIN}/status`), "new", "the New Arrivals item is untouched");
+});
+test("architect review: an AI photo with no generation id approves that photo (sig 'na'), never the app photo", async () => {
+  const db = world();
+  await db.ref(`new_arrivals/items/${GEN}/currentGen`).set(null);
+  const row = (await list(db)).newArrivals.find((x) => x.pid === GEN);
+  assert.equal(row.sig, "na");
+  await bf.many(db, "approve", { [GEN]: "na" }, "junid", NOW);
+  assert.equal((await read(db, `bf_campaign_2026/picks/${GEN}`)).shown, "https://x/gen.jpg");
+  assert.notEqual(await read(db, `new_arrivals/items/${GEN}/useCurrentPhoto`), true);
+});

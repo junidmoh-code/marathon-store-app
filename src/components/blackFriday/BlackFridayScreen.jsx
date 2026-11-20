@@ -212,6 +212,8 @@ export default function BlackFridayScreen({ api, onExit }) {
   const restored = useRef(false); // the saved selection has been put back (never saved over before that)
   const toastTimer = useRef(null);
   const tab = tabPicked || (main && main.newArrivals && main.newArrivals.length ? "newArrivals" : "review");
+  // Chosen once, on the first load: approving the last New Arrival never flips the screen to another tab.
+  useEffect(() => { if (main && !tabPicked) setTab(tab); }, [main]); // eslint-disable-line react-hooks/exhaustive-deps
   // Every Approve, Reject and bulk action: a toast with Undo for 6 seconds that fully reverses it.
   const showToast = (text, undo) => {
     clearTimeout(toastTimer.current);
@@ -242,6 +244,10 @@ export default function BlackFridayScreen({ api, onExit }) {
     for (const [pid, sig] of Object.entries(saved)) m.set(pid, { ...(rows.get(pid) || { pid, name: pid }), sig });
     setSelected(m);
     setSelectMode(true);
+    // Back on the tab that holds the ticks (a recovered selection is shown on To review).
+    const naPids = new Set((main.newArrivals || []).map((r) => r.pid));
+    const allNa = [...m.keys()].every((pid) => naPids.has(pid));
+    setTab(allNa && !main.selection.label ? "newArrivals" : (main.approved || []).some((r) => m.has(r.pid)) && ![...m.keys()].some((pid) => (main.review || []).some((r) => r.pid === pid) || naPids.has(pid)) ? "approved" : "review");
     if (main.selection.label) { setSelLabel(main.selection.label); setOnlySel(true); }
     else setNote(`${m.size} selected — your selection was kept`);
   }, [main]);

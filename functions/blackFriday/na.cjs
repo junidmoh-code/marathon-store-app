@@ -78,8 +78,9 @@ function mirrorPick(pid, item, facts, cur, { inWindow = false } = {}) {
   const ours = !!cur && cur.src === "na";
   if (status && APPROVED.includes(status)) {
     const at = Number(item.approvedAt) || 0;
-    // An approval made before the campaign (an old, already-done item) is not a Black Friday approval.
-    if (!ours && !inWindow && !(at >= CAMPAIGN_START_MS)) return undefined;
+    // An approval made before the campaign (even of a product still in the 20-day window) is not a
+    // Black Friday approval: its chain moves (approved → chaining → done) must never post it here.
+    if (!ours && !(at >= CAMPAIGN_START_MS)) return undefined;
     const shown = item.generatedUrl || null;
     if (!shown || !(at > 0)) return undefined;
     if (ours && cur.state === "approved" && Number(cur.at) === at && cur.shown === shown) return undefined;
@@ -90,7 +91,7 @@ function mirrorPick(pid, item, facts, cur, { inWindow = false } = {}) {
     };
   }
   if (status === "skipped") {
-    if (!ours && !inWindow) return undefined;
+    if (!ours && (!inWindow || !(Number(item.skippedAt) >= CAMPAIGN_START_MS))) return undefined;
     if (ours && cur.state === "rejected") return undefined;
     return { state: "rejected", src: "na", at: Number(item.skippedAt) || Date.now(), by: item.skippedBy || null, section: "newArrivals", name: facts.name || "" };
   }
@@ -114,7 +115,8 @@ function viewNaRow(pid, base, na, { nowMs = Date.now(), uploadedAt = null } = {}
     pid, name: base.name || pid, price: base.price, qty: Number(base.qty) || 0, sizes: base.sizes || "", kind,
     big: (Number(base.qty) || 0) >= 30, na: true, src: "na",
     photo: base.photo || null, shown: gen || base.photo || null,
-    use: gen ? "generated" : "current", genId: gen ? (na.currentGen || null) : null, sig: gen ? (na.currentGen || "current") : "current",
+    // sig: the photo shown — its New Arrivals generation, "na" (its main AI photo, no generation id), or "current".
+    use: gen ? "generated" : "current", genId: gen ? (na.currentGen || null) : null, sig: gen ? (na.currentGen || "na") : "current",
     generatedUrl: gen, generations: na && na.currentGen ? 1 : 0,
     generating: !!(na && naCore.requestPending(na, nowMs) && na.generateRequest && na.generateRequest.studio === true),
     styleApproved: true, canGenerate: naCanGenerate(kind),
