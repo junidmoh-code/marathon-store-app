@@ -193,8 +193,10 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
   // "locker".
   deliveryMode: "locker",
   locker: {
-    // EVERY parcel is declared as one shoe (Junid: "34 x 23 x 13 cm, 1.5 kg;
-    // do not estimate from the order's lines"). Courier Guy measures at
+    // A parcel of at most one pair is declared as one shoe (Junid: "34 x 23
+    // x 13 cm, 1.5 kg; do not estimate from the order's lines"); two or more
+    // pairs in the one parcel declare that parcel's own size, so the locker
+    // booked is one it fits (lockerDelivery.mjs). Courier Guy measures at
     // collection and re-rates; the difference lands on the order at
     // shipping/adjustment (scripts/shipping/reconcile.mjs).
     parcel: { lengthCm: 34, widthCm: 23, heightCm: 13, kg: 1.5 },
@@ -207,8 +209,9 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
     maxTownKm: 20,
     // The nearest lockers tried, in order, until one prices.
     tryLockers: 3,
-    // An order of N pairs of shoes is N one-shoe parcels, each its own
-    // shipment to the same locker. Above this many a person books it.
+    // One order is ONE parcel on one waybill (Junid, 20 Nov 2026). Only a
+    // person splits an order (shipping/lockerParcels); above this many
+    // shipments a person books it.
     maxParcels: 10,
     // Also ask the door-to-door price (one more /rates call, books nothing)
     // and keep it on the booking as shipping.doorQuote.

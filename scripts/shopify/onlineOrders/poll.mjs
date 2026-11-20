@@ -58,7 +58,7 @@ export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good co
 import { mintHubCode } from "./orderRefs.mjs";
 import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
 import { escalateOrder, ESCALATIONS_PATH, withdrawRequest } from "./escalate.mjs";
-import { fulfilParcel } from "./partialFulfil.mjs";
+import { fulfilParcel, partShipBlockers, partShipReason } from "./partialFulfil.mjs";
 import { createCourierClient } from "../../shipping/courier-client.mjs";
 import { costAlertMail, costAlertThreshold } from "../../shipping/costAlert.mjs";
 import { applySwapRequests, mailLineMoneyChanges } from "./swapRequests.mjs";
@@ -1003,6 +1003,25 @@ async function shipOrder(ctx, id, order) {
     });
     ctx.summary.fulfilled++;
     log(`  ✓ ${orderLabel(order)}: in-store exchange handed over — no courier, no Shopify order`);
+    return;
+  }
+  // NO PART-SHIPPING (Junid, 20 Nov 2026; partialFulfil.mjs partShipBlockers): a pack that left a line behind with
+  // nothing settled books no courier and fulfils nothing. Re-read at the exact paths, as the hold above: a decision
+  // written a moment ago (Jamie's 24 h rule settling the line) must count, and so must a pack this pass did not see.
+  const [freshLines, freshPacked] = await Promise.all([db.ref(`${ONLINE_ORDERS_PATH}/${id}/lines`).get(), db.ref(`${ONLINE_ORDERS_PATH}/${id}/packedLines`).get()]);
+  const partBlockers = partShipBlockers(id, { ...order, lines: freshLines.val() ?? order.lines, packedLines: freshPacked.val() ?? order.packedLines });
+  if (partBlockers.length) {
+    const why = partShipReason(partBlockers);
+    await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
+      fulfilState: "courier_failed",
+      "fulfil/state": "courier_failed",
+      courierError: why,
+      attention: { kind: ATTENTION_KIND.COURIER_FAILED, reason: `Packed, but not shipped: ${why}`, at: now },
+      attentionOpen: true,
+      updatedAt: now,
+    });
+    ctx.summary.courierFailed = (ctx.summary.courierFailed ?? 0) + 1;
+    log(`  ✗ ${orderLabel(order)}: ${why} — courier not booked, Shopify waits`);
     return;
   }
   // The hub orders close WHILE the courier is booked (fast booking, 20 Nov 2026): neither needs the other, and the
