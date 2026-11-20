@@ -3,7 +3,7 @@
 // A Marathon PE staff member sees all four shop chips; tapping Concrete only
 // stages the switch; confirming moves the module to Concrete, and "Handed over"
 // then goes to the server for CONCRETE.
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 
@@ -53,9 +53,12 @@ beforeEach(() => {
   perm = STAFF;
 });
 
+const mounted = [];
+afterEach(async () => { while (mounted.length) { const t = mounted.pop(); await act(async () => { t.unmount(); }); } });
 async function mount() {
   let tree;
   await act(async () => { tree = TestRenderer.create(<ActiveStoreLayer><DisplayChecks onExit={() => {}} products={[]} /></ActiveStoreLayer>); });
+  mounted.push(tree);
   return tree;
 }
 

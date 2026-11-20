@@ -60,7 +60,8 @@ describe("switching", () => {
     expect(JSON.parse(storage.getItem(S.ACTIVE_STORE_KEY))).toEqual({ uid: "u1", shop: "concrete", saDate: "2026-11-20", signIn: PE_USER.signIn });
     await flush();
     expect(log).toHaveBeenCalledTimes(1);
-    expect(log).toHaveBeenCalledWith({ from: "marathon-pe", to: "concrete", home: "marathon-pe", reason: "switch", deviceId: "dev-1", clientAtMs: 1795600000000 });
+    expect(log).toHaveBeenCalledWith({ id: expect.stringMatching(/^1795600000000_[a-z0-9]+$/), from: "marathon-pe", to: "concrete", home: "marathon-pe", reason: "switch", deviceId: "dev-1", clientAtMs: 1795600000000 });
+    expect(storage.getItem("mc.activeStore.pendingLog.v1")).toBe(null);   // accepted → off the queue
   });
 
   it("Back to home needs no confirmation, and tapping the home chip is the same", async () => {
@@ -157,11 +158,48 @@ describe("audit delivery", () => {
     expect(S.getActiveStore().activeShop).toBe("concrete");
   });
 
-  it("signing out while away audits the return home BEFORE the session ends", async () => {
+  it("signing out while away audits the return home BEFORE the session ends; the state clears only after", async () => {
     S.bindActiveStore(PE_USER);
     S.requestSwitch("concrete"); S.confirmSwitch();
-    await S.resetActiveStore();
+    await S.auditSignOut();
     expect(log.mock.calls.at(-1)[0]).toMatchObject({ from: "concrete", to: "marathon-pe", reason: "sign-out" });
+    expect(S.getActiveStore().activeShop).toBe("concrete");        // sign-out not done yet: still working
+    const n = log.mock.calls.length;
+    S.resetActiveStore();                                           // sign-out happened
+    await flush();
+    expect(log.mock.calls.length).toBe(n);                          // not audited twice
+    expect(S.getActiveStore().uid).toBe(null);
+  });
+
+  it("a failed sign-out leaves the account working", async () => {
+    S.bindActiveStore(PE_USER);
+    S.requestSwitch("concrete"); S.confirmSwitch();
+    await S.auditSignOut();
+    S.signOutFailed();
+    expect(S.getActiveStore()).toMatchObject({ uid: "u1", activeShop: "concrete" });
+    S.requestSwitch("marathon-pe");
+    expect(S.getActiveStore().activeShop).toBe("marathon-pe");
+  });
+
+  it("a line survives a reload in the middle of sending it", async () => {
+    let release;
+    log.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    S.bindActiveStore(PE_USER);
+    S.requestSwitch("concrete"); S.confirmSwitch();
+    await flush();
+    const q = JSON.parse(storage.getItem("mc.activeStore.pendingLog.v1"));
+    expect(q).toHaveLength(1);                                      // still queued while in flight
+    expect(q[0]).toMatchObject({ uid: "u1", to: "concrete" });
+    release({});
+  });
+
+  it("Junid re-homing someone moves them and is audited", async () => {
+    S.bindActiveStore(PE_USER);
+    S.requestSwitch("concrete"); S.confirmSwitch();
+    S.bindActiveStore({ ...PE_USER, homeShop: "trophy" });
+    expect(S.getActiveStore()).toMatchObject({ homeShop: "trophy", activeShop: "trophy" });
+    await flush();
+    expect(log.mock.calls.at(-1)[0]).toMatchObject({ from: "concrete", to: "trophy", reason: "rehomed" });
   });
 
   it("a queued line is only ever sent by the account it belongs to", async () => {
@@ -169,7 +207,7 @@ describe("audit delivery", () => {
     S.bindActiveStore(PE_USER);
     S.requestSwitch("concrete"); S.confirmSwitch();
     await flush(); await flush();
-    await S.resetActiveStore();
+    S.resetActiveStore();
     log.mockClear();
     S.bindActiveStore({ uid: "u2", homeShop: "trophy", signIn: "z" });
     await flush(); await flush();
@@ -211,6 +249,16 @@ describe("every stamped write records the active shop", () => {
     expect(deviceStamp("placed").away).toBeUndefined();
     S.requestSwitch("concrete"); S.confirmSwitch();
     expect(deviceStamp("fulfilled")).toMatchObject({ store: "concrete", homeStore: "marathon-pe", away: true });
+  });
+
+  it("a transaction body that runs after a switch still names the shop the person acted in", async () => {
+    const { stampTxn } = await import("../device/deviceStamp.js");
+    S.bindActiveStore(PE_USER);
+    const body = stampTxn((cur) => ({ ...cur, status: "done" }), "fulfil");   // action taken at PE
+    S.requestSwitch("concrete"); S.confirmSwitch();                         // switch lands before commit
+    const out = body({ id: "o1" });
+    expect(Object.values(out.stamps)[0]).toMatchObject({ store: "marathon-pe", homeStore: "marathon-pe" });
+    expect(Object.values(out.stamps)[0].away).toBeUndefined();
   });
 
   it("activeStoreStamp gives orders the same three facts", () => {

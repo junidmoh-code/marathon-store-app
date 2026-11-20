@@ -84,3 +84,14 @@ test("runLogStoreSwitch is capped per account per SA day", async () => {
   assert.equal(other.ok, true);
   assert.equal(readAt(db.state.root, "store_switch_log_count/2026-11-20/u2"), 1);
 });
+
+test("a resent queued line (same id) is written once, never overwritten", async () => {
+  const db = makeFakeDb({});
+  const data = { id: "1795600000000_abc123", from: "trophy", to: "concrete", reason: "switch" };
+  const a = await runLogStoreSwitch(db, { uid: "u1", nowMs: NOW, at: NOW, data });
+  const b = await runLogStoreSwitch(db, { uid: "u1", nowMs: NOW, at: NOW + 5, data });
+  assert.equal(a.id, data.id); assert.equal(b.duplicate, true);
+  const day = readAt(db.state.root, "store_switch_log/2026-11-20");
+  assert.deepEqual(Object.keys(day), [data.id]);
+  assert.equal(day[data.id].at, NOW);
+});

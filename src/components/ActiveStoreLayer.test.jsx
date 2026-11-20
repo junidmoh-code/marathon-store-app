@@ -1,6 +1,6 @@
 // ─── ACTIVE STORE LAYER — the modal and the banner ───────────────────────────
 // Run: npx vitest run src/components/ActiveStoreLayer.test.jsx
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 
@@ -23,9 +23,12 @@ beforeEach(() => {
   S.bindActiveStore({ uid: "u1", homeShop: "marathon-pe", signIn: "s" });
 });
 
+const mounted = [];
+afterEach(async () => { while (mounted.length) { const t = mounted.pop(); await act(async () => { t.unmount(); }); } });
 async function mount() {
   let tree;
   await act(async () => { tree = TestRenderer.create(<ActiveStoreLayer><div>screen</div></ActiveStoreLayer>); });
+  mounted.push(tree);
   return tree;
 }
 
@@ -62,6 +65,16 @@ describe("switch confirmation modal", () => {
     expect(stopped).toBe(true);
     expect(byId(tree, "store-switch-modal")).toHaveLength(1);
     await act(async () => { modal.props.onClick(); });
+    expect(byId(tree, "store-switch-modal")).toHaveLength(0);
+    expect(S.getActiveStore().activeShop).toBe("marathon-pe");
+  });
+});
+
+describe("keyboard", () => {
+  it("Escape cancels the switch", async () => {
+    const tree = await mount();
+    await act(async () => { S.requestSwitch("concrete"); });
+    await act(async () => { byId(tree, "store-switch-modal")[0].props.onKeyDown({ key: "Escape", preventDefault() {} }); });
     expect(byId(tree, "store-switch-modal")).toHaveLength(0);
     expect(S.getActiveStore().activeShop).toBe("marathon-pe");
   });

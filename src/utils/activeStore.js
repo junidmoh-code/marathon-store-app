@@ -34,6 +34,7 @@ export const SWITCH_REASON = Object.freeze({
   DAILY_RESET: "daily-reset", // a new SA day began while away
   FRESH_LOGIN: "fresh-login", // a new sign-in found an away choice on this device
   SIGN_OUT: "sign-out",       // signed out while away: the choice ends with the session
+  REHOMED: "rehomed",         // Junid changed this person's home shop: they go to it
 });
 
 const blank = () => ({ uid: null, name: null, homeShop: null, activeShop: null, pending: null, saDate: null, signIn: null, deviceId: null });
@@ -62,41 +63,55 @@ function persist() {
   writeJson(ACTIVE_STORE_KEY, { uid: state.uid, shop: state.activeShop, saDate: state.saDate, signIn: state.signIn });
 }
 
-// ── Audit: fire-and-forget, queued on failure, flushed on the next switch/bind.
-// Bounded: at most MAX_PENDING_LOG queued entries per device, oldest dropped.
-function queueLog(entry) {
-  const q = readJson(PENDING_LOG_KEY);
-  const list = Array.isArray(q) ? q : [];
-  list.push(entry);
-  writeJson(PENDING_LOG_KEY, list.slice(-MAX_PENDING_LOG));
-}
+// ── Audit: every line is QUEUED FIRST (in storage, with its account's uid and
+// a stable id), then sent; it leaves the queue only once the server has
+// accepted it. A reload mid-send loses nothing, and the id makes a resend
+// idempotent server-side (store_switch_log/{saDate}/{id}).
+// Bounded: at most MAX_PENDING_LOG queued lines per device, oldest dropped.
+const readQueue = () => { const q = readJson(PENDING_LOG_KEY); return Array.isArray(q) ? q.filter((e) => e && e.id) : []; };
+const writeQueue = (list) => writeJson(PENDING_LOG_KEY, list.length ? list.slice(-MAX_PENDING_LOG) : null);
+function queueLog(entry) { writeQueue([...readQueue().filter((e) => e.id !== entry.id), entry]); }
+function unqueue(id) { writeQueue(readQueue().filter((e) => e.id !== id)); }
 // A refusal that will never succeed on retry is dropped, not re-queued.
-const PERMANENT = /invalid-argument|unauthenticated|permission-denied/;
+const PERMANENT = /invalid-argument|unauthenticated|permission-denied|resource-exhausted/;
 const isPermanent = (err) => PERMANENT.test(String(err?.code || err?.message || ""));
+let idSeq = 0;
+const newId = (ms) => `${ms}_${Math.random().toString(36).slice(2, 8)}${(idSeq++ % 36).toString(36)}`;
+
+async function send(e) {
+  const { uid, ...entry } = e;
+  try { await deps.log(entry); unqueue(e.id); return true; }
+  catch (err) { if (isPermanent(err)) unqueue(e.id); return false; }
+}
 
 // Each queued line names the account it belongs to. The server takes the uid
 // from the caller's token, so a line is only ever sent by THAT account's
 // session; lines of another account on this shared device wait for it.
-export async function flushPendingLog() {
-  if (!deps.log || !state.uid) return;
-  const q = readJson(PENDING_LOG_KEY);
-  if (!Array.isArray(q) || q.length === 0) return;
-  const mine = q.filter((e) => e && e.uid === state.uid);
-  const others = q.filter((e) => e && e.uid !== state.uid);
-  writeJson(PENDING_LOG_KEY, others.length ? others : null);
-  for (const { uid, ...entry } of mine) {
-    try { await deps.log(entry); } catch (err) { if (!isPermanent(err)) queueLog({ uid, ...entry }); }
-  }
+let flushing = null;
+export function flushPendingLog() {
+  if (!deps.log || !state.uid) return Promise.resolve();
+  if (flushing) return flushing;
+  const uid = state.uid;
+  flushing = (async () => {
+    for (const e of readQueue().filter((x) => x.uid === uid)) {
+      if (state.uid !== uid) break;              // signed out mid-flush: stop
+      await send(e);
+    }
+  })().finally(() => { flushing = null; });
+  return flushing;
 }
 function audit(from, to, reason) {
   const uid = state.uid;
-  const entry = {
-    from: from || null, to: to || null, home: state.homeShop || null, reason,
-    deviceId: state.deviceId || null, clientAtMs: deps.now(),
+  if (!uid) return Promise.resolve();
+  const at = deps.now();
+  const e = {
+    uid, id: newId(at), from: from || null, to: to || null, home: state.homeShop || null, reason,
+    deviceId: state.deviceId || null, clientAtMs: at,
   };
-  if (!deps.log || !uid) { if (uid) queueLog({ uid, ...entry }); return Promise.resolve(); }
-  return Promise.resolve().then(() => deps.log(entry))
-    .catch((err) => { if (!isPermanent(err)) queueLog({ uid, ...entry }); });
+  queueLog(e);
+  if (!deps.log) return Promise.resolve();
+  // Delivered → the line is clearly reachable: send anything older still queued.
+  return Promise.resolve().then(() => send(e)).then((ok) => { if (ok) flushPendingLog().catch(() => {}); });
 }
 
 function commit(to, reason) {
@@ -120,13 +135,16 @@ export function bindActiveStore({ uid, homeShop = null, name = null, signIn = nu
     const homeMoved = state.homeShop !== (homeShop || null);
     state.name = name; state.deviceId = deviceId;
     if (homeMoved) {
+      const from = state.activeShop;
       state.homeShop = homeShop || null;
       state.activeShop = state.homeShop;
       state.pending = null;
       state.saDate = today;
       persist();
+      if (from !== state.activeShop) audit(from, state.activeShop, SWITCH_REASON.REHOMED);
     }
     emit();
+    flushPendingLog().catch(() => {});
     return;
   }
   const saved = readJson(ACTIVE_STORE_KEY);
@@ -142,16 +160,31 @@ export function bindActiveStore({ uid, homeShop = null, name = null, signIn = nu
   flushPendingLog().catch(() => {});
 }
 
-// Sign-out on a shared tablet: forget this account's choice entirely. Away at
-// that moment → the return home is audited FIRST (while still signed in); the
-// promise lets the caller wait for it (bounded) before signing out.
+// Signing out while away: audit the return home FIRST, while the session can
+// still call the server. The state itself is cleared by resetActiveStore once
+// sign-out has actually happened (AuthGate sees no user) — so a failed
+// sign-out leaves this account fully working.
+let signOutAudited = false;
+export function auditSignOut() {
+  if (!isAwayFromHome(state)) return Promise.resolve();
+  signOutAudited = true;
+  return audit(state.activeShop, state.homeShop, SWITCH_REASON.SIGN_OUT);
+}
+export function signOutFailed() { signOutAudited = false; }
+
+// Signed out (or the session vanished): forget this account's choice. An
+// away choice not already audited by auditSignOut is queued under its uid —
+// sent by that account's next session (the server would refuse it now).
 export function resetActiveStore() {
-  const away = isAwayFromHome(state);
-  const done = away ? audit(state.activeShop, state.homeShop, SWITCH_REASON.SIGN_OUT) : Promise.resolve();
+  if (isAwayFromHome(state) && !signOutAudited) {
+    const at = deps.now();
+    queueLog({ uid: state.uid, id: newId(at), from: state.activeShop, to: state.homeShop, home: state.homeShop,
+               reason: SWITCH_REASON.SIGN_OUT, deviceId: state.deviceId || null, clientAtMs: at });
+  }
+  signOutAudited = false;
   writeJson(ACTIVE_STORE_KEY, null);
   state = blank();
   emit();
-  return done;
 }
 
 // Called on a timer: at SA midnight an away choice goes back home by itself.
@@ -235,4 +268,6 @@ export function __resetActiveStoreForTests() {
   deps = { storage: null, log: null, today: () => saDateString(), now: () => serverNowMs() };
   listeners.clear();
   rolloverSeen = null;
+  signOutAudited = false;
+  flushing = null;
 }

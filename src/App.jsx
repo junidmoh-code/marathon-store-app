@@ -8829,7 +8829,7 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 // components/assistant/assistantOrderModel.js (shared with the sneaker wall).
 
 // Exported for orderViewRestore.render.test.jsx only.
-export function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
+export function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, confirmShopLocally = true, shopRegistry,
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
                             onViewPhoto, onSwitchView, userEmail, mode, setMode,
                             customerName, setCustomerName, customerPhone, setCustomerPhone,
@@ -8894,6 +8894,10 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const [nameDD, setNameDD] = useState(false);
   const [phoneDD, setPhoneDD] = useState(false);
   const [pendingShop, setPendingShop] = useState(null); // shop-switch confirm
+  // ONE confirmation per switch: an account with a home shop gets the app-wide
+  // full-screen modal (onSelectShop opens it), so this screen's own confirm is
+  // only for accounts with no home shop.
+  const pickShop = (id) => { if (!id || id === effectiveShop) return; if (confirmShopLocally) setPendingShop(id); else onSelectShop(id); };
   const searchRef = useRef(null);
 
   // Catalog by MODE — the mode/hub-filtered candidate set, computed ONCE by
@@ -9149,7 +9153,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
       {wall ? (
         <SneakerWall
           availableShops={availableShops} effectiveShop={effectiveShop} shopRegistry={shopRegistry}
-          onPickShop={setPendingShop}
+          onPickShop={pickShop}
           mode={mode} setMode={setMode} onSwitchView={onSwitchView} userEmail={userEmail}
           // Anyone who arrived by a ?view=wall link can leave it too — the
           // query survives hash navigation, so a till would otherwise stay
@@ -9172,7 +9176,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
         <div className="ad-lab">Order for</div>
         {(availableShops || []).map(s => (
           <button key={s.id} className="ad-nav" aria-current={effectiveShop === s.id}
-                  onClick={() => { if (s.id !== effectiveShop) setPendingShop(s.id); }}>
+                  onClick={() => pickShop(s.id)}>
             <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
             {labelFor(s.id, shopRegistry)}
           </button>
@@ -9768,7 +9772,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
               <div style={{ fontSize: 11, letterSpacing: ".18em", textTransform: "uppercase", color: "#FF6B6B", fontWeight: 800 }}>Warning · this re-routes orders</div>
               <div className="ad-svname" style={{ fontSize: 21, color: "#fff" }}>Change shop to {labelFor(pendingShop, shopRegistry)}?</div>
               <div style={{ fontSize: 13.5, color: "rgba(233,238,255,.72)", lineHeight: 1.55 }}>
-                You're ordering for <b style={{ color: "#fff" }}>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ color: "#FF8B8B" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b style={{ color: "#fff" }}>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart.` : ""}
+                You're ordering for <b style={{ color: "#fff" }}>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ color: "#FF8B8B" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b style={{ color: "#fff" }}>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} will be removed from the cart.` : ""}
               </div>
               <div style={{ display: "flex", gap: 10, width: "100%", marginTop: 4 }}>
                 <button onClick={() => setPendingShop(null)} style={{ flex: 1, padding: 13, borderRadius: 11, border: "1px solid rgba(255,255,255,.2)", background: "rgba(255,255,255,.05)", color: "#fff", fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
@@ -10222,6 +10226,11 @@ function AssistantView({ products, onExit, orders = [] }) {
     if (!next || next === effectiveShop) return;   // tapping the current shop is a no-op
     if (homeShop) { requestActiveStoreSwitch(next); return; }
     setPendingShopSwitch(next);
+  };
+  // No home shop, already confirmed on the desktop's own sheet: commit.
+  const commitShopDirect = (next) => {
+    if (!next || next === effectiveShop) return;
+    selectShop(next); setAffirmedShop(next); requestActiveStoreSwitch(next);
   };
   const confirmShopSwitch = () => {
     // An explicit, confirmed switch IS an affirmation of the destination, so the
@@ -11816,7 +11825,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         <AssistantDesktop
           products={browse} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
           deadForOrder={deadForOrder}
-          onSelectShop={requestShopSwitch} shopRegistry={shopRegistry}
+          onSelectShop={homeShop ? requestShopSwitch : commitShopDirect} confirmShopLocally={!homeShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
           onViewPhoto={setFullPhoto} onSwitchView={onExit}
@@ -11903,12 +11912,12 @@ function AssistantView({ products, onExit, orders = [] }) {
           (auto-selected by the clamp effect) so there's zero chance of mis-picking. */}
       {!singleShop && (
       <div style={{ display:"flex", justifyContent:"center", padding:"0 14px 8px" }}>
-        <div style={{ display:"flex", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
+        <div style={{ display:"flex", flexWrap:"wrap", justifyContent:"center", maxWidth:"100%", background:"rgba(255,255,255,.04)", border:"1px solid rgba(60,110,255,.25)", borderRadius:12, padding:3, gap:2 }}>
           {availableShops.map((s) => {
             const on = effectiveShop === s.id;
             return (
               <button key={s.id} onClick={() => requestShopSwitch(s.id)}
-                style={{ padding:"6px 22px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
+                style={{ padding:"6px 14px", borderRadius:9, border:"none", cursor:"pointer", fontSize:11.5, fontWeight:700,
                          background: on ? "rgba(60,110,255,.25)" : "transparent",
                          color: on ? "#fff" : "rgba(255,255,255,.5)",
                          boxShadow: on ? "0 0 6px rgba(60,110,255,.35)" : "none" }}>

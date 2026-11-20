@@ -22,10 +22,11 @@ if (!admin.apps.length) {
   admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 }
 
-const REASONS = ["switch", "back-home", "daily-reset", "fresh-login", "sign-out"];
+const REASONS = ["switch", "back-home", "daily-reset", "fresh-login", "sign-out", "rehomed"];
 // Per account per SA day. A person switches a handful of times a day; this
 // only stops a runaway or hostile client from filling the log.
 const MAX_PER_DAY = 200;
+const ID_RE = /^[A-Za-z0-9_-]{6,40}$/;
 const SA_OFFSET_MS = 2 * 60 * 60 * 1000;
 const saDateOf = (ms) => new Date(ms + SA_OFFSET_MS).toISOString().slice(0, 10);
 const clip = (v, n) => (typeof v === "string" && v ? v.slice(0, n) : null);
@@ -75,9 +76,13 @@ async function runLogStoreSwitch(db, { uid, email, data, nowMs, at }) {
     .transaction((n) => ((Number(n) || 0) >= MAX_PER_DAY ? undefined : (Number(n) || 0) + 1));
   if (!tx.committed) return { ok: false, code: "rate-limited" };
   const entry = { ...built.entry, name: built.entry.name || clip(email, 80), at };
-  const ref = db.ref(`store_switch_log/${built.saDate}`).push();
-  await ref.set(entry);
-  return { ok: true, id: ref.key, saDate: built.saDate };
+  // A client id makes a resend of a queued line idempotent: written once,
+  // never overwritten. No (or a malformed) id → a fresh push key.
+  const ref = ID_RE.test(String(data?.id || ""))
+    ? db.ref(`store_switch_log/${built.saDate}/${data.id}`)
+    : db.ref(`store_switch_log/${built.saDate}`).push();
+  const res = await ref.transaction((cur) => (cur ? undefined : entry));
+  return { ok: true, id: ref.key, saDate: built.saDate, duplicate: !res.committed };
 }
 exports.runLogStoreSwitch = runLogStoreSwitch;
 

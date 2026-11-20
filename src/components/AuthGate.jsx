@@ -42,7 +42,7 @@ import {
 import { serverNowMs } from "../utils/serverTime";
 import { adoptDeviceId, getDeviceId } from "../device/deviceId";
 import ActiveStoreLayer from "./ActiveStoreLayer";
-import { bindActiveStore, resetActiveStore, setActiveStoreLogger } from "../utils/activeStore";
+import { auditSignOut, bindActiveStore, resetActiveStore, setActiveStoreLogger, signOutFailed } from "../utils/activeStore";
 
 // The two calls the code screen makes. Module-level so the screen's props are
 // stable across renders.
@@ -85,6 +85,9 @@ export default function AuthGate({ children, renderTv }) {
   const [user,         setUser]         = useState(null);
   const [permRecord,   setPermRecord]   = useState(null);
   const [permLoaded,   setPermLoaded]   = useState(false);
+  // Which account the loaded record belongs to — so the active shop is never
+  // bound to a new sign-in with the PREVIOUS (signed-out, null) record.
+  const [permUid,      setPermUid]      = useState(null);
   // Phase 15: a transient /users/{uid} read failure leaves permRecord null,
   // which effectiveStoreIds would treat as "legacy = all-access". For a scoped
   // user that would silently over-grant store access until the read recovers.
@@ -183,6 +186,7 @@ export default function AuthGate({ children, renderTv }) {
       (snap) => {
         setPermReadError(false);
         setPermRecord(snap.val() || null);
+        setPermUid(user.uid);
         rememberRequired(user.uid, snap.val()?.deviceCodeRequired === true);
         setPermLoaded(true);
       },
@@ -201,9 +205,9 @@ export default function AuthGate({ children, renderTv }) {
   useEffect(() => {
     if (!authReady) return;                      // never wipe the saved choice before auth settles
     if (!realUid) { resetActiveStore(); return; }
-    if (!permLoaded || permReadError) return;
+    if (!permLoaded || permReadError || permUid !== realUid) return;
     bindActiveStore({ uid: realUid, homeShop, name: switchName, signIn: signInStamp, deviceId: getDeviceId() });
-  }, [authReady, realUid, homeShop, switchName, signInStamp, permLoaded, permReadError]);
+  }, [authReady, realUid, homeShop, switchName, signInStamp, permLoaded, permReadError, permUid]);
 
   // TV bypass: hand off entirely to the caller's renderTv — but only once
   // tvAuthReady is true, so the TV's data hooks always see a valid auth.
@@ -265,9 +269,11 @@ export default function AuthGate({ children, renderTv }) {
     revokeBeforeSignOut(user && !user.isAnonymous ? user.uid : null)
       .catch(() => {})
       // Away from home → the return is audited while still signed in (≤3 s).
-      .then(() => Promise.race([resetActiveStore(), new Promise((r) => setTimeout(r, 3000))]))
+      // The active shop itself is cleared only once sign-out has happened
+      // (the effect above sees no user); a failed sign-out keeps it working.
+      .then(() => Promise.race([auditSignOut(), new Promise((r) => setTimeout(r, 3000))]))
       .catch(() => {})
-      .then(() => signOut(auth))
+      .then(() => signOut(auth).catch((err) => { signOutFailed(); throw err; }))
       .catch((err) => console.warn("signOut failed:", err));
 
   return (

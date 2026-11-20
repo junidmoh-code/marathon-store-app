@@ -8,7 +8,7 @@
 //     the top of every screen — "Working in X (your store: Y)" — with a one-tap
 //     "Back to Y" that needs no confirmation.
 //   • A one-minute timer sends an away choice home at SA midnight.
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import {
   useActiveStore, confirmSwitch, cancelSwitch, backToHome, checkDayRollover, isAwayFromHome,
 } from "../utils/activeStore";
@@ -23,12 +23,31 @@ export const storeName = (id) => (id ? String(shopLabelOf(id) || id).toUpperCase
 export function SwitchStoreModal({ from, to, onConfirm, onCancel }) {
   const fromName = storeName(from);
   const toName = storeName(to);
+  // Focus: into the dialog on open (Cancel — the safe default), Tab stays
+  // inside, Escape cancels, and focus goes back to whatever opened it.
+  const cardRef = useRef(null);
+  const cancelRef = useRef(null);
+  useEffect(() => {
+    const opener = typeof document !== "undefined" ? document.activeElement : null;
+    try { cancelRef.current?.focus?.(); } catch { /* no DOM focus (tests) */ }
+    return () => { try { opener?.focus?.(); } catch { /* opener gone */ } };
+  }, []);
+  const onKeyDown = (e) => {
+    if (e.key === "Escape") { e.preventDefault?.(); onCancel(); return; }
+    if (e.key !== "Tab") return;
+    const nodes = cardRef.current?.querySelectorAll?.("button");
+    if (!nodes || nodes.length === 0) return;
+    const first = nodes[0], last = nodes[nodes.length - 1];
+    const active = typeof document !== "undefined" ? document.activeElement : null;
+    if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+  };
   return (
     <div role="dialog" aria-modal="true" aria-label="Switching store" data-testid="store-switch-modal"
-         onClick={onCancel}
+         onClick={onCancel} onKeyDown={onKeyDown}
          style={{ position: "fixed", inset: 0, zIndex: 100000, background: "rgba(0,0,0,.92)",
                   display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: FONT }}>
-      <div onClick={(e) => e.stopPropagation()}
+      <div ref={cardRef} onClick={(e) => e.stopPropagation()}
            style={{ width: "100%", maxWidth: 560, boxSizing: "border-box", borderRadius: 22, padding: "30px 26px 24px",
                     background: "linear-gradient(180deg, rgba(255,159,10,.16), rgba(255,107,0,.06))",
                     border: `2px solid ${WARN}`, boxShadow: `0 0 40px rgba(255,159,10,.25)`, color: "#fff", textAlign: "center" }}>
@@ -46,7 +65,7 @@ export function SwitchStoreModal({ from, to, onConfirm, onCancel }) {
                          fontFamily: FONT, fontSize: 21, fontWeight: 850 }}>
           Yes, switch to {toName}
         </button>
-        <button type="button" onClick={onCancel} data-testid="store-switch-cancel"
+        <button type="button" ref={cancelRef} onClick={onCancel} data-testid="store-switch-cancel"
                 style={{ marginTop: 12, width: "100%", minHeight: 52, borderRadius: 14, cursor: "pointer",
                          background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.2)", color: "#fff",
                          fontFamily: FONT, fontSize: 17, fontWeight: 700 }}>
