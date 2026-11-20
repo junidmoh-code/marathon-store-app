@@ -4774,6 +4774,9 @@ function StyleKitPanel({ products = [] }) {
     if (!files.length) return;
     const target = sel; // the kit the files were picked for, even if Junid taps another kit mid-upload
     setUploading(true); setMsg(`Uploading ${files.length} reference${files.length === 1 ? "" : "s"} to ${defs[target]?.label || target}…`);
+    // A new app version never reloads this tab under an upload (the updater's busy registry).
+    setUpdateBusy("stylekit-upload", true);
+    try {
     let ok = 0, fail = 0;
     for (const file of files) {
       try {
@@ -4792,7 +4795,7 @@ function StyleKitPanel({ products = [] }) {
       } catch (err) { fail++; console.warn("styleKit ref upload failed:", err); }
     }
     setMsg(`Added ${ok} reference${ok === 1 ? "" : "s"} to ${defs[target]?.label || target}${fail ? ` · ${fail} failed` : ""}.`);
-    setUploading(false);
+    } finally { setUpdateBusy("stylekit-upload", false); setUploading(false); }
   };
   const toggleRef = (r) => update(ref(database, `aiAssistant/styleKit/${sel}/refs/${r.id}`), { enabled: r.enabled === false });
   const setRefKind = (r, kind) => update(ref(database, `aiAssistant/styleKit/${sel}/refs/${r.id}`), { kind });
