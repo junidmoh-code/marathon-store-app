@@ -22,22 +22,30 @@ function tidy(raw) {
   if (NUM.test(s)) s = String(Number(s));
   return s;
 }
+const PREFIX = /^(uk|us|eu|sa|size)\s*/i;
+const RANGE = /^(.+?)\s*(?:-|–|—|\bto\b)\s*(.+?)\s*(?:y|yrs|years)?$/i;
 /**
- * One stock size → the sizes it stands for. A range is expanded in WHOLE steps
- * ("6-11" → 6 … 11, "S-XL" → S, M, L, XL, "7-8Y" → 7, 8); anything else is kept as it is. Pure.
+ * One stock size → the sizes it stands for. A range is expanded ("6-11" → 6 … 11; "6-7.5" → 6, 6.5, 7, 7.5 when
+ * an end is a half size; "S-XL" → S, M, L, XL; "UK 6-8", "6 to 8", "10-8" too). A range that cannot be read is
+ * listed by its two ends, never as a range. Anything else is kept as it is. Pure.
  */
 function expandSize(raw) {
-  const s0 = String(raw ?? "").trim();
+  const s0 = String(raw ?? "").trim().replace(PREFIX, "");
   if (!s0 || isOneSize(s0)) return [];
-  const m = s0.match(/^([A-Za-z0-9.½]+?)\s*[-–]\s*([A-Za-z0-9.½]+?)\s*(y|yrs|years)?$/i);
+  const m = s0.match(RANGE);
   if (m) {
-    const a = tidy(m[1]), b = tidy(m[2]);
-    if (NUM.test(a) && NUM.test(b) && Number(b) >= Number(a) && Number(b) - Number(a) <= 40) {
-      const out = [];
-      for (let x = Number(a); x <= Number(b) + 1e-9; x += 1) out.push(String(Math.round(x * 10) / 10));
-      return out;
+    let a = tidy(m[1]), b = tidy(m[2]);
+    if (NUM.test(a) && NUM.test(b)) {
+      if (Number(b) < Number(a)) [a, b] = [b, a];
+      const step = Number(a) % 1 || Number(b) % 1 ? 0.5 : 1;
+      if ((Number(b) - Number(a)) / step <= 60) {
+        const out = [];
+        for (let x = Number(a); x <= Number(b) + 1e-9; x += step) out.push(String(Math.round(x * 10) / 10));
+        return out;
+      }
     }
-    if (letterIdx(a) >= 0 && letterIdx(b) >= letterIdx(a)) return LETTERS.slice(letterIdx(a), letterIdx(b) + 1);
+    if (letterIdx(a) >= 0 && letterIdx(b) >= 0) { const [i, j] = [letterIdx(a), letterIdx(b)].sort((x, y) => x - y); return LETTERS.slice(i, j + 1); }
+    return [a, b].filter(Boolean); // never a range in the caption: its two ends, one by one
   }
   return [tidy(s0.replace(/\s*(y|yrs|years)$/i, ""))];
 }
