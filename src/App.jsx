@@ -10256,23 +10256,6 @@ function AssistantView({ products, onExit, orders = [] }) {
   // A destShop account confirmed any shop other than its own in the app-wide
   // modal already, and its own shop needs no affirming — so it is never asked.
   const needsDestConfirm = !homeShop && !singleShop && !noStoreAccess && affirmedShop !== effectiveShop;
-  // ── CART BELONGS TO ONE SHOP ──────────────────────────────────────────────
-  // All-store access (20 Nov 2026): the active shop can change under a full
-  // cart — a confirmed switch, the banner's "Back to …", or the automatic
-  // return home at SA midnight. Lines were priced, routed and stock-checked
-  // for the shop they were added under, so a shop change EMPTIES the cart and
-  // says so, rather than silently placing them for another shop.
-  const cartShopRef = useRef(effectiveShop);
-  const [cartClearedNote, setCartClearedNote] = useState(null);
-  useEffect(() => {
-    const prev = cartShopRef.current;
-    cartShopRef.current = effectiveShop;
-    if (prev === effectiveShop) return;
-    setCart((c) => {
-      if (c.length > 0) setCartClearedNote({ from: prev, to: effectiveShop, n: c.length });
-      return c.length > 0 ? [] : c;
-    });
-  }, [effectiveShop]);
   const runDestConfirm = () => {
     setAffirmedShop(effectiveShop);
     const pending = destConfirm;
@@ -10335,6 +10318,29 @@ function AssistantView({ products, onExit, orders = [] }) {
   const [marketingOptIn, setMarketingOptIn]             = useState(true);
   const [lastOrders, setLastOrders]                     = useState([]);
   const [submitting, setSubmitting]                     = useState(false);
+  // ── CART BELONGS TO ONE SHOP ──────────────────────────────────────────────
+  // All-store access (20 Nov 2026): the active shop can change under a full
+  // cart — a confirmed switch, the banner's "Back to …", or the automatic
+  // return home at SA midnight. Lines were priced, routed and stock-checked
+  // for the shop they were added under, so a shop change EMPTIES the cart and
+  // says so, rather than silently placing them for another shop.
+  const cartShopRef = useRef(effectiveShop);
+  const [cartClearedNote, setCartClearedNote] = useState(null);
+  // A checkout in flight finishes for the shop it started in (its lines are
+  // already captured); the cart is emptied once it is done. A destination
+  // confirmation waiting for the old shop is dropped — the next placement asks
+  // again for the current shop.
+  useEffect(() => {
+    if (submitting) return;
+    const prev = cartShopRef.current;
+    if (prev === effectiveShop) return;
+    cartShopRef.current = effectiveShop;
+    setDestConfirm(null);
+    setCart((c) => {
+      if (c.length > 0) setCartClearedNote({ from: prev, to: effectiveShop, n: c.length });
+      return c.length > 0 ? [] : c;
+    });
+  }, [effectiveShop, submitting]);
   // The submit-time stock guard's refusal, shown ON the checkout sheet (both
   // the phone sheet and the desktop panel) rather than in an alert that a tap
   // dismisses. Any cart change clears it: the assistant's next move is to drop
@@ -11931,8 +11937,9 @@ function AssistantView({ products, onExit, orders = [] }) {
 
       {cartClearedNote && (
         <div role="status" data-testid="cart-cleared-note"
-             style={{ margin:"0 14px 10px", padding:"10px 12px", borderRadius:12, display:"flex", gap:10, alignItems:"center",
-                      background:"rgba(255,159,10,.12)", border:"1px solid rgba(255,159,10,.5)", color:"#fff", fontSize:13 }}>
+             style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:96, zIndex:99980, width:"min(560px, calc(100vw - 28px))", boxSizing:"border-box",
+                      padding:"12px 14px", borderRadius:12, display:"flex", gap:10, alignItems:"center",
+                      background:"rgba(40,26,4,.96)", border:"1px solid rgba(255,159,10,.7)", color:"#fff", fontSize:13.5, boxShadow:"0 10px 30px rgba(0,0,0,.6)" }}>
           <span style={{ flex:1 }}>
             Shop changed to {labelFor(cartClearedNote.to, shopRegistry)} — the {cartClearedNote.n} item{cartClearedNote.n > 1 ? "s" : ""} in the cart for {labelFor(cartClearedNote.from, shopRegistry)} were removed. Add them again if they are for {labelFor(cartClearedNote.to, shopRegistry)}.
           </span>

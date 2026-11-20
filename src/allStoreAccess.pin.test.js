@@ -24,7 +24,7 @@ describe("a shop switch never shows the previous shop's orders", () => {
 describe("the cart belongs to one shop", () => {
   it("a change of the active shop empties a non-empty cart and says so", () => {
     expect(APP).toContain("const cartShopRef = useRef(effectiveShop);");
-    expect(APP).toMatch(/if \(prev === effectiveShop\) return;\s*\n\s*setCart\(\(c\) => \{/);
+    expect(APP).toMatch(/if \(submitting\) return;\s*\n\s*const prev = cartShopRef\.current;\s*\n\s*if \(prev === effectiveShop\) return;\s*\n\s*cartShopRef\.current = effectiveShop;\s*\n\s*setDestConfirm\(null\);\s*\n\s*setCart\(\(c\) => \{/);
     expect(APP).toContain('data-testid="cart-cleared-note"');
   });
 });
