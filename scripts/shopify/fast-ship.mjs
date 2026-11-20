@@ -74,8 +74,12 @@ if (BENCH) {
   await bench(BENCH);
 } else {
   const shipper = createFastShipper({ ...baseDeps, db: liveDb, graphql: shopifyGraphql, courier });
-  const stop = listenForPacked(liveDb, shipper.consider);
+  const stop = listenForPacked(liveDb, shipper.consider, {
+    onCancel: (err) => { log(`✗ fast-ship listener cancelled (${String(err?.message || err).slice(0, 200)}) — exiting; launchd restarts it`); process.exit(1); },
+  });
   log(`fast-ship listening (${STORE.key}, pid ${process.pid})`);
+  // Proof of life once an hour (a quiet log otherwise looks the same as a dead listener).
+  setInterval(() => log(`fast-ship alive (${shipper.inFlight.size} shipping now)`), 3600_000);
   let stopping = false;
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(sig, async () => {

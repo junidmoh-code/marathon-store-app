@@ -2,7 +2,7 @@
 // order ships the moment it is packed, and the fast path and the tick never
 // ship one order twice — however they interleave.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { createFastShipper } from "./fastShip.mjs";
+import { createFastShipper, listenForPacked } from "./fastShip.mjs";
 import { runOrdersPoll, takeShipLock, releaseShipLock, shipLockHeld, shipOrderLocked, SHIP_LOCKS_PATH, SHIP_LOCK_TTL_MS, META_PATH } from "./poll.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
 import doorRates from "../../shipping/fixtures/rates-door-capetown.json";
@@ -149,6 +149,58 @@ describe("the fast path ships a packed order at once", () => {
     expect(await shipper.consider("9001", order(f))).toBe("error");
     expect(order(f).fulfilState).toBe("pending");
     expect(lines.join("\n")).toMatch(/fast ship failed — boom; the next tick retries/);
+  });
+});
+
+describe("review fixes (architect review)", () => {
+  it("a hub-order close that fails after the booking: order left pending, never 'not booked'; the retry fulfils with the same waybill", async () => {
+    const f = fakeDb(world());
+    const c = courier();
+    const sh = shopify();
+    const realRef = f.db.ref;
+    let breakHub = true;
+    const db = { ref: (path) => {
+      const r = realRef(path);
+      return path.startsWith("orders/") && breakHub ? { ...r, transaction: async () => { throw new Error("hub write refused"); } } : r;
+    } };
+    const shipper = createFastShipper(deps({ ...f, db }, sh, c));
+    expect(await shipper.consider("9001", order(f))).toBe("error");
+    expect(order(f)).toMatchObject({ fulfilState: "pending", shipping: { waybill: "PTJJDH" } });
+    expect(sh.fulfils()).toBe(0);
+    breakHub = false;
+    await runOrdersPoll(deps({ ...f, db }, sh, c)); // the tick's fallback
+    expect(c.calls.filter((x) => x === "createShipment")).toHaveLength(1);
+    expect(order(f)).toMatchObject({ fulfilState: "done", shipping: { waybill: "PTJJDH" } });
+    expect(sh.fulfils()).toBe(1);
+  });
+
+  it("a throw before the ship (the ownership read) is caught, never an unhandled rejection", async () => {
+    const f = fakeDb(world({ order: { sourceStore: undefined } }));
+    const db = { ref: (path) => (path.endsWith("/sourceStore") ? { get: async () => { throw new Error("read refused"); } } : f.db.ref(path)) };
+    // A second parcel key makes ownsOrderAt read its parent's store.
+    const shipper = createFastShipper(deps({ ...f, db }, shopify(), courier(), { shipOne: async () => { throw new Error("must not be reached"); } }));
+    await expect(shipper.consider("9001r1", { ...order(f), status: "packed", fulfilState: "pending" })).resolves.toBeTypeOf("string");
+  });
+
+  it("ships at most maxParallel orders at a time (the backlog on attach)", async () => {
+    const f = fakeDb(world());
+    let now = 0, peak = 0;
+    const gates = [];
+    const shipOne = async () => { now++; peak = Math.max(peak, now); await new Promise((r) => gates.push(r)); now--; return { result: "shipped" }; };
+    const shipper = createFastShipper(deps(f, shopify(), courier(), { shipOne, maxParallel: 2 }));
+    for (const id of ["1", "2", "3", "4", "5"]) shipper.consider(id, { status: "packed", fulfilState: "pending" });
+    for (let i = 0; i < 5; i++) { await vi.waitFor(() => expect(gates.length).toBeGreaterThan(0)); gates.shift()(); }
+    await shipper.idle();
+    expect(peak).toBe(2);
+  });
+
+  it("the listener passes its cancel callback to both queries", () => {
+    const ons = [];
+    const q = { on: (ev, cb, cancel) => ons.push([ev, cancel]), off: () => {} };
+    const db = { ref: () => ({ orderByChild: () => ({ equalTo: () => q }) }) };
+    const onCancel = () => {};
+    listenForPacked(db, () => {}, { onCancel });
+    expect(ons).toEqual([["child_added", onCancel], ["child_changed", onCancel]]);
   });
 });
 

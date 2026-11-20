@@ -42,12 +42,26 @@ export function createFastShipper(deps) {
   const get = async (path) => (await db.ref(path).get()).val();
   const inFlight = new Map();
 
+  // A few at a time: on attach every pending order is offered at once (a backlog after downtime).
+  const MAX_PARALLEL = deps.maxParallel ?? 3;
+  let running = 0;
+  const waiting = [];
+  const slot = async () => {
+    if (running >= MAX_PARALLEL) await new Promise((r) => waiting.push(r));
+    running++;
+  };
+  const free = () => { running--; waiting.shift()?.(); };
+
   async function run(id, order, seenAt) {
-    if (!(await ownsOrderAt({ get }, id, order))) return "not_ours";
     const label = orderLabel(order ?? {}) || id;
     let out;
+    // EVERYTHING inside the try: consider()'s promise is not awaited by the listener, so a throw here would be an
+    // unhandled rejection that kills the process.
     try {
-      out = await shipOne(deps, id, order, { owner: "fast" });
+      if (!(await ownsOrderAt({ get }, id, order))) return "not_ours";
+      await slot();
+      try { out = await shipOne(deps, id, order, { owner: "fast" }); }
+      finally { free(); }
     } catch (e) {
       // Left pending: the tick's SHIP retries it (as it always has).
       log(`  ✗ ${label}: fast ship failed — ${String(e?.message || e).slice(0, 300)}; the next tick retries`);
@@ -89,10 +103,12 @@ export function createFastShipper(deps) {
  * listener attaches (so orders packed while this process was down go at once)
  * and again on each change.
  */
-export function listenForPacked(db, consider) {
+export function listenForPacked(db, consider, { onCancel = () => {} } = {}) {
   const q = db.ref(ONLINE_ORDERS_PATH).orderByChild(PENDING_QUERY.child).equalTo(PENDING_QUERY.value);
   const cb = (snap) => { try { consider(snap.key, snap.val()); } catch { /* consider never throws; belt and braces */ } };
-  q.on("child_added", cb);
-  q.on("child_changed", cb);
+  // A cancelled listener (permission or rules change) would leave a live process that never ships: the runner exits
+  // on it, and launchd starts it again.
+  q.on("child_added", cb, onCancel);
+  q.on("child_changed", cb, onCancel);
   return () => { q.off("child_added", cb); q.off("child_changed", cb); };
 }

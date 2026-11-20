@@ -272,7 +272,12 @@ Never twice: both shippers take `online_orders_meta/shipLocks/{orderId}`
 process lives; released by its own token) and re-read the order before
 shipping. Under that, `shipping/courierBooking` still refuses a second waybill.
 An attention the fast path raises sets `attentionSweepAt` to 0, so the next
-tick emails it.
+tick emails it (outside 07:00–19:00 that is the 06:30 catch-up; if a tick is
+mid-sweep at that moment its stamp can win and the email waits for the
+10-minute sweep). A lock left by a SIGKILLed holder stays as a small node
+until the next ship of that order replaces it. Marathon only: Concrete orders
+still ship on the Concrete tick (a second instance with SHOPIFY_STORE=concrete
+would work, logging to logs/fast-ship-concrete.log, but none is installed).
 
 `node scripts/shopify/fast-ship.mjs --bench=<orderKey>` times one real order
 through the ship with nothing written (overlay database), real rates, a

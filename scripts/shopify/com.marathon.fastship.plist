@@ -32,6 +32,8 @@
   </dict>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>60</integer>
+  <!-- A restart lets a booking in flight finish (the SIGTERM handler waits up to 45 s) instead of the 20 s default kill. -->
+  <key>ExitTimeOut</key><integer>60</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-fastship.out.log</string>
   <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-fastship.err.log</string>
