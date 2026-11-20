@@ -5,6 +5,8 @@
 //   localStorage  "bf.card.ui"       { at, tab, scrollY, anchor: { pid, top }, selectMode, showUnder, onlySel,
 //                                      selLabel, sel: { at, sigs }, viewer: { pid, id }, findPid, heights }
 //   sessionStorage "bf.card.list"    the last list the server sent (the card draws it at once, then refreshes)
+//   IndexedDB "bf-card" / kv "list"  the same list, kept when the app is closed: reopening draws it at once
+//                                    and the server's answer replaces it quietly (fast open, 21 Nov 2026)
 //   sessionStorage "bf.card.find"    the Find online results on screen
 // The ticks are also saved on the server (selection/{uid}); the newer copy wins.
 // Every read and write is guarded: a full or blocked storage never breaks the card.
@@ -66,4 +68,47 @@ export function scrollToAnchor(anchor, win = globalThis.window, doc = globalThis
   const dy = el.getBoundingClientRect().top - Number(anchor.top || 0);
   if (Math.abs(dy) > 1) win.scrollBy(0, dy);
   return true;
+}
+
+// ── the last list, kept on the phone across app closes (IndexedDB: room for a 2 MB list) ──
+const IDB_NAME = "bf-card";
+const IDB_STORE = "kv";
+function idb() {
+  return new Promise((ok, no) => {
+    let req;
+    try { req = globalThis.indexedDB.open(IDB_NAME, 1); } catch (e) { no(e); return; }
+    req.onupgradeneeded = () => { try { req.result.createObjectStore(IDB_STORE); } catch { /* exists */ } };
+    req.onsuccess = () => ok(req.result);
+    req.onerror = () => no(req.error);
+    req.onblocked = () => no(new Error("blocked"));
+  });
+}
+/** The list kept on the phone (or null): never older than STATE_MAX_AGE_MS. */
+export async function loadListIdb(nowMs = Date.now()) {
+  try {
+    if (!globalThis.indexedDB) return null;
+    const db = await idb();
+    const v = await new Promise((ok) => {
+      const r = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).get("list");
+      r.onsuccess = () => ok(r.result || null);
+      r.onerror = () => ok(null);
+    });
+    db.close();
+    return v && v.d && nowMs - Number(v.at || 0) < STATE_MAX_AGE_MS ? v.d : null;
+  } catch { return null; }
+}
+export async function saveListIdb(d, nowMs = Date.now()) {
+  try {
+    if (!d || !globalThis.indexedDB) return false;
+    const db = await idb();
+    const ok = await new Promise((done) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.objectStore(IDB_STORE).put({ at: nowMs, d }, "list");
+      tx.oncomplete = () => done(true);
+      tx.onerror = () => done(false);
+      tx.onabort = () => done(false);
+    });
+    db.close();
+    return ok;
+  } catch { return false; }
 }
