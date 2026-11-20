@@ -25,6 +25,7 @@ import { locationName } from "../../utils/networkRegistry";
 import { currentNetwork } from "../../utils/networkStore";
 import { sizesOf } from "../../utils/productTaxonomy.js";
 import CategorySelect from "./CategorySelect.jsx";
+import { headwearCategoryKeyFor } from "../../utils/headwearCategory.js";
 import PrintedBarcodeCapture from "./PrintedBarcodeCapture.jsx";
 import SizeQtyBoxes, { totalUnits } from "./SizeQtyBoxes.jsx";
 import { LocationPicker } from "../stock/widgets.jsx";
@@ -211,6 +212,16 @@ export default function NewProductForm({
         {saveAttempted && !catOk && (
           <div style={{ marginTop: 8, fontSize: 12.5, color: "#F87171", fontWeight: 600 }}>
             Pick a category — it sets the sizes and how this product is handled everywhere else.
+          </div>
+        )}
+        {/* A cap / beanie / bucket hat filed elsewhere is saved as Caps &
+            Beanies (utils/headwearCategory.js). Said on the form, so the
+            correction is never a surprise on the product page. */}
+        {catOk && headwearCategoryKeyFor(form.name, form.categoryKey) && (
+          <div style={{ marginTop: 8, fontSize: 12.5, color: "#FBBF24", fontWeight: 600 }}>
+            {formOneSize
+              ? "This will be saved as Caps & Beanies, one size — caps, beanies and bucket hats always are."
+              : "Caps, beanies and bucket hats are Caps & Beanies, one size — you will be asked to switch when you save."}
           </div>
         )}
       </div>

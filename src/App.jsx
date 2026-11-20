@@ -215,6 +215,7 @@ import { printOrderSlips } from "./print/orderSlip";
 // category later is a data edit — no code change, no deploy. `legacyFor` is the
 // derivation that keeps newly-created products inside every existing automation.
 import { catByKey, isOneSize, legacyFor, needsAssignment, isAssignable } from "./utils/productTaxonomy";
+import { headwearCategoryKeyFor, headwearRenamePatch } from "./utils/headwearCategory.js";
 import { sizesForCat, sizeRunsOf, runSizes, compareSizes, sizeFamily } from "./utils/sizeRuns";
 import { orderSizesForDisplay } from "./utils/sizeDisplayOrder";
 import { findSubmitShortfall, submitShortfallMessage } from "./components/stock/orderSubmitGuard";
@@ -881,7 +882,13 @@ function updateProductName(id, newName, product = null) {
       // A product with no brand (or a flagged one) gets its brand re-derived
       // from the new name; a set brand is never touched (brands.js brandOnRename).
       const b = product && product.id === id ? brandOnRename(product, newName.trim()) : null;
-      return update(ref(database, `products/${id}`), { name: newName.trim(), ...(b || {}) });
+      // A rename to a cap / beanie / bucket hat name re-files a one-size
+      // product under Caps & Beanies in the same write (utils/headwearCategory.js).
+      // Read by key, fresh: the caller may hold only the outgoing name.
+      return get(ref(database, `products/${id}`)).then((snap) => {
+        const hw = headwearRenamePatch(snap.val(), newName.trim());
+        return update(ref(database, `products/${id}`), { name: newName.trim(), ...(b || {}), ...(hw || {}) });
+      });
     })
     .catch(err => console.warn("updateProductName failed:", err));
 }
@@ -6508,6 +6515,22 @@ function AdminView({ products, orders, onExit }) {
     // and POS browse. Refuse rather than half-type it.
     if (!form.name.trim() || !form.categoryKey || !selectedCat || !formLegacy) return;
     if (!formSizes.length) return;
+    // ── A CAP, BEANIE OR BUCKET HAT IS CAPS & BEANIES, ONE SIZE (Junid, 20 Nov
+    // 2026 — utils/headwearCategory.js). From another one-size category the
+    // builder re-files it silently (same "_" size, nothing typed is lost).
+    // From a SIZED category the typed quantities are keyed by sizes the product
+    // will not have, so the form offers to switch to Caps & Beanies and asks
+    // for the one quantity again rather than guess which size's number to
+    // keep. Cancel keeps the chosen category (a name the rule misreads must
+    // never block a save).
+    {
+      const fixKey = headwearCategoryKeyFor(form.name, form.categoryKey);
+      if (fixKey && !formOneSize && isAssignable(taxonomy, fixKey)
+          && window.confirm("Caps, beanies and bucket hats are Caps & Beanies, one size. Switch the category to Caps & Beanies? (You will enter the quantity once more.)\n\nCancel keeps the category you picked.")) {
+        selectCategory(fixKey);
+        return;
+      }
+    }
     // Opening stock is required as a SECTION: the destination must be picked.
     // The quantities themselves are not — an explicit 0 everywhere is a valid
     // answer ("received nothing yet"), it just writes no movements.
@@ -7665,7 +7688,10 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       // Seed FIRST, then rename (see updateProductName).
       seedSearchIdentityFrom(product)
         // Same rule as updateProductName: only an empty brand is re-derived.
-        .then(() => save({ name: next, ...(brandOnRename(product, next) || {}) }, "the name"))
+        .then(() => save({ name: next, ...(brandOnRename(product, next) || {}),
+          // Renamed to a cap / beanie / bucket hat while filed elsewhere: re-file
+          // it under Caps & Beanies in the same save (one-size products only).
+          ...(headwearRenamePatch(product, next, (k) => legacyFor(detailTaxonomy.registry, k)) || {}) }, "the name"))
         .catch((err) => setSaveError(`Could not save the name: ${err?.message || err}. Try again.`));
     }
     else if (!next) setNameDraft(product.name);
