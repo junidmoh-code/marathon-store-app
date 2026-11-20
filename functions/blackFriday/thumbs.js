@@ -8,8 +8,10 @@
 // GET /bfThumb?u=<the photo's Firebase download URL>
 //   → 302 to products/{pid}/card_thumbs/{key}_w360.webp (public-read, like
 //     every products/** object), made from the photo the first time it is asked
-//     for and kept. The key is a hash of the photo's path AND its download token,
-//     so a photo re-shot under the same path gets a new thumbnail.
+//     for and kept. The key is a hash of the photo's path AND the Storage object's
+//     own generation (read from Storage, never taken from the request), so a photo
+//     re-shot under the same path gets a new thumbnail and a caller cannot make
+//     more than one thumbnail per photo version (review, PR #945).
 // Only photos of products in the app's own bucket; nothing else is read or
 // fetched. Changes no data: it reads one Storage object and writes its thumbnail.
 // Deploy BY NAME: firebase deploy --only functions:bfThumb
@@ -42,26 +44,31 @@ function sourceOf(raw) {
   if (path.includes("..") || path.includes("//")) return null;
   const pm = PATH_RE.exec(path);
   if (!pm) return null;
-  const key = fnv(`${path}|${u.searchParams.get("token") || ""}`);
-  return { path, pid: pm[1], thumbPath: `products/${pm[1]}/card_thumbs/${key}_w${W}.webp` };
+  return { path, pid: pm[1] };
 }
+/** The thumbnail's path for one version of the photo. Pure. */
+const thumbPathOf = (src, generation) => `products/${src.pid}/card_thumbs/${fnv(`${src.path}|${generation}`)}_w${W}.webp`;
 const publicUrl = (path) => `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/${encodeURIComponent(path)}?alt=media`;
 
 /** Make the thumbnail unless it exists. deps: { bucket, sharp }. → thumbPath */
 async function ensureThumb(src, { bucket, sharp }) {
-  const f = bucket.file(src.thumbPath);
+  const source = bucket.file(src.path);
+  const [meta] = await source.getMetadata();
+  if (Number(meta.size) > SOURCE_MAX_BYTES) throw Object.assign(new Error("too large"), { code: 413 });
+  const thumbPath = thumbPathOf(src, meta.generation || meta.md5Hash || "0");
+  const f = bucket.file(thumbPath);
   const [exists] = await f.exists();
-  if (exists) return src.thumbPath;
-  const [buf] = await bucket.file(src.path).download();
+  if (exists) return thumbPath;
+  const [buf] = await source.download();
   if (buf.length > SOURCE_MAX_BYTES) throw Object.assign(new Error("too large"), { code: 413 });
-  const out = await sharp(buf, { failOn: "none", limitInputPixels: 120_000_000 }).rotate()
+  const out = await sharp(buf, { failOn: "none", limitInputPixels: 60_000_000 }).rotate()
     .resize(W, H, { fit: "inside", withoutEnlargement: true }).webp({ quality: 74 }).toBuffer();
   await f.save(out, { resumable: false, metadata: { contentType: "image/webp", cacheControl: "public, max-age=31536000, immutable" } });
-  return src.thumbPath;
+  return thumbPath;
 }
 
 const bfThumb = onRequest(
-  { region: "europe-west1", memory: "1GiB", cpu: 1, concurrency: 40, maxInstances: 4, timeoutSeconds: 60, invoker: "public" },
+  { region: "europe-west1", memory: "1GiB", cpu: 1, concurrency: 8, maxInstances: 4, timeoutSeconds: 60, invoker: "public" },
   async (req, res) => {
     const src = sourceOf(req.query && req.query.u);
     if (!src) { res.status(400).send("not a product photo"); return; }
@@ -77,4 +84,4 @@ const bfThumb = onRequest(
   },
 );
 
-module.exports = { bfThumb, _internals: { sourceOf, ensureThumb, fnv, publicUrl, W, BUCKET } };
+module.exports = { bfThumb, _internals: { sourceOf, thumbPathOf, ensureThumb, fnv, publicUrl, W, BUCKET } };

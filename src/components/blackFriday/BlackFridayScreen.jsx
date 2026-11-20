@@ -332,7 +332,8 @@ function Block({ title, rows, testid, children, heights, ...rest }) {
   if (!rows.length) return null;
   const [s, e] = range ? [Math.min(range[0], rows.length), Math.min(range[1], rows.length)] : [0, Math.min(rows.length, FIRST_ROWS)];
   return (
-    <div ref={box} data-testid={testid} style={{ ...GLASS, padding: "8px 12px", marginBottom: 10 }}>
+    // overflowAnchor none: the list keeps its own place (desktop browsers' scroll anchoring would correct twice).
+    <div ref={box} data-testid={testid} style={{ ...GLASS, padding: "8px 12px", marginBottom: 10, overflowAnchor: "none" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
         <div style={{ fontSize: 13, fontWeight: 800, flex: 1 }}>{title} ({rows.length})</div>
         {children}
@@ -542,17 +543,23 @@ export default function BlackFridayScreen({ api, onExit }) {
     return () => { off(); setUpdateBusy("bf-card-open", false); setUpdateBannerHost("bf-card", false); };
   }, []);
   // ── his place, kept on the device ────────────────────────────────────────
+  // The ticks' own time: stamped when the selection CHANGES (never by a scroll), so an old phone copy never
+  // beats a newer server selection after a kill (review, PR #945).
+  const selAt = useRef(su.sel ? Number(su.sel.at) || 0 : 0);
+  const selFirst = useRef(true);
+  useEffect(() => { if (selFirst.current) { selFirst.current = false; return; } selAt.current = Date.now(); }, [selected]);
+  const placeApplied = useRef(!savedUi.current); // nothing to put back: saving may start at once
   const place = useRef({});
   place.current = { tab, selectMode, showUnder, onlySel, selLabel, viewer, find, selected };
   const savePlace = useCallback(() => {
-    if (!restored.current) return; // never save over the place before it has been put back
+    if (!restored.current || !placeApplied.current) return; // never save over the place before it has been put back
     const p = place.current;
     const hs = {};
     for (const [k, h] of heights.current) hs[k] = h;
     saveUi({
       tab: p.tab, scrollY: typeof window !== "undefined" ? Math.round(window.scrollY || 0) : 0, anchor: visibleAnchor(),
       selectMode: !!p.selectMode, showUnder: !!p.showUnder, onlySel: !!p.onlySel, selLabel: p.selLabel || null,
-      sel: { at: Date.now(), sigs: Object.fromEntries([...p.selected.values()].map((r) => [r.pid, r.sig || (r.use === "generated" ? r.genId : "current")])), label: p.selLabel || null },
+      sel: { at: selAt.current, sigs: Object.fromEntries([...p.selected.values()].map((r) => [r.pid, r.sig || (r.use === "generated" ? r.genId : "current")])), label: p.selLabel || null },
       viewer: p.viewer ? { pid: p.viewer.pid, id: viewerAt.current } : null,
       findPid: p.find && p.find.result ? p.find.r.pid : null,
       heights: hs,
@@ -582,15 +589,23 @@ export default function BlackFridayScreen({ api, onExit }) {
   // Put him back on the same row, with the photo or popup he had open (once, on the first list).
   const placeBack = useRef(false);
   useEffect(() => {
-    if (placeBack.current || !main || !savedUi.current) return;
+    // With "Show under 13" open the page is only full height once that list is here.
+    if (placeBack.current || !main || !savedUi.current || (su.showUnder && !under)) return;
     placeBack.current = true;
     const all = [...(main.newArrivals || []), ...(main.review || []), ...(main.approved || [])];
     if (su.viewer) { const r = all.find((x) => x.pid === su.viewer.pid); if (r) setViewer({ ...r, section: "main", startId: su.viewer.id }); }
     if (su.findPid) { const r = all.find((x) => x.pid === su.findPid); const res = loadFind(su.findPid); if (r && res) setFind({ r: { ...r, section: "main" }, result: res }); }
-    if (typeof window === "undefined") return;
-    const go = () => { if (su.scrollY) window.scrollTo(0, su.scrollY); requestAnimationFrame(() => { scrollToAnchor(su.anchor); requestAnimationFrame(() => scrollToAnchor(su.anchor)); }); };
-    requestAnimationFrame(go);
-  }, [main]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (typeof window === "undefined" || typeof requestAnimationFrame === "undefined") { placeApplied.current = true; return; }
+    if (su.scrollY) window.scrollTo(0, su.scrollY);
+    // The anchored row is drawn once the list has laid out: try for a few frames, then saving resumes.
+    let tries = 0;
+    const settle = () => {
+      const found = scrollToAnchor(su.anchor);
+      if ((!found || tries < 2) && tries++ < 20) { if (!found && su.scrollY) window.scrollTo(0, su.scrollY); requestAnimationFrame(settle); return; }
+      placeApplied.current = true;
+    };
+    requestAnimationFrame(settle);
+  }, [main, under]); // eslint-disable-line react-hooks/exhaustive-deps
   const refreshForUpdate = () => { savePlace(); saveList(main); applyUpdate(); };
   const saveTimer = useRef(null);
   useEffect(() => {
