@@ -66,7 +66,7 @@ test("one tap: Gemini is called once, progress is streamed, the photo lands on t
   const image = w.calls.filter((c) => c[0] === "image");
   assert.equal(image.length, 1);
   assert.equal(image[0][1], "gemini-3-pro-image");
-  assert.deepEqual(image[0][2], { aspectRatio: "3:4", imageSize: "2K" });
+  assert.deepEqual(image[0][2], { aspectRatio: "3:4", imageSize: "4K" });
   // Generated from the ORIGINAL staff photo.
   assert.deepEqual(w.calls.filter((c) => c[0] === "fetch").map((c) => c[1]), ["https://x/orig.jpg"]);
   // The card saw the thought and the draft while it worked.
@@ -548,7 +548,13 @@ test("the example photos cannot be loaded: the shoe is still generated, without 
 });
 
 // ── THE FOOTWEAR PLATE LOCK (Junid, 5 Oct) ───────────────────────────────────
-const shoeWorld = () => world({ product: { name: "Nike Air", categoryKey: "sneakers", brand: "Nike" }, item: { categoryKey: "sneakers" } });
+// Switched OFF since 20 Nov 2026 (the last-good setup has Gemini compose the whole photo); the code is kept and
+// these tests run it with the switch turned on.
+const shoeWorld = async () => {
+  const w = await world({ product: { name: "Nike Air", categoryKey: "sneakers", brand: "Nike" }, item: { categoryKey: "sneakers" } });
+  w.deps.generation = { ...require("../newArrivals/studio/config/generation.json"), footwearCorrection: true };
+  return w;
+};
 
 test("a footwear photo is CORRECTED: the photo shown is the one placed on the fixed plate; Gemini's own is kept beside it; the record says what was done", async () => {
   const w = await shoeWorld();

@@ -35,7 +35,7 @@ test("the image model and size are exactly the signed-off ones — and there is 
   assert.equal(gen.imageModel, lock.imageModel);
   assert.equal(gen.imageModel, "gemini-3-pro-image");
   assert.equal(gen.imageSize, lock.imageSize);
-  assert.equal(gen.imageSize, "2K");
+  assert.equal(gen.imageSize, "4K"); // Junid, 20 Nov 2026: the highest quality (the 4 Oct batch asked 2K)
   assert.deepEqual(gen.layers, lock.layers);
   assert.equal(lock.approvedBy, "Junid");
   for (const f of ["studio.mjs", "gemini-stream.mjs", "prompt.mjs"]) {
@@ -53,11 +53,12 @@ test("with every layer off the prompt is byte-for-byte the baseline", () => {
 
 test("the prompts the baseline photos were made with (pinned fingerprints)", () => {
   const p = (kind, layers) => studioPrompt({ kind, layers, productName: "Test Product", conditionClause: CONDITION_CLAUSE, placement: placementText(kind, spec[kind]) });
-  // Footwear: the baseline + the packaging layer, with the PLACEMENT measured from G-0102 said outright
-  // (Junid's footwear-consistency brief of 5 Oct — baseline.lock.json footwearLayout). Until then the
-  // fingerprint was 31ad98f1…, as the Mac mini sent it on 4 Oct; only the placement sentence differs.
-  assert.equal(sha(p("footwear", { packaging: true }).text), "b5e25b848b028aa3a0be2f5fe6a27b1127684cf74d1a91afd5c5178dea627fab");
-  assert.equal(lock.footwearLayout.requestedBy, "Junid");
+  // Footwear: the baseline + the packaging layer — 31ad98f1…, EXACTLY as the last-good 4 Oct batch was sent
+  // (restored 20 Nov 2026, Junid — baseline.lock.json restoredLastGood). From 5 Oct to 19 Nov it was
+  // b5e25b84… (the G-0102 placement said outright), which made the shoe small and the box float.
+  assert.equal(sha(p("footwear", { packaging: true }).text), "31ad98f10f79ba412cd76c8061070a866355015d416dd240ed3bcb203e42b402");
+  assert.equal(lock.restoredLastGood.footwearPromptSha256, "31ad98f10f79ba412cd76c8061070a866355015d416dd240ed3bcb203e42b402");
+  assert.equal(lock.restoredLastGood.requestedBy, "Junid");
   // The cream knit vest's class (one garment) and the two-piece: the bare baseline.
   assert.equal(sha(p("single", { packaging: true }).text), "42bd6d5ec625f712fa96281fdb6c33e71dc7319dc5306203284da3584a6251aa");
   assert.equal(sha(p("twopiece", {}).text), "3dbbc9e9a8a38765a16d748bf90133c70619d86ab3fa1e76995f3b8516f309e5");

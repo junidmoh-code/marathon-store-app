@@ -1,7 +1,7 @@
 {
   "baselinePromptSha256": "5046bbe1f2bc7c790037d3826217bd706a1f62fdc0cf6a1449bbb2b94d3e36ad",
   "imageModel": "gemini-3-pro-image",
-  "imageSize": "2K",
+  "imageSize": "4K",
   "layers": {
     "boxRules": false,
     "reshootBrief": false,
@@ -78,5 +78,12 @@
     "requestedAt": "2026-10-04",
     "for": "gpt-image-1 as a second provider alongside Gemini, picked per item; default stays Full Gemini",
     "source": "his brief of 4 Oct 2026 (OpenAI provider)"
+  },
+  "restoredLastGood": {
+    "requestedBy": "Junid",
+    "requestedAt": "2026-11-20",
+    "source": "his brief of 20 Nov 2026 (Black Friday photos bad; restore the last-good New Arrivals generation as ONE shared generator, highest quality)",
+    "for": "the 4 Oct setup (studio-2026-10-04.1, G-0087 to G-0117) again: footwear-reference.png, the 2 Oct footwear layout (footwear prompt fingerprint 31ad98f1… again), footwearCorrection off (Gemini composes the whole photo). imageSize 4K (was 2K) and the master kept at the model's full resolution, JPEG q92 — Junid asked for the highest quality.",
+    "footwearPromptSha256": "31ad98f10f79ba412cd76c8061070a866355015d416dd240ed3bcb203e42b402"
   }
 }

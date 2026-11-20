@@ -280,7 +280,8 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
   const fxOf = (at) => (deps.fx ? deps.fx(at) : usdZarToday(db, at)).catch(() => ({ rate: prices.usdToZar, fallback: true }));
   let res;
   try {
-    res = await studio.generateOne({
+    // THE ONE SHARED GENERATOR (20 Nov 2026): the same function Black Friday's Generate calls.
+    res = await studio.generate({
       item: { ...item, pid }, product, genId, method: how, provider: engine, emit,
       deps: {
         fetchBytes: deps.fetchBytes || fetchBytes,
@@ -323,7 +324,7 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
     // the whole image when it was made and lost (paid), else its prompt tokens.
     if (e.paid || e.usage) {
       const fx = await fxOf(now());
-      const lost = e.paid ? record.generationCost({ model, usage: e.usage, prices, fx }) : null;
+      const lost = e.paid ? record.generationCost({ model, usage: e.usage, prices, fx, imageSize: (deps.generation || generation).imageSize }) : null;
       await addSpend(db, lost ? lost.zar : record.failedCallZar({ model, usage: e.usage, prices, fx }), { estimated: !!lost?.estimated });
     }
     throw new HttpsError(e.studioRefusal ? "failed-precondition" : status === 402 ? "resource-exhausted" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
@@ -331,7 +332,7 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
 
   // The photo exists, is stored and is paid for: from here every step is retried.
   const at = now();
-  const cost = record.generationCost({ model, usage: res.usage, prices, fx: await fxOf(at) });
+  const cost = record.generationCost({ model, usage: res.usage, prices, fx: await fxOf(at), imageSize: (deps.generation || generation).imageSize });
   let code = null;
   try {
     const seq = await studio.withRetries(() => db.ref(record.GENSEQ).transaction((cur) => (Number(cur) || 0) + 1));
