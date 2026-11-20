@@ -152,7 +152,13 @@ export async function streamImage(model, parts, imageConfig, opts = {}) {
     if (!withThoughts || !thinkingRejected(e)) throw e;
     thoughtsUnsupported = String(e.message).slice(0, 300);
     body = requestBody(parts, imageConfig, { includeThoughts: false });
-    state = await once(model, body, { apiKey, fetchImpl, timeoutMs, onEvent });
+    // The retry gets only what is left of the budget, so the two together stay inside the callable's 540 s.
+    const left = Math.max(30_000, timeoutMs - (Date.now() - t0));
+    try { state = await once(model, body, { apiKey, fetchImpl, timeoutMs: left, onEvent }); }
+    catch (e2) {
+      if (e2?.name === "AbortError") { const err = new Error(`Gemini ${model} gave no photo within ${Math.round(timeoutMs / 1000)}s`); err.status = 504; throw err; }
+      throw e2;
+    }
   }
   const requestMs = Date.now() - t0;
   if (!state.image) {
