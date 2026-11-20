@@ -470,3 +470,13 @@ test("POSTING BRAIN: the card reads brain/view and writes only brain/control (Pa
   await assert.rejects(_internals.brainSlot(db, { day: "2026-11-21", i: 1, at: "23:00" }, "junid", 3), /never 22:00/);
   await assert.rejects(_internals.brainSlot(db, { day: "2026-12-01", i: 1, at: "10:00" }, "junid", 3), /day of the campaign/);
 });
+
+test("CAPTION (Junid 20 Nov): two lines, every in-stock size, never a range", () => {
+  const cap = require("../blackFriday/caption.cjs");
+  assert.equal(core.captionPreview(750, [{ sizes: "6-11" }]), "R750\nAvailable sizes: 6, 7, 8, 9, 10, 11");
+  assert.equal(cap.sizesLine(["6", "7", "9", "10"]), "6, 7, 9, 10");
+  assert.equal(cap.sizesLine(["6", "6.5", "7"]), "6, 6.5, 7");
+  assert.equal(cap.sizesLine(["XXL", "S", "L", "M", "XL"]), "S, M, L, XL, XXL");
+  assert.equal(core.captionPreview(300, [{ sizes: "one size" }]), "R300\nAvailable sizes: one size");
+  assert.doesNotMatch(core.captionPreview(650, [{ sizes: "M-XL" }, { sizes: "S" }]), /BLACK FRIDAY|🔥|EACH|Message us/);
+});
