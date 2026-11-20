@@ -50,6 +50,8 @@ import { usePermissions } from "./components/PermissionsContext";
 import AllProductsList from "./components/concrete/AllProductsList";
 import BrandCheckTab, { useBrandCheckCount } from "./components/concrete/BrandCheckTab";
 import { canVerifyBrand, useConcreteLiveSet } from "./components/concrete/concreteStore";
+import { BRAND_CHECK_TAB, CONCRETE_PRODUCTS_CARD } from "./config/temporaryCards";
+import ConcreteProductsCard from "./components/concrete/ConcreteProductsCard";
 import { isSuperAdmin as isSuperAdminEmail } from "./config/superAdmins";
 import { toAuthPassword } from "./utils/auth-utils";
 import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, phoneGroupKey } from "./utils/phone";
@@ -3088,6 +3090,14 @@ const RoleIcons = {
       <path d="M22 2 11 13"/>
     </svg>
   ),
+  concrete_products: (
+    // A plain block — Concrete. TEMPORARY card (src/config/temporaryCards.js).
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#E5E5E5" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 8 12 3l9 5v8l-9 5-9-5z"/>
+      <path d="M3 8l9 5 9-5"/>
+      <path d="M12 13v8"/>
+    </svg>
+  ),
   black_friday: (
     // A price tag — the Black Friday card groups everything by its stock price.
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -3544,7 +3554,8 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // Junid or a stockRole admin. The route below re-checks the same gate.
   const socialVisible = isSuperAdmin || homePerm?.stockRole === "admin";
   // Brand Check's waiting count on the Admin tile — Junid or a stockRole admin.
-  const brandCheckBadge = useBrandCheckCount(products, canVerifyBrand(homeUser, homePerm));
+  // Hidden with the tab (src/config/temporaryCards.js BRAND_CHECK_TAB).
+  const brandCheckBadge = useBrandCheckCount(products, BRAND_CHECK_TAB && canVerifyBrand(homeUser, homePerm));
 
   // TV Ad — writes /settings/tvAd, which the TV screen overlay reads live.
   // Same identity as Social/Shopify: super-admin or stockRole admin, matching
@@ -3612,6 +3623,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // Black Friday 2026 — Junid approves each stock-price group; the Mac mini posts
       // the approved ones to the 14 WhatsApp groups. Super-admin only (the
       // bfCampaign* callables re-check it server-side).
+      // CONCRETE PRODUCTS — TEMPORARY (Junid, 20 Nov 2026): mark which clothing
+      // is Concrete-only. Junid or a stockRole admin (canVerifyBrand — the
+      // mark IS the brand check). One flag removes tile and route:
+      // src/config/temporaryCards.js CONCRETE_PRODUCTS_CARD.
+      CONCRETE_PRODUCTS_CARD && canVerifyBrand(homeUser, homePerm) && { key:"concrete_products", icon:RoleIcons.concrete_products, name:"Concrete Products", desc:"Temporary · mark clothing Concrete-only", onClick:()=>(window.location.hash = "#concrete-products") },
       isSuperAdmin                                             && { key:"black_friday", icon:RoleIcons.black_friday, name:"Black Friday", desc:"Price groups · approve · WhatsApp", onClick:()=>(window.location.hash = "#black-friday") },
       shopifyVisible                                           && { key:"shopify_publish", icon:RoleIcons.shopify_publish, name:"Shopify Publishing", desc:"Clean names · condition · publish", badge:shopifyBadge, onClick:()=>onSelect(ROLES.SHOPIFY_PUBLISH) },
       // Social — generated posts waiting for approval, the style reference
@@ -6291,7 +6307,10 @@ function AdminView({ products, orders, onExit }) {
   // Brand Check queue. Brand Check is Junid or a stockRole admin only.
   const { user: adminUser, permRecord: adminPerm } = usePermissions();
   const canBrandCheck = canVerifyBrand(adminUser, adminPerm);
-  const brandCheckCount = useBrandCheckCount(products, canBrandCheck);
+  // The Brand Check TAB is hidden (temporaryCards.js) — canBrandCheck still
+  // gates verify on All products.
+  const showBrandCheck = BRAND_CHECK_TAB && canBrandCheck;
+  const brandCheckCount = useBrandCheckCount(products, showBrandCheck);
   const concreteLive = useConcreteLiveSet(!!adminUser);
   // The AI features (Claude name-cleanup, Gemini/OpenAI photo generation,
   // pickup-board voice) moved to the super-admin-only AI Studio view — this
@@ -6322,7 +6341,7 @@ function AdminView({ products, orders, onExit }) {
   // See photoGuides.js and handleGuidedPhoto below.
   // sku + barcode are NOT in form state — they auto-generate at save time via
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
-  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false, listOnConcrete:false });
+  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   // ── STYLE CODE INTAKE (step 1) ──────────────────────────────────────────
   // While null, "Add Product" shows the style-code gate instead of the create
@@ -6770,15 +6789,9 @@ function AdminView({ products, orders, onExit }) {
       // onValueCreated trigger) turns it into the queue entry — the client
       // never writes /new_arrivals itself, so no rule is involved.
       newProduct.newArrivalAt = serverNowMs();
-      // CONCRETE (second Shopify store) — the upload form's one switch, OFF by
-      // default. Only an ON is written: absent means "Marathon only". The
-      // brand check is NOT stamped here — a new product always lands in Brand
-      // Check for Junid/admin to confirm (src/utils/concreteListing.js).
-      if (form.listOnConcrete === true && auth.currentUser?.uid) {
-        newProduct.listOnConcrete = true;
-        newProduct.listOnConcreteSetBy = auth.currentUser.uid;
-        newProduct.listOnConcreteSetAt = serverNowMs();
-      }
+      // CONCRETE: the upload form no longer marks anything (Junid, 20 Nov
+      // 2026) — staff add products exactly as before; Junid marks
+      // Concrete-only products on the Concrete Products card.
       // The AI source copies uploaded above. Set only when present — the
       // record never carries a null for a photo it was not given.
       if (photoSourceUrl) newProduct.photoSourceUrl = photoSourceUrl;
@@ -7049,7 +7062,7 @@ function AdminView({ products, orders, onExit }) {
 
       // Any photo still being prepared belongs to the product just saved.
       photoPrepSeq.current.photo += 1;
-      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false, listOnConcrete:false });
+      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
       setShoeboxTouched(false);
       setRecvQtys({});
       setSaveAttempted(false);
@@ -7216,7 +7229,7 @@ function AdminView({ products, orders, onExit }) {
   // spilled outside the chips. The counts still live on the desktop rail.
   const sectionToggle = (
     <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["all-products","All products"],...(canBrandCheck ? [["brand-check","Brand Check"]] : []),["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"],["taxonomy","Taxonomy"]]
+      {[["products","Products"],["all-products","All products"],...(showBrandCheck ? [["brand-check","Brand Check"]] : []),["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"],["taxonomy","Taxonomy"]]
         .map(([val, label]) => {
         const on = adminSection === val;
         return (
@@ -7451,7 +7464,7 @@ function AdminView({ products, orders, onExit }) {
   // ── DESKTOP WORKSPACE (>=1024px) — rail of sections + titled main pane.
   //    Handles both admin sections; mobile keeps the single column below. ──
   if (isWide) {
-    const NAV = [["products", "Products", products.length], ["all-products", "All products", 0], ...(canBrandCheck ? [["brand-check", "Brand Check", brandCheckCount]] : []), ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount], ["bulk-pricing", "Bulk Pricing", 0], ["specials", "Specials", 0], ["taxonomy", "Taxonomy", 0]];
+    const NAV = [["products", "Products", products.length], ["all-products", "All products", 0], ...(showBrandCheck ? [["brand-check", "Brand Check", brandCheckCount]] : []), ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount], ["bulk-pricing", "Bulk Pricing", 0], ["specials", "Specials", 0], ["taxonomy", "Taxonomy", 0]];
     const navItem = ([key, label, count]) => {
       const on = adminSection === key;
       return (
@@ -7488,7 +7501,7 @@ function AdminView({ products, orders, onExit }) {
       : adminSection === "specials" ? "Specials"
       : adminSection === "taxonomy" ? "Taxonomy" : "Products";
     const subtitle = adminSection === "all-products"
-      ? "Every product. Mark which ones also list on the Concrete store."
+      ? "Every product. Mark which ones are Concrete-only (sold on the Concrete website only)."
       : adminSection === "brand-check"
       ? "New and re-marked products waiting for a brand check."
       : adminSection === "assign-categories"
@@ -7541,7 +7554,7 @@ function AdminView({ products, orders, onExit }) {
           <div style={{ flex:1, overflow:"auto", padding:"18px 30px 48px" }}>
             <div style={{ maxWidth:1160, margin:"0 auto" }}>
               {adminSection === "all-products" ? <AllProductsList products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />
-                : adminSection === "brand-check" ? <BrandCheckTab products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />
+                : adminSection === "brand-check" && showBrandCheck ? <BrandCheckTab products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />
                 : adminSection === "assign-categories" ? <AssignCategoriesTab products={products} registry={taxonomy} />
                 : adminSection === "review-categories" ? <AdminReviewCategoriesTab products={products} />
                 : adminSection === "missing-prices" ? <MissingPricesTab products={products} />
@@ -7557,7 +7570,7 @@ function AdminView({ products, orders, onExit }) {
   }
 
   if (adminSection === "all-products") return reviewShell(<AllProductsList products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />);
-  if (adminSection === "brand-check") return reviewShell(<BrandCheckTab products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />);
+  if (adminSection === "brand-check" && showBrandCheck) return reviewShell(<BrandCheckTab products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />);
   if (adminSection === "assign-categories") return reviewShell(<AssignCategoriesTab products={products} registry={taxonomy} />);
   if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
   if (adminSection === "missing-prices") return reviewShell(<MissingPricesTab products={products} />);
@@ -21043,6 +21056,15 @@ if (typeof document !== "undefined" && !document.getElementById("__bcast_spin"))
 // working for the next visitor on the device.
 
 
+// The TEMPORARY Concrete Products card's mount: the live taxonomy (labels for
+// the subcategory filter) and the Concrete live set (unmarking one live there
+// also switches its Concrete listing off). temporaryCards.js removes it.
+function ConcreteProductsCardRoute({ products }) {
+  const { registry } = useTaxonomy();
+  const live = useConcreteLiveSet(true);
+  return <ConcreteProductsCard products={products} ProductPhoto={ProductPhoto} registry={registry} liveOnConcrete={live} onExit={() => (window.location.hash = "")} />;
+}
+
 function AdminSignInScreen({ onCancel }) {
   const [busy,  setBusy]  = useState(false);
   const [error, setError] = useState(null);
@@ -21212,6 +21234,8 @@ function AppInner() {
   // /#black-friday — the Black Friday 2026 card. Recognises the hash only; the
   // mount below gates (super admin), and the callables are what actually refuse.
   const wantBlackFriday = hash === "#black-friday" || hash === "#black-friday/";
+  // /#concrete-products — the TEMPORARY Concrete Products card (temporaryCards.js).
+  const wantConcreteProducts = CONCRETE_PRODUCTS_CARD && (hash === "#concrete-products" || hash === "#concrete-products/");
   // /#admin/network — NETWORK. Recognises the HASH only and grants nothing;
   // authorization happens at the mount below, and the RTDB rule on /network
   // is what actually refuses the write.
@@ -21507,6 +21531,10 @@ function AppInner() {
     // real account gets the admin sign-in (which only Junid can pass).
     view = (isSuperAdmin || deviceIdentity?.canManageCodes === true)
       ? <DeviceCodesCard isOwner={isSuperAdmin} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantConcreteProducts) {
+    view = canVerifyBrand(authUser, permRecord)
+      ? <ConcreteProductsCardRoute products={products} />
       : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantBlackFriday) {
     view = isSuperAdmin

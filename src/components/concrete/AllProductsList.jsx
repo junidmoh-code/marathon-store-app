@@ -1,6 +1,7 @@
 // ─── PRODUCT ADMIN → ALL PRODUCTS (the Concrete marking list) ─────────────────
 // Every product, searchable and filterable by category, with a Concrete toggle
 // per row and multi-select bulk "Add to Concrete" / "Remove from Concrete".
+// Since 20 Nov 2026 "Concrete" means CONCRETE-ONLY (concreteListing.js).
 //
 // /products is already in memory on every screen (useProducts — the offline-
 // mirrored subscription), so filtering here costs nothing on the wire. What is
@@ -35,12 +36,13 @@ const chip = (on) => ({
 });
 
 export function ConcreteSwitch({ on, onChange, disabled }) {
+  // minHeight 36: a switch that takes a product off Marathon is a real tap target.
   return (
     <button type="button" role="switch" aria-checked={on} disabled={disabled} onClick={(e) => { e.stopPropagation(); onChange(!on); }}
-      title={on ? "On Concrete — tap to remove" : "Marathon only — tap to add to Concrete"}
+      title={on ? "Concrete-only — tap to return it to Marathon" : "Marathon — tap to make it Concrete-only"}
       style={{ display: "flex", alignItems: "center", gap: 6, background: on ? "rgba(214,214,214,.16)" : "transparent",
                border: "1px solid " + (on ? "rgba(230,230,230,.6)" : "rgba(255,255,255,.14)"), color: on ? "#fff" : "rgba(255,255,255,.45)",
-               borderRadius: 999, padding: "5px 10px", fontSize: 11, fontWeight: 800, letterSpacing: ".06em", cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1 }}>
+               borderRadius: 999, padding: "5px 12px", minHeight: 36, fontSize: 11, fontWeight: 800, letterSpacing: ".06em", cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1 }}>
       <span style={{ width: 8, height: 8, borderRadius: 4, background: on ? "#E5E5E5" : "rgba(255,255,255,.2)" }} />
       CONCRETE
     </button>
@@ -63,10 +65,11 @@ export default function AllProductsList({ products, ProductPhoto, canVerify, liv
 
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const run = async (ids, on) => {
+    if (!canVerify) return;
     setBusy(true); setMsg(null);
     const r = await markProducts(ids, on, { verify: canVerify, liveOnConcrete });
     setBusy(false); setConfirm(null);
-    if (r.ok) { setSelected(new Set()); setMsg({ ok: true, text: `${r.count} product${r.count === 1 ? "" : "s"} ${on ? "added to" : "removed from"} Concrete.` }); }
+    if (r.ok) { setSelected(new Set()); setMsg({ ok: true, text: `${r.count} product${r.count === 1 ? "" : "s"} ${on ? "made Concrete-only" : "returned to Marathon"}.` }); }
     else setMsg({ ok: false, text: `${r.count ? `${r.count} saved, then: ` : ""}${r.message}` });
   };
 
@@ -78,12 +81,15 @@ export default function AllProductsList({ products, ProductPhoto, canVerify, liv
         {cats.map((c) => <button key={c} style={chip(category === c)} onClick={() => { setCategory(c); setShown(PAGE); }}>{c === "all" ? "All" : c}</button>)}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {[["all", "Everything"], ["on", "On Concrete"], ["off", "Marathon only"]].map(([k, l]) =>
+        {[["all", "Everything"], ["on", "Concrete-only"], ["off", "Marathon"]].map(([k, l]) =>
           <button key={k} style={chip(concrete === k)} onClick={() => { setConcrete(k); setShown(PAGE); }}>{l}</button>)}
         <span style={{ marginLeft: "auto", fontSize: 12, color: "rgba(255,255,255,.5)", alignSelf: "center" }}>{list.length} products</span>
       </div>
 
-      {selected.size > 0 && (
+      {/* Marking takes a product off marathonclub.co.za now (Concrete-only), so
+          only Junid / a stockRole admin may (Sonnet review, PR #952 B2). */}
+      {!canVerify && <div style={{ fontSize: 12, color: "rgba(255,255,255,.5)" }}>Only Junid or an admin can change which products are Concrete-only.</div>}
+      {selected.size > 0 && canVerify && (
         <div style={{ position: "sticky", top: 0, zIndex: 3, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", background: "#111", border: "1px solid rgba(255,255,255,.15)", borderRadius: 12, padding: 10 }}>
           <b style={{ fontSize: 13 }}>{selected.size} selected</b>
           <button disabled={busy} onClick={() => setConfirm({ on: true, ids: [...selected] })} style={{ ...chip(true), background: "#E5E5E5", color: "#000", borderColor: "#E5E5E5" }}>Add to Concrete</button>
@@ -107,7 +113,7 @@ export default function AllProductsList({ products, ProductPhoto, canVerify, liv
               <div style={{ fontSize: 13.5, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name || p.id}</div>
               <div style={{ fontSize: 11.5, color: "rgba(255,255,255,.45)" }}>{topCategory(p)}{p.brand ? ` · ${p.brand}` : ""}</div>
             </div>
-            <ConcreteSwitch on={on} disabled={busy} onChange={(next) => run([p.id], next)} />
+            <ConcreteSwitch on={on} disabled={busy || !canVerify} onChange={(next) => run([p.id], next)} />
           </div>
         );
       })}
@@ -125,8 +131,8 @@ export default function AllProductsList({ products, ProductPhoto, canVerify, liv
             </div>
             <div style={{ fontSize: 13, color: "rgba(255,255,255,.6)", marginBottom: 16 }}>
               {confirm.on
-                ? "They stay on Marathon too. They appear in the Concrete publishing tab, ready to publish."
-                : "They stay on Marathon. Any that are live on the Concrete store are switched off there."}
+                ? "They become Concrete-only: they come off marathonclub.co.za (within a couple of minutes, in trading hours) and appear in the Concrete publishing tab, ready to publish. Missing Products lists them under Concrete."
+                : "They go back to Marathon. Any that are live on the Concrete store are switched off there. Marathon does not republish them by itself — publish them from the Marathon tab."}
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button disabled={busy} onClick={() => setConfirm(null)} style={chip(false)}>Cancel</button>

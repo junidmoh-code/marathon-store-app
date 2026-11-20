@@ -1,7 +1,8 @@
 // ─── SHOPIFY PUBLISHING: MARATHON | CONCRETE ─────────────────────────────────
 // Two top tabs over the one publishing view. Marathon is exactly the page it
-// always was (every product, /shopify_publish). Concrete shows ONLY products
-// marked listOnConcrete and drives /shopify_publish_concrete with the same
+// always was (/shopify_publish) MINUS Concrete-only products (Junid, 20 Nov
+// 2026 — they sell on the Concrete website only). Concrete shows ONLY
+// Concrete-only products and drives /shopify_publish_concrete with the same
 // states, Publish confirmation, batch publish, On/Off switch and edit page.
 //
 // The store's node is chosen by setPublishTarget() BEFORE the view renders, and
@@ -10,7 +11,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import ShopifyPublishView from "./ShopifyPublishView";
 import { setPublishTarget, targetBusy } from "./publishTarget.js";
-import { isOnConcrete } from "../../utils/concreteListing";
+import { isConcreteProduct } from "../../utils/concreteListing";
 import HouseStylePanel from "../concrete/HouseStylePanel";
 
 const TAB_KEY = "marathon_shopify_tab";
@@ -19,7 +20,8 @@ const readTab = () => { try { return sessionStorage.getItem(TAB_KEY) === "concre
 export default function ShopifyPublishTabs({ products = [], onExit }) {
   const [tab, setTab] = useState(readTab);
   const [busyNote, setBusyNote] = useState(null);
-  const concreteProducts = useMemo(() => products.filter(isOnConcrete), [products]);
+  const concreteProducts = useMemo(() => products.filter(isConcreteProduct), [products]);
+  const marathonProducts = useMemo(() => products.filter((p) => !isConcreteProduct(p)), [products]);
   try { setPublishTarget(tab); } catch { /* held by a running publish — choose() already refused the switch */ }
   // Leaving the page puts the store back on Marathon: the home screen's
   // awaiting badge (useShopifyAwaitingCount) reads through the same store.
@@ -54,7 +56,7 @@ export default function ShopifyPublishTabs({ products = [], onExit }) {
   return (
     <ShopifyPublishView
       key={tab}
-      products={tab === "concrete" ? concreteProducts : products}
+      products={tab === "concrete" ? concreteProducts : marathonProducts}
       onExit={onExit}
       topSlot={tabs}
       title={tab === "concrete" ? "CONCRETE PUBLISHING" : "SHOPIFY PUBLISHING"}

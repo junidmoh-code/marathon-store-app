@@ -1,21 +1,67 @@
 # Concrete store — second Shopify store, one stock pool
 
 Concrete World (`g2m9cm-9q.myshopify.com`, concreteworld.co.za) lists every
-product Junid marks **in addition to** Marathon's store. Both sell from the one
-stock engine. Marathon's publishing ignores the Concrete fields entirely.
+product Junid marks **Concrete**. Since 20 Nov 2026 a Concrete product is
+**CONCRETE-ONLY**: it sells on the Concrete website only (Marathon's
+publishing tab and reconciler skip it, and the Marathon reconciler switches
+off any that are live on marathonclub.co.za), and Missing Products lists it
+under the Concrete division, not Marathon. Both stores sell from the one stock
+engine.
 
 ## Data
 
 | path | what |
 |---|---|
-| `/products/{pid}.listOnConcrete` | `true` = also on Concrete. Absent/false = Marathon only |
-| `/products/{pid}.listOnConcreteSetBy` / `listOnConcreteSetAt` | who/when (serverNowMs) |
+| `/products/{pid}.concreteProduct` | `true` = Concrete-only. Absent/false = Marathon |
+| `/products/{pid}.concreteProductSetBy` / `concreteProductSetAt` | who/when (serverNowMs) |
+| `/settings/concreteOnlyIndex/{pid}` | `true` while Concrete-only — the small index the Marathon reconciler reads (no /products scan) |
+| `/settings/missingProductsSolved/{pushKey}` | Missing Products → Solved tab: every Solve and every Concrete mark, with what Undo needs |
+| `/products/{pid}.listOnConcrete` (+SetBy/SetAt) | LEGACY (#911). Still read when `concreteProduct` is absent; mirrored on every write for one release, then dropped |
 | `/products/{pid}.brandVerifiedAt` / `brandVerifiedBy` | the Brand Check stamp |
 | `/shopify_publish_concrete/{pid}` | same shape as `/shopify_publish/{pid}` |
 | `/shopify_sync_concrete/{pid}` | same shape as `/shopify_sync/{pid}` (Admin SDK only) |
 
-Helper: `src/utils/concreteListing.js` (`isOnConcrete`, `buildConcreteUpdate`,
-`setOnConcrete`, `buildBrandConfirmUpdate`, `needsBrandCheck`).
+Helper: `src/utils/concreteListing.js` (`isConcreteProduct`, `buildConcreteUpdate`,
+`setConcreteProduct`, `buildBrandConfirmUpdate`, `needsBrandCheck`). Migration:
+`scripts/concrete/migrate-concrete-only.mjs` (dry run by default; `--commit`;
+`--rollback FILE`). Marathon-side enforcement: `scripts/shopify/concreteOnly.mjs`.
+
+## Concrete-only rules (20 Nov 2026) — PASTE THESE
+
+`/products` and `/settings` are writable by every signed-in staff account on
+the live rules, so the app works without these. But marking a product
+Concrete-only now takes it OFF marathonclub.co.za, so these `.validate` rules
+let only Junid, Jafer or a stockRole admin SET or CHANGE the mark (a `.write`
+granted at `/products` cannot be narrowed below it; `.validate` can refuse a
+change). LIMIT: RTDB does not run `.validate` on a DELETE, so a staff account
+could still delete the field (the product returns to Marathon's lists; nothing
+goes live by itself) or an index entry (the Marathon reconciler would then not
+see that product; its own refusal still stops a NEW Marathon publish). Closing
+that needs `/products`'s write grant restructured — a bigger change, not made
+here. Admin SDK scripts bypass rules.
+
+Inside `"products" → "$pid"`, next to `styleCode…`:
+
+```json
+"concreteProduct":      { ".validate": "newData.isBoolean() && (newData.val() === data.val() || (auth.token.email_verified === true && (auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com')) || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" },
+"concreteProductSetBy": { ".validate": "newData.isString() && newData.val() === auth.uid" },
+"concreteProductSetAt": { ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000" },
+"listOnConcrete":       { ".validate": "newData.isBoolean() && (newData.val() === data.val() || (auth.token.email_verified === true && (auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com')) || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" }
+```
+
+(If you already pasted #911's `listOnConcrete` line from block 1 below, replace
+it with this one.)
+
+Inside `"settings"`:
+
+```json
+"concreteOnlyIndex": {
+  "$pid": { ".validate": "newData.val() === true && ((auth.token.email_verified === true && (auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com')) || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')" }
+},
+"missingProductsSolved": {
+  "$id": { ".validate": "(newData.hasChildren(['kind', 'pid', 'at', 'by']) || (data.exists() && newData.hasChildren(['status']))) && (!newData.child('at').exists() || (newData.child('at').isNumber() && newData.child('at').val() <= now + 86400000))" }
+}
+```
 
 ## Rules to paste (Firebase console → Realtime Database → Rules)
 

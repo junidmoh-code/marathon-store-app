@@ -51,6 +51,7 @@
 // Thumb follow LabelPrintView.jsx, rows use the home list's separator
 // treatment (RoleCard in App.jsx), and every colour/spacing value comes from
 // stock/ui.js. Writes go ONLY to /shopify_publish, through the store.
+import { isConcreteProduct } from "../../utils/concreteListing";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bGray, bGreen } from "../stock/ui";
 import {
@@ -396,7 +397,8 @@ export function useShopifyAwaitingCount(products, enabled) {
     // nothing on the page to work off.
     // A product with no sellable stock online is not on the page to work off
     // either (docs/SHOPIFY-REVIEW-INSTOCK.md), so it is not counted.
-    for (const p of products || []) if (p?.id && isPublishableProduct(p) && !keys.has(p.id) && !hidden.has(p.id)) n += 1;
+    // Concrete-only products (Junid, 20 Nov 2026) are not Marathon's to publish.
+    for (const p of products || []) if (p?.id && isPublishableProduct(p) && !isConcreteProduct(p) && !keys.has(p.id) && !hidden.has(p.id)) n += 1;
     return n;
   }, [enabled, keys, hidden, products]);
 }

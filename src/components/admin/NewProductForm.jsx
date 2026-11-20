@@ -444,15 +444,9 @@ export default function NewProductForm({
         </label>
       )}
 
-      {/* ── CONCRETE — also list on the Concrete store. Default OFF. ───────── */}
-      <label style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer",
-                      color: "rgba(233,238,255,.8)", fontSize: 14, fontWeight: 600 }}>
-        <input type="checkbox" role="switch" checked={form.listOnConcrete === true}
-               onChange={(e) => setForm((f) => ({ ...f, listOnConcrete: e.target.checked }))}
-               style={{ width: 20, height: 20, accentColor: BLUE, cursor: "pointer" }} />
-        Concrete
-        <span style={{ color: "rgba(233,238,255,.32)", fontSize: 12, fontStyle: "italic" }}>(also list on the Concrete store)</span>
-      </label>
+      {/* The "Concrete" switch that #911 put here is GONE (Junid, 20 Nov 2026):
+          staff add products exactly as before, and Junid marks Concrete-only
+          products himself (the Concrete Products card / Missing Products). */}
 
       <div style={{ fontSize: 12, color: "rgba(233,238,255,.3)", fontStyle: "italic" }}>
         {isPerfume && form.printedBarcode
