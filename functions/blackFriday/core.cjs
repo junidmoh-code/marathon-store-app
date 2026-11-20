@@ -19,6 +19,17 @@
 //
 // AN APPROVAL IS OF A PHOTO: picks.sig = "current" or the generation id
 // approved; a new photo makes the product wait again.
+//
+// JUNID'S OWN PHOTOS (20 Nov 2026): a photo he picks from his iPhone ("Replace
+// photo") or from the web ("Find online") is kept in photos/{pid}/gens like a
+// generation — { src: "upload"|"web", url, path, site?, pageUrl? } — so it is
+// approved, pinned and posted exactly like one (the poster needs no change).
+// photos/{pid}/srcId names the product's SOURCE photo on the card: the photo
+// Generate starts from. The app's own photo (products/{pid}/photoUrl) is never
+// touched or deleted; "Use app photo" brings it back.
+//
+// NO PRICE, NO POST (Junid, 20 Nov 2026): a product whose stock price is R0 or
+// missing cannot be approved, and an approval of one never posts.
 "use strict";
 const captionLib = require("./caption.cjs");
 
@@ -37,6 +48,36 @@ const CAPTION_MAX = 950;       // caption characters (WhatsApp's limit is 1024)
 // The AI looks Junid has had since October; every other kind needs his OK on its sample first.
 const ESTABLISHED_STYLES = Object.freeze(["sneakers", "clothing"]);
 const KIND_LABEL = Object.freeze({ sneakers: "Sneakers", clothing: "Clothing", headwear: "Caps & beanies", perfume: "Perfume", bags: "Bags", belts: "Belts", sunglasses: "Sunglasses", watches: "Watches", jewellery: "Chains & bracelets", accessories: "Accessories" });
+
+/** Is this stock price a real one (above R0)? Pure. */
+const hasPrice = (p) => p !== null && p !== undefined && p !== "" && Number.isFinite(Number(p)) && Number(p) > 0;
+const NO_PRICE = "No price, set price first";
+/** A photos/{pid}/gens entry that is Junid's own photo (upload / web), not an AI generation. Pure. */
+const isSourceGen = (g) => !!g && (g.src === "upload" || g.src === "web");
+/** The newest AI generation's id (never one of his own photos), or null. Pure. */
+function latestAiId(photo) {
+  const gens = (photo && photo.gens) || {};
+  const ids = Object.keys(gens).filter((id) => gens[id] && gens[id].url && !isSourceGen(gens[id])).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  return ids.length ? ids[ids.length - 1] : null;
+}
+/** The source photo Generate starts from (his own photo), or null for the app's photo. Pure. */
+function sourceOf(photo) {
+  const id = photo && photo.srcId;
+  const g = id && photo.gens && photo.gens[id];
+  return isSourceGen(g) && g.url ? { id, ...g } : null;
+}
+/** Every photo the card can swipe through, oldest first: the app photo, then his photos and the AI photos. Pure. */
+function galleryOf(appPhoto, photo, { extra = [] } = {}) {
+  const out = appPhoto ? [{ id: "app", url: appPhoto, label: "App photo" }] : [];
+  out.push(...extra);
+  const gens = (photo && photo.gens) || {};
+  for (const id of Object.keys(gens).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))) {
+    const g = gens[id];
+    if (!g || !g.url) continue;
+    out.push({ id, url: g.url, label: g.src === "upload" ? "Your photo" : g.src === "web" ? `From ${g.site || "the web"}` : g.fromSrc ? "AI (from your photo)" : "AI", ...(g.pageUrl ? { pageUrl: g.pageUrl } : {}) });
+  }
+  return out;
+}
 
 const priceLabel = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2)}`);
 const priceKey = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2).replace(".", "_")}`);
@@ -65,19 +106,28 @@ function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = 
   const naPick = !!pick && pick.src === "na";
   const sig = naPick ? "na" : sigOf(photo);
   const gen = sig !== "current" && !naPick ? photo.gens[sig] : null;
-  const latest = photo && photo.genId && photo.gens && photo.gens[photo.genId] ? photo.gens[photo.genId] : null;
+  const aiId = latestAiId(photo);
+  const latest = aiId ? photo.gens[aiId] : null;
+  const source = sourceOf(photo);
   const approved = isApproved(pick, photo, it);
   const kind = it.kind || "clothing";
+  // The price that posts: the approved price (as the poster reads it), else the build's stock price.
+  const postPrice = pick && pick.state === "approved" ? (pick.price ?? it.price) : it.price;
   return {
     pid, name: it.name || pid, price: it.price, qty: Number(it.qty) || 0, sizes: it.sizes || "", kind,
     big: (Number(it.qty) || 0) >= BIG_QTY, na: na || it.na === true || naPick || (!!pick && pick.section === "newArrivals"),
     ...(naPick ? { src: "na" } : {}),
     photo: it.photo || null, shown: naPick ? pick.shown : gen ? gen.url : (it.photo || null),
     use: naPick ? (pick.useCurrent ? "current" : "generated") : sig === "current" ? "current" : "generated", genId: photo && photo.genId ? photo.genId : null, sig,
-    generatedUrl: latest ? latest.url : null, generations: photo && photo.gens ? Object.keys(photo.gens).length : 0,
+    generatedUrl: latest ? latest.url : null, aiGenId: aiId, generations: Object.values((photo && photo.gens) || {}).filter((g) => g && g.url && !isSourceGen(g)).length,
+    // His own photo (Replace photo / Find online): what Generate starts from; shownFrom says what the row shows.
+    srcId: source ? source.id : null, srcUrl: source ? source.url : null, srcFrom: source ? source.src : null,
+    shownFrom: naPick ? "na" : gen ? (isSourceGen(gen) ? gen.src : "ai") : "app",
+    gallery: galleryOf(it.photo || null, photo, { extra: naPick && pick.shown && pick.shown !== it.photo ? [{ id: "na", url: pick.shown, label: "Approved in New Arrivals" }] : [] }),
+    noPrice: !hasPrice(postPrice),
     generating: !!(photo && photo.generating && nowMs - Number(photo.generating.at) < sched.CLAIM_MS),
-    // A kind whose AI look Junid has not approved yet: "Use current photo" is the safe default.
-    styleApproved: ESTABLISHED_STYLES.includes(kind) || !!(styles[kind] && styles[kind].approvedAt),
+    // Kept for older screens only: Generate is offered on EVERY product whatever its kind (Junid, 20 Nov 2026).
+    styleApproved: ESTABLISHED_STYLES.includes(kind) || !!(styles[kind] && styles[kind].approvedAt), canGenerate: true,
     // The last Generate failed (photos/{pid}/failed, set by bfGenerate; the next success clears it).
     failed: photo && photo.failed && photo.failed.at ? { at: photo.failed.at, reason: String(photo.failed.reason || "") } : null,
     tab: approved ? "approved" : "review",
@@ -130,6 +180,8 @@ function viewSection(node, section = "main", { postingPaused = false, nowMs = Da
   const review = ordered.filter((r) => r.tab === "review" && !extraApproved[r.pid]);
   const approved = ordered.filter((r) => r.tab === "approved");
   const totals = totalsOf(n, picks, photos);
+  // Approved with no price: held back from posting (the poster skips them too) and listed for Junid.
+  totals.noPriceApproved = approved.filter((r) => r.noPrice).length;
   if (section === "main") { totals.review = review.length; totals.approved = approved.length; }
   totals.newArrivals = naRows.length;
   totals.approvedNa = approved.filter((r) => r.na).length;
@@ -189,9 +241,13 @@ function approveMutator({ item, section, photo, uid, nowMs, seenSig = null, only
     const sig = sigOf(photo);
     if (seenSig && seenSig !== sig) { out.refusal = "its photo changed since the card loaded — look again, then approve"; return undefined; }
     if (onlyIfUntouched && cur && cur.state) { out.noop = true; return undefined; }
-    const shown = sig === "current" ? (item.photo || null) : ((photo.gens[sig] && photo.gens[sig].url) || null);
+    if (!hasPrice(item && item.price)) { out.refusal = NO_PRICE; return undefined; }
+    const g = sig === "current" ? null : photo.gens[sig];
+    const shown = sig === "current" ? (item.photo || null) : ((g && g.url) || null);
     if (cur && cur.state === "approved" && cur.sig === sig && cur.shown === shown) { out.noop = true; return undefined; }
-    return { state: "approved", sig, shown, at: nowMs, by: uid || null, section, price: item.price, kind: item.kind || "clothing", name: item.name || "", sizes: item.sizes || "" };
+    return { state: "approved", sig, shown, at: nowMs, by: uid || null, section, price: item.price, kind: item.kind || "clothing", name: item.name || "", sizes: item.sizes || "",
+      // Which photo was approved: the app's, an AI photo, or his own (upload / web).
+      photoFrom: !g ? "app" : isSourceGen(g) ? g.src : "ai" };
   };
 }
 function rejectMutator({ item, section, uid, nowMs }, out = {}) {
@@ -219,17 +275,34 @@ function restoreMutator({ prev, expectAt }, out = {}) {
   };
 }
 /** Choose the photo a product posts with. On photos/{pid}. */
-function useMutator({ use, genId = null }, out = {}) {
+function useMutator({ use, genId = null, app = false }, out = {}) {
   return (cur) => {
     const p = cur || {};
     if (use === "current") {
+      // "Use app photo": the app's own photo again, and Generate starts from it again (his photos stay kept).
+      if (app && p.srcId) { const { srcId, ...rest } = p; return { ...rest, use: "current" }; } // eslint-disable-line no-unused-vars
       if (p.use !== "generated") { out.noop = true; return undefined; }
       return { ...p, use: "current" };
     }
     const id = genId || p.genId;
     if (!id || !p.gens || !p.gens[id]) { out.refusal = "there is no generated photo for it yet — tap Generate"; return undefined; }
     if (p.use === "generated" && p.genId === id) { out.noop = true; return undefined; }
-    return { ...p, use: "generated", genId: id };
+    // Choosing one of his own photos also makes it the source Generate starts from.
+    return { ...p, use: "generated", genId: id, ...(isSourceGen(p.gens[id]) ? { srcId: id } : {}) };
+  };
+}
+/**
+ * His own photo arrives (Replace photo / Find online): kept in gens, made the
+ * source, and shown — unless the product is approved now (keepChoice): then
+ * the approved photo keeps posting until he picks the new one. On photos/{pid}. Pure.
+ */
+function addSourceMutator({ id, entry, keepChoice = false }, out = {}) {
+  return (cur) => {
+    const p = cur || {};
+    if (p.gens && p.gens[id]) { out.noop = true; return undefined; }
+    const next = { ...p, gens: { ...(p.gens || {}), [id]: entry }, srcId: id };
+    if (!keepChoice) { next.use = "generated"; next.genId = id; }
+    return next;
   };
 }
 /** The permanent approval record (approvals/{pid}/{at}): product, the exact photo approved, when, by whom. Pure. */
@@ -250,6 +323,7 @@ function toPost(picks, photos, posted) {
   const out = {};
   for (const [pid, p] of Object.entries(picks || {})) {
     if (!isApproved(p, (photos || {})[pid])) continue;
+    if (!hasPrice(p.price)) continue; // no price, no post
     if (postedFor(p, (posted || {})[pid])) continue;
     out[pid] = p;
   }
@@ -314,6 +388,7 @@ function planAlbums(albums, schedule, nowMs, prevPlan = null, posted = {}) {
 module.exports = {
   ROOT, PID_RE, GEN_RE, SIG_OK, KIND_RE, SECTIONS, BIG_QTY, ALBUM_MAX, CAPTION_MAX, ESTABLISHED_STYLES, KIND_LABEL,
   priceLabel, priceKey, captionPreview, sigOf, isApproved, isRejected, postedFor,
+  hasPrice, NO_PRICE, isSourceGen, latestAiId, sourceOf, galleryOf, addSourceMutator,
   viewItem, postingOf, orderRows, viewSection, totalsOf, planView, approvalRecord,
   approveMutator, rejectMutator, resetMutator, restoreMutator, useMutator, withRev,
   toPost, albumsOf, planAlbums, fnv,
