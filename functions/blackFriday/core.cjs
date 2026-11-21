@@ -251,7 +251,7 @@ const planView = (plan) => Object.entries(plan || {}).map(([album, e]) => ({ alb
  * approval of a photo he has not seen. onlyIfUntouched: "Approve all 30+".
  * `shown` pins the exact image approved.
  */
-function approveMutator({ item, section, photo, uid, nowMs, seenSig = null, onlyIfUntouched = false }, out = {}) {
+function approveMutator({ item, section, photo, uid, nowMs, seenSig = null, onlyIfUntouched = false, source = null }, out = {}) {
   return (cur) => {
     const sig = sigOf(photo);
     if (seenSig && seenSig !== sig) { out.refusal = "its photo changed since the card loaded — look again, then approve"; return undefined; }
@@ -261,7 +261,7 @@ function approveMutator({ item, section, photo, uid, nowMs, seenSig = null, only
     const shown = sig === "current" ? (item.photo || null) : ((g && g.url) || null);
     if (cur && cur.state === "approved" && cur.sig === sig && cur.shown === shown) { out.noop = true; return undefined; }
     // THE APPROVAL'S SOURCE (Junid, 21 Nov 2026): the tab he approved it from, stored on the approval itself.
-    return { state: "approved", sig, shown, at: nowMs, by: uid || null, section, source: section === "newArrivals" ? "new_arrivals" : "normal", approvedBy: uid || null, approvedAt: nowMs, price: item.price, kind: item.kind || "clothing", name: item.name || "", sizes: item.sizes || "",
+    return { state: "approved", sig, shown, at: nowMs, by: uid || null, section, source: source || (section === "newArrivals" ? "new_arrivals" : "normal"), approvedBy: uid || null, approvedAt: nowMs, price: item.price, kind: item.kind || "clothing", name: item.name || "", sizes: item.sizes || "",
       // Which photo was approved: the app's, an AI photo, or his own (upload / web).
       photoFrom: !g ? "app" : isSourceGen(g) ? g.src : "ai" };
   };

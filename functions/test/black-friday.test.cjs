@@ -503,3 +503,11 @@ test("CAPTION (Junid 20 Nov): two lines, every in-stock size, never a range", ()
   assert.equal(core.captionPreview(300, [{ sizes: "one size" }]), "R300\nAvailable sizes: one size");
   assert.doesNotMatch(core.captionPreview(650, [{ sizes: "M-XL" }, { sizes: "S" }]), /BLACK FRIDAY|🔥|EACH|Message us/);
 });
+
+test("an approval stores the tab it was made from: New Arrivals only inside the 20-day window (Junid, 21 Nov)", () => {
+  const { sourceFor } = require("../blackFriday/blackFriday.js")._internals;
+  const now = Date.UTC(2026, 10, 21, 9, 0, 0);
+  assert.equal(sourceFor(`p${now - 86400_000}`, "new", now), "new_arrivals");
+  assert.equal(sourceFor(`p${now - 25 * 86400_000}`, "new", now), "normal", "older than 20 days: shown in To review");
+  assert.equal(sourceFor(`p${now - 86400_000}`, null, now), "normal", "not a New Arrival");
+});
