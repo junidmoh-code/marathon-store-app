@@ -151,7 +151,7 @@ const MUTATIONS = [
   { id: "U20", file: BRET, guard: "a residential area counts as a place (Rooiberg)",
     from: " || (hit.class === \"landuse\" && hit.type === \"residential\");", to: ";" },
   { id: "U17", file: BRET, guard: "the town tries take only a place, never a street",
-    from: "export const isPlace = (hit) => !hit?.class || hit.class === \"place\" || hit.class === \"boundary\";", to: "export const isPlace = () => true;" },
+    from: "export const isPlace = (hit) => !hit?.class || hit.class === \"place\" || hit.class === \"boundary\" || (hit.class === \"landuse\" && hit.type === \"residential\");", to: "export const isPlace = () => true;" },
   { id: "U18", file: LOCKER, guard: "Shopify's point in another province is not used",
     from: "(await pointInProvince(geo, address, { fetchImpl })) !== false", to: "true" },
 
