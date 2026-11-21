@@ -132,6 +132,9 @@ describe("the default is door-to-locker", () => {
       id: "RVM01240", provider: "tcg-locker", name: "Astron Energy Ventersdorp", address: "1 Van Riebeeck St, Ventersdorp",
       hours: "Mon – Sun: All day", description: "Opposite KFC", km: expect.any(Number),
       placedBy: "street", smsTo: "0820000000", hasCollectionCode: false, collectionCodeNote: NO_CODE_NOTE,
+      // The locker's own point and address (the delivery address when Courier Guy cannot place the street, #2181).
+      lat: -26.3209, lng: 26.8156,
+      tcgAddress: { street_address: "1 Van Riebeeck St", local_area: "", city: "Ventersdorp", zone: "", code: "" },
     });
     expect(s.deliveryLocker.km).toBeLessThan(2);
     // a fixed declaration, not an estimate: no rule version, so reconcile never learns the parcel table from it
@@ -673,7 +676,7 @@ describe("placeAddress: the street, else the postal code's own point, else the t
     const fetchImpl = vi.fn(async () => hit(-26.262, 27.9175));
     const at = await placeAddress(ADDRESS, { fetchImpl, wait, base: async () => ({ lat: -26.223, lng: 27.89, from: "Soweto, 1804" }) });
     expect(at).toEqual({ lat: -26.262, lng: 27.9175, from: "postal code 1804", by: "postcode" });
-    expect(fetchImpl.mock.calls[0][0]).toMatch(/countrycodes=za&limit=1&postalcode=1804$/);
+    expect(fetchImpl.mock.calls[0][0]).toMatch(/countrycodes=za&limit=5&addressdetails=1&postalcode=1804$/);
   });
 
   it("no postal-code point (or the lookup fails): the town's; nothing at all: null", async () => {

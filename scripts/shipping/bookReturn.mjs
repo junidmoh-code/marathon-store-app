@@ -61,19 +61,54 @@ const tryLabels = (address) => [...new Set([
   [address.street_address, address.local_area, address.city, address.code],
   [address.local_area, address.city, address.code],
   [address.city, address.code],
+  // The town with its PROVINCE (#2181, 21 Nov 2026): "Khomanani, 0933" alone matched a Khomanani in Khayelitsha.
+  [address.city, provinceName(address.zone)],
 ].map((parts) => [...new Set(parts.map(str).filter(Boolean))].join(", ")).filter(Boolean))];
 
-/** The customer's address → { lat, lng, from } (OpenStreetMap Nominatim; the full address, then the suburb/town). */
+// TCG zone → the province name OpenStreetMap gives as address.state.
+const PROVINCES = {
+  KZN: "KwaZulu-Natal", GP: "Gauteng", WC: "Western Cape", EC: "Eastern Cape", FS: "Free State",
+  LP: "Limpopo", MP: "Mpumalanga", NW: "North West", NC: "Northern Cape",
+};
+const squash = (s) => str(s).toLowerCase().replace(/[^a-z]/g, "");
+export const provinceName = (zone) => PROVINCES[str(zone).toUpperCase()] ?? "";
+/**
+ * Is an OpenStreetMap hit in the address's province? Pure. #2181 (21 Nov 2026): a Limpopo customer in
+ * "Khomanani" was placed in Khayelitsha, Cape Town (a building called Khomanani), and the booking went to a
+ * Cape Town locker. A hit whose state is known and is not the order's province is never used. An address
+ * without a province, or a hit without a state, is not judged.
+ */
+export function inProvince(hit, address) {
+  const want = squash(provinceName(address?.zone) || address?.zone);
+  if (!want) return true;
+  const state = squash(hit?.address?.state);
+  if (state) return state === want;
+  const shown = squash(hit?.display_name);
+  return !shown || shown.includes(want);
+}
+/**
+ * Is a hit a PLACE (a town, suburb, village — or an area boundary), not a road or a building? Pure. The suburb/town
+ * tries stand for the customer's area: #2181's "Khomanani, Limpopo" matched "Khomanani Street" in Nkowankowa, 80 km
+ * from the customer. A hit without a class is not judged.
+ */
+export const isPlace = (hit) => !hit?.class || hit.class === "place" || hit.class === "boundary";
+const pickHit = (list, address, { placeOnly = false } = {}) => (Array.isArray(list) ? list : [])
+  .find((h) => h && Number.isFinite(Number(h.lat)) && Number.isFinite(Number(h.lon)) && inProvince(h, address) && (!placeOnly || isPlace(h))) ?? null;
+export const nominatimHit = pickHit;
+
+/** The customer's address → { lat, lng, from } (OpenStreetMap Nominatim; the full address, then the suburb/town), in its own province. */
 export async function geocode(address, { fetchImpl = globalThis.fetch } = {}) {
   if (Number.isFinite(Number(address?.lat)) && Number.isFinite(Number(address?.lng))) return { lat: Number(address.lat), lng: Number(address.lng), from: "address" };
-  for (const q of tryLabels(address)) {
+  const labels = tryLabels(address);
+  for (const q of labels) {
     try {
-      const res = await fetchImpl(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=za&limit=1&q=${encodeURIComponent(q)}`, {
+      const res = await fetchImpl(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=za&limit=5&addressdetails=1&q=${encodeURIComponent(q)}`, {
         headers: { "User-Agent": "marathon-club-returns/1.0 (gunidmoh@gmail.com)", Accept: "application/json" },
         signal: AbortSignal.timeout(10000),
       });
-      const hit = res.ok ? (await res.json())?.[0] : null;
-      if (hit && Number.isFinite(Number(hit.lat)) && Number.isFinite(Number(hit.lon))) return { lat: Number(hit.lat), lng: Number(hit.lon), from: q };
+      // The street try takes any hit; the wider tries only a place in the province.
+      const hit = res.ok ? pickHit(await res.json(), address, { placeOnly: q !== labels[0] }) : null;
+      if (hit) return { lat: Number(hit.lat), lng: Number(hit.lon), from: q };
     } catch { /* the next, wider try */ }
     await new Promise((r) => setTimeout(r, 1100)); // Nominatim's policy: at most one request a second
   }
@@ -86,13 +121,23 @@ const lockerShape = ({ p, d }) => {
     id: p.pickup_point_id, provider: p.pickup_point_provider || "tcg-locker", name: str(p.name),
     address: (str(a.street_address) && str(a.street_address).toLowerCase().includes(str(a.city).toLowerCase()) ? str(a.street_address) : [a.street_address, a.city].map(str).filter(Boolean).join(", ")) || str(a.entered_address),
     hours: str(p.trading_hours), description: str(p.description), km: Number.isFinite(d) ? Math.round(d * 10) / 10 : null,
+    // The locker's own point and address: the delivery address of a door-to-locker shipment when Courier Guy
+    // cannot place the customer's street (#2181).
+    ...(Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lng)) ? { lat: Number(p.lat), lng: Number(p.lng) } : {}),
+    ...(a.street_address || a.city ? { tcgAddress: plain({ street_address: str(a.street_address), local_area: str(a.local_area), city: str(a.city), zone: str(a.zone), code: str(a.code) }) } : {}),
   };
 };
 
-/** Every Courier Guy locker the parcel fits near `at`, online and listed, nearest first. → [{ id, provider, name, address, hours, description, km }] */
-export async function nearestLockers(client, at, size) {
-  const res = await client.getPickupPoints({ lat: at.lat, lng: at.lng, order_closest: "true", type: "locker" });
-  const list = (Array.isArray(res) ? res : res?.pickup_points) || [];
+/**
+ * Every Courier Guy locker the parcel fits near `at`, online and listed, nearest first. → [{ id, provider, name, address, hours, description, km }]
+ * `maxKm`: Courier Guy's own search radius is ~25 km and answers `pickup_points: null` beyond it (#2181: the nearest
+ * lockers were 27–30 km away). With nothing found, the search is asked once more out to maxKm (`max_distance`, km).
+ */
+export async function nearestLockers(client, at, size, { maxKm = null } = {}) {
+  const ask = (extra) => client.getPickupPoints({ lat: at.lat, lng: at.lng, order_closest: "true", type: "locker", ...extra });
+  const listOf = (res) => (Array.isArray(res) ? res : res?.pickup_points) || [];
+  let list = listOf(await ask({}));
+  if (!list.length && Number.isFinite(Number(maxKm)) && Number(maxKm) > 0) list = listOf(await ask({ max_distance: Math.ceil(Number(maxKm)) }));
   return list
     .filter((p) => p?.pickup_point_id && p.type === "locker" && !p.is_hidden && (p.status == null || p.status === "online") && fitsCompartment(p, size))
     .map((p) => ({ p, d: Number.isFinite(Number(p.lat)) ? km(at, { lat: Number(p.lat), lng: Number(p.lng) }) : Infinity }))

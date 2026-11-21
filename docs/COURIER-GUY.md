@@ -311,6 +311,33 @@ Order #2257 (Ventersdorp), booked by hand with this request on 20 Nov 2026:
 `D2LM - ECO` R130.31 (`D2LL - ECO` R192.72) against `ECOR` R519.62 to the
 door.
 
+## An "unknown" booking, and Courier Guy failing to place an address (#2181, 21 Nov 2026)
+
+#2181 (Khomanani, Limpopo 0933) sat "Packed, courier not booked" for an hour: the create came back
+HTTP 500 "cannot find a latitude/longitude for the address", which bookShipment read as a lost answer
+("unknown") and never retried. Worse, the locker it was for was in Cape Town: OpenStreetMap's only
+"Khomanani" was a building in Khayelitsha, and the town fallback ignored the province.
+
+- **Placing the customer.** Shopify's own point for the address (`shipping/geo`, written at ingest when
+  Shopify validated it, and asked once before booking for older orders) comes first, used only while the
+  address it was made for is unchanged (`geo.sig`). OpenStreetMap hits outside the order's province are
+  never used, and the suburb/town tries take only a *place* (not "Khomanani Street"). An address nothing
+  places is refused, never booked to a guess.
+- **Lockers beyond ~25 km.** `GET /pickup-points` answers `pickup_points: null` beyond its own radius;
+  with nothing found it is asked again with `max_distance` (km) out to the limit (50 km for a locker a
+  person named).
+- **Geocode 500 = definite refusal** (`isGeocodeRefusal`): never "unknown". A door-to-locker create is sent
+  once more with the locker's own address and point as `delivery_address` (the customer stays the delivery
+  contact; Courier Guy files a locker shipment under the locker's address anyway). The order records
+  `shipping/deliveryAddressFallback: "locker"`.
+- **"unknown" is checked at Courier Guy** (`scripts/shipping/unknownBooking.mjs`, from the orders tick before
+  SHIP and from fast-ship every 5 minutes): `GET /shipments` from the day before the claim, matched on
+  `customer_reference` ("#2181", a split "#2181 (1/2)") created after the claim minus 5 minutes. Found →
+  attached like a booking, the claim "booked", the order back to pending so Shopify is fulfilled with that
+  waybill. None after 10 minutes → the claim is released in a transaction on that very claim and the order
+  booked ONCE more (`shipping/unknownRecheck/rebooks`); a second "unknown" stays on the order with its
+  reason. Nobody is asked to check the portal.
+
 ## The parcel rule (Junid, 23 Oct 2026 — ONE parcel, never split)
 
 An order ALWAYS ships as ONE parcel. The sneaker box is the unit of size —

@@ -31,6 +31,7 @@ import { createFastShipper, listenForPacked } from "./onlineOrders/fastShip.mjs"
 import { recordingDb } from "./onlineOrders/recordingDb.mjs";
 import { ONLINE_ORDERS_PATH, ORDER_STATUS } from "../../src/utils/onlineOrders.js";
 import { createCourierClient } from "../shipping/courier-client.mjs";
+import { sweepUnknownBookings } from "../shipping/unknownBooking.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = join(resolve(HERE, "../.."), "logs");
@@ -80,6 +81,22 @@ if (BENCH) {
   log(`fast-ship listening (${STORE.key}, pid ${process.pid})`);
   // Proof of life once an hour (a quiet log otherwise looks the same as a dead listener).
   setInterval(() => log(`fast-ship alive (${shipper.inFlight.size} shipping now)`), 3600_000);
+  // A booking whose answer was lost ("unknown"): Courier Guy is asked by the order reference every 5 minutes, all
+  // hours — a shipment found is attached, none after 10 minutes is booked once more (unknownBooking.mjs). An order
+  // handed back goes pending, and the listener above ships it.
+  let sweeping = false;
+  const sweepUnknown = async () => {
+    if (sweeping || stopping) return;
+    sweeping = true;
+    try {
+      for (const r of await sweepUnknownBookings({ db: liveDb, client: courier, log, now: () => Date.now() })) {
+        if (r.action !== "wait" && r.action !== "none") log(`  ↻ ${r.ref}: unknown booking — ${r.action}${r.waybill ? ` ${r.waybill}` : ""}${r.error ? ` (${r.error})` : ""}`);
+      }
+    } catch (e) { log(`  ! unknown-booking sweep failed — ${String(e?.message || e).slice(0, 200)}`); }
+    finally { sweeping = false; }
+  };
+  setTimeout(sweepUnknown, 30_000);
+  setInterval(sweepUnknown, 5 * 60_000);
   let stopping = false;
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(sig, async () => {

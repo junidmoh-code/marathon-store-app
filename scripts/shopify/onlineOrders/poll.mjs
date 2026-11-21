@@ -49,10 +49,11 @@ import { productIsFootwear } from "../../../src/utils/footwearLine.js";
 import { availableAt, routeLines, ROUTED_LOCATIONS, STRIP_SHOPS } from "./routing.mjs";
 import {
   isIngestible, buildLine, buildItemLines, unitPieces, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
-  displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName,
+  displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName, shippingOf,
 } from "./orderModel.mjs";
-import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder } from "./shopifyOrders.mjs";
+import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder, fetchShippingPoint } from "./shopifyOrders.mjs";
 import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey } from "./shipping.mjs";
+import { sweepUnknownBookings } from "../../shipping/unknownBooking.mjs";
 // The held-courier text (scripts/shipping/exchangeReturn.mjs releases an order carrying exactly this when Junid says good).
 export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
 import { mintHubCode } from "./orderRefs.mjs";
@@ -282,6 +283,10 @@ export async function runOrdersPoll(deps) {
 
   // ── 3. SHIP ────────────────────────────────────────────────────────────────
   if (graphql) {
+    // A booking whose answer was lost ("unknown"): Courier Guy is asked by the order reference — a shipment found is
+    // attached, none after 10 minutes is booked once more (scripts/shipping/unknownBooking.mjs). Before the pending
+    // query, so an order handed back is shipped on this same tick.
+    await recheckUnknownBookings(ctx);
     const pending = await queryEq(ctx, "fulfilState", "pending");
     for (const [id, order] of Object.entries(pending)) {
       // Under the ship lock, on a FRESH read (fast-ship.mjs may have shipped it since the query): never twice.
@@ -959,6 +964,39 @@ export async function shipOrderLocked(ctx, id, snapshot, { owner }) {
   }
 }
 
+/** shipping/geo from Shopify for an order that has none (asked once: shipping/geoAsked). Never throws. → the order, with it when found. */
+export async function backfillShippingGeo(ctx, id, order) {
+  const { db, log, now } = ctx;
+  try {
+    const point = await fetchShippingPoint(ctx.graphql, order.shopifyGid);
+    // Only for the address the order holds: shippingOf signs Shopify's point with Shopify's address, and the
+    // booking uses it only while that matches the order's own (an address Jamie changed is not Shopify's).
+    const geo = point ? shippingOf({ shippingAddress: { ...point } }).geo : null;
+    await db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping`).update(geo ? { geo, geoAsked: now } : { geoAsked: now });
+    return geo ? { ...order, shipping: { ...order.shipping, geo } } : order;
+  } catch (e) {
+    log(`  ! ${orderLabel(order)}: Shopify's map point not read (${String(e?.message || e).slice(0, 120)}) — placed by OpenStreetMap`);
+    return order;
+  }
+}
+
+/** The tick's unknown-booking check (unknownBooking.mjs). Never throws: a failure waits for the next tick. */
+export async function recheckUnknownBookings(ctx) {
+  const { db, log } = ctx;
+  try {
+    const failed = await queryEq(ctx, "fulfilState", "courier_failed");
+    const orders = Object.fromEntries(Object.entries(failed).filter(([, o]) => o?.shipping?.courierBooking?.state === "unknown"));
+    if (!Object.keys(orders).length) return [];
+    const client = ctx.courier ?? (ctx.courierClient ??= createCourierClient({ maxAttempts: 2, timeoutMs: 15_000 }));
+    const out = await sweepUnknownBookings({ db, client, orders, now: () => Date.now(), log: ctx.courierLog ?? ((l) => log(`  ${l}`)) });
+    for (const r of out) if (r.action !== "wait" && r.action !== "none") log(`  ↻ ${r.ref}: unknown booking — ${r.action}${r.waybill ? ` ${r.waybill}` : ""}`);
+    return out;
+  } catch (e) {
+    log(`  ! unknown-booking check failed — ${String(e?.message || e).slice(0, 200)}`);
+    return [];
+  }
+}
+
 // The Courier Guy's public tracking page for a waybill (the link the customer agent sends too).
 export const courierTrackUrl = (waybill) => `https://portal.thecourierguy.co.za/track?ref=${encodeURIComponent(String(waybill))}`;
 
@@ -1038,6 +1076,11 @@ async function shipOrder(ctx, id, order) {
   // NOTHING COURIER-SIDE MAY BLOCK THE FULFILMENT BELOW: a booking error is
   // recorded, and a record that cannot be written is logged and skipped —
   // otherwise the order would stay pending and be re-quoted every tick.
+  // An order ingested before shipping/geo existed (21 Nov 2026): Shopify's point for its address, asked once, so the
+  // door-to-locker booking places the customer by it rather than by an OpenStreetMap name match (#2181).
+  if (!order.shipping?.geo && !order.shipping?.geoAsked && order.shopifyGid && ctx.graphql && order.shipping?.address) {
+    order = await backfillShippingGeo(ctx, id, order);
+  }
   let booking;
   try {
     booking = await bookShipment({ ...order, key: id }, {
