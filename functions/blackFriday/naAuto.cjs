@@ -30,17 +30,32 @@ function skipWhy(r, { nowMs = Date.now(), takenBack = false } = {}) {
 }
 
 /** One pass. apply: false = report only. → { onTab, toApprove, photoOf, skipped, notOnTab, approved?, refused? } */
-async function run(db, { apply = false, nowMs = Date.now(), by = BY, list, many, detail = false } = {}) {
+async function run(db, { apply = false, nowMs = Date.now(), by = BY, list, many, detail = false, naMod = () => require("../newArrivals/newArrivals.js") } = {}) {
   const lanes = await naLib.windowLanes(db, nowMs);
   const v = await list(db, "main", nowMs);
   const rows = v.newArrivals || [];
-  const ledgerPids = rows.length ? await Promise.all(rows.map((r) => db.ref(`${core.ROOT}/approvals/${r.pid}`).limitToFirst(1).once("value").then((s) => s.exists()))) : [];
+  // Taken back by Junid: an approval on the Black Friday ledger, or New Arrivals' own un-approve stamp (any date).
+  const takenBack = await Promise.all(rows.map(async (r) => {
+    const [led, un] = await Promise.all([
+      db.ref(`${core.ROOT}/approvals/${r.pid}`).limitToFirst(1).once("value").then((s) => s.exists()),
+      val(db, `${naCore.ITEMS}/${r.pid}/unapprovedAt`),
+    ]);
+    return led || !!un;
+  }));
   const sigs = {}, skipped = {};
-  rows.forEach((r, i) => {
-    const why = skipWhy(r, { nowMs, takenBack: ledgerPids[i] });
-    if (why) { (skipped[why] ||= []).push(`${r.pid} ${r.name} R${r.price ?? 0}`); return; }
-    sigs[r.pid] = r.sig || "current";
-  });
+  const skip = (r, why) => (skipped[why] ||= []).push(`${r.pid} ${r.name} R${r.price ?? 0}`);
+  const cands = [];
+  rows.forEach((r, i) => { const why = skipWhy(r, { nowMs, takenBack: takenBack[i] }); if (why) skip(r, why); else cands.push(r); });
+  // Stock read NOW (a built row carries the 05:00 quantity): sold out since, or no longer listable → not approved.
+  const na = naMod();
+  const locs = cands.length ? await na._internals.stockLocations(db) : null;
+  for (let i = 0; i < cands.length; i += 25) {
+    await Promise.all(cands.slice(i, i + 25).map(async (r) => {
+      const d = await na._internals.productDetail(db, r.pid, locs).catch(() => null);
+      if (!d || !d.raw || !(d.stock && d.stock.totalUnits > 0)) return skip(r, "out of stock");
+      sigs[r.pid] = r.sig || "current";
+    }));
+  }
   const out = {
     window: lanes.size, onTab: rows.length, toApprove: Object.keys(sigs).length,
     photoOf: { generated: Object.values(sigs).filter((s) => s !== "current").length, current: Object.values(sigs).filter((s) => s === "current").length },

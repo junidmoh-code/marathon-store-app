@@ -4,7 +4,8 @@
 //   node scripts/blackFriday/naApproveAll.cjs --apply    approve
 "use strict";
 const path = require("node:path");
-const admin = require("firebase-admin");
+// firebase-admin from the functions package (where it is installed).
+const admin = require(require.resolve("firebase-admin", { paths: [path.join(__dirname, "../../functions")] }));
 if (!admin.apps.length) admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 const bf = require(path.join(__dirname, "../../functions/blackFriday/blackFriday.js"))._internals;
 const naAuto = require(path.join(__dirname, "../../functions/blackFriday/naAuto.cjs"));
