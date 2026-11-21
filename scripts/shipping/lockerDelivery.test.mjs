@@ -4,7 +4,7 @@
 // old booking, unchanged.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { bookShipment, cancelShipment, planShipment } from "./bookShipment.mjs";
-import { lockerParcelCount, declaredParcel, oneShoe, placeAddress, NO_CODE_NOTE } from "./lockerDelivery.mjs";
+import { lockerParcelCount, declaredParcel, oneShoe, placeAddress, NO_CODE_NOTE, lockerSizeFor, chooseLockerRate, serviceSize } from "./lockerDelivery.mjs";
 import { rebookLocker, UNCOLLECTED } from "./rebook-locker.mjs";
 import { reconcileOrder, runReconcile, shipmentsOf } from "./reconcile.mjs";
 import { adjustmentLines } from "./courier-recon.mjs";
@@ -105,14 +105,22 @@ describe("the default is door-to-locker", () => {
     expect(priced).toMatchObject({ delivery_pickup_point_id: "RVM01240", delivery_pickup_point_provider: "tcg-locker", parcels: [expect.objectContaining({ submitted_length_cm: 34, submitted_weight_kg: 1.5 })] });
   });
 
-  it("the parcel is NEVER estimated from the lines: thirty bags are still one shoe, and size never refuses", async () => {
+  it("the box comes from the lines (Junid, 21 Nov 2026): thirty bags weigh 15 kg, past the M box's 10 kg, so the L box", async () => {
     const client = fakeClient();
     const order = ORDER({ lines: [{ category: "Accessories", subcategory: "Bags", qty: 30 }] });
     const d = db(true);
     const res = await bookShipment(order, deps(d, client));
     expect(res.waybill).toBe("WB1");
     expect(client.of("createShipment")).toHaveLength(1);
-    expect(client.of("createShipment")[0].parcels).toEqual([{ parcel_description: "Retail", submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 13, submitted_weight_kg: 1.5 }]);
+    expect(client.of("createShipment")[0]).toMatchObject({ service_level_code: "D2LL - ECO", parcels: [{ parcel_description: "Retail", submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 26, submitted_weight_kg: 15 }] });
+    expect(d.root.online_orders["1001"].shipping.parcel).toMatchObject({ lockerSize: "L", declaredAs: "whole_order" });
+  });
+
+  it("thirty-one bags (15.5 kg) fit no locker box: refused, a person books it, nothing created", async () => {
+    const client = fakeClient();
+    const res = await bookShipment(ORDER({ lines: [{ category: "Accessories", subcategory: "Bags", qty: 31 }] }), deps(db(true), client));
+    expect(client.of("createShipment")).toEqual([]);
+    expect(JSON.stringify(res)).toMatch(/largest Courier Guy locker box/);
   });
 
   it("live: books D2L once and records the locker, the waybills, the door quote and the no-code fact on the order", async () => {
@@ -339,9 +347,10 @@ describe("a split: N one-shoe parcels, each its own shipment to the SAME locker"
     }
   });
 
-  it("one pair with clothes is still declared as one shoe", () => {
-    expect(declaredParcel({}, { parcels: [{ pairs: 1, lengthCm: 34, widthCm: 23, heightCm: 16, actualKg: 2.8 }] })).toMatchObject({ kind: "oneShoe", lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.5 });
-    expect(declaredParcel({}, { parcels: [{ pairs: 2, lengthCm: 34, widthCm: 23, heightCm: 26, actualKg: 2.4 }] })).toEqual({ kind: "wholeOrder", lengthCm: 34, widthCm: 23, heightCm: 26, actualKg: 2.4 });
+  it("one pair with clothes stuffed inside is the M box (one shoe) at its own weight; with goods on top, the L box", () => {
+    expect(declaredParcel({}, { parcels: [{ pairs: 1, lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 2.8, overflowBundles: 0 }] })).toEqual({ kind: "oneShoe", size: "M", lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 2.8 });
+    expect(declaredParcel({}, { parcels: [{ pairs: 1, lengthCm: 34, widthCm: 23, heightCm: 16, actualKg: 2.8, overflowBundles: 1 }] })).toEqual({ kind: "wholeOrder", size: "L", lengthCm: 34, widthCm: 23, heightCm: 16, actualKg: 2.8 });
+    expect(declaredParcel({}, { parcels: [{ pairs: 2, lengthCm: 34, widthCm: 23, heightCm: 26, actualKg: 2.4 }] })).toEqual({ kind: "wholeOrder", size: "L", lengthCm: 34, widthCm: 23, heightCm: 26, actualKg: 2.4 });
     // a person's split is one-shoe shipments, whatever the pairs
     expect(declaredParcel({}, { parcels: [{ pairs: 2, lengthCm: 34, widthCm: 23, heightCm: 26, actualKg: 2.4 }] }, 2).kind).toBe("oneShoe");
   });
@@ -702,5 +711,41 @@ describe("planShipment in locker mode is rates and lookups only", () => {
     expect(plan).toMatchObject({ ok: true, locker: { id: "RVM01240" }, doorQuote: { code: "ECO" } });
     expect(plan.payloads).toHaveLength(2);
     expect(client.shipmentCalls()).toEqual([]);
+  });
+});
+
+
+describe("the locker box size (Junid, 21 Nov 2026: the smallest real box each parcel fits, priced right up front)", () => {
+  const est = (p) => ({ parcels: [p] });
+  it("from what Courier Guy measured our parcels at: 1 pair M, 1 pair + goods on top L, 2+ pairs L, no footwear M", () => {
+    expect(lockerSizeFor({}, null)).toBe("M");
+    expect(lockerSizeFor({}, est({ pairs: 1, lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.3, overflowBundles: 0 }))).toBe("M");
+    expect(lockerSizeFor({}, est({ pairs: 1, lengthCm: 34, widthCm: 23, heightCm: 19, actualKg: 2.1, overflowBundles: 2 }))).toBe("L");
+    expect(lockerSizeFor({}, est({ pairs: 2, lengthCm: 34, widthCm: 23, heightCm: 26, actualKg: 2.4 }))).toBe("L");
+    expect(lockerSizeFor({}, est({ pairs: 6, lengthCm: 34, widthCm: 46, heightCm: 39, actualKg: 8 }))).toBe("L");
+    // clothes only: never S (half of them measured taller than the S box's 8 cm), even when the estimate is a big box
+    expect(lockerSizeFor({}, est({ kind: "flatBag", pairs: 0, lengthCm: 41, widthCm: 34, heightCm: 4, actualKg: 0.4 }))).toBe("M");
+    expect(lockerSizeFor({}, est({ kind: "box", pairs: 0, lengthCm: 55, widthCm: 40, heightCm: 35, actualKg: 2 }))).toBe("M");
+  });
+  it("weight moves it up a box (M takes 10 kg); past 15 kg, or a shoebox stack bigger than L, no locker takes it", () => {
+    expect(lockerSizeFor({}, est({ pairs: 0, lengthCm: 40, widthCm: 30, heightCm: 18, actualKg: 11 }))).toBe("L");
+    expect(lockerSizeFor({}, est({ pairs: 0, lengthCm: 40, widthCm: 30, heightCm: 18, actualKg: 16 }))).toBeNull();
+    expect(lockerSizeFor({}, est({ pairs: 8, lengthCm: 34, widthCm: 46, heightCm: 52, actualKg: 12 }))).toBeNull();
+    expect(declaredParcel({}, est({ pairs: 8, lengthCm: 34, widthCm: 46, heightCm: 52, actualKg: 12 }))).toMatchObject({ kind: "tooBig", size: null });
+  });
+  it("the service: the cheapest quoted for a box at least the chosen size", () => {
+    const rates = [{ code: "D2LXS - ECO", rate: 86.51 }, { code: "D2LS - ECO", rate: 97.46 }, { code: "D2LM - ECO", rate: 130.31 }, { code: "D2LL - ECO", rate: 192.72 }];
+    expect(chooseLockerRate(rates, "M").code).toBe("D2LM - ECO");
+    expect(chooseLockerRate(rates, "L").code).toBe("D2LL - ECO");
+    expect(serviceSize("D2LXS - ECO")).toBe("XS");
+    expect(serviceSize("ECO")).toBeNull();
+  });
+  it("one pair with a cap on top is booked on the L service up front (#2257 was booked M and re-rated to L)", async () => {
+    const client = fakeClient();
+    const d = db(true);
+    const order = ORDER({ lines: [{ category: "Footwear", subcategory: "Sneakers", size: "9", qty: 1 }, { category: "Accessories", subcategory: "Bags", qty: 1 }] });
+    await bookShipment(order, deps(d, client));
+    expect(client.of("createShipment")[0].service_level_code).toBe("D2LL - ECO");
+    expect(d.root.online_orders["1001"].shipping.parcel.lockerSize).toBe("L");
   });
 });

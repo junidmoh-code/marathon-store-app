@@ -14,16 +14,15 @@
 //                 an order: shipping/lockerParcels on the order
 //                 (rebook-locker.mjs --parcels) is N one-shoe shipments to the
 //                 SAME locker (a pickup-point shipment carries one parcel).
-//   the parcel    an order of at most one pair of shoes is declared as one
-//                 shoe: /config/shipping/locker/parcel, 34 × 23 × 13 cm,
-//                 1.5 kg, never estimated from its lines. An order of two or
-//                 more pairs is declared as the ONE parcel the parcel rule
-//                 packs it in (estimateParcel), so Courier Guy quotes the
-//                 locker size it really fits (measured 20 Nov: 2 to 6 pairs →
-//                 D2LL - ECO R192.72 flat). Courier Guy measures at collection
-//                 and re-rates; reconcile.mjs keeps the difference on the
-//                 order (shipping/adjustment). A parcel no locker takes is
-//                 refused like "no locker" below: a person books it.
+//   the parcel    the smallest Courier Guy locker box the parcel really
+//                 fits (Junid, 21 Nov 2026, replacing "every parcel is one
+//                 shoe"): lockerSizeFor, from what Courier Guy measured 406
+//                 of our parcels at. 1 pair → M (declared as one shoe); 1 pair
+//                 with goods on top, or 2+ pairs → L (the order's own parcel);
+//                 no footwear → M; heavier than the box → one up. The service
+//                 booked is the cheapest for a box at least that size, so the
+//                 price is right at booking. Past the L box: refused like "no
+//                 locker", a person books it.
 //   the locker    the customer's address placed on the map (placeAddress:
 //                 OpenStreetMap, the street first; a street it does not know —
 //                 most of ours — is placed by its POSTAL CODE, which in a city
@@ -51,8 +50,8 @@
 // customer's phone when the parcel lands in the locker; the create response
 // carries none (checked on #2257). The locker record says so; nothing here
 // invents one.
-import { chooseLocker } from "../../src/shipping/estimateParcel.js";
 import { normalizeRates, chooseRate } from "../../src/shipping/chooseService.js";
+import { DEFAULT_SHIPPING_CONFIG } from "../../src/shipping/shippingConfig.js";
 import { quoteParcel, tcgParcel } from "./quote.mjs";
 import { addressSig, tcgZone } from "../../src/shipping/orderShipment.js";
 import { geocode, nearestLockers, placedByStreet, nominatimHit, inProvince } from "./bookReturn.mjs";
@@ -162,17 +161,93 @@ export function lockerParcelCount(order) {
 /** The pairs of shoes in the order (the parcel rule's count). Pure. */
 export const pairsIn = (estimate) => (estimate?.parcels ?? []).reduce((t, p) => t + (Number(p?.pairs) || 0), 0);
 
+// ── THE LOCKER BOX SIZE (Junid, 21 Nov 2026: "stop declaring every parcel as one shoe; book the smallest real Courier
+// Guy locker box each parcel fits, so the price is right up front with no adjustment later") ─────────────────────────
+// Courier Guy's door-to-locker price is flat per box: XS R86.51, S R97.46, M R130.31, L R192.72 (quoted 21 Nov 2026,
+// the same to every locker). Its hub measures the parcel and re-rates it to the box it really needs, so the box is
+// chosen from what Courier Guy MEASURED our parcels at (406 door parcels it dimensioned, Sep–Nov 2026), not from the
+// estimate's centimetres:
+//   one pair, nothing on top      → M   (198 of 205 measured M; 6 L, 1 S)
+//   one pair with goods on top    → L   (every one measured L: #1773, #1822, #1876 …; #2257 booked M, re-rated L)
+//   two or more pairs             → L   (74 two-pair parcels: 60 L, 13 M, 1 bigger; every 3–6 pairs L)
+//   no footwear (clothes, caps, bags) → M (S only half the time: 41 of 82 the estimate called S measured 8–14 cm high,
+//                                   too tall for the 8 cm S box, so S would be re-rated about every second order)
+// A parcel heavier than the box takes (M 10 kg, L 15 kg) goes one box up; past L, or bigger than L, no locker takes it
+// and a person books it (refused like "no locker").
+export const LOCKER_SIZES = ["XS", "S", "M", "L"];
+const BOX_RANK = Object.fromEntries(LOCKER_SIZES.map((s, i) => [s, i]));
+
+/** The locker box (from dropBox.lockers: TCG's own compartment sizes and weight limits) of a size, or null. Pure. */
+export function lockerBox(cfg, size) {
+  const list = cfg?.dropBox?.lockers?.length ? cfg.dropBox.lockers : DEFAULT_SHIPPING_CONFIG.dropBox.lockers;
+  return list.find((l) => l.size === size) ?? null;
+}
+
+const fitsBox = (dims, kg, box) => {
+  if (!box) return false;
+  const a = [...dims].map(Number).sort((x, y) => y - x), b = [box.lengthCm, box.widthCm, box.heightCm].map(Number).sort((x, y) => y - x);
+  return a.every((n, i) => Number.isFinite(n) && n <= b[i]) && Number(kg) <= Number(box.maxKg);
+};
+
 /**
- * The parcel each shipment declares. Pure. One shoe, except a single-parcel order of two or more pairs: that is the
- * whole order in the one parcel the parcel rule packs (a one-shoe declaration would book a locker it cannot fit in).
+ * The box this order's ONE parcel is booked as: "M" | "L" | null (no locker takes it). Pure.
+ * estimate: estimateParcel(lines) (null when the lines could not be read → M, the one-shoe box).
+ */
+export function lockerSizeFor(cfg, estimate) {
+  const p = estimate?.parcels?.length === 1 ? estimate.parcels[0] : null;
+  if (!p) return "M";
+  const pairs = Number(p.pairs) || 0;
+  const kg = Number(p.actualKg) || 0;
+  const onTop = (Number(p.overflowBundles) || 0) > 0;
+  let size = pairs >= 2 || (pairs === 1 && onTop) ? "L" : "M";
+  if (size === "M" && !(kg <= Number(lockerBox(cfg, "M")?.maxKg ?? 10))) size = "L";
+  if (size === "L") {
+    const box = lockerBox(cfg, "L");
+    // The whole order must fit the L box: its weight always, its size when it is a stack of shoeboxes (clothes squash).
+    if (!(kg <= Number(box?.maxKg ?? 15))) return null;
+    if (pairs >= 2 && box && !fitsBox([p.lengthCm, p.widthCm, p.heightCm], kg, box)) return null;
+  }
+  return size;
+}
+
+/**
+ * The parcel each shipment declares. Pure.
+ *   M: one shoe (cfg.locker.parcel, 34 × 23 × 13 cm), at the order's own weight when it is heavier than 1.5 kg;
+ *   L: the order's own parcel when it fits the L box, else a two-shoebox parcel (34 × 23 × 26) at the order's weight;
+ *   a person's split (count > 1): one shoe each, as before.
+ * → { kind: "oneShoe" | "wholeOrder", size, lengthCm, widthCm, heightCm, actualKg } | { kind: "tooBig", size: null, … }
  */
 export function declaredParcel(cfg, estimate, count = 1) {
-  const whole = estimate?.parcels?.length === 1 ? estimate.parcels[0] : null;
-  const dims = whole ? [whole.lengthCm, whole.widthCm, whole.heightCm, whole.actualKg].map(Number) : [];
-  if (count === 1 && pairsIn(estimate) > 1 && dims.length === 4 && dims.every((n) => Number.isFinite(n) && n > 0)) {
-    return { kind: "wholeOrder", lengthCm: dims[0], widthCm: dims[1], heightCm: dims[2], actualKg: dims[3] };
+  const shoe = oneShoe(cfg);
+  if (count > 1) return { ...shoe, size: "M" };
+  const p = estimate?.parcels?.length === 1 ? estimate.parcels[0] : null;
+  const kg = Number(p?.actualKg) > shoe.actualKg ? Number(p.actualKg) : shoe.actualKg;
+  const size = lockerSizeFor(cfg, estimate);
+  const dims = p ? [p.lengthCm, p.widthCm, p.heightCm].map(Number) : [];
+  const own = dims.length === 3 && dims.every((n) => Number.isFinite(n) && n > 0);
+  if (size === "M") return { ...shoe, actualKg: kg, size };
+  if (size === "L") {
+    return own && fitsBox(dims, kg, lockerBox(cfg, "L"))
+      ? { kind: "wholeOrder", size, lengthCm: dims[0], widthCm: dims[1], heightCm: dims[2], actualKg: kg }
+      : { kind: "wholeOrder", size, lengthCm: shoe.lengthCm, widthCm: shoe.widthCm, heightCm: shoe.heightCm * 2, actualKg: kg };
   }
-  return oneShoe(cfg);
+  return { kind: "tooBig", size: null, ...(own ? { lengthCm: dims[0], widthCm: dims[1], heightCm: dims[2] } : { lengthCm: shoe.lengthCm, widthCm: shoe.widthCm, heightCm: shoe.heightCm }), actualKg: Number(p?.actualKg) || kg };
+}
+
+/** The size letter of a door-to-locker service code ("D2LM - ECO" → "M"), or null. Pure. */
+export const serviceSize = (code) => {
+  const m = String(code ?? "").match(/^D2L(XS|S|M|L)\b/i);
+  return m ? m[1].toUpperCase() : null;
+};
+
+/**
+ * The service booked: the cheapest quoted for a box AT LEAST the size chosen (Courier Guy quotes every box the declared
+ * parcel fits; a smaller box than ours would only be re-rated up at the hub). Codes with no size letter stay in. Pure.
+ */
+export function chooseLockerRate(rates, size) {
+  const min = BOX_RANK[size] ?? 0;
+  const ok = (rates ?? []).filter((r) => { const s = serviceSize(r.code); return s == null || BOX_RANK[s] >= min; });
+  return ok.reduce((best, r) => (!best || r.rate < best.rate ? r : best), null);
 }
 
 const townOf = (address) => str(address?.city) || str(address?.local_area) || "the customer's address";
@@ -193,7 +268,9 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
   // `shoe` is the parcel EVERY shipment of this order declares (one shoe, or the whole order in one parcel).
   const shoe = declaredParcel(cfg, estimate, count);
   const parcel = {
-    declaredAs: shoe.kind === "wholeOrder" ? "whole_order" : "one_shoe",
+    declaredAs: shoe.kind === "wholeOrder" ? "whole_order" : shoe.kind === "tooBig" ? "too_big" : "one_shoe",
+    // The Courier Guy locker box it is booked as (lockerSizeFor), null when no locker takes it.
+    lockerSize: shoe.size ?? null,
     parcels: Array.from({ length: count }, () => ({ ...shoe })),
     parcelCount: count,
     actualKg: shoe.actualKg * count,
@@ -208,6 +285,7 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
     ...extra,
   });
 
+  if (!shoe.size) return refuse(`the parcel is bigger or heavier than the largest Courier Guy locker box (L: 60 × 41 × 41 cm, 15 kg)`);
   const maxParcels = pos(lk.maxParcels, 10);
   if (count > maxParcels) return refuse(`the order needs ${count} locker parcels, more than the ${maxParcels} booked automatically`);
 
@@ -223,7 +301,7 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
   const at = await geocoder(address, ...(geo ? [{ geo }] : []));
   // No line to Junid for this one: the map service being down looks the same, and the order's own attention says it.
   if (!at) return refuse(`no Courier Guy locker could be chosen for ${town}: the address could not be placed on the map`, { transient: true, junidLine: null });
-  const size = chooseLocker([shoe.lengthCm, shoe.widthCm, shoe.heightCm], shoe.actualKg, { ...(cfg.dropBox ?? {}), enabled: true })?.size ?? (shoe.kind === "wholeOrder" ? "L" : "M");
+  const size = shoe.size;
   const placedBy = at.by ?? (placedByStreet(address, at) ? "street" : "town");
   // Shopify's point is the customer's own address: as precise as a street.
   const byStreet = placedBy === "street" || placedBy === "shopify";
@@ -272,7 +350,7 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
       // A retry that FAILED is a failed lookup (try again later), not "Courier Guy quotes nothing here".
       else if (again.error) q = again;
     }
-    const usable = q.rates.filter((r) => !exclude.has(r.code));
+    const usable = q.rates.filter((r) => !exclude.has(r.code) && (serviceSize(r.code) == null || BOX_RANK[serviceSize(r.code)] >= BOX_RANK[size]));
     if (usable.length) { found = { locker, rates: usable, used }; break; }
     lastError = q.error ?? lastError;
   }
@@ -282,7 +360,7 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
     return refuse(`Courier Guy quoted no door-to-locker service to the locker${candidates.length > 1 ? "s" : ""} near ${town} (${tried})`);
   }
 
-  const rate = found.rates.reduce((best, r) => (!best || r.rate < best.rate ? r : best), null);
+  const rate = chooseLockerRate(found.rates, size);
   const door = await doorAsk;
   const doorQuote = door?.rate ? { code: door.rate.code, rate: finiteOrNull(door.rate.rate) } : null;
 

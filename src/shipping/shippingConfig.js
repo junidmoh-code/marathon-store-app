@@ -193,12 +193,11 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
   // "locker".
   deliveryMode: "locker",
   locker: {
-    // A parcel of at most one pair is declared as one shoe (Junid: "34 x 23
-    // x 13 cm, 1.5 kg; do not estimate from the order's lines"); two or more
-    // pairs in the one parcel declare that parcel's own size, so the locker
-    // booked is one it fits (lockerDelivery.mjs). Courier Guy measures at
-    // collection and re-rates; the difference lands on the order at
-    // shipping/adjustment (scripts/shipping/reconcile.mjs).
+    // The M box is declared as this one shoe; the box itself is chosen from
+    // the order's lines (lockerDelivery.mjs lockerSizeFor, Junid 21 Nov 2026:
+    // the smallest real locker box the parcel fits, priced right up front).
+    // Courier Guy still measures at collection; any difference lands on the
+    // order at shipping/adjustment (scripts/shipping/reconcile.mjs).
     parcel: { lengthCm: 34, widthCm: 23, heightCm: 13, kg: 1.5 },
     // The nearest locker must be near enough to be "the customer's locker":
     // further than this from the address, nothing is booked and Junid decides
