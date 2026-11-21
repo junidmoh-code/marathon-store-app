@@ -54,7 +54,8 @@
 import { chooseLocker } from "../../src/shipping/estimateParcel.js";
 import { normalizeRates, chooseRate } from "../../src/shipping/chooseService.js";
 import { quoteParcel, tcgParcel } from "./quote.mjs";
-import { geocode, nearestLockers, placedByStreet } from "./bookReturn.mjs";
+import { addressSig, tcgZone } from "../../src/shipping/orderShipment.js";
+import { geocode, nearestLockers, placedByStreet, nominatimHit, inProvince } from "./bookReturn.mjs";
 
 export const NO_CODE_NOTE = "No collection code exists at booking: Courier Guy SMSes the PIN to the customer's phone when the parcel lands in the locker.";
 export const D2L_MODE = "door_to_locker";
@@ -70,22 +71,77 @@ const finiteOrNull = (n) => (Number.isFinite(Number(n)) ? Number(n) : null);
  * stand-in for a customer's home: the postal code's own point is asked for
  * first when the street is unknown (1804 lands 5 km from Soweto's centre).
  */
-export async function placeAddress(address, { fetchImpl = globalThis.fetch, base = geocode, wait = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+export async function placeAddress(address, { fetchImpl = globalThis.fetch, base = geocode, wait = (ms) => new Promise((r) => setTimeout(r, ms)), geo = null } = {}) {
+  // Shopify's own point for this very address (shipping/geo, written at ingest): Shopify places rural addresses
+  // OpenStreetMap does not know (#2181: "291 Madobi villge, Khomanani 0933" — OSM had only a Khomanani in Cape Town).
+  // Checked against the order's province like an OpenStreetMap hit: a point Shopify put in another province is not used.
+  if (geo && Number.isFinite(Number(geo.lat)) && Number.isFinite(Number(geo.lng)) && (await pointInProvince(geo, address, { fetchImpl })) !== false) {
+    return { lat: Number(geo.lat), lng: Number(geo.lng), from: "Shopify", by: "shopify" };
+  }
   const at = await base(address, { fetchImpl });
   if (at && placedByStreet(address, at)) return { ...at, by: "street" };
   const code = str(address?.code);
   if (/^\d{4}$/.test(code)) {
     try {
       await wait(1100); // Nominatim's policy: at most one request a second
-      const res = await fetchImpl(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=za&limit=1&postalcode=${code}`, {
+      const res = await fetchImpl(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=za&limit=5&addressdetails=1&postalcode=${code}`, {
         headers: { "User-Agent": "marathon-club-shipping/1.0", Accept: "application/json" },
         signal: AbortSignal.timeout(10000),
       });
-      const hit = res.ok ? (await res.json())?.[0] : null;
-      if (hit && Number.isFinite(Number(hit.lat)) && Number.isFinite(Number(hit.lon))) return { lat: Number(hit.lat), lng: Number(hit.lon), from: `postal code ${code}`, by: "postcode" };
+      // Only a point in the order's own province (bookReturn inProvince).
+      const hit = res.ok ? nominatimHit(await res.json(), address) : null;
+      if (hit) return { lat: Number(hit.lat), lng: Number(hit.lon), from: `postal code ${code}`, by: "postcode" };
     } catch { /* the town's point, below */ }
   }
   return at ? { ...at, by: "town" } : null;
+}
+
+/** Shopify's point for the order's CURRENT address (shipping/geo), or null. Pure. */
+export function shopifyGeo(order) {
+  const g = order?.shipping?.geo;
+  if (!g || !Number.isFinite(Number(g.lat)) || !Number.isFinite(Number(g.lng))) return null;
+  return g.sig === addressSig(order?.shipping?.address) ? { lat: Number(g.lat), lng: Number(g.lng) } : null;
+}
+
+/**
+ * The same shipment, delivered to the locker's OWN address and point instead of the customer's street (#2181,
+ * 21 Nov 2026: Courier Guy refused the create with "cannot find a latitude/longitude for the address" for a rural
+ * street it had just quoted). The parcel goes to the locker either way (Courier Guy files a locker shipment under
+ * the locker's address); the customer stays the delivery contact, so the PIN SMS is unchanged. null when the
+ * locker record carries no address. Pure.
+ */
+export function lockerAddressPayload(payload, locker) {
+  const a = locker?.tcgAddress ?? {};
+  const street = str(a.street_address) || str(locker?.address);
+  const city = str(a.city) || str(payload?.delivery_address?.city);
+  if (!payload || !street || !city) return null;
+  const hasPoint = Number.isFinite(Number(locker?.lat)) && Number.isFinite(Number(locker?.lng));
+  return {
+    ...payload,
+    delivery_address: {
+      type: "business", company: str(locker?.name), street_address: street, local_area: str(a.local_area) || city, city,
+      zone: tcgZone(str(a.zone)) || str(payload?.delivery_address?.zone), country: "ZA", code: str(a.code) || str(payload?.delivery_address?.code),
+      ...(hasPoint ? { lat: Number(locker.lat), lng: Number(locker.lng) } : {}),
+    },
+  };
+}
+
+/**
+ * Is a map point in the address's province? → true | false | null (could not tell: no province on the address, or the
+ * reverse lookup failed — the point is then used, as it was validated by Shopify). OpenStreetMap reverse, province level.
+ */
+export async function pointInProvince(at, address, { fetchImpl = globalThis.fetch } = {}) {
+  if (!str(address?.zone)) return null;
+  try {
+    const res = await fetchImpl(`https://nominatim.openstreetmap.org/reverse?format=json&zoom=5&addressdetails=1&lat=${Number(at.lat)}&lon=${Number(at.lng)}`, {
+      headers: { "User-Agent": "marathon-club-shipping/1.0", Accept: "application/json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return null;
+    const hit = await res.json();
+    if (!hit?.address?.state && !hit?.display_name) return null;
+    return inProvince(hit, address);
+  } catch { return null; }
 }
 
 /** The one parcel every booking declares. Pure. */
@@ -162,18 +218,21 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
     : Promise.resolve(null);
   doorAsk.catch(() => {});
 
-  const at = await geocoder(address);
+  // Shopify's point for this address, when there is one, goes to the geocoder first (placeAddress checks its province).
+  const geo = shopifyGeo(order);
+  const at = await geocoder(address, ...(geo ? [{ geo }] : []));
   // No line to Junid for this one: the map service being down looks the same, and the order's own attention says it.
   if (!at) return refuse(`no Courier Guy locker could be chosen for ${town}: the address could not be placed on the map`, { transient: true, junidLine: null });
   const size = chooseLocker([shoe.lengthCm, shoe.widthCm, shoe.heightCm], shoe.actualKg, { ...(cfg.dropBox ?? {}), enabled: true })?.size ?? (shoe.kind === "wholeOrder" ? "L" : "M");
-  let lockers;
-  try { lockers = await nearestLockers(client, at, size); }
-  catch (err) { return { ok: false, transient: true, parcel, reason: `the locker list could not be read (${str(err?.message || err).slice(0, 200)})` }; }
-
   const placedBy = at.by ?? (placedByStreet(address, at) ? "street" : "town");
-  const byStreet = placedBy === "street";
+  // Shopify's point is the customer's own address: as precise as a street.
+  const byStreet = placedBy === "street" || placedBy === "shopify";
   const limit = byStreet ? pos(lk.maxKm, 30) : pos(lk.maxTownKm, 20);
   const chosenId = str(order?.shipping?.lockerChoice?.id);
+  let lockers;
+  // A locker a person named may be a little beyond the automatic limit: searched out to 50 km.
+  try { lockers = await nearestLockers(client, at, size, { maxKm: chosenId ? Math.max(limit, 50) : limit }); }
+  catch (err) { return { ok: false, transient: true, parcel, reason: `the locker list could not be read (${str(err?.message || err).slice(0, 200)})` }; }
   let candidates;
   if (chosenId) {
     // A person named the locker: the distance rule is theirs to break, but it must be a real, online locker near the address.

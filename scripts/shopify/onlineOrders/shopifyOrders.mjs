@@ -7,7 +7,7 @@ const ORDER_FIELDS = `
   id legacyResourceId name number createdAt updatedAt cancelledAt
   displayFinancialStatus displayFulfillmentStatus email phone
   customer { firstName lastName defaultEmailAddress { emailAddress } defaultPhoneNumber { phoneNumber } }
-  shippingAddress { name firstName lastName address1 address2 city province zip country phone }
+  shippingAddress { name firstName lastName address1 address2 city province zip country phone latitude longitude coordinatesValidated }
   currentSubtotalPriceSet { shopMoney { amount currencyCode } }
   currentTotalPriceSet { shopMoney { amount currencyCode } }
   totalShippingPriceSet { shopMoney { amount } }
@@ -57,6 +57,15 @@ export async function fetchOrdersUpdatedSince(graphql, { sinceMs, createdSinceMs
 export async function fetchOrderById(graphql, id) {
   const data = await graphql(`query ($id: ID!) { order(id: $id) { ${ORDER_FIELDS} } }`, { id: `gid://shopify/Order/${id}` });
   return data.order ?? null;
+}
+
+/** Shopify's point for the order's shipping address → { latitude, longitude, coordinatesValidated, … } | null. */
+export async function fetchShippingPoint(graphql, orderGid) {
+  const data = await graphql(
+    `query ($id: ID!) { order(id: $id) { shippingAddress { address1 address2 city province zip latitude longitude coordinatesValidated } } }`,
+    { id: orderGid },
+  );
+  return data?.order?.shippingAddress ?? null;
 }
 
 /** The order's fulfilment orders that still have units to ship. */

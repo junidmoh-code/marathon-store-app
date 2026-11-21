@@ -24,8 +24,13 @@
 // /online_orders/{key}/shipping/courierBooking in a transaction; a second
 // packer (or a retry) finds the claim and books nothing. A failed create
 // releases the claim with the error recorded; a create whose response was lost
-// (timeout/5xx) leaves the claim as "unknown" — check the portal before
-// retrying, because TCG may have booked it (the client never retries a create).
+// (timeout/5xx) leaves the claim as "unknown", because TCG may have booked it
+// (the client never retries a create). unknownBooking.mjs then asks Courier Guy
+// itself (GET /shipments by the order reference): a shipment found is attached,
+// none after 10 minutes releases the claim for ONE automatic re-book.
+// A 500 that is Courier Guy failing to place the address on the map is a
+// definite refusal (isGeocodeRefusal), never "unknown": a door-to-locker
+// parcel is sent once more with the locker's own address.
 //
 // DOOR-TO-LOCKER (Junid, 20 Nov 2026). Unless /config/shipping/deliveryMode is
 // "door", every booking is collected from our door and delivered to the
@@ -45,7 +50,7 @@ import { orderLines, deliveryAddress, deliveryContact, orderRef, orderKey as key
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { quoteParcel, tcgParcels, lockerCollection } from "./quote.mjs";
 import { fileLogger } from "./courier-client.mjs";
-import { planLockerDelivery } from "./lockerDelivery.mjs";
+import { planLockerDelivery, lockerAddressPayload } from "./lockerDelivery.mjs";
 
 export const LIVE_PATH = "config/shipping/live";
 
@@ -120,6 +125,23 @@ async function productsFor(db, order) {
     } catch { /* an unreadable product classifies by its line alone */ }
   }));
   return out;
+}
+
+/** The customer_reference a booking of this order carries ("#2181"; an exchange: its shopifyName "#1789-EX"). Pure. */
+export function bookingRef(order) {
+  return exchangeOverrides(order, orderRef(order), {}).ref;
+}
+
+/**
+ * Courier Guy refusing a create because IT could not place the delivery address on the map (#2181, 21 Nov 2026:
+ * HTTP 500 "cannot find a latitude/longitude for the address. Try to add more detail…"). Despite the 500 this is a
+ * validation answer, not a lost response: no shipment was made. It is a definite failure (never "unknown"), and a
+ * door-to-locker booking is sent once more with the locker's own address (lockerAddressPayload). Pure.
+ */
+export function isGeocodeRefusal(err) {
+  const status = Number(err?.status);
+  if (!(status >= 400 && status < 600) || status === 408) return false;
+  return /latitude\s*\/\s*longitude|lat\s*\/\s*lng|could ?n[o']t (?:find|geocode)|cannot geocode|unable to geocode/i.test(String(err?.body ?? err?.message ?? ""));
 }
 
 /** Everything up to (not including) the shipment call. Pure apart from rates. */
@@ -303,7 +325,14 @@ export async function bookShipment(order, deps = {}) {
     return { skipped: true, reason: `no order at /online_orders/${key}` };
   }
   const claimRef = db.ref(`online_orders/${key}/shipping/courierBooking`);
-  const claim = await claimRef.transaction((cur) => (cur && cur.state !== "failed" ? undefined : { state: "booking", at: now() }));
+  // A claim the unknown-booking check released (unknownBooking.mjs: no shipment at Courier Guy) is re-booked here: its
+  // `released` and `rebooks` are carried, and the re-book is COUNTED only once a create is attempted (below).
+  let prior = null;
+  const claim = await claimRef.transaction((cur) => {
+    if (cur && cur.state !== "failed") return undefined;
+    prior = cur?.released ? { released: cur.released, rebooks: Number(cur.rebooks) || 0 } : null;
+    return { state: "booking", at: now(), ...(prior ?? {}) };
+  });
   if (!claim.committed) {
     return { skipped: true, reason: `booking already ${claim.snapshot?.val()?.state ?? "claimed"}` };
   }
@@ -311,13 +340,14 @@ export async function bookShipment(order, deps = {}) {
   // Re-read live AFTER winning the claim: the quotes took seconds, and a
   // switch turned off in that window must still stop this booking.
   if (!(await readLive(db))) {
-    await claimRef.set({ state: "failed", at: now(), error: "live switched off before booking" });
+    await claimRef.set({ state: "failed", at: now(), error: "live switched off before booking", ...(prior ?? {}) });
     log(`bookShipment ${key} DRY RUN (live switched off mid-booking)`);
     return { skipped: true, dryRun: plan.payload, parcel: plan.parcel };
   }
 
   // ONE create per parcel (door-to-door: always one; door-to-locker: one per one-shoe parcel, same locker).
   const made = partial ? [...partial.shipments] : [];
+  let addressFallback = false;
   // → false when parcels were booked and their record could NOT be kept: the claim must then stay held
   // ("unknown"), or a retry would find no checkpoint and book parcel 1 a second time.
   const keepPartial = async () => {
@@ -329,12 +359,34 @@ export async function bookShipment(order, deps = {}) {
     const nth = payloads.length > 1 ? ` (parcel ${i + 1} of ${payloads.length})` : "";
     let res;
     try {
-      res = await client.createShipment(payloads[i]);
+      // The address fallback is decided once per order: a split's later parcels go straight to the locker's address.
+      if (addressFallback && plan.locker) payloads[i] = lockerAddressPayload(payloads[i], plan.locker) ?? payloads[i];
+      try {
+        res = await client.createShipment(payloads[i]);
+      } catch (first) {
+        // Courier Guy could not place the customer's street (a definite refusal, nothing was made): a door-to-locker
+        // parcel goes to the locker anyway, so it is sent ONCE more with the locker's own address and point.
+        const retry = isGeocodeRefusal(first) && plan.locker && !addressFallback ? lockerAddressPayload(payloads[i], plan.locker) : null;
+        if (!retry) throw first;
+        log(`bookShipment ${key} CREATE REFUSED${nth} (Courier Guy could not place the address: ${String(first?.message || first).slice(0, 160)}) — once more with the locker's own address`);
+        payloads[i] = retry;
+        res = await client.createShipment(retry);
+        addressFallback = true;
+      }
     } catch (err) {
-      // 408 means the request may still have run — as ambiguous as a 5xx.
-      const ambiguous = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;
+      // 408 means the request may still have run — as ambiguous as a 5xx. A geocode refusal is not: nothing was made.
+      const lost = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;
+      const ambiguous = lost && !isGeocodeRefusal(err);
       const kept = await keepPartial();
-      await claimRef.set({ state: ambiguous || !kept ? "unknown" : "failed", at: now(), error: `${String(err?.message || err).slice(0, 300)}${nth}`, ...(made.length ? { booked: made.map((m) => m.waybill) } : {}) });
+      await claimRef.set({
+        state: ambiguous || !kept ? "unknown" : "failed", at: now(), error: `${String(err?.message || err).slice(0, 300)}${nth}`,
+        ...(made.length ? { booked: made.map((m) => m.waybill) } : {}),
+        // What the attempt was, for the unknown-booking check (unknownBooking.mjs): the reference it carried and,
+        // door-to-locker, the locker — so a shipment Courier Guy did make is attached with its locker.
+        ...(ambiguous || !kept ? { ref: plan.ref ?? null, shipments: payloads.length, ...(plan.locker ? { locker: plain(plan.locker) } : {}) } : {}),
+        // A re-book after a release: counted now that it reached a create (MAX_AUTO_REBOOKS stops the next one).
+        ...(prior ? { released: prior.released, rebooks: (ambiguous || !kept) ? prior.rebooks + 1 : prior.rebooks } : {}),
+      });
       log(`bookShipment ${key} CREATE ${ambiguous ? "UNKNOWN" : "FAILED"}${nth} ${err?.message || err}`);
       throw err;
     }
@@ -342,7 +394,7 @@ export async function bookShipment(order, deps = {}) {
     // as "unknown" (nothing re-books it) and let a person check the portal.
     if (!res || typeof res !== "object" || (res.id == null && !res.short_tracking_reference && !res.custom_tracking_reference)) {
       await keepPartial();
-      await claimRef.set({ state: "unknown", at: now(), error: `create returned no shipment id or tracking reference${nth}`, ...(made.length ? { booked: made.map((m) => m.waybill) } : {}) });
+      await claimRef.set({ state: "unknown", at: now(), error: `create returned no shipment id or tracking reference${nth}`, ...(made.length ? { booked: made.map((m) => m.waybill) } : {}), ref: plan.ref ?? null, shipments: payloads.length, ...(plan.locker ? { locker: plain(plan.locker) } : {}), ...(prior ? { released: prior.released, rebooks: prior.rebooks + 1 } : {}) });
       log(`bookShipment ${key} CREATE UNCONFIRMED${nth} — response named no shipment: ${JSON.stringify(res)?.slice(0, 300)}`);
       throw new Error("bookShipment: Courier Guy's create response named no shipment — check the portal before retrying");
     }
@@ -378,6 +430,8 @@ export async function bookShipment(order, deps = {}) {
       // Where the customer collects it — what Jamie tells them. No code yet: see collectionCodeNote.
       deliveryLocker: plain(plan.locker),
       deliveryMode: "locker",
+      // Courier Guy could not place the customer's street: the shipment carries the locker's address (#2181).
+      ...(addressFallback ? { deliveryAddressFallback: "locker" } : {}),
       // EVERY waybill (a split has several); shipping.waybill above is the first.
       waybills: made.map((m) => m.waybill).filter(Boolean),
       shipments: plain(made),

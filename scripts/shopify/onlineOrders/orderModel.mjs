@@ -6,6 +6,7 @@ import {
   orderLabel, ONLINE_PICK_KIND, PACKER_INSTRUCTION, PACKING_STORE, ORDER_STATUS, LINE_STATUS,
   ATTENTION_KIND, HOLDING_STATUSES, deriveOrderStatus,
 } from "../../../src/utils/onlineOrders.js";
+import { addressSig } from "../../../src/shipping/orderShipment.js";
 
 // Only these are pulled in. A pending-payment order becomes PAID later and is
 // picked up then (its updated_at moves); a partly fulfilled one was handled by
@@ -57,7 +58,13 @@ export function shippingOf(node) {
     name: a.name, address1: a.address1, address2: a.address2, city: a.city,
     province: a.province, zip: a.zip, country: a.country, phone: a.phone,
   }) : null;
-  return address && Object.keys(address).length ? { address } : {};
+  if (!address || !Object.keys(address).length) return {};
+  // Shopify's own point for the address, when Shopify validated it: the door-to-locker booking places the customer
+  // by it (lockerDelivery.mjs shopifyGeo), and only while the address is unchanged (sig). #2181, 21 Nov 2026.
+  const lat = Number(a.latitude), lng = Number(a.longitude);
+  const geo = a.coordinatesValidated === true && a.latitude != null && a.longitude != null && Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)
+    ? { lat, lng, sig: addressSig(address) } : null;
+  return geo ? { address, geo } : { address };
 }
 
 export function totalsOf(node) {
