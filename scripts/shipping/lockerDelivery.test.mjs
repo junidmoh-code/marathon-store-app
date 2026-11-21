@@ -732,6 +732,15 @@ describe("the locker box size (Junid, 21 Nov 2026: the smallest real box each pa
     expect(lockerSizeFor({}, est({ pairs: 0, lengthCm: 40, widthCm: 30, heightCm: 18, actualKg: 16 }))).toBeNull();
     expect(lockerSizeFor({}, est({ pairs: 8, lengthCm: 34, widthCm: 46, heightCm: 52, actualKg: 12 }))).toBeNull();
     expect(declaredParcel({}, est({ pairs: 8, lengthCm: 34, widthCm: 46, heightCm: 52, actualKg: 12 }))).toMatchObject({ kind: "tooBig", size: null });
+    // one pair with so much on top it is longer than the L box any way round (60 × 41 × 41): no locker, a person books it
+    expect(lockerSizeFor({}, est({ pairs: 1, lengthCm: 34, widthCm: 23, heightCm: 62, actualKg: 6, overflowBundles: 8 }))).toBeNull();
+  });
+  it("the declaration fits its box: a one-shoe override heavier or taller than M is declared L; past 15 kg refused", () => {
+    const cfg = (parcel) => ({ locker: { parcel } });
+    expect(declaredParcel(cfg({ lengthCm: 34, widthCm: 23, heightCm: 13, kg: 11 }), null)).toMatchObject({ size: "L", actualKg: 11 });
+    expect(declaredParcel(cfg({ lengthCm: 34, widthCm: 23, heightCm: 22, kg: 1.5 }), null)).toMatchObject({ size: "L", heightCm: 41 });
+    expect(declaredParcel(cfg({ lengthCm: 34, widthCm: 23, heightCm: 13, kg: 16 }), null)).toMatchObject({ kind: "tooBig", size: null });
+    expect(declaredParcel({}, null)).toEqual({ kind: "oneShoe", size: "M", lengthCm: 34, widthCm: 23, heightCm: 13, actualKg: 1.5 });
   });
   it("the service: the cheapest quoted for a box at least the chosen size", () => {
     const rates = [{ code: "D2LXS - ECO", rate: 86.51 }, { code: "D2LS - ECO", rate: 97.46 }, { code: "D2LM - ECO", rate: 130.31 }, { code: "D2LL - ECO", rate: 192.72 }];

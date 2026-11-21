@@ -205,7 +205,7 @@ export function lockerSizeFor(cfg, estimate) {
     const box = lockerBox(cfg, "L");
     // The whole order must fit the L box: its weight always, its size when it is a stack of shoeboxes (clothes squash).
     if (!(kg <= Number(box?.maxKg ?? 15))) return null;
-    if (pairs >= 2 && box && !fitsBox([p.lengthCm, p.widthCm, p.heightCm], kg, box)) return null;
+    if (pairs >= 1 && box && !fitsBox([p.lengthCm, p.widthCm, p.heightCm], kg, box)) return null;
   }
   return size;
 }
@@ -222,14 +222,17 @@ export function declaredParcel(cfg, estimate, count = 1) {
   if (count > 1) return { ...shoe, size: "M" };
   const p = estimate?.parcels?.length === 1 ? estimate.parcels[0] : null;
   const kg = Number(p?.actualKg) > shoe.actualKg ? Number(p.actualKg) : shoe.actualKg;
-  const size = lockerSizeFor(cfg, estimate);
+  let size = lockerSizeFor(cfg, estimate);
+  // The declaration itself must fit its box too (a /config/shipping one-shoe override can be heavier or taller than M).
+  if (size === "M" && !fitsBox([shoe.lengthCm, shoe.widthCm, shoe.heightCm], kg, lockerBox(cfg, "M"))) size = "L";
+  if (size === "L" && !(kg <= Number(lockerBox(cfg, "L")?.maxKg ?? 15))) size = null;
   const dims = p ? [p.lengthCm, p.widthCm, p.heightCm].map(Number) : [];
   const own = dims.length === 3 && dims.every((n) => Number.isFinite(n) && n > 0);
   if (size === "M") return { ...shoe, actualKg: kg, size };
   if (size === "L") {
     return own && fitsBox(dims, kg, lockerBox(cfg, "L"))
       ? { kind: "wholeOrder", size, lengthCm: dims[0], widthCm: dims[1], heightCm: dims[2], actualKg: kg }
-      : { kind: "wholeOrder", size, lengthCm: shoe.lengthCm, widthCm: shoe.widthCm, heightCm: shoe.heightCm * 2, actualKg: kg };
+      : { kind: "wholeOrder", size, lengthCm: Math.min(shoe.lengthCm, 60), widthCm: Math.min(shoe.widthCm, 41), heightCm: Math.min(shoe.heightCm * 2, 41), actualKg: kg };
   }
   return { kind: "tooBig", size: null, ...(own ? { lengthCm: dims[0], widthCm: dims[1], heightCm: dims[2] } : { lengthCm: shoe.lengthCm, widthCm: shoe.widthCm, heightCm: shoe.heightCm }), actualKg: Number(p?.actualKg) || kg };
 }
