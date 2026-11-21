@@ -301,7 +301,7 @@ function buildPosterSvg({ W, H, rows, total, anchorsPx, headPx, scale = 1, heade
   const totalSize = Math.min(maxTotalSize, type.sizeForWidth(totalText, innerW - 48, { font: "anton" }));
   out.push(T(totalText, { font: "anton", size: totalSize, x: px0 + innerW / 2, y: P.total.top + P.total.h - 28 * k, anchor: "middle", fill: "#fff" }));
   const delOpts = { font: "archivo", weight: 700, size: 10.5, letterSpacing: 1.4 };
-  const delText = "FREE DELIVERY ON ORDERS OVER R999";
+  const delText = "FREE DELIVERY ON ORDERS FROM R2,000";
   const delW = 20 + 8 + type.measure(delText, delOpts);
   const dx = px0 + (innerW - delW) / 2;
   out.push(icon("truck", dx, P.deliveryY - 14, 20, INK, 1.5));

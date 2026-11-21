@@ -21,10 +21,13 @@
   (19 of them, R1,000–R9,700) and every order below it was charged R99
   (22 of them, R250–R850). No order contradicted the rule.
 
+  21 Nov 2026 (Junid): free shipping moved from R1,000 to R2,000; R99 below that.
+  Also in: snippets/marathon-card.liquid (Jamie reads that line), snippets/free-shipping-nudge.liquid.
+
   IF THE RATES CHANGE, CHANGE THEM HERE. Nothing else reads them.
 {%- endcomment -%}
 
-{%- assign free_from = 1000 -%}
+{%- assign free_from = 2000 -%}
 {%- assign flat_rate = 99 -%}
 
 <div class="delivery-promise" role="note">
@@ -32,7 +35,7 @@
     <strong>Delivered anywhere in South Africa.</strong>
   </p>
   <p class="delivery-promise__line">
-    R{{ flat_rate }} delivery — free on orders over R{{ free_from }}.
+    R{{ flat_rate }} delivery — free on orders from R2,000.
   </p>
   {%- if shop.shipping_policy.body != blank -%}
     <p class="delivery-promise__line delivery-promise__link">
