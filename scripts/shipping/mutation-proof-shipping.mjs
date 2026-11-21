@@ -53,7 +53,7 @@ const MUTATIONS = [
   { id: "L5", file: BOOK, guard: "an order already carrying a shipmentId is never booked again",
     from: "if (order?.shipping?.shipmentId) {", to: "if (false) {" },
   { id: "L6", file: BOOK, guard: "a held booking claim blocks a second booking",
-    from: "(cur && cur.state !== \"failed\" ? undefined :", to: "(false ? undefined :" },
+    from: "if (cur && cur.state !== \"failed\") return undefined;", to: "if (false) return undefined;" },
   { id: "L7", file: BOOK, guard: "a 5xx/timeout leaves the claim UNKNOWN (TCG may have booked it)",
     from: "const lost = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;", to: "const lost = false;" },
   { id: "L8", file: BOOK, guard: "live refuses without a collection contact / with no box",
