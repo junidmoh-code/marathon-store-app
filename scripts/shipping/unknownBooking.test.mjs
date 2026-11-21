@@ -235,7 +235,9 @@ describe("placing the customer (#2181: a Limpopo customer was placed in Cape Tow
   it("inProvince refuses a hit in another province", () => {
     expect(inProvince(capeTown, LP)).toBe(false);
     expect(inProvince(street, LP)).toBe(true);
-    expect(inProvince(capeTown, { ...LP, zone: "" })).toBe(true);
+    // No typed province: the postal code (0933, Limpopo) still judges; with neither, nothing is judged.
+    expect(inProvince(capeTown, { ...LP, zone: "" })).toBe(false);
+    expect(inProvince(capeTown, { ...LP, zone: "", code: "" })).toBe(true);
   });
 
   it("geocode never returns a point outside the province, nor a street for the town", async () => {
@@ -485,5 +487,59 @@ describe("Shopify's point in the wrong province is not used (should-fix 5)", () 
     const at = await placeAddress(LP, { geo: { lat: -34, lng: 18.6 }, fetchImpl: wc, wait: async () => {}, base: async () => ({ lat: -23.3, lng: 30.7, from: "Khomanani, Limpopo" }) });
     expect(at.by).not.toBe("shopify");
     expect(at.lat).toBe(-23.3);
+  });
+});
+
+// ── 21 Nov 2026 regression: customers type the wrong province (#2330, #2338, #2340) ──
+import { postalProvinces, allowedProvinces, isPlace } from "./bookReturn.mjs";
+describe("the province the order may be in: the typed one AND the postal code's", () => {
+  const fs = (name) => ({ lat: "-29.2", lon: "26.7", class: "place", type: "town", display_name: `${name}, Free State, South Africa`, address: { state: "Free State" } });
+  it("postal codes → provinces", () => {
+    expect(postalProvinces("0500")).toEqual(["LP"]);
+    expect(postalProvinces("0933")).toEqual(["LP"]);
+    expect(postalProvinces("9781")).toEqual(["FS"]);
+    expect(postalProvinces("9585")).toEqual(["FS"]);
+    expect(postalProvinces("4001")).toEqual(["KZN"]);
+    expect(postalProvinces("7785")).toEqual(["WC"]);
+    expect(postalProvinces("")).toEqual([]);
+  });
+
+  it("#2338 Botshabelo 9781 typed Western Cape: a Free State hit is accepted", () => {
+    const a = { city: "Botshabelo", zone: "WC", code: "9781" };
+    expect(allowedProvinces(a)).toEqual(["WC", "FS"]);
+    expect(inProvince(fs("Botshabelo"), a)).toBe(true);
+  });
+
+  it("#2340 Tumahole, Parys 9585 typed Gauteng: Free State accepted; #2330 Rooiberg 0500 typed Gauteng: Limpopo accepted", () => {
+    expect(inProvince(fs("Parys"), { city: "Tumahole, Parys", zone: "GP", code: "9585" })).toBe(true);
+    expect(inProvince({ address: { state: "Limpopo" } }, { city: "27 Blankblaar Rooiberg", zone: "GP", code: "0500" })).toBe(true);
+  });
+
+  it("#2181 is still safe: Khomanani 0933 typed Limpopo never takes the Cape Town building", () => {
+    expect(inProvince({ address: { state: "Western Cape" } }, { city: "Khomanani", zone: "LP", code: "0933" })).toBe(false);
+  });
+
+  it("Shopify's point in the postal code's province is used even when the typed province is wrong", async () => {
+    const freeState = async () => ({ ok: true, json: async () => ({ address: { state: "Free State" }, display_name: "Botshabelo, Free State" }) });
+    const a = { street_address: "1564 section A", city: "Botshabelo", zone: "WC", code: "9781" };
+    expect(await pointInProvince({ lat: -29.27, lng: 26.73 }, a, { fetchImpl: freeState })).toBe(true);
+    expect(await placeAddress(a, { geo: { lat: -29.27, lng: 26.73 }, fetchImpl: freeState, base: async () => { throw new Error("never"); } })).toMatchObject({ by: "shopify" });
+  });
+
+  it("a residential area is a place (Rooiberg is mapped as landuse=residential); a street or a peak is not", () => {
+    expect(isPlace({ class: "landuse", type: "residential" })).toBe(true);
+    expect(isPlace({ class: "highway", type: "residential" })).toBe(false);
+    expect(isPlace({ class: "natural", type: "peak" })).toBe(false);
+  });
+
+  it("a street typed into the town field: the town's last word is tried with each allowed province", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const asked = [];
+      const fetchImpl = async (url) => { asked.push(decodeURIComponent(url.split("q=")[1])); return { ok: true, json: async () => (asked.at(-1) === "Rooiberg, Limpopo" ? [{ lat: "-24.77", lon: "27.73", class: "landuse", type: "residential", address: { state: "Limpopo" } }] : []) }; };
+      const p = geocode({ street_address: "27 Blankblaar rooiberg", city: "27 Blankblaar Rooiberg", zone: "GP", code: "0500" }, { fetchImpl });
+      await vi.runAllTimersAsync();
+      expect(await p).toMatchObject({ lat: -24.77, from: "Rooiberg, Limpopo" });
+    } finally { vi.useRealTimers(); }
   });
 });

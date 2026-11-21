@@ -54,7 +54,7 @@ import { normalizeRates, chooseRate } from "../../src/shipping/chooseService.js"
 import { DEFAULT_SHIPPING_CONFIG } from "../../src/shipping/shippingConfig.js";
 import { quoteParcel, tcgParcel } from "./quote.mjs";
 import { addressSig, tcgZone } from "../../src/shipping/orderShipment.js";
-import { geocode, nearestLockers, placedByStreet, nominatimHit, inProvince } from "./bookReturn.mjs";
+import { geocode, nearestLockers, placedByStreet, nominatimHit, inProvince, allowedProvinces } from "./bookReturn.mjs";
 
 export const NO_CODE_NOTE = "No collection code exists at booking: Courier Guy SMSes the PIN to the customer's phone when the parcel lands in the locker.";
 export const D2L_MODE = "door_to_locker";
@@ -130,7 +130,7 @@ export function lockerAddressPayload(payload, locker) {
  * reverse lookup failed — the point is then used, as it was validated by Shopify). OpenStreetMap reverse, province level.
  */
 export async function pointInProvince(at, address, { fetchImpl = globalThis.fetch } = {}) {
-  if (!str(address?.zone)) return null;
+  if (!str(address?.zone) && !allowedProvinces(address).length) return null;
   try {
     const res = await fetchImpl(`https://nominatim.openstreetmap.org/reverse?format=json&zoom=5&addressdetails=1&lat=${Number(at.lat)}&lon=${Number(at.lng)}`, {
       headers: { "User-Agent": "marathon-club-shipping/1.0", Accept: "application/json" },

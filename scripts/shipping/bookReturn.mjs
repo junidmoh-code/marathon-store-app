@@ -55,6 +55,12 @@ const km = (a, b) => {
   return 2 * 6371 * Math.asin(Math.sqrt(h));
 };
 
+/** The last word of a town field that carries more (a number or a street before it), else "". Pure. */
+const townWord = (city) => {
+  const words = str(city).split(/[\s,]+/).filter(Boolean);
+  return words.length > 1 && (/\d/.test(str(city)) || words.length > 2) ? words[words.length - 1] : "";
+};
+
 export const MAX_LOCKER_KM = 30;
 export const MAX_TOWN_LOCKER_KM = 15;
 const tryLabels = (address) => [...new Set([
@@ -62,7 +68,10 @@ const tryLabels = (address) => [...new Set([
   [address.local_area, address.city, address.code],
   [address.city, address.code],
   // The town with its PROVINCE (#2181, 21 Nov 2026): "Khomanani, 0933" alone matched a Khomanani in Khayelitsha.
-  [address.city, provinceName(address.zone)],
+  // Every province the order may be in: the one typed AND the postal code's (customers pick the wrong one).
+  ...allowedProvinces(address).map((zone) => [address.city, provinceName(zone)]),
+  // A street typed into the town field ("27 Blankblaar Rooiberg", #2330): its last word is the town.
+  ...(townWord(address.city) ? allowedProvinces(address).map((zone) => [townWord(address.city), provinceName(zone)]) : []),
 ].map((parts) => [...new Set(parts.map(str).filter(Boolean))].join(", ")).filter(Boolean))];
 
 // TCG zone → the province name OpenStreetMap gives as address.state.
@@ -73,25 +82,56 @@ const PROVINCES = {
 const squash = (s) => str(s).toLowerCase().replace(/[^a-z]/g, "");
 export const provinceName = (zone) => PROVINCES[str(zone).toUpperCase()] ?? "";
 /**
- * Is an OpenStreetMap hit in the address's province? Pure. #2181 (21 Nov 2026): a Limpopo customer in
- * "Khomanani" was placed in Khayelitsha, Cape Town (a building called Khomanani), and the booking went to a
- * Cape Town locker. A hit whose state is known and is not the order's province is never used. An address
- * without a province, or a hit without a state, is not judged.
+ * The province(s) a South African postal code is in — coarse ranges, two where a range straddles a border (2026
+ * codes; checked against this account's own shipments). [] for a code not covered. Pure.
+ */
+const POSTAL_RANGES = [
+  [1, 199, ["GP"]], [200, 299, ["NW", "GP"]], [300, 499, ["NW"]], [500, 999, ["LP"]],
+  [1000, 1099, ["MP", "GP"]], [1100, 1399, ["MP"]], [1400, 2199, ["GP"]], [2200, 2499, ["MP"]],
+  [2500, 2899, ["NW"]], [2900, 2999, ["KZN", "MP"]], [3000, 4699, ["KZN"]], [4700, 4799, ["KZN", "EC"]],
+  [4800, 6499, ["EC"]], [6500, 8099, ["WC"]], [8100, 8999, ["NC"]], [9000, 9299, ["FS", "NC"]], [9300, 9999, ["FS"]],
+];
+export function postalProvinces(code) {
+  const c = str(code);
+  if (!/^\d{4}$/.test(c)) return [];
+  const n = Number(c);
+  return POSTAL_RANGES.find(([a, b]) => n >= a && n <= b)?.[2] ?? [];
+}
+/**
+ * Every province the order may be in: the one the customer typed AND the one(s) its postal code is in. Pure.
+ * 21 Nov 2026: customers pick the wrong province — #2330 Rooiberg 0500 typed Gauteng (Limpopo), #2338 Botshabelo
+ * 9781 typed Western Cape (Free State), #2340 Tumahole, Parys 9585 typed Gauteng (Free State). Judging by the typed
+ * province alone threw away Shopify's correct point and every OpenStreetMap hit for all three.
+ */
+export function allowedProvinces(address) {
+  const typed = str(address?.zone).toUpperCase();
+  return [...new Set([...(PROVINCES[typed] ? [typed] : []), ...postalProvinces(address?.code)])];
+}
+
+/**
+ * Is a map hit in a province the order may be in (allowedProvinces)? Pure. #2181 (21 Nov 2026): a Limpopo customer
+ * in "Khomanani" 0933 was placed in Khayelitsha, Cape Town (a building called Khomanani) — neither the typed province
+ * nor the postal code's. An address with no province and no known postal code, or a hit without a state, is not judged.
  */
 export function inProvince(hit, address) {
-  const want = squash(provinceName(address?.zone) || address?.zone);
-  if (!want) return true;
+  const allowed = allowedProvinces(address).map((z) => squash(provinceName(z)));
+  if (!allowed.length) {
+    const raw = squash(address?.zone);
+    if (!raw) return true;
+    allowed.push(raw);
+  }
   const state = squash(hit?.address?.state);
-  if (state) return state === want;
+  if (state) return allowed.includes(state);
   const shown = squash(hit?.display_name);
-  return !shown || shown.includes(want);
+  return !shown || allowed.some((a) => shown.includes(a));
 }
 /**
  * Is a hit a PLACE (a town, suburb, village — or an area boundary), not a road or a building? Pure. The suburb/town
  * tries stand for the customer's area: #2181's "Khomanani, Limpopo" matched "Khomanani Street" in Nkowankowa, 80 km
  * from the customer. A hit without a class is not judged.
  */
-export const isPlace = (hit) => !hit?.class || hit.class === "place" || hit.class === "boundary";
+// A residential area counts (OpenStreetMap maps small towns such as Rooiberg, #2330, only as landuse=residential).
+export const isPlace = (hit) => !hit?.class || hit.class === "place" || hit.class === "boundary" || (hit.class === "landuse" && hit.type === "residential");
 const pickHit = (list, address, { placeOnly = false } = {}) => (Array.isArray(list) ? list : [])
   .find((h) => h && Number.isFinite(Number(h.lat)) && Number.isFinite(Number(h.lon)) && inProvince(h, address) && (!placeOnly || isPlace(h))) ?? null;
 export const nominatimHit = pickHit;
