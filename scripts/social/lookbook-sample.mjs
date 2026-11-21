@@ -110,7 +110,7 @@ async function specWireframe() {
     box(hw + 24, P.header.top, W - hw - 48, P.header.h, "BLACK BAR: THE EVERYDAY / LEGACY COLLECTION"),
     ...P.rows.map((r, i) => box(hw + 24, r.top + 8, W - hw - 48, r.h - 16, ["HAT", "JACKET", "TEE", "BOTTOMS", "BAG", "SNEAKERS"][i] + " — CUT-OUT | BRAND / NAME / R PRICE")),
     box(hw + 24, P.total.top, W - hw - 48, P.total.h, "BLACK: TOTAL + R8,643 (CONDENSED)"),
-    box(hw + 24, P.deliveryY - 20, W - hw - 48, 30, "TRUCK + FREE DELIVERY ON ORDERS OVER R999"),
+    box(hw + 24, P.deliveryY - 20, W - hw - 48, 30, "TRUCK + FREE DELIVERY ON ORDERS FROM R2,000"),
   ];
   return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${parts.join("")}</svg>`)).jpeg({ quality: 90 }).toBuffer();
 }
