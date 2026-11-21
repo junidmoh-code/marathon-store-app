@@ -331,12 +331,25 @@ HTTP 500 "cannot find a latitude/longitude for the address", which bookShipment 
   contact; Courier Guy files a locker shipment under the locker's address anyway). The order records
   `shipping/deliveryAddressFallback: "locker"`.
 - **"unknown" is checked at Courier Guy** (`scripts/shipping/unknownBooking.mjs`, from the orders tick before
-  SHIP and from fast-ship every 5 minutes): `GET /shipments` from the day before the claim, matched on
-  `customer_reference` ("#2181", a split "#2181 (1/2)") created after the claim minus 5 minutes. Found →
-  attached like a booking, the claim "booked", the order back to pending so Shopify is fulfilled with that
-  waybill. None after 10 minutes → the claim is released in a transaction on that very claim and the order
-  booked ONCE more (`shipping/unknownRecheck/rebooks`); a second "unknown" stays on the order with its
-  reason. Nobody is asked to check the portal.
+  SHIP and from fast-ship every 5 minutes): `GET /shipments` from the day before the claim, every page
+  (offset paging, oldest first — read against the live API), matched EXACTLY on `customer_reference`
+  ("#2181", a split "#2181 (1/2)"; "#1941" never matches "#1941-EX") created after the claim minus 5 minutes,
+  not cancelled. An answer that is not a shipments list, a repeated page or a page cap reached THROWS: "no
+  answer" is never "no shipment".
+  - Found → merged with the parcels already on `shipping/partial` (by shipment id) and attached like a
+    booking; the claim carries the waybill first (crash-safe), the order goes back to pending so Shopify is
+    fulfilled with it. A split with parcels still missing keeps the found ones as the checkpoint and books
+    only the rest.
+  - None after 10 minutes, live on → the claim is released in a transaction on that very claim and the order
+    booked once more. The allowance is counted by bookShipment only when that re-book reaches a create
+    (`courierBooking.rebooks`); a re-book refused (ceiling, no locker, live off) spends nothing.
+  - Attention, never a guess: more shipments than the order needs (possibly booked twice), a claim written
+    before this change (no shipment count on it), and — 30 minutes after every release — a late create that
+    made a second shipment (`shipping_recon/unknownReleased`). Nobody is asked to check the portal.
+- A door-to-door geocode 500 has no locker to fall back to: the claim is "failed" and the order shows
+  "Packed, courier not booked" with the reason (no retry loop). In a split, the fallback is decided once:
+  later parcels go straight to the locker's address. Shopify's point is checked against the order's
+  province (OpenStreetMap reverse) before it is used.
 
 ## The parcel rule (Junid, 23 Oct 2026 — ONE parcel, never split)
 

@@ -53,7 +53,7 @@ import {
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder, fetchShippingPoint } from "./shopifyOrders.mjs";
 import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey } from "./shipping.mjs";
-import { sweepUnknownBookings } from "../../shipping/unknownBooking.mjs";
+import { sweepUnknownBookings, RELEASED_PATH as UNKNOWN_RELEASED_PATH } from "../../shipping/unknownBooking.mjs";
 // The held-courier text (scripts/shipping/exchangeReturn.mjs releases an order carrying exactly this when Junid says good).
 export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
 import { mintHubCode } from "./orderRefs.mjs";
@@ -986,7 +986,8 @@ export async function recheckUnknownBookings(ctx) {
   try {
     const failed = await queryEq(ctx, "fulfilState", "courier_failed");
     const orders = Object.fromEntries(Object.entries(failed).filter(([, o]) => o?.shipping?.courierBooking?.state === "unknown"));
-    if (!Object.keys(orders).length) return [];
+    // Nothing unknown and no release waiting for its late look: no Courier Guy client, no call.
+    if (!Object.keys(orders).length && !(await db.ref(UNKNOWN_RELEASED_PATH).get()).exists()) return [];
     const client = ctx.courier ?? (ctx.courierClient ??= createCourierClient({ maxAttempts: 2, timeoutMs: 15_000 }));
     const out = await sweepUnknownBookings({ db, client, orders, now: () => Date.now(), log: ctx.courierLog ?? ((l) => log(`  ${l}`)) });
     for (const r of out) if (r.action !== "wait" && r.action !== "none") log(`  ↻ ${r.ref}: unknown booking — ${r.action}${r.waybill ? ` ${r.waybill}` : ""}`);

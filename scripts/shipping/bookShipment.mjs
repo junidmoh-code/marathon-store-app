@@ -325,7 +325,14 @@ export async function bookShipment(order, deps = {}) {
     return { skipped: true, reason: `no order at /online_orders/${key}` };
   }
   const claimRef = db.ref(`online_orders/${key}/shipping/courierBooking`);
-  const claim = await claimRef.transaction((cur) => (cur && cur.state !== "failed" ? undefined : { state: "booking", at: now() }));
+  // A claim the unknown-booking check released (unknownBooking.mjs: no shipment at Courier Guy) is re-booked here: its
+  // `released` and `rebooks` are carried, and the re-book is COUNTED only once a create is attempted (below).
+  let prior = null;
+  const claim = await claimRef.transaction((cur) => {
+    if (cur && cur.state !== "failed") return undefined;
+    prior = cur?.released ? { released: cur.released, rebooks: Number(cur.rebooks) || 0 } : null;
+    return { state: "booking", at: now(), ...(prior ?? {}) };
+  });
   if (!claim.committed) {
     return { skipped: true, reason: `booking already ${claim.snapshot?.val()?.state ?? "claimed"}` };
   }
@@ -333,7 +340,7 @@ export async function bookShipment(order, deps = {}) {
   // Re-read live AFTER winning the claim: the quotes took seconds, and a
   // switch turned off in that window must still stop this booking.
   if (!(await readLive(db))) {
-    await claimRef.set({ state: "failed", at: now(), error: "live switched off before booking" });
+    await claimRef.set({ state: "failed", at: now(), error: "live switched off before booking", ...(prior ?? {}) });
     log(`bookShipment ${key} DRY RUN (live switched off mid-booking)`);
     return { skipped: true, dryRun: plan.payload, parcel: plan.parcel };
   }
@@ -352,12 +359,14 @@ export async function bookShipment(order, deps = {}) {
     const nth = payloads.length > 1 ? ` (parcel ${i + 1} of ${payloads.length})` : "";
     let res;
     try {
+      // The address fallback is decided once per order: a split's later parcels go straight to the locker's address.
+      if (addressFallback && plan.locker) payloads[i] = lockerAddressPayload(payloads[i], plan.locker) ?? payloads[i];
       try {
         res = await client.createShipment(payloads[i]);
       } catch (first) {
         // Courier Guy could not place the customer's street (a definite refusal, nothing was made): a door-to-locker
         // parcel goes to the locker anyway, so it is sent ONCE more with the locker's own address and point.
-        const retry = isGeocodeRefusal(first) && plan.locker ? lockerAddressPayload(payloads[i], plan.locker) : null;
+        const retry = isGeocodeRefusal(first) && plan.locker && !addressFallback ? lockerAddressPayload(payloads[i], plan.locker) : null;
         if (!retry) throw first;
         log(`bookShipment ${key} CREATE REFUSED${nth} (Courier Guy could not place the address: ${String(first?.message || first).slice(0, 160)}) — once more with the locker's own address`);
         payloads[i] = retry;
@@ -366,7 +375,8 @@ export async function bookShipment(order, deps = {}) {
       }
     } catch (err) {
       // 408 means the request may still have run — as ambiguous as a 5xx. A geocode refusal is not: nothing was made.
-      const ambiguous = (!(err?.status >= 400 && err?.status < 500) || err?.status === 408) && !isGeocodeRefusal(err);
+      const lost = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;
+      const ambiguous = lost && !isGeocodeRefusal(err);
       const kept = await keepPartial();
       await claimRef.set({
         state: ambiguous || !kept ? "unknown" : "failed", at: now(), error: `${String(err?.message || err).slice(0, 300)}${nth}`,
@@ -374,6 +384,8 @@ export async function bookShipment(order, deps = {}) {
         // What the attempt was, for the unknown-booking check (unknownBooking.mjs): the reference it carried and,
         // door-to-locker, the locker — so a shipment Courier Guy did make is attached with its locker.
         ...(ambiguous || !kept ? { ref: plan.ref ?? null, shipments: payloads.length, ...(plan.locker ? { locker: plain(plan.locker) } : {}) } : {}),
+        // A re-book after a release: counted now that it reached a create (MAX_AUTO_REBOOKS stops the next one).
+        ...(prior ? { released: prior.released, rebooks: (ambiguous || !kept) ? prior.rebooks + 1 : prior.rebooks } : {}),
       });
       log(`bookShipment ${key} CREATE ${ambiguous ? "UNKNOWN" : "FAILED"}${nth} ${err?.message || err}`);
       throw err;
@@ -382,7 +394,7 @@ export async function bookShipment(order, deps = {}) {
     // as "unknown" (nothing re-books it) and let a person check the portal.
     if (!res || typeof res !== "object" || (res.id == null && !res.short_tracking_reference && !res.custom_tracking_reference)) {
       await keepPartial();
-      await claimRef.set({ state: "unknown", at: now(), error: `create returned no shipment id or tracking reference${nth}`, ...(made.length ? { booked: made.map((m) => m.waybill) } : {}), ref: plan.ref ?? null, shipments: payloads.length, ...(plan.locker ? { locker: plain(plan.locker) } : {}) });
+      await claimRef.set({ state: "unknown", at: now(), error: `create returned no shipment id or tracking reference${nth}`, ...(made.length ? { booked: made.map((m) => m.waybill) } : {}), ref: plan.ref ?? null, shipments: payloads.length, ...(plan.locker ? { locker: plain(plan.locker) } : {}), ...(prior ? { released: prior.released, rebooks: prior.rebooks + 1 } : {}) });
       log(`bookShipment ${key} CREATE UNCONFIRMED${nth} — response named no shipment: ${JSON.stringify(res)?.slice(0, 300)}`);
       throw new Error("bookShipment: Courier Guy's create response named no shipment — check the portal before retrying");
     }

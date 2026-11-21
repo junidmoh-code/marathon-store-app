@@ -29,6 +29,8 @@ const REC = "scripts/shipping/reconcile.mjs";
 const ORDER = "src/shipping/orderShipment.js";
 const LOCKER = "scripts/shipping/lockerDelivery.mjs";
 const REBOOK = "scripts/shipping/rebook-locker.mjs";
+const UNK = "scripts/shipping/unknownBooking.mjs";
+const BRET = "scripts/shipping/bookReturn.mjs";
 const TESTS = ["src/shipping", "scripts/shipping", "src/components/admin/ShippingCard.gate.test.jsx"];
 
 const CHILD_ENV = {
@@ -53,7 +55,7 @@ const MUTATIONS = [
   { id: "L6", file: BOOK, guard: "a held booking claim blocks a second booking",
     from: "(cur && cur.state !== \"failed\" ? undefined :", to: "(false ? undefined :" },
   { id: "L7", file: BOOK, guard: "a 5xx/timeout leaves the claim UNKNOWN (TCG may have booked it)",
-    from: "const ambiguous = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;", to: "const ambiguous = false;" },
+    from: "const lost = !(err?.status >= 400 && err?.status < 500) || err?.status === 408;", to: "const lost = false;" },
   { id: "L8", file: BOOK, guard: "live refuses without a collection contact / with no box",
     from: "  if (plan.liveBlockers.length) {", to: "  if (false) {" },
   { id: "L9", file: ORDER, guard: "the order code is never used as the /online_orders key",
@@ -110,6 +112,44 @@ const MUTATIONS = [
     from: "    parcels: [tcgParcel(shoe)],\n    service_level_code: rate.code,", to: "    parcels: (estimate?.parcels ?? []).map((p) => tcgParcel(p)),\n    service_level_code: rate.code," },
   { id: "D14", file: BOOK, guard: "a split interrupted mid-way books only the rest on retry",
     from: "const made = partial ? [...partial.shipments] : [];", to: "const made = [];" },
+
+  // ── AN "UNKNOWN" BOOKING, CHECKED AT COURIER GUY (#2181, 21 Nov 2026) ─────
+  { id: "U1", file: UNK, guard: "the claim moves only while it is the very unknown claim that was checked (never twice)",
+    from: "const sameClaim = (cur) => cur && cur.state === \"unknown\" && Number(cur.at) === claimAt;", to: "const sameClaim = (cur) => !!cur;" },
+  { id: "U2", file: BOOK, guard: "Courier Guy's geocode 500 is recognised (the locker-address fallback)",
+    from: "  if (!(status >= 400 && status < 600) || status === 408) return false;", to: "  return false;" },
+  { id: "U3", file: BOOK, guard: "a geocode refusal is a definite failure, never \"unknown\"",
+    from: "const ambiguous = lost && !isGeocodeRefusal(err);", to: "const ambiguous = lost;" },
+  { id: "U4", file: UNK, guard: "at most one automatic re-book",
+    from: "if (Number(claim.rebooks) >= MAX_AUTO_REBOOKS) {", to: "if (false) {" },
+  { id: "U5", file: UNK, guard: "a cancelled shipment is not the order's booking",
+    from: ".filter((s) => !/cancel/i.test(str(s?.status)))", to: ".filter(() => true)" },
+  { id: "U6", file: UNK, guard: "the reference matches exactly (#1941 is never #1941-EX)",
+    from: "return !!want && (r === want || r.startsWith(`${want} (`));", to: "return !!want && r.startsWith(want);" },
+  { id: "U7", file: UNK, guard: "an answer that is not a shipment list is an error, never \"no shipment\"",
+    from: "if (!res || !Array.isArray(res.shipments)) throw", to: "if (false) throw" },
+  { id: "U8", file: UNK, guard: "an ignored offset is an error, never \"no shipment\"",
+    from: "if (page > 0 && keys.every((k) => seen.has(k))) throw", to: "if (false) throw" },
+  { id: "U9", file: UNK, guard: "the page cap with a full last page is an error",
+    from: "if (page >= maxPages) throw", to: "if (page >= maxPages) break; if (false) throw" },
+  { id: "U10", file: UNK, guard: "the parcels an earlier attempt booked are merged in (no second waybill for parcel 1)",
+    from: "const made = mergeMade(earlier, found);", to: "const made = mergeMade([], found);" },
+  { id: "U11", file: UNK, guard: "more shipments than the order needs go to attention",
+    from: "if (made.length > wanted) return flag(", to: "if (false) return flag(" },
+  { id: "U12", file: UNK, guard: "a claim from before this change is never attached on a guess",
+    from: "const legacy = claim.shipments == null;", to: "const legacy = false;" },
+  { id: "U13", file: UNK, guard: "nothing is released while live is off",
+    from: "if (!(await readLive(db))) return { action: \"live_off\" };", to: "" },
+  { id: "U14", file: UNK, guard: "the claim carries the waybill before the order's fields (the attach crash)",
+    from: "const ok = await moveClaim(plain({ state: \"booked\", at: t, recovered: true, shipmentId: first.shipmentId, waybill: first.waybill,", to: "const ok = await moveClaim(plain({ state: \"booked\", at: t, recovered: true, shipmentId: null, waybill: null," },
+  { id: "U15", file: BOOK, guard: "a re-book is counted once it reaches a create",
+    from: "rebooks: (ambiguous || !kept) ? prior.rebooks + 1 : prior.rebooks", to: "rebooks: prior.rebooks" },
+  { id: "U16", file: BRET, guard: "an OpenStreetMap hit in another province is never used",
+    from: "  if (state) return state === want;", to: "  if (state) return true;" },
+  { id: "U17", file: BRET, guard: "the town tries take only a place, never a street",
+    from: "export const isPlace = (hit) => !hit?.class || hit.class === \"place\" || hit.class === \"boundary\";", to: "export const isPlace = () => true;" },
+  { id: "U18", file: LOCKER, guard: "Shopify's point in another province is not used",
+    from: "(await pointInProvince(geo, address, { fetchImpl })) !== false", to: "true" },
 
   // ── THE ESTIMATOR ────────────────────────────────────────────────────────
   { id: "E1", file: EST, guard: "chargeable = max(actual, volumetric)",
