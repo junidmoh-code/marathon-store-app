@@ -3074,7 +3074,8 @@ exports.generateProductPhotos = onCall(
           // (No clean cut-out: the generated photo is kept — it was paid for — and the record says it drifted.)
           let cut = null;
           if (driftFallback) {
-            try { cut = await cutoutOnWhite(buffer); }
+            // The REAL product (the staff photo the check judged against), never an earlier generated hero.
+            try { cut = await cutoutOnWhite(truth); }
             catch (err) {
               console.warn(`generateProductPhotos: ${id} no cut-out for the drift fallback:`, err && err.message);
               // A garment that failed the check twice is never proposed (Junid, 21 Nov 2026: never post a failed image).

@@ -294,3 +294,24 @@ test("a product made through a staging look is never checked as a garment (it go
   assert.deepEqual(seen, [{}], "the plain drift check, not the garment one");
   assert.equal(r.drift.check, undefined);
 });
+
+test("a category re-routed to a clothing-family kit gets the garment check as well as the finish", async () => {
+  const src = await sharp({ create: { width: 600, height: 800, channels: 3, background: { r: 100, g: 60, b: 30 } } }).jpeg().toBuffer();
+  const answer = await sharp({ create: { width: 1600, height: 1600, channels: 3, background: { r: 230, g: 230, b: 225 } } }).composite([{ input: await sharp({ create: { width: 500, height: 500, channels: 3, background: { r: 100, g: 60, b: 30 } } }).png().toBuffer(), left: 550, top: 550 }]).jpeg().toBuffer();
+  const refBuf = await sharp({ create: { width: 1000, height: 1000, channels: 3, background: "#5a5a5a" } }).jpeg().toBuffer();
+  const seen = [];
+  const deps = {
+    generation: { imageModel: "m", imageSize: "4K", layers: {} }, conditionClause: "C.",
+    fetchBytes: async () => ({ buffer: src }), image: async () => ({ buffer: answer, mime: "image/jpeg", usage: null }),
+    upload: async (p) => ({ path: p, url: `https://firebasestorage.googleapis.com/${p}` }), now: () => 9,
+    styleKitFor: async () => ({ kit: "scarves", label: "Scarves", dedicated: true, prompt: "P", promptFamily: "clothing", refs: [refBuf], refIds: ["a"] }),
+    driftCheck: async (o, g, opts) => { seen.push(opts || {}); return { checked: true, drift: false, issues: "" }; },
+  };
+  await generate({ item: { pid: "p" }, product: { categoryKey: "scarves", name: "Scarf", photoUrl: "https://firebasestorage.googleapis.com/o.jpg" }, genId: "g", deps });
+  assert.deepEqual(seen, [{ garment: true }]);
+});
+
+test("the garment check keeps the condition rule: worn-in creasing is not a fault; packing/fold/hanger creases are", () => {
+  assert.match(GARMENT_CHECK_PROMPT, /WORN INTO the fabric by use/);
+  assert.match(GARMENT_CHECK_PROMPT, /packing creases, fold lines and hanger creases are ALWAYS faults/);
+});

@@ -846,11 +846,15 @@ test("garment check: failed twice and no clean cut-out → NO photo lands; both 
   const g = garmentCheck([["lines"], ["lines"]]);
   w.deps.kit = { driftCheck: g.driftCheck };
   w.deps.cutout = async () => null;
+  // Every spend write, not just the last (the fake database keeps only the last increment).
+  const spends = [];
+  const ref = w.db.ref.bind(w.db);
+  w.db.ref = (path) => { const r = ref(path); if (path === core.ROOT) { const up = r.update.bind(r); r.update = (v) => { if (v["stats/totalSpentZar"]) spends.push(v["stats/totalSpentZar"][".sv"].increment); return up(v); }; } return r; };
   await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /quality check twice and the product could not be cut out cleanly/);
   const item = await itemOf(w.db);
   assert.ok(!item.generations || !Object.keys(item.generations).length, "the failed photo is never put on the card");
-  // (The fake database keeps the last increment written: the images were each booked.)
-  assert.ok((await w.db.ref(`${core.ROOT}/stats/totalSpentZar`).once()).val()?.[".sv"]?.increment > 0, "what was paid is still counted");
+  assert.equal(spends.length, 2, "both paid images are booked, once each");
+  assert.ok(spends.every((z) => z > 0));
 });
 
 test("garment check: a check that cannot run never costs a retry (fail-open, as the drift check)", async () => {
