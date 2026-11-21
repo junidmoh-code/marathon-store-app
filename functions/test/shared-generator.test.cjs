@@ -128,8 +128,19 @@ test("THE LAST-GOOD PROMPTS are rebuilt byte for byte (G-0101 footwear, G-0119 c
   const { placementText } = await import("../newArrivals/studio/compose.mjs");
   for (const g of [lastGood.g0101, lastGood.g0119]) {
     const { kind, categoryKey, productName, boxMode } = g.args;
-    const p = studioPrompt({ kind, categoryKey, productName, boxMode, conditionClause: CONDITION_CLAUSE, placement: placementText(kind, spec[kind]), layers: generation.layers });
+    // THE GARMENT FINISH (Junid, 21 Nov 2026) is the one paragraph added to clothing since: with it switched off
+    // (and steam as it was on 4 Oct) the prompt is still the last-good one byte for byte; with it on, it is the
+    // last-good one with exactly that paragraph before the studio brief.
+    const asOn4Oct = { ...generation.layers, garmentFinish: false, steam: true };
+    const p = studioPrompt({ kind, categoryKey, productName, boxMode, conditionClause: CONDITION_CLAUSE, placement: placementText(kind, spec[kind]), layers: asOn4Oct });
     assert.equal(p.text, g.promptText, `${g.code}: the prompt drifted from the last-good one`);
+    const now = studioPrompt({ kind, categoryKey, productName, boxMode, conditionClause: CONDITION_CLAUSE, placement: placementText(kind, spec[kind]), layers: generation.layers });
+    if (kind === "footwear") assert.equal(now.text, g.promptText, `${g.code}: footwear is untouched by the garment finish`);
+    else {
+      const { GARMENT_FINISH_LAYER } = await import("../newArrivals/studio/prompt.mjs");
+      assert.deepEqual(now.layers, ["garmentFinish"]);
+      assert.equal(now.text.replace(`${GARMENT_FINISH_LAYER}\n\n`, ""), g.promptText, `${g.code}: only the garment finish was added`);
+    }
     assert.equal(`${p.version}`, g.promptVersion.match(/\((.*)\)$/)[1]);
     assert.equal(g.model, generation.imageModel, `${g.code}: the same model`);
   }

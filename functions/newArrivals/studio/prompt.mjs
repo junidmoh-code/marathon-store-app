@@ -7,6 +7,7 @@
 // sent (composePrompt in marathon-group-poster).
 import { baselinePrompt, BASELINE_TEXT } from "./baseline-prompts.mjs";
 import { PACKAGING_LAYER } from "./compose.mjs";
+import { GARMENT_FINISH } from "../../lib/style-kit-catalogue.mjs";
 
 export const PROMPT_VERSION = "studio-2026-10-04.1";
 
@@ -31,6 +32,15 @@ export const STEAM_LAYER = [
   "Every print, logo, label, embroidery, stitch line, seam, pocket, zip and button stays exactly where and as it is,",
   "and the colour stays true — never lighter, darker or more saturated. Light it as the plate is lit.",
 ].join(" ");
+
+/**
+ * LAYER garmentFinish (Junid, 21 Nov 2026 — replaces `steam`): EVERY garment, T-shirts, polos and jerseys included
+ * (the brown knit polo that made him ask was a golf-t-shirt, so it had no steam layer at all): freshly steamed and
+ * pressed, a perfectly straight centred hang, crisp collar/placket/buttons, no artefact from the layout diagram or
+ * references, soft light with a subtle wall shadow. The text lives in lib/style-kit-catalogue.mjs so the Style Kit
+ * path and the Shopify publisher send the same words.
+ */
+export const GARMENT_FINISH_LAYER = GARMENT_FINISH;
 
 /**
  * LAYER footwearBox (replaces `packaging` when on): every shoe is shown with
@@ -71,6 +81,8 @@ export function layersFor({ kind, categoryKey = null, layers = {}, boxMode = "no
     if (layers.footwearBox) out.push({ name: "footwearBox", text: footwearBoxLayer(boxMode) });
     else if (layers.packaging) out.push({ name: "packaging", text: PACKAGING_LAYER });
     if (layers.footwearPose) out.push({ name: "footwearPose", text: FOOTWEAR_POSE_LAYER });
+  } else if (layers.garmentFinish) {
+    out.push({ name: "garmentFinish", text: GARMENT_FINISH_LAYER });
   } else if (layers.steam && !BASELINE_ONLY_KEYS.includes(String(categoryKey || ""))) {
     out.push({ name: "steam", text: STEAM_LAYER });
   }

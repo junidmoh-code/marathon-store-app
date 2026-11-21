@@ -351,3 +351,97 @@ export function parseDriftAnswer(text) {
     return { drift: v === "drifted", issues: String(j.issues || "").slice(0, 200) };
   } catch { return null; }
 }
+
+// ── THE GARMENT FINISH + THE GARMENT QUALITY CHECK (Junid, 21 Nov 2026) ─────
+// Junid called a brown knit polo (white collar) unprofessional: creased, hung
+// crooked, and the layout diagram's rectangle drawn into the wall. Every
+// clothing generation — T-shirts, polos, hoodies, jerseys, tracksuits, all of
+// them — now carries GARMENT_FINISH, and every one is checked after it is made
+// for the four faults he named PLUS the drift check's "same product". One call,
+// one answer. Failed → ONE retry told exactly what to fix → failed again → the
+// product cut out of its own photo. A failed image is never kept as the photo.
+
+/** Clothing — the products the garment finish and the garment check apply to. Pure. */
+export function isGarment(product) {
+  const p = product || {};
+  // A catalogue key that maps to a kit decides (a "Clothing" product filed under caps or bags is not a garment);
+  // only a product with no such key falls back on its top category.
+  const kit = CATEGORY_KIT[str(p.categoryKey)];
+  if (kit) return kit === "clothing" || kit === "jerseys" || kit === "tracksuits";
+  return p.category === "Clothing" || p.productType === "clothing";
+}
+
+export const GARMENT_FINISH = [
+  "GARMENT FINISH — this must look like a premium brand's own studio photograph of its clothing, nothing less.",
+  "1. FRESHLY STEAMED AND PRESSED: no wrinkles, creases, fold lines or crumpling from packing, storage or the hanger.",
+  "Every fold line, packing crease and hanger crease in the product photo is HANDLING, never wear — the condition rule",
+  "below lets it go, so it MUST go: show the garment as it looks straight off the steamer, never copy those creases.",
+  "The fabric is smooth and natural — never shiny, plastic or ironed flat — and the knit, piqué or rib texture is",
+  "sharp and clearly visible.",
+  "2. THE HANG: the garment hangs perfectly straight and centred on a straight hanger — shoulders level and",
+  "symmetrical, the hem straight and horizontal, both sleeves falling evenly at the same angle. Never twisted,",
+  "leaning, tilted, skewed or off-centre.",
+  "3. DETAILS CRISP: the collar lies flat with sharp, even edges and matching points; the placket is straight and",
+  "vertical; the buttons are aligned on it. Keep the real product's EXACT colour, collar colour, trims, logo and",
+  "buttons — the same number, colour and position as in the product photo.",
+  "4. NO ARTEFACTS: the result holds only the backdrop and the garment — never a rectangle, frame line, border,",
+  "box, dashed or guide line, grid, label or text taken from the layout diagram, the references or any other input",
+  "image. The other images set the scene only.",
+  "5. LIGHT: soft studio light with gentle depth and a subtle, soft shadow of the garment on the wall behind it,",
+  "matching the house-style Marathon wall's lighting and colour grade.",
+].join(" ");
+
+// The faults the check may name. "product" and "colour" are the drift check's; the rest are Junid's 21 Nov list.
+export const GARMENT_FAULTS = Object.freeze(["product", "colour", "lines", "wrinkles", "tilt"]);
+
+export const GARMENT_CHECK_PROMPT = [
+  "You are checking an AI studio photo of a CLOTHING item for a shop before it is posted. IMAGE 1 is the shop's",
+  "own photo of the REAL garment. IMAGE 2 is the new studio photo, which must show THE SAME garment, professionally.",
+  "The background, hanger, lighting, framing and size in the frame are allowed to change. Report each fault that",
+  "a customer would clearly notice in IMAGE 2:",
+  "\"product\" — a different garment, or a missing, changed or invented logo, graphic, print or detail;",
+  "\"colour\" — the body colour, collar colour, trims or button colour differ from IMAGE 1;",
+  "\"lines\" — any rectangle, frame line, border, box outline, dashed or guide line, grid, label or text in the",
+  "picture that is not part of the garment or the backdrop (the backdrop's own mesh, rails and posts are fine);",
+  "\"wrinkles\" — clearly visible wrinkles, creases, fold lines or crumpling on the garment: soft uneven ripples,",
+  "diagonal creases, crumpled areas or a fold with a raised ridge. Knit texture, ribbing, pleats and designed seams",
+  "are NOT wrinkles, and a straight, even line running across the garment that is also in IMAGE 1 (a knit panel",
+  "join, seam, stripe or rib line) is part of the design, NOT a wrinkle. Creasing WORN INTO the fabric by use that",
+  "is also in IMAGE 1 (a permanent elbow or knee break, a stretched hem) is the item's real condition and must stay,",
+  "so it is NOT a fault — but packing creases, fold lines and hanger creases are ALWAYS faults;",
+  "\"tilt\" — the garment hangs tilted, leaning, twisted or clearly off-centre, or its shoulders or hem are not level.",
+  "Small rendering differences and details hidden by the angle are not faults.",
+  "Reply with JSON only: {\"faults\":[<zero or more of \"product\",\"colour\",\"lines\",\"wrinkles\",\"tilt\">],",
+  "\"issues\":\"<one short sentence naming what is wrong, empty if nothing>\"}",
+].join(" ");
+
+/**
+ * Read the garment check's answer. Unreadable → null (unchecked, never a fail).
+ * → { drift (= failed), faults: [...], issues }  Pure.
+ */
+export function parseGarmentAnswer(text) {
+  const t = String(text || "");
+  const m = t.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const j = JSON.parse(m[0]);
+    if (!Array.isArray(j.faults)) return null;
+    const faults = GARMENT_FAULTS.filter((f) => j.faults.map((x) => String(x).toLowerCase().trim()).includes(f));
+    return { drift: faults.length > 0, faults, issues: String(j.issues || "").slice(0, 200) };
+  } catch { return null; }
+}
+
+const FIX_TEXT = Object.freeze({
+  product: "it CHANGED THE GARMENT — this time the garment is exactly the one in the product photo, every logo, print and detail as it is",
+  colour: "the COLOUR DRIFTED — this time the body colour, collar colour, trims and buttons are exactly as in the product photo",
+  lines: "it DREW A RECTANGLE OR LINES into the picture — this time the picture holds only the backdrop and the garment, with no rectangle, frame line, border, box, guide line or text anywhere",
+  wrinkles: "the garment was LEFT WRINKLED — this time it is freshly steamed and pressed, with no wrinkle, crease or fold line, the fabric smooth and its texture sharp (every seam, panel line, stripe, collar and trim the garment is MADE with stays exactly as in the product photo)",
+  tilt: "the garment HUNG CROOKED — this time it hangs perfectly straight and centred, shoulders level and symmetrical, hem straight, sleeves falling evenly",
+});
+
+/** The fix the retry is told, from the faults the check found. null when there is nothing to fix. Pure. */
+export function garmentFixNote(faults) {
+  const fs = GARMENT_FAULTS.filter((f) => (faults || []).includes(f));
+  if (!fs.length) return null;
+  return `FIX FROM THE LAST ATTEMPT (it failed the quality check): ${fs.map((f) => FIX_TEXT[f]).join("; ")}.`;
+}
