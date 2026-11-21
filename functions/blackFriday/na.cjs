@@ -94,6 +94,7 @@ function mirrorPick(pid, item, facts, cur, { inWindow = false } = {}) {
     if (ours && cur.state === "approved" && Number(cur.at) === at && cur.shown === shown) return undefined;
     return {
       state: "approved", src: "na", sig: "na", shown, at, by: item.approvedBy || null, section: "newArrivals",
+      source: "new_arrivals", approvedBy: item.approvedBy || null, approvedAt: at,
       price: facts.price ?? null, kind: facts.kind || "clothing", name: facts.name || "", sizes: facts.sizes || "",
       ...(item.useCurrentPhoto ? { useCurrent: true } : {}),
     };

@@ -18,7 +18,6 @@
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onValueWritten } = require("firebase-functions/v2/database");
-const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const core = require("./core.cjs");
 const naLib = require("./na.cjs");
@@ -192,6 +191,11 @@ async function findItem(db, pid, hint, nowMs = Date.now()) {
 const bfPhotoSig = (photo, sig) => !!sig && core.GEN_RE.test(String(sig)) && !!(photo && photo.gens && photo.gens[sig] && photo.gens[sig].url);
 /** A New Arrival approved through Black Friday is still a New Arrival on the card and to the poster. */
 const sectionFor = (sec, pid, status) => (status ? "newArrivals" : sec);
+/**
+ * The tab the approval was made from (Junid, 21 Nov): a product shows on the New Arrivals tab only while it is in the
+ * 20-day window with a New Arrivals status; anywhere else (To review) it is a Normal approval. Pure.
+ */
+const sourceFor = (pid, status, nowMs) => (status && String(pid) >= naCore.windowStartKey(nowMs) ? "new_arrivals" : "normal");
 
 async function tap(db, { action, pid, section, use, genId, sig, app = false, approve = false }, uid, nowMs) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Which product?");
@@ -223,14 +227,14 @@ async function tap(db, { action, pid, section, use, genId, sig, app = false, app
     if (approve === true && !out.refusal) {
       const photo = res && res.committed ? res.snapshot.val() : await val(db, `${core.ROOT}/photos/${pid}`);
       const o2 = {};
-      const r2 = await revTransaction(pickRef, core.approveMutator({ item, section: sec, photo, uid, nowMs }, o2), o2);
+      const r2 = await revTransaction(pickRef, core.approveMutator({ item, section: sec, photo, uid, nowMs, source: sourceFor(pid, naNow, nowMs) }, o2), o2);
       if (o2.refusal) return { ok: false, pid, refusal: o2.refusal };
       if (r2 && r2.committed && !o2.noop) { out.base = o2.base; out.noop = false; approvedToo = true; await ledger(db, pid, r2.snapshot.val()).catch(() => {}); }
     }
   } else if (action === "approve") {
     const photo = photoNow;
     if (sig !== undefined && sig !== null && !core.SIG_OK(sig)) throw new HttpsError("invalid-argument", "Which photo?");
-    const res = await revTransaction(pickRef, core.approveMutator({ item, section: sec, photo, uid, nowMs, seenSig: sig || null }, out), out);
+    const res = await revTransaction(pickRef, core.approveMutator({ item, section: sec, photo, uid, nowMs, seenSig: sig || null, source: sourceFor(pid, naNow, nowMs) }, out), out);
     // The record is of the approval as committed (a later tap may already have changed the pick).
     if (res && res.committed && !out.noop && !out.refusal) await ledger(db, pid, res.snapshot.val()).catch(() => {});
   } else if (action === "reject") {
@@ -267,7 +271,7 @@ async function approveBig(db, sigs, uid, nowMs) {
     await Promise.all(todo.slice(i, i + 25).map(async ([pid, it]) => {
       const out = {};
       const photo = await val(db, `${core.ROOT}/photos/${pid}`);
-      const res = await revTransaction(db.ref(`${core.ROOT}/picks/${pid}`), core.approveMutator({ item: it, section: "main", photo, uid, nowMs, seenSig: String(asked[pid] || "current"), onlyIfUntouched: true }, out), out);
+      const res = await revTransaction(db.ref(`${core.ROOT}/picks/${pid}`), core.approveMutator({ item: it, section: "main", photo, uid, nowMs, seenSig: String(asked[pid] || "current"), onlyIfUntouched: true, source: "normal" }, out), out);
       if (res && res.committed && !out.noop && !out.refusal) { approved.push(pid); undo[pid] = { prev: out.base || null, expectAt: nowMs }; await ledger(db, pid, res.snapshot.val()).catch(() => {}); }
     }));
   }
@@ -314,10 +318,11 @@ async function many(db, action, list, uid, nowMs) {
       else {
         const { item, section: found } = await findItem(db, pid, null, nowMs);
         if (!item && action === "approve") { refused.push({ pid, refusal: "not in the campaign" }); return; }
-        const section = bfOwn ? sectionFor(found, pid, await val(db, `${naCore.ITEMS}/${pid}/status`)) : found;
+        const naSt = bfOwn ? await val(db, `${naCore.ITEMS}/${pid}/status`) : null;
+        const section = bfOwn ? sectionFor(found, pid, naSt) : found;
         if (action === "approve") {
           const photo = photoNow;
-          res = await revTransaction(ref, core.approveMutator({ item, section, photo, uid, nowMs, seenSig: sig || null }, out), out);
+          res = await revTransaction(ref, core.approveMutator({ item, section, photo, uid, nowMs, seenSig: sig || null, source: sourceFor(pid, naSt, nowMs) }, out), out);
         } else await revTransaction(ref, core.rejectMutator({ item, section, uid, nowMs }, out), out);
       }
       if (res && res.committed && !out.noop && !out.refusal) await ledger(db, pid, res.snapshot.val()).catch(() => {});
@@ -540,15 +545,4 @@ const bfNaMirror = onValueWritten(
   },
 );
 
-// ALL NEW ARRIVALS ARE POSTED (Junid, 21 Nov 2026): every 10 minutes, each new arrival on the card's New Arrivals
-// tab is approved through the same bulk Approve (naAuto.cjs has the rules: never R0, no photo, paper bags, out of
-// stock, rejected or taken back; an upload settles 15 minutes first).
-const bfNaAutoApprove = onSchedule(
-  { schedule: "every 10 minutes", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "512MiB", timeoutSeconds: 300, retryCount: 0 },
-  async () => {
-    const out = await require("./naAuto.cjs").run(admin.database(), { apply: true, list, many });
-    console.log(`bfNaAutoApprove: ${out.approved || 0} approved of ${out.onTab} on the tab; skipped ${JSON.stringify(out.skipped)}${out.refused && out.refused.length ? `; refused ${JSON.stringify(out.refused.slice(0, 10))}` : ""}`);
-  },
-);
-
-module.exports = { bfCampaignList, bfCampaignSet, bfNaMirror, bfNaAutoApprove, _internals: { bfPhotoSig, findItem, repost, naTap, naStatus, ledger, brainView, brainPause, brainSlot, brainDayCat, list, tap, saveSelection, loadSelection, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };
+module.exports = { bfCampaignList, bfCampaignSet, bfNaMirror, _internals: { sourceFor, bfPhotoSig, findItem, repost, naTap, naStatus, ledger, brainView, brainPause, brainSlot, brainDayCat, list, tap, saveSelection, loadSelection, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };

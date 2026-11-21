@@ -115,7 +115,8 @@ function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = 
   const postPrice = pick && pick.state === "approved" ? (pick.price ?? it.price) : it.price;
   return {
     pid, name: it.name || pid, price: it.price, qty: Number(it.qty) || 0, sizes: it.sizes || "", kind,
-    big: (Number(it.qty) || 0) >= BIG_QTY, na: na || it.na === true || naPick || (!!pick && pick.section === "newArrivals"),
+    // An approval carries its source (the tab Junid approved it from): that decides New Arrivals vs Normal.
+    big: (Number(it.qty) || 0) >= BIG_QTY, na: pick && pick.state === "approved" && pick.source ? pick.source === "new_arrivals" : (na || it.na === true || naPick || (!!pick && pick.section === "newArrivals")),
     ...(naPick ? { src: "na" } : {}),
     photo: it.photo || null, shown: naPick ? pick.shown : gen ? gen.url : (it.photo || null),
     use: naPick ? (pick.useCurrent ? "current" : "generated") : sig === "current" ? "current" : "generated", genId: photo && photo.genId ? photo.genId : null, sig,
@@ -250,7 +251,7 @@ const planView = (plan) => Object.entries(plan || {}).map(([album, e]) => ({ alb
  * approval of a photo he has not seen. onlyIfUntouched: "Approve all 30+".
  * `shown` pins the exact image approved.
  */
-function approveMutator({ item, section, photo, uid, nowMs, seenSig = null, onlyIfUntouched = false }, out = {}) {
+function approveMutator({ item, section, photo, uid, nowMs, seenSig = null, onlyIfUntouched = false, source = null }, out = {}) {
   return (cur) => {
     const sig = sigOf(photo);
     if (seenSig && seenSig !== sig) { out.refusal = "its photo changed since the card loaded — look again, then approve"; return undefined; }
@@ -259,7 +260,8 @@ function approveMutator({ item, section, photo, uid, nowMs, seenSig = null, only
     const g = sig === "current" ? null : photo.gens[sig];
     const shown = sig === "current" ? (item.photo || null) : ((g && g.url) || null);
     if (cur && cur.state === "approved" && cur.sig === sig && cur.shown === shown) { out.noop = true; return undefined; }
-    return { state: "approved", sig, shown, at: nowMs, by: uid || null, section, price: item.price, kind: item.kind || "clothing", name: item.name || "", sizes: item.sizes || "",
+    // THE APPROVAL'S SOURCE (Junid, 21 Nov 2026): the tab he approved it from, stored on the approval itself.
+    return { state: "approved", sig, shown, at: nowMs, by: uid || null, section, source: source || (section === "newArrivals" ? "new_arrivals" : "normal"), approvedBy: uid || null, approvedAt: nowMs, price: item.price, kind: item.kind || "clothing", name: item.name || "", sizes: item.sizes || "",
       // Which photo was approved: the app's, an AI photo, or his own (upload / web).
       photoFrom: !g ? "app" : isSourceGen(g) ? g.src : "ai" };
   };

@@ -56,7 +56,7 @@ test("Approve moves a product to Approved; Reject removes it from the list; reje
   const db = seed();
   const r = await tap(db, { action: "approve", pid: "c" }, 5000);
   assert.equal(r.row.tab, "approved");
-  assert.deepEqual({ ...(await pick(db, "c")), rev: undefined }, { state: "approved", sig: "current", shown: "https://x/Cap C.jpg", at: 5000, by: "junid", section: "main", price: 150, kind: "headwear", name: "Cap C", sizes: "M-XL", photoFrom: "app", rev: undefined });
+  assert.deepEqual({ ...(await pick(db, "c")), rev: undefined }, { state: "approved", sig: "current", shown: "https://x/Cap C.jpg", at: 5000, by: "junid", section: "main", source: "normal", approvedBy: "junid", approvedAt: 5000, price: 150, kind: "headwear", name: "Cap C", sizes: "M-XL", photoFrom: "app", rev: undefined });
   await tap(db, { action: "reject", pid: "d" }, 6000);
   // The 05:00 rebuild writes the product again — it stays rejected.
   await db.ref("bf_campaign_2026/items/main/d").set(it_("Hoodie D", 450, 14));
@@ -502,4 +502,12 @@ test("CAPTION (Junid 20 Nov): two lines, every in-stock size, never a range", ()
   assert.equal(cap.sizesLine(["XXL", "S", "L", "M", "XL"]), "S, M, L, XL, XXL");
   assert.equal(core.captionPreview(300, [{ sizes: "one size" }]), "R300\nAvailable sizes: one size");
   assert.doesNotMatch(core.captionPreview(650, [{ sizes: "M-XL" }, { sizes: "S" }]), /BLACK FRIDAY|🔥|EACH|Message us/);
+});
+
+test("an approval stores the tab it was made from: New Arrivals only inside the 20-day window (Junid, 21 Nov)", () => {
+  const { sourceFor } = require("../blackFriday/blackFriday.js")._internals;
+  const now = Date.UTC(2026, 10, 21, 9, 0, 0);
+  assert.equal(sourceFor(`p${now - 86400_000}`, "new", now), "new_arrivals");
+  assert.equal(sourceFor(`p${now - 25 * 86400_000}`, "new", now), "normal", "older than 20 days: shown in To review");
+  assert.equal(sourceFor(`p${now - 86400_000}`, null, now), "normal", "not a New Arrival");
 });
