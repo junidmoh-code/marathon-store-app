@@ -222,7 +222,7 @@ import { checkDrift } from "../lib/style-kit-drift.mjs";
 test("garments: clothing by category, product type or catalogue key; never footwear or accessories", () => {
   for (const p of [{ category: "Clothing" }, { productType: "clothing" }, { categoryKey: "golf-t-shirts" }, { categoryKey: "soccer-jerseys" }, { categoryKey: "tracksuits" }, { categoryKey: "hoodies" }])
     assert.equal(isGarment(p), true, JSON.stringify(p));
-  for (const p of [{ category: "Footwear", categoryKey: "sneakers" }, { categoryKey: "caps-beanies" }, { categoryKey: "bags" }, {}, null])
+  for (const p of [{ category: "Footwear", categoryKey: "sneakers" }, { categoryKey: "caps-beanies" }, { categoryKey: "bags" }, { category: "Clothing", categoryKey: "caps-beanies" }, {}, null])
     assert.equal(isGarment(p), false, JSON.stringify(p));
 });
 
@@ -274,4 +274,23 @@ test("a clothing Style Kit photo carries the garment finish before the condition
   assert.doesNotMatch(first, /FIX FROM THE LAST ATTEMPT/);
   assert.match(second, /FIX FROM THE LAST ATTEMPT.*LEFT WRINKLED/); assert.ok(second.endsWith("CONDITION."));
   assert.deepEqual(res.drift.faults, ["wrinkles"]); assert.equal(res.drift.retry, "same");
+});
+
+test("a product made through a staging look is never checked as a garment (it got no garment finish)", async () => {
+  const src = await sharp({ create: { width: 600, height: 800, channels: 3, background: { r: 30, g: 60, b: 160 } } }).jpeg().toBuffer();
+  const plate = { buffer: await sharp({ create: { width: 543, height: 724, channels: 3, background: "#888" } }).jpeg().toBuffer(), width: 543, height: 724 };
+  const answer = await sharp({ create: { width: 1086, height: 1448, channels: 3, background: "#777" } }).jpeg().toBuffer();
+  const seen = [];
+  const deps = {
+    generation: { imageModel: "m", imageSize: "4K", layers: {} }, conditionClause: "C.",
+    fetchBytes: async () => ({ buffer: src }), loadPlateFile: async () => plate,
+    image: async () => ({ buffer: answer, mime: "image/jpeg", usage: null }),
+    upload: async (p) => ({ path: p, url: `https://firebasestorage.googleapis.com/${p}` }), now: () => 7,
+    driftCheck: async (o, g, opts) => { seen.push(opts || {}); return { checked: true, drift: false, issues: "" }; },
+  };
+  // A top-category "Clothing" product with no catalogue key, sent through the bags staging by its caller.
+  const r = await generate({ item: { pid: "p" }, product: { category: "Clothing", name: "Tote", photoUrl: "https://firebasestorage.googleapis.com/o.jpg" }, genId: "g", look: "bags", deps });
+  assert.equal(r.look, "bags");
+  assert.deepEqual(seen, [{}], "the plain drift check, not the garment one");
+  assert.equal(r.drift.check, undefined);
 });

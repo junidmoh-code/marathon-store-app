@@ -364,9 +364,11 @@ export function parseDriftAnswer(text) {
 /** Clothing — the products the garment finish and the garment check apply to. Pure. */
 export function isGarment(product) {
   const p = product || {};
-  if (p.category === "Clothing" || p.productType === "clothing") return true;
+  // A catalogue key that maps to a kit decides (a "Clothing" product filed under caps or bags is not a garment);
+  // only a product with no such key falls back on its top category.
   const kit = CATEGORY_KIT[str(p.categoryKey)];
-  return kit === "clothing" || kit === "jerseys" || kit === "tracksuits";
+  if (kit) return kit === "clothing" || kit === "jerseys" || kit === "tracksuits";
+  return p.category === "Clothing" || p.productType === "clothing";
 }
 
 export const GARMENT_FINISH = [

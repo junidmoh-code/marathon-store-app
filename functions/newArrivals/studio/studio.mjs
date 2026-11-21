@@ -307,7 +307,8 @@ export async function generate({ item, product, genId, method = "full", provider
     catch (e) { deps.log?.(`the Style Kit could not be read (${String(e.message).slice(0, 80)}) — using the house look`); }
   }
   // THE GARMENT CHECK (Junid, 21 Nov 2026): clothing is checked for finish as well as drift, and its retry is told the fix.
-  const garment = isGarment(product || { categoryKey: item.categoryKey });
+  // (A product made through a staging `look` gets no garment finish, so it is never judged as a garment either.)
+  const garment = isGarment(product || { categoryKey: item.categoryKey }) && !(!kit && look && staging.hasStaging(look));
   // (The retry's drafts get their own names: the first attempt's are already stored and Storage never overwrites.)
   const runAs = (inp, gid, fix = null) => (kit
     ? generateKit({ item, product, genId: gid, kit, input: inp, placeNote, secondRef, fix, garment, deps, emit })
