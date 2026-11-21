@@ -17,6 +17,7 @@ import { objectiveMeasurements } from "./measure.mjs";
 import { correctFootwear } from "./correct.mjs";
 import sourcePhoto from "../sourcePhoto.cjs";
 import staging from "./staging.cjs";
+import { isGarment, garmentFixNote, GARMENT_FINISH } from "../../lib/style-kit-catalogue.mjs";
 
 export const METHODS = Object.freeze(["full", "split"]);
 export const PROVIDERS = Object.freeze(["gemini", "openai"]);
@@ -73,7 +74,7 @@ const draftJpeg = (buf) => sharp(buf).rotate().resize(1280, 1280, { fit: "inside
  * emit({ type, … }) — progress for the card; never throws.
  * → { generated, kind, method, promptVersion, layersUsed, box, trace, draftFiles, usage }
  */
-export async function generateOne({ item, product, genId, method = "full", provider = "gemini", input = "photo", placeNote = false, secondRef = null, deps, emit = () => {} }) {
+export async function generateOne({ item, product, genId, method = "full", provider = "gemini", input = "photo", placeNote = false, secondRef = null, fix = null, deps, emit = () => {} }) {
   // The engine: its model and its name for the card's progress line. Everything else is the same for both.
   const model = provider === "openai" ? deps.generation.openaiModel : deps.generation.imageModel;
   const engine = PROVIDER_NAME[provider] || "Gemini";
@@ -139,7 +140,11 @@ export async function generateOne({ item, product, genId, method = "full", provi
   // layout diagram is drawn in that frame and the result is cover-cropped to the plate, as for Gemini.
   const aspect = closestAspect(plate.width, plate.height, provider === "openai" ? ["2:3", "3:2", "1:1"] : null);
   const frame = genFrameOf(plate.width, plate.height, RATIOS[aspect]);
-  const guideJ = await forModel(await layoutGuideImage(kind, effSpec, plate.buffer, frame));
+  // NO LAYOUT DIAGRAM FOR A GARMENT (Junid, 21 Nov 2026 — "no rectangles, frame lines, borders, boxes"): Gemini kept
+  // drawing the diagram's dashed box into the wall (the brown knit polo; 3 of 9 first attempts in the proof run),
+  // while every attempt sent without it was placed right by the PLACEMENT percentages alone. Footwear keeps it.
+  const noDiagram = kind !== "footwear";
+  const guideJ = noDiagram ? null : await forModel(await layoutGuideImage(kind, effSpec, plate.buffer, frame));
 
   // LAYER footwearExamples: more of Junid's own photos of the same composition
   // (other shoes, other boxes) — so the layout is learnt, not the one reference's shoe.
@@ -151,18 +156,21 @@ export async function generateOne({ item, product, genId, method = "full", provi
     inputOf("plate", plateJ, { file: plate.file || null }),
     ...(refJ ? [inputOf("reference", refJ, { file: ref.file || null })] : []),
     ...examples.map((e) => inputOf("example", e.forModel, { file: e.file })),
-    inputOf("layoutDiagram", guideJ, { file: "drawn from config/layout-spec.json" }),
+    ...(guideJ ? [inputOf("layoutDiagram", guideJ, { file: "drawn from config/layout-spec.json" })] : []),
     inputOf("source", orig, { url: originalUrl }),
     ...(box ? [inputOf("box", box, boxFrom || {})] : []),
   ]);
   // THE 2 OCT BASELINE REQUEST, exactly: the prompt, plate, reference, layout
   // diagram, then the product photo (and box).
+  const fixText = fix?.note || null;
   const parts = [
     textPart(prompt.text),
+    ...(fixText ? [textPart(fixText)] : []),
     textPart("BACKGROUND PLATE — use exactly:"), imagePart(plateJ),
     ...(refJ ? [textPart("REFERENCE — the target composition and look:"), imagePart(refJ)] : []),
     ...(examples.length ? [textPart(EXAMPLES_LABEL), ...examples.map((e) => imagePart(e.forModel))] : []),
-    textPart("LAYOUT DIAGRAM — NOT part of the photo: the dashed box(es) on this grey diagram show where and how large the product goes on the canvas. Never draw boxes, outlines, labels or grey into the result. FIDELITY COMES FIRST: never change the product in any way to make it fit the box — only move it and scale it uniformly:"), imagePart(guideJ),
+    ...(noDiagram ? [textPart(NO_DIAGRAM_NOTE)] : []),
+    ...(guideJ ? [textPart("LAYOUT DIAGRAM — NOT part of the photo: the dashed box(es) on this grey diagram show where and how large the product goes on the canvas. Never draw boxes, outlines, labels or grey into the result. FIDELITY COMES FIRST: never change the product in any way to make it fit the box — only move it and scale it uniformly:"), imagePart(guideJ)] : []),
     ...(placeNote ? [textPart(PLACE_NOTE)] : []),
     textPart(kind === "footwear" ? "SHOE PHOTO — the real shoe:" : "GARMENT PHOTO — the real garment(s):"), imagePart(orig),
     ...(ref2 ? [textPart(SECOND_REF_LABEL), imagePart(ref2)] : []),
@@ -273,7 +281,7 @@ export async function generateOne({ item, product, genId, method = "full", provi
       thoughts: gen.thoughts ?? null, thoughtImages: gen.thoughtImages || 0, thoughtsUnsupported: gen.thoughtsUnsupported || null,
       draftFiles: kept, resolution: gm.width ? { width: gm.width, height: gm.height } : null,
       ...(gen.cutShort ? { streamCutShort: gen.cutShort } : {}), ...(finishNote ? { finishNote } : {}), ...(boxNote ? { boxNote } : {}),
-      ...(correction ? { correction } : {}),
+      ...(correction ? { correction } : {}), ...(noDiagram ? { noLayoutDiagram: true } : {}), ...(fixText ? { qualityFix: { note: fixText } } : {}),
     },
   };
 }
@@ -298,22 +306,24 @@ export async function generate({ item, product, genId, method = "full", provider
     try { const k = await deps.styleKitFor(product || { categoryKey: item.categoryKey, name: item.name }, item.pid); if (k?.dedicated && k.refs?.length) kit = k; }
     catch (e) { deps.log?.(`the Style Kit could not be read (${String(e.message).slice(0, 80)}) — using the house look`); }
   }
+  // THE GARMENT CHECK (Junid, 21 Nov 2026): clothing is checked for finish as well as drift, and its retry is told the fix.
+  const garment = isGarment(product || { categoryKey: item.categoryKey });
   // (The retry's drafts get their own names: the first attempt's are already stored and Storage never overwrites.)
-  const runAs = (inp, gid) => (kit
-    ? generateKit({ item, product, genId: gid, kit, input: inp, placeNote, secondRef, deps, emit })
+  const runAs = (inp, gid, fix = null) => (kit
+    ? generateKit({ item, product, genId: gid, kit, input: inp, placeNote, secondRef, fix, garment, deps, emit })
     : look && staging.hasStaging(look)
       ? generateOther({ item, product, genId: gid, kind: look, input: inp, placeNote, deps, emit })
-      : generateOne({ item, product, genId: gid, method, provider, input: inp, placeNote, secondRef, deps, emit }));
+      : generateOne({ item, product, genId: gid, method, provider, input: inp, placeNote, secondRef, fix, deps, emit }));
   // THE ORIGINAL GIVEN BACK (Junid, 20 Nov 2026): when the model hands back the staff photo, the input is cleaned
   // — the product cut out of the staff photo (background removal) and put on plain white — and the SAME request
   // (prompt, plate, model, size) is made ONCE more with that cut-out in place of the raw photo. Never more than once.
-  const attempt = async (gid) => {
-    try { return await runAs(input, gid); }
+  const attempt = async (gid, fix = null) => {
+    try { return await runAs(input, gid, fix); }
     catch (e) {
       if (!e.echo || input === "cutout" || !deps.cutout) throw e;
       try { emit({ type: "status", text: "It gave back the original photo — cleaning the photo and trying once more…" }); } catch { /* view only */ }
       let res;
-      try { res = await runAs("cutout", `${gid}-cutout`); }
+      try { res = await runAs("cutout", `${gid}-cutout`, fix); }
       catch (e2) {
         // No clean cut-out could be made: the first answer's refusal stands, and the card is told why.
         if (e2.noCutout) { e.cutoutFailed = true; throw e; }
@@ -326,7 +336,7 @@ export async function generate({ item, product, genId, method = "full", provider
   const first = withKit(await attempt(genId), kit);
   // (Split places the product by code from Gemini's cut-out — nothing for the check to judge against a scene.)
   if (first?.method === "split") return first;
-  return driftGuard({ first, again: async () => withKit(await attempt(`${genId}-drift`), kit), item, product, deps, emit, startedMs });
+  return driftGuard({ first, again: async (fix) => withKit(await attempt(`${genId}-drift`, fix), kit), item, product, garment, deps, emit, startedMs });
 }
 
 /** Stamp which Style Kit made the photo on its result (and so on the record). Pure. */
@@ -339,28 +349,34 @@ function withKit(res, kit) {
 // product) → ONE more generation; drifted again → the product cut out of its own photo, on white. The check
 // that cannot run is never a drift; the guard can never lose a photo that was made.
 export const DRIFT_NOTE = "The generated photo changed the product twice, so this is the product cut out of its own photo — tap Regenerate to try again.";
+export const GARMENT_QC_NOTE = "The generated photo failed the quality check twice (lines, wrinkles, a crooked hang or the wrong colour), so this is the product cut out of its own photo — tap Regenerate to try again.";
+/** The garment check failed twice and no clean cut-out could be made: the failed photo is NEVER kept as the photo. */
+export const GARMENT_QC_REFUSAL = "the photo failed the quality check twice and the product could not be cut out cleanly — tap Generate to try again";
 // The callables run for at most 540 s: a retry is only started while there is clearly time for it.
 export const DRIFT_RETRY_BUDGET_MS = 240_000;
-export async function driftGuard({ first, again, item, product, deps, emit = () => {}, startedMs = Date.now(), clockMs = () => Date.now() }) {
+export async function driftGuard({ first, again, item, product, garment = false, deps, emit = () => {}, startedMs = Date.now(), clockMs = () => Date.now() }) {
   if (!deps.driftCheck || !first?.generated?.url) return first;
   const say = (text) => { try { emit({ type: "status", text }); } catch { /* view only */ } };
   let raw;
   try { raw = (await deps.fetchBytes(originalUrlOf(item, product))).buffer; } catch { return first; }
   const check = async (res) => {
-    try { return await deps.driftCheck(raw, (await deps.fetchBytes(res.generated.url)).buffer); }
+    try { return await deps.driftCheck(raw, (await deps.fetchBytes(res.generated.url)).buffer, ...(garment ? [{ garment: true }] : [])); }
     catch (e) { return { checked: false, drift: false, issues: String(e.message || e).slice(0, 80) }; }
   };
   const tag = (d) => (d.checked ? (d.drift ? "drifted" : "same") : "unchecked");
-  say("Checking the product against the original photo…");
+  say(garment ? "Checking the garment: same product, colour, no lines, no wrinkles, hanging straight…" : "Checking the product against the original photo…");
   const d1 = await check(first);
-  if (!d1.drift) return { ...first, drift: { first: tag(d1) } };
-  deps.log?.(`the photo drifted from the original (${d1.issues}) — trying once more`);
+  const faultsOf = (d) => (garment && Array.isArray(d.faults) ? { faults: d.faults } : {});
+  if (!d1.drift) return { ...first, drift: { first: tag(d1), ...(garment ? { check: "garment" } : {}) } };
+  deps.log?.(`the photo ${garment ? `failed the garment check [${(d1.faults || []).join(", ")}]` : "drifted from the original"} (${d1.issues}) — trying once more`);
+  // The retry is told exactly what to fix.
+  const fix = garment ? { note: garmentFixNote(d1.faults) } : null;
   // Every image paid for along the way, so the caller books all of them and nothing twice.
   const paid = [...(first.wastedUsages || []), first.usage || null];
   let second = null, retry = "skipped";
   if (clockMs() - startedMs < DRIFT_RETRY_BUDGET_MS) {
-    say("The product changed in the photo — trying once more…");
-    try { second = await again(); retry = "made"; }
+    say(garment ? "The photo failed the quality check — trying once more with the fix…" : "The product changed in the photo — trying once more…");
+    try { second = await again(fix); retry = "made"; }
     catch (e) {
       // The retry failed outright: anything it was charged is still booked, then the cut-out.
       paid.push(...(e.wastedUsages || []), ...(e.paid || e.echo ? [e.usage || null] : []));
@@ -369,24 +385,33 @@ export async function driftGuard({ first, again, item, product, deps, emit = () 
   } else deps.log?.("no time left for a drift retry — using the cut-out");
   if (second) {
     const d2 = await check(second);
-    if (!d2.drift) return { ...second, drift: { first: "drifted", issues: d1.issues || "", retry: tag(d2) }, wastedUsages: [...paid, ...(second.wastedUsages || [])] };
+    if (!d2.drift) return { ...second, drift: { first: "drifted", issues: d1.issues || "", ...faultsOf(d1), retry: tag(d2), ...(garment ? { check: "garment" } : {}) }, wastedUsages: [...paid, ...(second.wastedUsages || [])] };
     d1.retryIssues = d2.issues || "";
+    if (garment) d1.retryFaults = d2.faults || [];
     paid.push(...(second.wastedUsages || []), second.usage || null);
   }
-  const driftRec = { first: "drifted", issues: d1.issues || "", retry: second ? "drifted" : retry, ...(d1.retryIssues ? { retryIssues: d1.retryIssues } : {}) };
+  const driftRec = { first: "drifted", issues: d1.issues || "", ...faultsOf(d1), retry: second ? "drifted" : retry, ...(d1.retryIssues ? { retryIssues: d1.retryIssues } : {}),
+    ...(d1.retryFaults ? { retryFaults: d1.retryFaults } : {}), ...(garment ? { check: "garment" } : {}) };
   // The LAST paid image is this result's own cost; the rest are wasted — the total booked is exactly what was paid.
   const ownUsage = paid.length ? paid[paid.length - 1] : null;
   const wastedUsages = paid.slice(0, -1);
   const base = second || first;
-  say("It changed the product again — using the product cut out of its own photo…");
+  say(garment ? "It failed the quality check again — using the product cut out of its own photo…" : "It changed the product again — using the product cut out of its own photo…");
   try {
     const up = await cutoutResult({ raw, item, deps });
-    const out = { ...base, generated: up, usage: ownUsage, driftFallback: "cutout", note: DRIFT_NOTE, draftFiles: [], drift: driftRec, wastedUsages };
+    const out = { ...base, generated: up, usage: ownUsage, driftFallback: "cutout", note: garment ? GARMENT_QC_NOTE : DRIFT_NOTE, draftFiles: [], drift: driftRec, wastedUsages };
     delete out.uncorrected; delete out.corrected; // the cut-out is not a corrected generation
     return out;
   } catch (e) {
     // No clean cut-out: keep the generated photo (it was paid for) and say plainly that it drifted.
     deps.log?.(`no cut-out for the drift fallback (${String(e.message).slice(0, 80)})`);
+    // A garment that failed the check twice is NEVER kept as the photo (Junid, 21 Nov 2026: never post a failed
+    // image). Every image paid for is booked by the caller as wasted.
+    if (garment) {
+      const r = new StudioRefusal(GARMENT_QC_REFUSAL);
+      r.wastedUsages = paid; r.usage = null; r.drift = driftRec;
+      throw r;
+    }
     return { ...base, usage: ownUsage, drift: { ...driftRec, fallback: "no-cutout" }, wastedUsages,
       note: "The check says this photo may not match the real product (colour, logo or shape) and no clean cut-out could be made — check it by eye." };
   }
@@ -412,7 +437,7 @@ async function cutoutResult({ raw, item, deps }) {
  * model, size and finishing (toMaster: full resolution, JPEG q92) as every other shared generation.
  */
 export const KIT_REFS_LABEL = "STYLE REFERENCES — copy ONLY the scene, backdrop, camera angle, lighting and framing from these. The products in them are DIFFERENT items: never copy their design, colour, logo or shape. The product in the result comes only from the PRODUCT photo above:";
-export async function generateKit({ item, product, genId, kit, input = "photo", placeNote = false, secondRef = null, deps, emit = () => {} }) {
+export async function generateKit({ item, product, genId, kit, input = "photo", placeNote = false, secondRef = null, fix = null, garment = false, deps, emit = () => {} }) {
   const say = (ev) => { try { emit(ev); } catch { /* the card's view never affects the generation */ } };
   const { generation } = deps;
   const model = generation.imageModel;
@@ -428,7 +453,10 @@ export async function generateKit({ item, product, genId, kit, input = "photo", 
   const refsJ = await Promise.all(kit.refs.map((b) => forModel(b)));
   const ref2 = await secondRefFor({ deps, secondRef }); // a clean catalogue photo of THIS item, for detail only
   const name = product?.name || item.name || "";
-  const promptText = [kit.prompt, name ? `The product is: ${name}.` : "", deps.conditionClause].filter(Boolean).join("\n\n");
+  // A garment (Junid, 21 Nov 2026) gets the garment finish after the kit's prompt, and a retry its fix — before the
+  // condition clause, which still overrides everything.
+  const garmentKit = garment || kit.promptFamily === "clothing";
+  const promptText = [kit.prompt, name ? `The product is: ${name}.` : "", garmentKit ? GARMENT_FINISH : "", fix?.note || "", deps.conditionClause].filter(Boolean).join("\n\n");
   const parts = [
     textPart(promptText),
     ...(placeNote ? [textPart("The PRODUCT photo below is a cut-out on plain white, NOT a finished photo: place this exact item in the reference scene.")] : []),
@@ -463,6 +491,7 @@ export async function generateKit({ item, product, genId, kit, input = "photo", 
 
 // ── THE CLEANED INPUT AND THE ECHO CHECK (20 Nov 2026) ──────────────────────
 export const PLACE_NOTE = "PLACE IT ON THE BACKDROP: the GARMENT PHOTO below is a cut-out on plain white, NOT a finished photo. Hang this exact garment on the fence of the BACKGROUND PLATE as the brief above says — the result is the plate with the garment on it, never the cut-out on white and never the photo it was cut from.";
+export const NO_DIAGRAM_NOTE = "NO LAYOUT DIAGRAM is sent for a garment: place it by the PLACEMENT percentages above alone. The result holds only the BACKGROUND PLATE and the garment — never a rectangle, frame, border, box, dashed or guide line, or any text.";
 export const SECOND_REF_LABEL = "SECOND REFERENCE — a clean catalogue photo of this exact item (the same club, season and colourway). Use it ONLY to read detail the GARMENT PHOTO shows unclearly (badges, sponsor, trims); the result must be the item in the GARMENT PHOTO — never a different version:";
 export const ECHO_DIFF = 12;        // 64x64 grey mean difference: under this, the output is the input picture
 export const PLATE_EDGE_DIFF = 12;  // the backdrop either side this close to the plate: it IS on the plate, never an echo

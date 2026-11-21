@@ -2987,6 +2987,7 @@ exports.generateProductPhotos = onCall(
     // Routed per product by the Style Kit Catalogue (makeKitResolver).
     const kitFor = style === "house" ? await makeKitResolver(db) : null;
     const drift = style === "house" ? await styleKitDrift() : null;
+    const cat = style === "house" ? await styleKitCatalogue() : null;
     const sharpLib = style === "house" ? require("sharp") : null;
 
     let processed = 0, failed = 0, estCostUSD = 0;
@@ -3018,8 +3019,13 @@ exports.generateProductPhotos = onCall(
           if (kit && !kit.refs.length) {
             throw new Error(`house style: no usable ${template} Style Kit references`);
           }
+          // THE GARMENT FINISH + CHECK (Junid, 21 Nov 2026): clothing gets the garment finish after its kit's prompt,
+          // and the drift check also judges lines, wrinkles, tilt and colour; its retry is told the fix.
+          const garment = !!(kit && cat && (kit.promptFamily === "clothing" || cat.isGarment(p)));
+          const basePrompt = kit ? (garment ? `${kit.prompt} ${cat.GARMENT_FINISH}` : kit.prompt) : null;
           // name-aware + optional per-run fix note; house swaps in the template's locked prompt
-          const prompt = buildPhotoPrompt(p.name, note, kit ? kit.prompt : PHOTO_PROMPT);
+          const composeWith = (n) => buildPhotoPrompt(p.name, n, basePrompt || PHOTO_PROMPT);
+          const prompt = composeWith(note);
           // Sneaker house shots include the product's own box photo when one is
           // saved (photoBoxUrl). Best-effort: a broken box URL downgrades to the
           // no-box prompt path instead of failing the product.
@@ -3030,8 +3036,10 @@ exports.generateProductPhotos = onCall(
             try { box = await fetchImageBuffer(p.photoBoxUrl); }
             catch (err) { console.warn(`generateProductPhotos: ${id} box photo fetch failed:`, err && err.message); }
           }
-          const runOnce = () => getEngine(engName)
-            .generate(buffer, contentType, { quality, size, prompt, box, refs: kit ? kit.refs : undefined });
+          // The quality retry's fix (garments) joins the run's own note; the condition rule still comes last.
+          const withFix = (fixNote) => [note, fixNote].map((x) => String(x || "").trim()).filter(Boolean).join(" — ");
+          const runOnce = (fixNote = null) => getEngine(engName)
+            .generate(buffer, contentType, { quality, size, prompt: fixNote ? composeWith(withFix(fixNote)) : prompt, box, refs: kit ? kit.refs : undefined });
           let { buffer: rawBuf, costUSD, mime: rawMime } = await runOnce();
           // ── THE DRIFT CHECK (house style): the result against the ORIGINAL
           // photo. Drifted → ONE retry; drifted again → the product's own
@@ -3044,18 +3052,18 @@ exports.generateProductPhotos = onCall(
             try { truth = (await fetchImageBuffer(p.photoUrlOriginal)).buffer; } catch { truth = buffer; }
           }
           if (kit) {
-            const d1 = await drift.checkDrift({ original: truth, generated: rawBuf }, { apiKey: geminiApiKey.value(), sharp: sharpLib });
-            driftInfo = { first: d1.checked ? (d1.drift ? "drifted" : "same") : "unchecked", issues: d1.issues || "" };
+            const d1 = await drift.checkDrift({ original: truth, generated: rawBuf }, { apiKey: geminiApiKey.value(), sharp: sharpLib, garment });
+            driftInfo = { first: d1.checked ? (d1.drift ? "drifted" : "same") : "unchecked", issues: d1.issues || "", ...(garment ? { check: "garment", faults: d1.faults || [] } : {}) };
             if (d1.drift) {
               console.warn(`generateProductPhotos: ${id} drifted (${d1.issues}) — retrying once`);
               let second = null;
               // A retry that fails outright never costs the product: the cut-out stands in for the drifted photo.
-              try { second = await runOnce(); costUSD += second.costUSD; }
+              try { second = await runOnce(garment ? cat.garmentFixNote(d1.faults) : null); costUSD += second.costUSD; }
               catch (err) { console.warn(`generateProductPhotos: ${id} drift retry failed:`, err && err.message); driftInfo.retry = "failed"; driftFallback = true; }
               if (second) {
-                const d2 = await drift.checkDrift({ original: truth, generated: second.buffer }, { apiKey: geminiApiKey.value(), sharp: sharpLib });
+                const d2 = await drift.checkDrift({ original: truth, generated: second.buffer }, { apiKey: geminiApiKey.value(), sharp: sharpLib, garment });
                 driftInfo.retry = d2.checked ? (d2.drift ? "drifted" : "same") : "unchecked";
-                if (d2.drift) { driftInfo.retryIssues = d2.issues || ""; driftFallback = true; }
+                if (d2.drift) { driftInfo.retryIssues = d2.issues || ""; if (garment) driftInfo.retryFaults = d2.faults || []; driftFallback = true; }
                 else { rawBuf = second.buffer; rawMime = second.mime; }
               }
             }
@@ -3067,7 +3075,16 @@ exports.generateProductPhotos = onCall(
           let cut = null;
           if (driftFallback) {
             try { cut = await cutoutOnWhite(buffer); }
-            catch (err) { console.warn(`generateProductPhotos: ${id} no cut-out for the drift fallback:`, err && err.message); driftFallback = false; driftInfo.fallback = "no-cutout"; }
+            catch (err) {
+              console.warn(`generateProductPhotos: ${id} no cut-out for the drift fallback:`, err && err.message);
+              // A garment that failed the check twice is never proposed (Junid, 21 Nov 2026: never post a failed image).
+              if (garment) {
+                estCostUSD += costUSD;
+                costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
+                throw new Error("failed the quality check twice and the product could not be cut out cleanly");
+              }
+              driftFallback = false; driftInfo.fallback = "no-cutout";
+            }
           }
           const { buffer: outBuf, mime } = cut
             ? cut

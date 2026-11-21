@@ -103,7 +103,7 @@ test("one tap: Gemini is called once, progress is streamed, the photo lands on t
   assert.match(log.promptSha, /^[0-9a-f]{64}$/);
   assert.equal(log.thoughts, "Placing the hoodie on the fence.");
   assert.equal(log.drafts.length, 1);
-  assert.equal(log.inputs.map((i) => i.role).join(","), "plate,layoutDiagram,source");
+  assert.equal(log.inputs.map((i) => i.role).join(","), "plate,source", "a garment is sent no layout diagram (21 Nov 2026)");
   assert.equal(w.saved.length, 1);
   assert.match(w.saved[0].path, /\.genlog\.json$/);
   // What the card gets back never carries the log's heavy fields.
@@ -484,26 +484,27 @@ test("the item's own method is used when the tap names none; with neither, Full 
   assert.equal((await itemOf(full.db)).generations[b.genId].method, "full");
 });
 
-test("a hoodie's prompt carries the steam layer; the record names the layers that made the photo, and pixel measurements are kept", async () => {
+test("a hoodie's prompt carries the garment finish; the record names the layers that made the photo, and pixel measurements are kept", async () => {
   const w = await world();
   const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
   const gen = (await itemOf(w.db)).generations[out.genId];
-  assert.deepEqual(gen.layers, { steam: true });
-  assert.equal(gen.promptVersion, "baseline-2026-10-02+steam (studio-2026-10-04.1)");
+  assert.deepEqual(gen.layers, { garmentFinish: true });
+  assert.equal(gen.promptVersion, "baseline-2026-10-02+garmentFinish (studio-2026-10-04.1)");
   const call = w.calls.find((c) => c[0] === "image");
-  assert.match(call[3][0].text, /STEAMED AND PRESSED/);
+  assert.match(call[3][0].text, /FRESHLY STEAMED AND PRESSED/);
   const log = (await w.db.ref(`${core.GENLOG}/${out.code}`).once()).val();
   assert.ok(log.measurements && log.measurements.noise && log.measurements.background, "numbers for the weekly report");
   assert.ok(gen.measurements);
 });
 
-test("a t-shirt's prompt is the bare baseline: no layer on the record", async () => {
-  const w = await world({ product: { categoryKey: "t-shirts", name: "Plain Tee" }, item: { categoryKey: "t-shirts" } });
-  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
-  const gen = (await itemOf(w.db)).generations[out.genId];
-  assert.equal(gen.layers, undefined);
-  assert.equal(gen.promptVersion, "baseline-2026-10-02 (studio-2026-10-04.1)");
-  assert.doesNotMatch(w.calls.find((c) => c[0] === "image")[3][0].text, /STEAMED AND PRESSED/);
+test("a t-shirt (and a golf polo) gets the garment finish too since 21 Nov 2026 — no garment is left on the bare baseline", async () => {
+  for (const key of ["t-shirts", "golf-t-shirts"]) {
+    const w = await world({ product: { categoryKey: key, name: "Plain Tee" }, item: { categoryKey: key } });
+    const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+    const gen = (await itemOf(w.db)).generations[out.genId];
+    assert.deepEqual(gen.layers, { garmentFinish: true });
+    assert.match(w.calls.find((c) => c[0] === "image")[3][0].text, /GARMENT FINISH/);
+  }
 });
 
 test("a sneaker with no box photo: the brand's library box and two example photos are sent, each labelled for what it is", async () => {
@@ -708,15 +709,15 @@ test("OpenAI's errors are said in the same plain way: declined, out of credit, a
   assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 gave no photo within 300s"), { status: 504 })), "No photo — OpenAI took too long and the connection was closed — it may still have been charged; tap Generate to try again.");
 });
 
-test("OpenAI gets the SAME steam layer on a hoodie and the SAME box rule + shoe references on a sneaker — and its request puts the real product first", async () => {
+test("OpenAI gets the SAME garment finish on a hoodie and the SAME box rule + shoe references on a sneaker — and its request puts the real product first", async () => {
   const { toPromptAndImages } = await import("../newArrivals/studio/openai-image.mjs");
-  const { STEAM_LAYER, footwearBoxLayer, FOOTWEAR_POSE_LAYER } = await import("../newArrivals/studio/prompt.mjs");
-  // Clothing: the steam layer, word for word, in the prompt OpenAI is sent.
+  const { GARMENT_FINISH_LAYER, footwearBoxLayer, FOOTWEAR_POSE_LAYER } = await import("../newArrivals/studio/prompt.mjs");
+  // Clothing: the garment finish, word for word, in the prompt OpenAI is sent.
   const h = await world();
   const ho = await studio.studioGenerate(h.db, { pid: PID, provider: "openai" }, "junid", h.deps);
   const hParts = h.calls.find((c) => c[0] === "image")[3];
-  assert.ok(toPromptAndImages(hParts).prompt.includes(STEAM_LAYER));
-  assert.deepEqual((await itemOf(h.db)).generations[ho.genId].layers, { steam: true });
+  assert.ok(toPromptAndImages(hParts).prompt.includes(GARMENT_FINISH_LAYER));
+  assert.deepEqual((await itemOf(h.db)).generations[ho.genId].layers, { garmentFinish: true });
   // Footwear: no box photo of its own → the brand's library box, never an invented one; the reference photo goes too.
   const s = await world({ product: { name: "Nike Air", categoryKey: "sneakers", brand: "Nike" }, item: { categoryKey: "sneakers" } });
   const lib = await sharp({ create: { width: 300, height: 200, channels: 4, background: "#e85d04" } }).png().toBuffer();
@@ -769,4 +770,101 @@ test("paused AFTER the tap was accepted, while the photo was being prepared: the
   const it = await itemOf(w.db);
   assert.equal(it.generateRequest, undefined, "the claim is released");
   assert.equal(Object.keys(it.generations || {}).length, 0);
+});
+
+// ── THE GARMENT QUALITY CHECK (Junid, 21 Nov 2026) ──────────────────────────
+// After every clothing photo: lines/borders, wrinkles, tilt, colour, same product. Failed → ONE retry told the fix
+// (lines → no layout diagram); failed again → the cut-out; no cut-out → no photo at all. Never a failed image kept.
+function garmentCheck(answers) {
+  const seen = [];
+  return { seen, driftCheck: async (orig, gen, opts = {}) => { seen.push(opts); const f = answers.shift(); return f === null ? { checked: false, drift: false, issues: "down" } : { checked: true, drift: f.length > 0, faults: f, issues: f.length ? `found ${f.join("+")}` : "" }; } };
+}
+const textsOf = (call) => call[3].filter((p) => p.text).map((p) => p.text);
+
+test("garment check: a clothing photo is checked AS A GARMENT; a pass keeps it with one image call", async () => {
+  const w = await world();
+  const g = garmentCheck([[]]);
+  w.deps.kit = { driftCheck: g.driftCheck };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.deepEqual(g.seen, [{ garment: true }]);
+  assert.equal(w.calls.filter((c) => c[0] === "image").length, 1);
+  assert.deepEqual((await itemOf(w.db)).generations[out.genId].drift, { first: "same", check: "garment" });
+});
+
+test("a garment is sent NO layout diagram (it was drawn into the wall); footwear keeps its diagram", async () => {
+  const w = await world();
+  await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const t = textsOf(w.calls.find((c) => c[0] === "image"));
+  assert.ok(!t.some((x) => x.startsWith("LAYOUT DIAGRAM")));
+  assert.ok(t.some((x) => x.startsWith("NO LAYOUT DIAGRAM is sent for a garment")));
+  const s = await world({ product: { name: "Nike Air", categoryKey: "sneakers", category: "Footwear" }, item: { categoryKey: "sneakers" } });
+  await studio.studioGenerate(s.db, { pid: PID }, "junid", s.deps);
+  const ts = textsOf(s.calls.find((c) => c[0] === "image"));
+  assert.ok(ts.some((x) => x.startsWith("LAYOUT DIAGRAM")));
+  assert.ok(!ts.some((x) => x.startsWith("NO LAYOUT DIAGRAM")));
+});
+
+test("garment check: lines + wrinkles → ONE retry with the fix said; the retry is kept when it passes", async () => {
+  const w = await world({ product: { categoryKey: "golf-t-shirts", name: "Brown knit polo" }, item: { categoryKey: "golf-t-shirts" } });
+  const g = garmentCheck([["lines", "wrinkles"], []]);
+  w.deps.kit = { driftCheck: g.driftCheck };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const imgs = w.calls.filter((c) => c[0] === "image");
+  assert.equal(imgs.length, 2, "one retry, never more");
+  assert.ok(!textsOf(imgs[0]).some((t) => t.startsWith("FIX FROM")), "the first request carries no fix");
+  const fix = textsOf(imgs[1]).find((t) => t.startsWith("FIX FROM THE LAST ATTEMPT"));
+  assert.match(fix, /DREW A RECTANGLE OR LINES/); assert.match(fix, /LEFT WRINKLED/);
+  assert.doesNotMatch(fix, /HUNG CROOKED|COLOUR DRIFTED/);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.drift.first, "drifted"); assert.deepEqual(gen.drift.faults, ["lines", "wrinkles"]); assert.equal(gen.drift.retry, "same");
+});
+
+test("garment check: a crooked hang only → the retry is told to hang it straight", async () => {
+  const w = await world();
+  const g = garmentCheck([["tilt"], []]);
+  w.deps.kit = { driftCheck: g.driftCheck };
+  await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const imgs = w.calls.filter((c) => c[0] === "image");
+  assert.match(textsOf(imgs[1]).find((t) => t.startsWith("FIX FROM")), /HUNG CROOKED/);
+});
+
+test("garment check: failed twice → the product cut out of its own photo, with the quality note", async () => {
+  const w = await world();
+  const g = garmentCheck([["wrinkles"], ["tilt"]]);
+  w.deps.kit = { driftCheck: g.driftCheck };
+  w.deps.cutout = async () => ({ png: await sharp({ create: { width: 120, height: 160, channels: 4, background: { r: 120, g: 70, b: 40, alpha: 1 } } }).extend({ top: 10, bottom: 10, left: 10, right: 10, background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer() });
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.driftFallback, "cutout");
+  assert.match(gen.note || "", /failed the quality check twice/);
+  assert.deepEqual(gen.drift.retryFaults, ["tilt"]);
+  assert.equal(w.calls.filter((c) => c[0] === "image").length, 2, "never a third generation");
+});
+
+test("garment check: failed twice and no clean cut-out → NO photo lands; both images are booked as spend", async () => {
+  const w = await world();
+  const g = garmentCheck([["lines"], ["lines"]]);
+  w.deps.kit = { driftCheck: g.driftCheck };
+  w.deps.cutout = async () => null;
+  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /quality check twice and the product could not be cut out cleanly/);
+  const item = await itemOf(w.db);
+  assert.ok(!item.generations || !Object.keys(item.generations).length, "the failed photo is never put on the card");
+  // (The fake database keeps the last increment written: the images were each booked.)
+  assert.ok((await w.db.ref(`${core.ROOT}/stats/totalSpentZar`).once()).val()?.[".sv"]?.increment > 0, "what was paid is still counted");
+});
+
+test("garment check: a check that cannot run never costs a retry (fail-open, as the drift check)", async () => {
+  const w = await world();
+  const g = garmentCheck([null]);
+  w.deps.kit = { driftCheck: g.driftCheck };
+  await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.equal(w.calls.filter((c) => c[0] === "image").length, 1);
+});
+
+test("a sneaker is never checked as a garment", async () => {
+  const w = await world({ product: { name: "Nike Air", categoryKey: "sneakers", category: "Footwear" }, item: { categoryKey: "sneakers" } });
+  const g = garmentCheck([[]]);
+  w.deps.kit = { driftCheck: g.driftCheck };
+  await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.deepEqual(g.seen, [{}]);
 });

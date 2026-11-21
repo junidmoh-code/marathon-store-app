@@ -116,16 +116,16 @@ test("the category decides the plate: all footwear (slides too) on the pedestal,
 });
 
 // ── THE LAYERS SWITCHED ON 4 OCT (Junid's rebuild brief, constraint 6) ───────
-import { STEAM_LAYER, footwearBoxLayer, FOOTWEAR_POSE_LAYER } from "../newArrivals/studio/prompt.mjs";
+import { STEAM_LAYER, GARMENT_FINISH_LAYER, footwearBoxLayer, FOOTWEAR_POSE_LAYER } from "../newArrivals/studio/prompt.mjs";
 import { EXAMPLES_LABEL } from "../newArrivals/studio/studio.mjs";
 import { productOnlyPrompt, SPLIT_PROMPT_VERSION } from "../newArrivals/studio/split-prompts.mjs";
 
 test("the layers in force are exactly the signed-off ones, each with its approval on record", () => {
   assert.deepEqual(gen.layers, { boxRules: false, reshootBrief: false, socialsRequest: false, framingCorrection: false, packaging: false,
-    steam: true, footwearBox: true, footwearPose: true, footwearExamples: false });
+    steam: false, footwearBox: true, footwearPose: true, footwearExamples: false, garmentFinish: true });
   // Each layer in force is on record as Junid's — approved, or requested by him and marked
   // provisional until he has seen a photo made with it — and its exact wording is pinned.
-  const texts = { steam: STEAM_LAYER, footwearBox: ["own", "library", "none"].map(footwearBoxLayer).join("\n"), footwearPose: FOOTWEAR_POSE_LAYER, footwearExamples: EXAMPLES_LABEL };
+  const texts = { steam: STEAM_LAYER, garmentFinish: GARMENT_FINISH_LAYER, footwearBox: ["own", "library", "none"].map(footwearBoxLayer).join("\n"), footwearPose: FOOTWEAR_POSE_LAYER, footwearExamples: EXAMPLES_LABEL };
   for (const [name, on] of Object.entries(gen.layers)) {
     if (!on) continue;
     const a = lock.layerApprovals[name];
@@ -135,30 +135,37 @@ test("the layers in force are exactly the signed-off ones, each with its approva
   assert.equal(gen.defaultMethod, "full");
 });
 
-test("a T-SHIRT is still generated on the bare baseline — byte for byte — with every layer on", () => {
-  for (const key of ["t-shirts", "golf-t-shirts"]) {
-    const args = { kind: "single", productName: "Plain Tee", conditionClause: CONDITION_CLAUSE, placement: placementText("single", spec.single) };
-    assert.equal(studioPrompt({ ...args, categoryKey: key, layers: gen.layers }).text, baselinePrompt(args));
+test("EVERY GARMENT — T-shirts and polos too — gets the garment finish before the studio brief; nothing else of the baseline moves (Junid, 21 Nov 2026)", () => {
+  for (const key of ["t-shirts", "golf-t-shirts", "hoodies", "soccer-jerseys", "basketball-vests", null]) {
+    const args = { kind: "single", productName: "Brown Knit Polo", conditionClause: CONDITION_CLAUSE, placement: placementText("single", spec.single) };
+    const out = studioPrompt({ ...args, categoryKey: key, layers: gen.layers });
+    assert.deepEqual(out.layers, ["garmentFinish"], `${key}: the garment finish`);
+    assert.equal(out.text.replace(`${GARMENT_FINISH_LAYER}\n\n`, ""), baselinePrompt(args));
+    assert.ok(out.text.indexOf("GARMENT FINISH") < out.text.indexOf("STUDIO QUALITY"));
   }
+  // A two-piece set gets it too; footwear never.
+  assert.deepEqual(studioPrompt({ kind: "twopiece", categoryKey: "tracksuits", productName: "Set", conditionClause: CONDITION_CLAUSE, placement: placementText("twopiece", spec.twopiece), layers: gen.layers }).layers, ["garmentFinish"]);
+  assert.deepEqual(layersFor({ kind: "footwear", categoryKey: "sneakers", layers: { garmentFinish: true } }), []);
+  // Junid's five points, each said.
+  assert.match(GARMENT_FINISH_LAYER, /FRESHLY STEAMED AND PRESSED: no wrinkles, creases, fold lines/);
+  assert.match(GARMENT_FINISH_LAYER, /knit, piqué or rib texture is\s+sharp/);
+  assert.match(GARMENT_FINISH_LAYER, /perfectly straight and centred on a straight hanger — shoulders level and\s+symmetrical, the hem straight/);
+  assert.match(GARMENT_FINISH_LAYER, /collar lies flat with sharp, even edges/);
+  assert.match(GARMENT_FINISH_LAYER, /EXACT colour, collar colour, trims, logo and\s+buttons/);
+  assert.match(GARMENT_FINISH_LAYER, /never a rectangle, frame line, border,\s+box, dashed or guide line/);
+  assert.match(GARMENT_FINISH_LAYER, /subtle, soft shadow of the garment on the wall/);
+  // The condition rule still comes last and still overrides it (worn-in creases stay).
+  const out = studioPrompt({ kind: "single", categoryKey: "golf-t-shirts", productName: "P", conditionClause: CONDITION_CLAUSE, placement: "", layers: gen.layers });
+  assert.ok(out.text.endsWith(CONDITION_CLAUSE));
 });
 
-test("CLOTHING (not tees): the steam paragraph sits before the studio brief; nothing else of the baseline moves", () => {
-  const args = { kind: "single", productName: "Fleece Hoodie", conditionClause: CONDITION_CLAUSE, placement: placementText("single", spec.single) };
-  const out = studioPrompt({ ...args, categoryKey: "hoodies", layers: gen.layers });
+test("with garmentFinish off, the old steam layer behaves exactly as signed off on 4 Oct (tees bare, hoodies steamed)", () => {
+  const old = { ...gen.layers, garmentFinish: false, steam: true };
+  const args = { kind: "single", productName: "Plain Tee", conditionClause: CONDITION_CLAUSE, placement: placementText("single", spec.single) };
+  for (const key of ["t-shirts", "golf-t-shirts"]) assert.equal(studioPrompt({ ...args, categoryKey: key, layers: old }).text, baselinePrompt(args));
+  const out = studioPrompt({ ...args, categoryKey: "hoodies", layers: old });
   assert.deepEqual(out.layers, ["steam"]);
   assert.equal(out.text.replace(`${STEAM_LAYER}\n\n`, ""), baselinePrompt(args));
-  assert.ok(out.text.indexOf("STEAMED AND PRESSED") < out.text.indexOf("STUDIO QUALITY"));
-  // Steaming never licenses a change to the garment itself.
-  assert.match(STEAM_LAYER, /Every print, logo, label, embroidery, stitch line, seam, pocket, zip and button stays exactly/);
-  assert.match(STEAM_LAYER, /colour stays true/);
-  // …nor to its shape or to anything designed into it.
-  assert.match(STEAM_LAYER, /Remove ONLY those/);
-  assert.match(STEAM_LAYER, /shape, cut, length, fit and\s+volume — never inflated, stretched, straightened, levelled or resized/);
-  assert.match(STEAM_LAYER, /pleats and pressed creases; gathers,\s+elastic and ribbing/);
-  // It does not fight the baseline's lighting.
-  assert.doesNotMatch(STEAM_LAYER, /key light/);
-  // A two-piece set gets it too.
-  assert.deepEqual(studioPrompt({ kind: "twopiece", categoryKey: "tracksuits", productName: "Set", conditionClause: CONDITION_CLAUSE, placement: placementText("twopiece", spec.twopiece), layers: gen.layers }).layers, ["steam"]);
 });
 
 test("SNEAKERS: one box on the rail — its own, else the one in the shoe photo, else the brand's; the shoe on the pedestal", () => {

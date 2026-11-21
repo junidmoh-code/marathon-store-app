@@ -214,3 +214,64 @@ test("a product that falls through to the house default keeps the restored reque
   await assert.rejects(generate({ item: { pid: "p1", categoryKey: "perfumes" }, product: { categoryKey: "perfumes" }, genId: "g", deps }), (e) => { generateOneReached = /only footwear and clothing/.test(e.message); return true; });
   assert.ok(generateOneReached);
 });
+
+// ── THE GARMENT FINISH + CHECK (Junid, 21 Nov 2026) ─────────────────────────
+import { isGarment, parseGarmentAnswer, garmentFixNote, GARMENT_FINISH, GARMENT_CHECK_PROMPT, GARMENT_FAULTS } from "../lib/style-kit-catalogue.mjs";
+import { checkDrift } from "../lib/style-kit-drift.mjs";
+
+test("garments: clothing by category, product type or catalogue key; never footwear or accessories", () => {
+  for (const p of [{ category: "Clothing" }, { productType: "clothing" }, { categoryKey: "golf-t-shirts" }, { categoryKey: "soccer-jerseys" }, { categoryKey: "tracksuits" }, { categoryKey: "hoodies" }])
+    assert.equal(isGarment(p), true, JSON.stringify(p));
+  for (const p of [{ category: "Footwear", categoryKey: "sneakers" }, { categoryKey: "caps-beanies" }, { categoryKey: "bags" }, {}, null])
+    assert.equal(isGarment(p), false, JSON.stringify(p));
+});
+
+test("garment answer: the named faults only, in fixed order; unreadable or no list → unchecked, never a fail", () => {
+  assert.deepEqual(parseGarmentAnswer('{"faults":["Wrinkles","lines","nonsense"],"issues":"a box on the wall"}'), { drift: true, faults: ["lines", "wrinkles"], issues: "a box on the wall" });
+  assert.deepEqual(parseGarmentAnswer('```json\n{"faults":[],"issues":""}\n```'), { drift: false, faults: [], issues: "" });
+  assert.equal(parseGarmentAnswer('{"verdict":"same"}'), null);
+  assert.equal(parseGarmentAnswer("looks fine"), null);
+  assert.deepEqual(GARMENT_FAULTS, ["product", "colour", "lines", "wrinkles", "tilt"]);
+  for (const f of GARMENT_FAULTS) assert.ok(GARMENT_CHECK_PROMPT.includes(`"${f}"`), f);
+});
+
+test("garment fix note: one sentence per fault found; nothing found → no note", () => {
+  assert.equal(garmentFixNote([]), null); assert.equal(garmentFixNote(undefined), null);
+  const n = garmentFixNote(["tilt", "colour"]);
+  assert.match(n, /^FIX FROM THE LAST ATTEMPT/); assert.match(n, /COLOUR DRIFTED.*HUNG CROOKED/);
+  assert.doesNotMatch(n, /WRINKLED|RECTANGLE/);
+});
+
+test("the check sends the garment prompt for a garment, the drift prompt otherwise, and reads each answer its own way", async () => {
+  const sent = [];
+  const fetchImpl = (answer) => async (url, init) => { sent.push(JSON.parse(init.body).contents[0].parts[0].text); return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: answer }] } }] }) }; };
+  const img = await sharp({ create: { width: 50, height: 50, channels: 3, background: "#963" } }).jpeg().toBuffer();
+  const g = await checkDrift({ original: img, generated: img }, { apiKey: "k", sharp, fetchImpl: fetchImpl('{"faults":["tilt"],"issues":"leans left"}'), garment: true });
+  assert.deepEqual({ checked: g.checked, drift: g.drift, faults: g.faults }, { checked: true, drift: true, faults: ["tilt"] });
+  assert.equal(sent[0], GARMENT_CHECK_PROMPT);
+  const d = await checkDrift({ original: img, generated: img }, { apiKey: "k", sharp, fetchImpl: fetchImpl('{"verdict":"same","issues":""}') });
+  assert.equal(d.drift, false); assert.equal(d.faults, undefined); assert.notEqual(sent[1], GARMENT_CHECK_PROMPT);
+});
+
+test("a clothing Style Kit photo carries the garment finish before the condition clause, and its retry the fix", async () => {
+  const src = await sharp({ create: { width: 600, height: 800, channels: 3, background: { r: 100, g: 60, b: 30 } } }).jpeg().toBuffer();
+  const answer = await sharp({ create: { width: 1600, height: 1600, channels: 3, background: { r: 230, g: 230, b: 225 } } }).composite([{ input: await sharp({ create: { width: 500, height: 500, channels: 3, background: { r: 100, g: 60, b: 30 } } }).png().toBuffer(), left: 550, top: 550 }]).jpeg().toBuffer();
+  const refBuf = await sharp({ create: { width: 1000, height: 1000, channels: 3, background: { r: 90, g: 90, b: 90 } } }).jpeg().toBuffer();
+  const calls = [], checks = [["wrinkles"], []];
+  const deps = {
+    generation: { imageModel: "gemini-3-pro-image", imageSize: "4K", layers: {} }, conditionClause: "CONDITION.",
+    fetchBytes: async () => ({ buffer: src }),
+    image: async (model, parts, imageConfig) => { calls.push({ parts }); return { buffer: answer, mime: "image/jpeg", usage: { n: calls.length } }; },
+    upload: async (p) => ({ path: p, url: `https://firebasestorage.googleapis.com/${p}` }),
+    now: () => 42 + calls.length,
+    styleKitFor: async () => ({ kit: "jerseys", label: "Jerseys", dedicated: true, prompt: "JERSEY KIT PROMPT", promptFamily: "clothing", refs: [refBuf], refIds: ["a"] }),
+    driftCheck: async (o, g, opts) => { assert.deepEqual(opts, { garment: true }); const f = checks.shift(); return { checked: true, drift: f.length > 0, faults: f, issues: "" }; },
+  };
+  const res = await generate({ item: { pid: "p9", categoryKey: "soccer-jerseys", name: "Ajax away" }, product: { photoUrl: "https://firebasestorage.googleapis.com/o.jpg", categoryKey: "soccer-jerseys", name: "Ajax away" }, genId: "g1", deps });
+  assert.equal(calls.length, 2);
+  const first = calls[0].parts[0].text, second = calls[1].parts[0].text;
+  assert.ok(first.includes(GARMENT_FINISH)); assert.ok(first.indexOf(GARMENT_FINISH) < first.indexOf("CONDITION."));
+  assert.doesNotMatch(first, /FIX FROM THE LAST ATTEMPT/);
+  assert.match(second, /FIX FROM THE LAST ATTEMPT.*LEFT WRINKLED/); assert.ok(second.endsWith("CONDITION."));
+  assert.deepEqual(res.drift.faults, ["wrinkles"]); assert.equal(res.drift.retry, "same");
+});
