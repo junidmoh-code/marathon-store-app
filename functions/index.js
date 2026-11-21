@@ -6720,6 +6720,9 @@ exports.insightsRollupSweep = onSchedule(
   exports.bfCampaignSet = bf.bfCampaignSet;
   // A tap on the New Arrivals card mirrors into the Black Friday pick (one approval).
   exports.bfNaMirror = bf.bfNaMirror;
+  // Every New Arrival is approved and posted (Junid, 21 Nov 2026): every 10 minutes.
+  //   firebase deploy --only functions:bfNaAutoApprove
+  exports.bfNaAutoApprove = bf.bfNaAutoApprove;
   exports.bfGenerate = require("./blackFriday/generate.js").bfGenerate;
   // Junid's own photo for a product: Replace photo (his iPhone) and Find online (20 Nov 2026).
   exports.bfPhotoSource = require("./blackFriday/sources.js").bfPhotoSource;
