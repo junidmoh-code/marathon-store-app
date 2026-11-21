@@ -18,7 +18,6 @@
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onValueWritten } = require("firebase-functions/v2/database");
-const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const core = require("./core.cjs");
 const naLib = require("./na.cjs");
@@ -540,15 +539,4 @@ const bfNaMirror = onValueWritten(
   },
 );
 
-// ALL NEW ARRIVALS ARE POSTED (Junid, 21 Nov 2026): every 10 minutes, each new arrival on the card's New Arrivals
-// tab is approved through the same bulk Approve (naAuto.cjs has the rules: never R0, no photo, paper bags, out of
-// stock, rejected or taken back; an upload settles 15 minutes first).
-const bfNaAutoApprove = onSchedule(
-  { schedule: "every 10 minutes", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "512MiB", timeoutSeconds: 300, retryCount: 0 },
-  async () => {
-    const out = await require("./naAuto.cjs").run(admin.database(), { apply: true, list, many });
-    console.log(`bfNaAutoApprove: ${out.approved || 0} approved of ${out.onTab} on the tab; skipped ${JSON.stringify(out.skipped)}${out.refused && out.refused.length ? `; refused ${JSON.stringify(out.refused.slice(0, 10))}` : ""}`);
-  },
-);
-
-module.exports = { bfCampaignList, bfCampaignSet, bfNaMirror, bfNaAutoApprove, _internals: { bfPhotoSig, findItem, repost, naTap, naStatus, ledger, brainView, brainPause, brainSlot, brainDayCat, list, tap, saveSelection, loadSelection, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };
+module.exports = { bfCampaignList, bfCampaignSet, bfNaMirror, _internals: { bfPhotoSig, findItem, repost, naTap, naStatus, ledger, brainView, brainPause, brainSlot, brainDayCat, list, tap, saveSelection, loadSelection, approveBig, many, restore, approveStyle, schedule, clearSchedule, replan, revTransaction, assertJunid } };

@@ -56,7 +56,7 @@ test("Approve moves a product to Approved; Reject removes it from the list; reje
   const db = seed();
   const r = await tap(db, { action: "approve", pid: "c" }, 5000);
   assert.equal(r.row.tab, "approved");
-  assert.deepEqual({ ...(await pick(db, "c")), rev: undefined }, { state: "approved", sig: "current", shown: "https://x/Cap C.jpg", at: 5000, by: "junid", section: "main", price: 150, kind: "headwear", name: "Cap C", sizes: "M-XL", photoFrom: "app", rev: undefined });
+  assert.deepEqual({ ...(await pick(db, "c")), rev: undefined }, { state: "approved", sig: "current", shown: "https://x/Cap C.jpg", at: 5000, by: "junid", section: "main", source: "normal", approvedBy: "junid", approvedAt: 5000, price: 150, kind: "headwear", name: "Cap C", sizes: "M-XL", photoFrom: "app", rev: undefined });
   await tap(db, { action: "reject", pid: "d" }, 6000);
   // The 05:00 rebuild writes the product again — it stays rejected.
   await db.ref("bf_campaign_2026/items/main/d").set(it_("Hoodie D", 450, 14));
