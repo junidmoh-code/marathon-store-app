@@ -543,3 +543,10 @@ describe("the province the order may be in: the typed one AND the postal code's"
     } finally { vi.useRealTimers(); }
   });
 });
+
+it("postal ranges keep the real province at the borders (CodeRabbit on #958)", async () => {
+  const { postalProvinces } = await import("./bookReturn.mjs");
+  expect(postalProvinces("0480")).toContain("LP"); // Bela-Bela
+  expect(postalProvinces("8160")).toContain("WC"); // Vredendal
+  expect(postalProvinces("0933")).toEqual(["LP"]); // #2181 stays Limpopo only
+});

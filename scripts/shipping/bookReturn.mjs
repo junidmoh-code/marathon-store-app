@@ -83,13 +83,13 @@ const squash = (s) => str(s).toLowerCase().replace(/[^a-z]/g, "");
 export const provinceName = (zone) => PROVINCES[str(zone).toUpperCase()] ?? "";
 /**
  * The province(s) a South African postal code is in — coarse ranges, two where a range straddles a border (2026
- * codes; checked against this account's own shipments). [] for a code not covered. Pure.
+ * codes; checked against this account's own shipments; 0480 Bela-Bela is Limpopo and 8160 Vredendal is Western Cape, CodeRabbit on #958). [] for a code not covered. Pure.
  */
 const POSTAL_RANGES = [
-  [1, 199, ["GP"]], [200, 299, ["NW", "GP"]], [300, 499, ["NW"]], [500, 999, ["LP"]],
+  [1, 199, ["GP"]], [200, 299, ["NW", "GP"]], [300, 499, ["NW", "LP"]], [500, 999, ["LP"]],
   [1000, 1099, ["MP", "GP"]], [1100, 1399, ["MP"]], [1400, 2199, ["GP"]], [2200, 2499, ["MP"]],
   [2500, 2899, ["NW"]], [2900, 2999, ["KZN", "MP"]], [3000, 4699, ["KZN"]], [4700, 4799, ["KZN", "EC"]],
-  [4800, 6499, ["EC"]], [6500, 8099, ["WC"]], [8100, 8999, ["NC"]], [9000, 9299, ["FS", "NC"]], [9300, 9999, ["FS"]],
+  [4800, 6499, ["EC"]], [6500, 8099, ["WC"]], [8100, 8999, ["NC", "WC"]], [9000, 9299, ["FS", "NC"]], [9300, 9999, ["FS"]],
 ];
 export function postalProvinces(code) {
   const c = str(code);
