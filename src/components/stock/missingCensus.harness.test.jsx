@@ -17,7 +17,8 @@ let hidden = null;
 try { hidden = process.env.CENSUS_HIDDEN ? JSON.parse(readFileSync(process.env.CENSUS_HIDDEN, "utf8")) : (snap?.hidden ?? null); } catch { hidden = null; }
 const paths = snap ? {
   stock: snap.stock, stock_targets: snap.targets, refill_requests: snap.recentRequests, "config/refillEngine": snap.config,
-  network: snap.network ?? null, "settings/missingProductsHidden": hidden, "settings/stockHold/held": snap.held && Object.keys(snap.held).length ? snap.held : null,
+  network: snap.network ?? null, "settings/missingProductsHidden": hidden,
+  "refill_engine/seats/marathon-pine": snap.seats?.["marathon-pine"] ?? null, "refill_engine/seats/concrete": snap.seats?.concrete ?? null, "settings/stockHold/held": snap.held && Object.keys(snap.held).length ? snap.held : null,
 } : {};
 const gets = snap ? {
   "config/refillEngine/footwearRunByLocation": snap.config.footwearRunByLocation ?? null,
@@ -130,6 +131,14 @@ describe.skipIf(!SNAP)("census of the real Missing Products lists", () => {
         }
       }
       out.divisions[name] = d;
+    }
+    // A closer look at named products: each destination and what it would send.
+    for (const pid of String(process.env.CENSUS_PIDS || "").split(",").filter(Boolean)) {
+      for (const [k, s] of last) if (k.endsWith(`:${pid}`)) {
+        let plans = {};
+        try { for (const d of s.a.dests || []) plans[typeof d === "string" ? d : d] = (s.a.kind === undefined && s.a.planFor && s.a.tickable) ? (s.a.planFor(s.a.card, [d], s.a.openByLoc)?.lines?.[0] || null) : null; } catch (e) { plans = { error: String(e) }; }
+        console.log("PID", k, JSON.stringify(s.row ? s.row.dests : null), "tickable", JSON.stringify(s.a.tickable), "openByLoc", JSON.stringify(s.a.openByLoc), "plans", JSON.stringify(plans));
+      }
     }
     if (process.env.CENSUS_OUT) writeFileSync(process.env.CENSUS_OUT, JSON.stringify(out, null, 1));
     console.log(JSON.stringify({ ...out, divisions: Object.fromEntries(Object.entries(out.divisions).map(([k, v]) => [k, { ...v, needsPolicy: v.needsPolicy.length }])) }, null, 1));

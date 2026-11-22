@@ -9,6 +9,7 @@ const decodeless = (x) => x;
   seed({
     stock: s.stock, stock_targets: s.targets, refill_requests: s.recentRequests, network: s.network || undefined,
     config: { refillEngine: s.config },
+    refill_engine: { seats: s.seats || {} },
     settings: { stockHold: { held: s.held || {} }, missingProductsHidden: s.hidden || undefined },
   });
   const products = Object.entries(s.products).map(([id, p]) => ({ id, ...p }));

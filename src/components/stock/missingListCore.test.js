@@ -1,6 +1,6 @@
 // ─── MISSING PRODUCTS — WHAT IS ON THE LIST (the pure rules) ─────────────────
 import { describe, it, expect } from "vitest";
-import { openRequestsByProduct, productRow, sneakerRow, createFrozenOrder, freezeOrder, tapProblem, openingOrder, rowKey } from "./missingListCore";
+import { openRequestsByProduct, productRow, sneakerRow, createFrozenOrder, freezeOrder, tapProblem, openingOrder, rowKey, shopOwners, pickNext } from "./missingListCore";
 
 const cell = (qty) => ({ qty });
 const tee = { id: "p1", name: "Tee", productType: "clothing", categoryKey: "t-shirts", sizes: ["S", "M", "L"] };
@@ -44,17 +44,25 @@ describe("productRow — a card is a row only if a tap would send something", ()
     const allStock = { central: { p1: { M: cell(40), L: cell(3) } } };
     const row = productRow({ ...base, allStock, planFor: directPlan({ concrete: ["S", "L"], "marathon-pine": [] }, { L: 3 }) });
     expect(row.key).toBe(rowKey(1, "clothing", "p1"));
-    expect(row.dests).toEqual([
-      { id: "marathon-pine", name: "Pine", ok: false, sizes: [], units: 0 },
-      { id: "concrete", name: "Concrete", ok: true, sizes: ["L"], units: 2 },
-    ]);
+    // only Concrete would send something: only Concrete is OFFERED (no dead Pine)
+    expect(row.dests).toEqual([{ id: "concrete", name: "Concrete", ok: true, sizes: ["L"], units: 2 }]);
     expect(row.stock).toBe(3);                    // not 43: M is not something a tap sends
     expect(row.sourceName).toBe("Central");
   });
-  it("a shop the card may not be solved into is a dead button, whatever the plan says", () => {
+  it("a shop the card may not be solved into is not offered, whatever the plan says", () => {
     const allStock = { central: { p1: { L: cell(3) } } };
     const row = productRow({ ...base, tickable: ["concrete"], allStock, planFor: directPlan({ concrete: ["L"], "marathon-pine": ["L"] }, { L: 3 }) });
-    expect(row.dests.map((d) => d.ok)).toEqual([false, true]);
+    expect(row.dests.map((d) => d.id)).toEqual(["concrete"]);
+  });
+  it("ONE OWNER: owned by Concrete → Pine is never offered; owned by Pine → Concrete never; owned by both → not listed; neither → both", () => {
+    const allStock = { central: { p1: { L: cell(3) } } };
+    const plan = directPlan({ concrete: ["L"], "marathon-pine": ["L"] }, { L: 3 });
+    expect(productRow({ ...base, allStock, planFor: plan, owners: ["concrete"] }).dests.map((d) => d.id)).toEqual(["concrete"]);
+    expect(productRow({ ...base, allStock, planFor: plan, owners: ["marathon-pine"] }).dests.map((d) => d.id)).toEqual(["marathon-pine"]);
+    expect(productRow({ ...base, allStock, planFor: plan, owners: ["marathon-pine", "concrete"] })).toBe(null);
+    expect(productRow({ ...base, allStock, planFor: plan, owners: [] }).dests.map((d) => d.id)).toEqual(["marathon-pine", "concrete"]);
+    // owned by Concrete, and a Concrete solve would send nothing → not on the list at all (never Pine instead)
+    expect(productRow({ ...base, allStock, planFor: directPlan({ concrete: [], "marathon-pine": ["L"] }, { L: 3 }), owners: ["concrete"] })).toBe(null);
   });
   it("a shop behind a hub: the row needs the source to hold a size the policy covers; reservations are netted off Central", () => {
     const hubPlan = (_c, [store]) => ({ lines: [{ store, hub: "hub2", sizes: ["M", "L"], firstBatch: false, units: 0, got: [] }] });
@@ -78,12 +86,12 @@ describe("sneakerRow", () => {
   const base = { card, section: 2, dests: ["hub1", "hub2"], nameOf };
   it("lines at a hub → a live button; the stock line is the free stock of the sizes sent", () => {
     const row = sneakerRow({ ...base, planFor: (_c, hub) => (hub === "hub1" ? [{ size: "8", qty: 2, avail: 5 }, { size: "9", qty: 1, avail: 1 }] : []) });
-    expect(row.dests.map((d) => [d.id, d.ok, d.units])).toEqual([["hub1", true, 3], ["hub2", false, 0]]);
+    expect(row.dests.map((d) => [d.id, d.ok, d.units])).toEqual([["hub1", true, 3]]);   // Hub 2 sends nothing: absent
     expect(row.stock).toBe(6);
   });
-  it("the other Marathon hub already has it → that hub is a dead button", () => {
+  it("the other Marathon hub already has it → that hub is not offered", () => {
     const row = sneakerRow({ ...base, planFor: () => [{ size: "8", qty: 2, avail: 5 }], refusal: (_c, [h]) => (h === "hub2" ? "seated at Hub 1" : null) });
-    expect(row.dests.map((d) => d.ok)).toEqual([true, false]);
+    expect(row.dests.map((d) => d.id)).toEqual(["hub1"]);
   });
   it("nothing to raise because NO policy names its sizes, and nobody has requested it → 'needs policy', with Central's stock", () => {
     const row = sneakerRow({ ...base, planFor: () => [], hasPolicy: () => false, requested: false });
@@ -113,5 +121,35 @@ describe("the gate at the tap", () => {
     expect(tapProblem({ row, dest: "hub1" })).toBe(null);
     expect(tapProblem({ row, dest: "hub2" })).toMatch(/Nothing to send to Hub 2/);
     expect(tapProblem({ row, dest: "hub3" })).toMatch(/not a destination on this list/);
+  });
+});
+
+describe("shopOwners — Junid's words: stock there, seated there, or a request queued there", () => {
+  const shops = ["marathon-pine", "concrete"];
+  it("units count; an EMPTY row (left by a count) does not", () => {
+    expect(shopOwners({ shops, cells: { concrete: { M: { qty: 2 } }, "marathon-pine": { M: { qty: 0 } } } })).toEqual(["concrete"]);
+  });
+  it("a seat counts, with no units", () => {
+    expect(shopOwners({ shops, cells: {}, seated: (s) => s === "marathon-pine" })).toEqual(["marathon-pine"]);
+  });
+  it("a queued request counts", () => {
+    expect(shopOwners({ shops, cells: {}, queued: (s) => s === "concrete" })).toEqual(["concrete"]);
+  });
+  it("nothing anywhere → nobody owns it", () => {
+    expect(shopOwners({ shops, cells: { concrete: { M: { qty: 0 } } } })).toEqual([]);
+  });
+});
+
+describe("pickNext — choosing on one card", () => {
+  it("a tap chooses, a second tap un-chooses", () => {
+    expect(pickNext([], "hub3", { exclusive: true })).toEqual(["hub3"]);
+    expect(pickNext(["hub3"], "hub3", { exclusive: true })).toEqual([]);
+  });
+  it("one-or-the-other: the second location switches the first off — never both", () => {
+    expect(pickNext(["marathon-pine"], "concrete", { exclusive: true })).toEqual(["concrete"]);
+    expect(pickNext(["hub1"], "hub2", { exclusive: true })).toEqual(["hub2"]);
+  });
+  it("where both may go (Marathon's shops), both can be chosen", () => {
+    expect(pickNext(["marathon-pe"], "trophy")).toEqual(["marathon-pe", "trophy"]);
   });
 });

@@ -45,7 +45,8 @@ export function onValue(r, cb, _err) {
 }
 export const onChildAdded = () => () => {};
 export const get = (r) => new Promise((res) => setTimeout(() => res(snap(r.path, filtered(r))), 40));
-export const update = (r, patch) => new Promise((res) => setTimeout(() => {
+export const update = (r, patch) => { if (typeof window !== "undefined") window.__writes = (window.__writes || 0) + 1; return updateLater(r, patch); };
+const updateLater = (r, patch) => new Promise((res) => setTimeout(() => {
   const base = r.path ? `${r.path}/` : "";
   const written = [];
   for (const [k, v] of Object.entries(patch || {})) { put(base + k, clone(v)); written.push(base + k); }
