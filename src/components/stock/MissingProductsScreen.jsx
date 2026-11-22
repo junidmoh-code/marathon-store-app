@@ -43,7 +43,7 @@ import { openingOrder, openRequestsByProduct, productRow, sneakerRow, createFroz
 import { useSlicedRows } from "./useSlicedRows";
 import { useProductSolve } from "./NetworkTransfer";
 import { useSneakerRequest } from "./MissingFootwear";
-import { shopDestinations, shopsAreExclusive, destinationProblem } from "./divisionDestinations";
+import { shopDestinations, destinationProblem } from "./divisionDestinations";
 import { otherMarathonHub, marathonHubSeated, marathonSolveRefusal } from "./concreteDivision";
 import { hideProduct, unhideProduct, undoSneakerRequest } from "./missingActions";
 import HiddenProducts, { HoldSpot } from "./HiddenProducts";
@@ -206,7 +206,7 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
         return productRow({
           card, section: sec, product: c.byId.get(card.pid), dests: shopDestinations(c.network, sec), tickable: api.tickableStores(card),
           planFor: api.planFor, openByLoc: c.reqByPid.get(card.pid) || NONE, allStock: c.allStock, central: c.central,
-          routes: c.cfg?.routes, exclusive: shopsAreExclusive(c.network, sec), nameOf: c.label,
+          routes: c.cfg?.routes, nameOf: c.label,
         });
       },
     },
@@ -237,7 +237,10 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
   const frozen = useRef({});
   const [, repaint] = useState(0);
   const fz = (frozen.current[active] ||= { ...createFrozenOrder(), last: new Map(), shown: null, leaving: new Map() });
-  const listed = view === "list" && section != null && sliced.complete[active] ? listedOf(active) : [];
+  // Is this list actually drawn right now? (Not while its rows are still being
+  // worked out, and not behind the hidden tab.)
+  const onScreen = view === "list" && section != null && !!sliced.complete[active];
+  const listed = onScreen ? listedOf(active) : [];
   const listedBy = new Map(listed.map((r) => [r.key, r]));
   // Shoes waiting for a policy sit together at the top, under one label.
   const before = new Set(fz.seen);
@@ -252,6 +255,9 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
   }));
   const display = [...inOrder.filter((d) => d.row.needsPolicy), ...inOrder.filter((d) => !d.row.needsPolicy)];
   useEffect(() => {
+    // A list that is not drawn has nothing "shown": when it comes back, its
+    // cards are simply there — none of them enters or leaves.
+    if (!onScreen) { for (const t of fz.leaving.values()) clearTimeout(t); fz.leaving.clear(); fz.shown = null; return; }
     fz.shown = new Set(listedBy.keys());
     for (const [k, t] of fz.leaving) {
       if (t) continue;
@@ -295,14 +301,11 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
     if (inFlight.current.has(row.key) || !canAct) return;
     const c = ctx.current;
     // THE GATE AT THE TAP, whatever the card showed: this list's own
-    // destinations only; never Pine and Concrete both; never a dead button.
+    // destinations only, ONE of them (so never Pine and Concrete both, never
+    // Hub 1 and Hub 2 both), and never a dead button. The hooks ask
+    // destinationProblem again of what they are about to write.
     const kindOf = row.kind === "sneakers" ? "sneaker" : "product";
-    let problem = tapProblem({ row, dest }) || destinationProblem({ network: c.network, section: row.section, destinations: [dest], kind: kindOf });
-    if (!problem && row.kind === "clothing" && shopsAreExclusive(c.network, row.section)) {
-      const kept = shopDestinations(c.network, row.section).filter((s) => s !== dest && Object.keys(c.allStock?.[s]?.[row.pid] || {}).length > 0);
-      const mine = Object.keys(c.allStock?.[dest]?.[row.pid] || {}).length > 0;
-      if (kept.length && !mine) problem = `${c.label(kept[0])} already keeps this — it is not sent to ${c.label(dest)} as well.`;
-    }
+    const problem = tapProblem({ row, dest }) || destinationProblem({ network: c.network, section: row.section, destinations: [dest], kind: kindOf });
     if (problem) { say({ ok: false, text: problem }); return; }
     inFlight.current.add(row.key);
     setBusy((b) => ({ ...b, [row.key]: dest }));

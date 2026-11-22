@@ -45,7 +45,7 @@ describe("solve → undo wiring", () => {
     const fbSnapAt = NETWORK.indexOf("priorOpen[loc] = openNow[loc] ?? null;");
     // (Sections, 2026-10: both paths are now per-store parts of ONE write —
     // there is a single update in the solve, and BOTH snapshots precede it.)
-    const solveStart = NETWORK.indexOf("const solve = async (card) => {");
+    const solveStart = NETWORK.indexOf("const solve = async (card, only = null) => {");
     const solveBlock = NETWORK.slice(solveStart, NETWORK.indexOf("\n  };", solveStart));
     expect(solveBlock.split("await update(ref(database), updates)").length - 1).toBe(1);
     const writeAt = NETWORK.indexOf("await update(ref(database), updates)");
@@ -105,7 +105,10 @@ describe("solve → undo wiring", () => {
     // and the Missing Products screen both draw it whether or not a card is left.
     expect(NETWORK).toMatch(/strip: undoStrip/);
     expect(NETWORK).toMatch(/\{n\.strip\}\s+\{n\.sectionSwitch\}/);
-    expect(SCREEN).toMatch(/\{solve\.strip\}/);
+    // (22 Nov 2026, the rebuilt screen: its undo is the toast's, which is
+    // fixed over the screen and so survives an empty list by construction.)
+    expect(SCREEN).toMatch(/data-action="undo"/);
+    expect(SCREEN).toMatch(/product\.undoEntry\(u\)/);
   });
   it("undo is canAct-gated like every other write on this screen", () => {
     expect(NETWORK).toMatch(/if \(!canAct \|\| undoUi\[u\.key\]\?\.busy \|\| undoInFlight\.current\.has\(u\.key\)\) return \{ ok: false/);
@@ -119,7 +122,7 @@ describe("solve → undo wiring", () => {
     // (22 Nov 2026: the owner is the Missing Products screen, which outlives
     // a switch of division, of view, and the Hidden tab.)
     expect(SCREEN).toMatch(/const \[solvedSession, setSolvedSession\] = useState\(\[\]\)/);
-    expect(SCREEN).toMatch(/solvedSession=\{solvedSession\} setSolvedSession=\{setSolvedSession\}/);
+    expect(SCREEN).toMatch(/solvedSession: shared\.solvedSession, setSolvedSession: shared\.setSolvedSession,/);
     expect(NETWORK).toMatch(/const solvedSession = solvedSessionProp \?\? localSession;/);
     // The siblings an undo spares are every row still standing — saved or session.
     expect(NETWORK).toMatch(/const undoables = useMemo\(\(\) => standing\(solvedAll\), \[solvedAll\]\);/);

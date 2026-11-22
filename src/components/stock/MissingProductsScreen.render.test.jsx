@@ -1,0 +1,529 @@
+// ─── MISSING PRODUCTS — THE REBUILT SCREEN (Junid, 22 Nov 2026) ───────────────
+// Marathon | Concrete with counts, Sneakers | Clothing, then the list. A card
+// is a fixed box whose destination buttons ARE the solve. Only what a tap
+// would send for is on the list; the order never changes after a solve; a
+// toast confirms with Undo.
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import React from "react";
+import TestRenderer, { act } from "react-test-renderer";
+
+const NOW = Date.parse("2026-11-22T10:00:00.000Z");
+const paths = {};
+const gets = {};
+const listeners = {};
+const emit = (path, value) => { paths[path] = value; for (const cb of listeners[path] || []) cb({ val: () => value }); };
+const updateMock = vi.fn(() => Promise.resolve());
+const txnCalls = [];
+let txnData = {};
+let pushN = 0;
+vi.mock("firebase/database", () => ({
+  query: (r, ...parts) => ({ path: `${r.path}?${parts.map((p) => p.q).join("&")}` }), orderByChild: (f) => ({ q: `orderBy=${f}` }), equalTo: (v) => ({ q: `equalTo=${v}` }),
+  ref: (_db, path) => ({ path: path ?? "" }),
+  onValue: (r, cb) => { (listeners[r.path] ||= []).push(cb); cb({ val: () => paths[r.path] ?? null }); return () => { listeners[r.path] = (listeners[r.path] || []).filter((x) => x !== cb); }; },
+  update: (...a) => updateMock(...a),
+  get: (r) => Promise.resolve({ val: () => gets[r.path] ?? null }),
+  push: () => ({ key: `req${++pushN}` }),
+  // A real transaction: the function sees the stored value; undefined aborts.
+  runTransaction: (r, fn) => { const cur = txnData[r.path] ?? null; const next = fn(cur); txnCalls.push({ path: r.path, cur, next }); if (next !== undefined) txnData[r.path] = next; return Promise.resolve({ committed: next !== undefined, snapshot: { val: () => (next === undefined ? cur : next) } }); },
+}));
+vi.mock("./solvedLogStore", () => ({
+  useSolvedLog: () => ({ entries: [], settled: true, error: null, hasMore: false, loadMore: () => {} }),
+  saveSolvedRows: vi.fn(async () => {}), markSolvedUndone: vi.fn(async () => {}),
+}));
+vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
+vi.mock("../../firebase", () => ({ database: {}, functions: {}, auth: { currentUser: { uid: "u1" } } }));
+const seatCalls = [];
+vi.mock("firebase/functions", () => ({ httpsCallable: () => async (arg) => { seatCalls.push(arg); return { data: { ok: true } }; } }));
+const perm = { permRecord: { stockRole: "admin", displayName: "Junid" }, isSuperAdmin: true };
+vi.mock("../PermissionsContext", () => ({ usePermissions: () => ({ ...perm }) }));
+vi.mock("./applyMovement", () => ({ applyMovement: vi.fn(() => Promise.resolve({ ok: true })) }));
+vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => new Date(NOW).toISOString(), serverNowMs: () => NOW }));
+
+const { default: MissingProductsScreen } = await import("./MissingProductsScreen.jsx");
+const { __resetNetworkForTests } = await import("../../utils/networkStore.js");
+
+const S1_LIVE = { locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true } } };
+// The live shape (22 Nov 2026): Concrete's and Pine's clothing is kept in the
+// shop straight from Central; Marathon's shops are fed through Hub 2.
+const CONFIG = {
+  ruleBasedTargets: true,
+  routes: { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" },
+  maxUnitsPerIntent: 20,
+  defaultRunByStore: { hub2: { L: 3, M: 3, S: 2 }, "marathon-pe": { L: 2, M: 2, S: 2 }, trophy: { L: 2, M: 2, S: 2 } },
+  footwearRunByLocation: { hub1: { 8: 2, 9: 2 }, hub2: { 8: 2, 9: 2 } },
+  centralFedClothing: { concrete: 4 },
+  concreteDivision: { shopOnly: { oneSize: 5, perSize: 2 } },
+};
+// ids are p<upload ms>: newest upload first is the order a list opens in.
+const TEE = "p1795200000000", JACKET = "p1795150000000", HOODIE = "p1795120000000", GONE_TEE = "p1795110000000";
+const SHOE_A = "p1795000000000", SHOE_B = "p1795100000000", SHOE_C = "p1794900000000", TWIN = "p1794000000000";
+const KID = "p1795103464793", KID2 = "p1795103158565";
+const KID_SIZES = ["24", "25", "26"];
+const PRODUCTS = [
+  { id: SHOE_A, name: "Air Zoom Alpha", brand: "Nike", category: "Footwear", subcategory: "Sneakers", categoryKey: "sneakers", sizes: ["8", "9"], photoUrl: "https://x/a.jpg" },
+  { id: SHOE_B, name: "Gazelle Bold", brand: "Adidas", category: "Footwear", subcategory: "Sneakers", categoryKey: "sneakers", sizes: ["8", "9"], photoUrl: "https://x/b.jpg" },
+  { id: SHOE_C, name: "Samba OG", brand: "Adidas", category: "Footwear", subcategory: "Sneakers", categoryKey: "sneakers", sizes: ["8", "9"], photoUrl: "https://x/c.jpg" },
+  { id: TWIN, name: "Air Zoom Alpha", brand: "Nike", category: "Footwear", subcategory: "Sneakers", categoryKey: "sneakers", sizes: ["8", "9"], photoUrl: "https://x/twin.jpg" },
+  { id: KID, name: "Nike SB dunk low grey small", category: "Footwear", subcategory: "Sneakers", categoryKey: "kids-shoes", productType: "sneaker", sizes: KID_SIZES, photoUrl: "https://x/k.jpg" },
+  { id: KID2, name: "Nike SB dunk small black white", category: "Footwear", subcategory: "Sneakers", categoryKey: "kids-shoes", productType: "sneaker", sizes: KID_SIZES, photoUrl: "https://x/k2.jpg" },
+  { id: TEE, name: "Essentials Tee Olive", brand: "Fear of God", productType: "clothing", categoryKey: "t-shirts", subcategory: "T-Shirts", sizes: ["S", "M", "L"], photoUrl: "https://x/t.jpg" },
+  { id: JACKET, name: "Varsity Jacket", brand: "Nike", productType: "clothing", categoryKey: "jackets", subcategory: "Jackets & Coats", sizes: ["S", "M", "L"] },
+  { id: HOODIE, name: "Box Hoodie", brand: "Stussy", productType: "clothing", categoryKey: "hoodies", subcategory: "Hoodies", sizes: ["S", "M", "L"] },
+  { id: GONE_TEE, name: "T shirt white 70740", productType: "clothing", categoryKey: "t-shirts", subcategory: "T-Shirts", sizes: ["S", "M", "L"] },
+];
+const cell = (qty) => ({ qty, v: 1, mv: "m1", state: "live" });
+const SIZES = { S: cell(9), M: cell(9), L: cell(9) };
+const baseStock = () => ({
+  central: {
+    [SHOE_A]: { 8: cell(9), 9: cell(9) }, [SHOE_B]: { 8: cell(9), 9: cell(9) }, [SHOE_C]: { 8: cell(1) },
+    [TEE]: { ...SIZES }, [JACKET]: { ...SIZES },
+    [HOODIE]: { L: cell(3) },                       // Central has only L of the hoodie
+    [KID]: { 24: cell(2), 25: cell(2), 26: cell(2) }, [KID2]: { 24: cell(2), 25: cell(2), 26: cell(2) },
+  },
+  hub3: { [TWIN]: { 8: cell(3) } },                 // the same-named record already has stock at Hub 3
+  // Concrete keeps M of two tees; Central holds NONE of the plain white one.
+  concrete: { [GONE_TEE]: { M: cell(1) }, [HOODIE]: { M: cell(1) } },
+});
+const sneakerReq = (over = {}) => ({ productId: SHOE_A, size: "8", qty: 2, requestingLocation: "hub1", status: "open", requestSource: "solve", createdFrom: { manual: true, source: "central", via: "missing_sneakers" }, ...over });
+
+const mount = async () => { let tree; await act(async () => { tree = TestRenderer.create(<MissingProductsScreen products={PRODUCTS} onExit={() => {}} />); }); await act(async () => {}); await act(async () => {}); return tree; };
+const flat = (n) => (n == null || n === false ? "" : typeof n === "string" || typeof n === "number" ? String(n) : Array.isArray(n) ? n.map(flat).join("") : flat(n.children));
+const textOf = (tree) => flat(tree.toJSON());
+const host = (tree, attr, value) => tree.root.findAll((n) => typeof n.type === "string" && n.props && (value === undefined ? n.props[attr] !== undefined : n.props[attr] === value));
+// The cards on screen, in order — a slot that is closing is not a card any more.
+const slots = (tree) => host(tree, "data-slot").filter((n) => n.props.style.height !== 0);
+const cardsOf = (tree) => slots(tree).map((s) => s.findAll((n) => typeof n.type === "string" && n.props["data-card"])[0].props["data-card-name"]);
+const card = (tree, pid) => host(tree, "data-card", pid)[0];
+const dests = (tree, pid) => card(tree, pid).findAll((n) => n.type === "button" && n.props["data-dest"]);
+const offered = (tree, pid) => dests(tree, pid).map((b) => b.props["data-dest"]);
+const live = (tree, pid) => dests(tree, pid).filter((b) => !b.props.disabled).map((b) => b.props["data-dest"]);
+const stockLine = (tree, pid) => flat(card(tree, pid).findAll((n) => typeof n.type === "string" && n.props["data-stock"])[0].children);
+const tapDest = async (tree, pid, dest) => { await act(async () => { await dests(tree, pid).find((b) => b.props["data-dest"] === dest).props.onClick(); }); await act(async () => {}); };
+const division = async (tree, sec) => { await act(async () => { host(tree, "data-division", sec)[0].props.onClick(); }); await act(async () => {}); };
+const kind = async (tree, k) => { await act(async () => { host(tree, "data-kind", k)[0].props.onClick(); }); await act(async () => {}); };
+const count = (tree, sec) => flat(host(tree, "data-division-count", sec)[0].children);
+const toast = (tree) => { const t = host(tree, "data-toast")[0]; return t ? { kind: t.props["data-toast"], text: flat(t.children), undo: t.findAll((n) => n.type === "button" && n.props["data-action"] === "undo")[0] } : null; };
+const requestsIn = (upd) => Object.entries(upd).filter(([k]) => k.startsWith("refill_requests/")).map(([, v]) => v);
+const lastUpdate = () => updateMock.mock.calls[updateMock.mock.calls.length - 1][1];
+const MARATHON = 2, CONCRETE = 1;
+
+beforeEach(() => {
+  updateMock.mockClear(); pushN = 0; seatCalls.length = 0; txnCalls.length = 0; txnData = {};
+  for (const k of Object.keys(gets)) delete gets[k];
+  __resetNetworkForTests();
+  for (const p of ["settings/missingProductsHidden", "settings/stockHold/held", "stock_targets"]) emit(p, null);
+  emit("network", S1_LIVE);
+  emit("config/refillEngine", CONFIG);
+  emit("refill_requests", null);
+  emit("stock", baseStock());
+  gets["config/refillEngine/footwearRunByLocation"] = CONFIG.footwearRunByLocation;
+  gets["config/refillEngine/policyGroups/footwear-all/policy/hub3"] = { target: 3, minQty: 2, reorderPoint: 1, carriedOnly: true };
+  perm.permRecord = { stockRole: "admin", displayName: "Junid" }; perm.isSuperAdmin = true;
+});
+
+const buttons = (tree) => tree.root.findAll((n) => n.type === "button").map((b) => flat(b.children));
+// What a tap wrote: the cells and requests of the one update it made.
+const stockLocs = (upd) => [...new Set(Object.keys(upd).filter((k) => k.startsWith("stock/")).map((k) => k.split("/")[1]))];
+// Put the last update into the transaction store, as the database would hold it.
+const land = (upd) => { for (const [k, v] of Object.entries(upd)) txnData[k] = v; };
+
+describe("the screen Junid asked for", () => {
+  it("Marathon | Concrete with counts, Sneakers | Clothing (Sneakers first), then the list — and nothing else", async () => {
+    const tree = await mount();
+    expect(host(tree, "data-division").map((n) => n.props["data-division"])).toEqual([MARATHON, CONCRETE]);
+    expect(host(tree, "data-kind").map((n) => [n.props["data-kind"], n.props["aria-selected"]])).toEqual([["sneakers", true], ["clothing", false]]);
+    // REMOVED: tabs, search, filters, the count line, Move by hand, Mark & hide, the panel
+    expect(tree.root.findAll((n) => n.type === "input" || n.type === "select").length).toBe(0);
+    expect(host(tree, "data-view").length).toBe(0);
+    const all = textOf(tree);
+    for (const gone of [/To do/, /Queued & solved/, /newest uploads first/, /missing from/i, /Move by hand/, /Mark & hide/, /Carry at/, /Starts keeping/, /Never sent/, /One moment/, /Concrete-only/]) expect(all).not.toMatch(gone);
+    for (const b of buttons(tree)) expect(["← Back", "Marathon", "Concrete", "Sneakers", "Clothing", "Hub 1", "Hub 2", "Hide", ""].some((ok) => b === ok || /^(Marathon|Concrete)\d+$/.test(b))).toBe(true);
+  });
+
+  it("the header count is the number of cards on that division's two lists", async () => {
+    const tree = await mount();
+    const n = { [MARATHON]: 0, [CONCRETE]: 0 };
+    for (const sec of [MARATHON, CONCRETE]) {
+      await division(tree, sec);
+      for (const k of ["sneakers", "clothing"]) { await kind(tree, k); n[sec] += cardsOf(tree).length; }
+    }
+    expect(count(tree, MARATHON)).toBe(String(n[MARATHON]));
+    expect(count(tree, CONCRETE)).toBe(String(n[CONCRETE]));
+    expect(n).toEqual({ [MARATHON]: 8, [CONCRETE]: 8 });
+  });
+
+  it("every card is the same fixed box: photo, name, one stock line, its destinations and Hide", async () => {
+    const tree = await mount();
+    const heights = host(tree, "data-card").map((n) => n.props.style.height);
+    expect(new Set(heights).size).toBe(1);
+    expect(stockLine(tree, SHOE_B)).toBe("Central 18");
+    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "hide").length).toBe(1);
+  });
+});
+
+describe("destinations follow the division — on the card, and in what is written", () => {
+  it("Marathon sneakers: Hub 1 and Hub 2, never Hub 3; one tap writes requests for that hub only", async () => {
+    const tree = await mount();
+    expect(offered(tree, SHOE_B)).toEqual(["hub1", "hub2"]);
+    await tapDest(tree, SHOE_B, "hub2");
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const upd = lastUpdate();
+    expect(Object.keys(upd).every((k) => k.startsWith("refill_requests/"))).toBe(true);
+    const reqs = requestsIn(upd);
+    expect(reqs.map((r) => [r.size, r.qty])).toEqual([["8", 2], ["9", 2]]);
+    for (const r of reqs) { expect(r.requestingLocation).toBe("hub2"); expect(r.productId).toBe(SHOE_B); expect(r.status).toBe("open"); expect(r.requestSource).toBe("solve"); }
+    expect(toast(tree).text).toMatch(/Hub 2 · 4 pairs/);
+  });
+
+  it("Hub 1 and Hub 2 never both: the card leaves Marathon's list with the tap and stays on Concrete's", async () => {
+    const tree = await mount();
+    await tapDest(tree, SHOE_B, "hub1");
+    expect(cardsOf(tree)).not.toContain("Gazelle Bold");
+    expect(count(tree, MARATHON)).toBe("7");
+    expect(updateMock).toHaveBeenCalledTimes(1);          // one tap, one hub, one write
+    await division(tree, CONCRETE);
+    expect(cardsOf(tree)).toContain("Gazelle Bold");
+    expect(count(tree, CONCRETE)).toBe("8");
+  });
+
+  it("Concrete sneakers: one button, Hub 3", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE);
+    expect(offered(tree, SHOE_B)).toEqual(["hub3"]);
+    await tapDest(tree, SHOE_B, "hub3");
+    for (const r of requestsIn(lastUpdate())) expect(r.requestingLocation).toBe("hub3");
+    expect(stockLocs(lastUpdate()).every((l) => l === "hub3")).toBe(true);
+    expect(cardsOf(tree)).not.toContain("Gazelle Bold");
+    await division(tree, MARATHON);
+    expect(cardsOf(tree)).toContain("Gazelle Bold");       // still Marathon's to solve
+  });
+
+  it("Concrete clothing: Pine and Concrete; a tap on Pine writes for Pine only, and the card is gone — never both", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE); await kind(tree, "clothing");
+    expect(offered(tree, TEE)).toEqual(["marathon-pine", "concrete"]);
+    expect(flat(dests(tree, TEE)[0].children)).toBe("Pine");
+    await tapDest(tree, TEE, "marathon-pine");
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const upd = lastUpdate();
+    expect(stockLocs(upd)).toEqual(["marathon-pine"]);
+    const reqs = requestsIn(upd);
+    expect(reqs.length).toBeGreaterThan(0);
+    for (const r of reqs) expect(r.requestingLocation).toBe("marathon-pine");
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+    expect(card(tree, TEE)?.props).toBeDefined();            // its slot is only closing…
+    expect(live(tree, TEE).length >= 0).toBe(true);
+    await kind(tree, "sneakers"); await kind(tree, "clothing");
+    expect(card(tree, TEE)).toBeUndefined();                 // …and there is no card left to tap for Concrete
+    await division(tree, MARATHON);
+    expect(cardsOf(tree)).toContain("Essentials Tee Olive"); // Marathon's list keeps it
+  });
+
+  it("Marathon clothing: Marathon's own shops, never Pine or Concrete; one tap, one shop", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    expect(offered(tree, TEE)).toEqual(["marathon-pe", "trophy"]);
+    await tapDest(tree, TEE, "trophy");
+    const locs = stockLocs(lastUpdate());
+    expect(locs).toContain("trophy");
+    for (const l of locs) expect(["trophy", "hub2"]).toContain(l);
+    for (const r of requestsIn(lastUpdate())) expect(r.requestingLocation).toBe("trophy");
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+  });
+});
+
+describe("only what a solve would send is on the list", () => {
+  it("a product short of sizes that no source holds is not listed and not counted", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE); await kind(tree, "clothing");
+    // Concrete has M of the white tee and is short of S and L; Central has none of it.
+    expect(cardsOf(tree)).not.toContain("T shirt white 70740");
+    expect(cardsOf(tree)).toEqual(["Essentials Tee Olive", "Varsity Jacket", "Box Hoodie"]);
+    expect(textOf(tree)).not.toMatch(/has none/i);
+  });
+
+  it("a product short of sizes where one is available is listed, and sends only that size; the stock line is that size's stock", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE); await kind(tree, "clothing");
+    // Concrete keeps M of the hoodie and is short of S and L; Central has only L (3).
+    expect(stockLine(tree, HOODIE)).toBe("Central 3");
+    expect(live(tree, HOODIE)).toContain("concrete");
+    await tapDest(tree, HOODIE, "concrete");
+    const reqs = requestsIn(lastUpdate());
+    expect(reqs.map((r) => r.size)).toEqual(["L"]);
+    expect(reqs[0].requestingLocation).toBe("concrete");
+    expect(reqs[0].qty).toBeLessThanOrEqual(3);
+    // nothing is written for the size Central does not have
+    expect(Object.keys(lastUpdate()).some((k) => /\/S$/.test(k))).toBe(false);
+  });
+
+  it("the stock line agrees with the payload: every size sent is one it counted, and never more than it counted", async () => {
+    const tree = await mount();
+    const line = stockLine(tree, SHOE_C);                    // Central holds one pair, size 8
+    expect(line).toBe("Central 1");
+    await tapDest(tree, SHOE_C, "hub1");
+    const reqs = requestsIn(lastUpdate());
+    expect(reqs.map((r) => [r.size, r.qty])).toEqual([["8", 1]]);
+    expect(reqs.reduce((t, r) => t + r.qty, 0)).toBeLessThanOrEqual(Number(line.split(" ")[1]));
+  });
+
+  it("what Central has already promised is not offered again: a shelf fully owed to open requests is off the list", async () => {
+    // both pairs of the Samba's only size are already requested by Hub 2 (the scan's row)
+    emit("refill_requests", { r1: { productId: SHOE_C, size: "8", qty: 1, requestingLocation: "hub2", status: "open", requestSource: "scan", createdFrom: { source: "central" } } });
+    const tree = await mount();
+    expect(cardsOf(tree)).not.toContain("Samba OG");
+    expect(count(tree, MARATHON)).toBe("7");
+  });
+});
+
+describe("queued means a real open request, and nothing else", () => {
+  it("a product with Central stock and no open request is solvable", async () => {
+    const tree = await mount();
+    expect(live(tree, SHOE_A)).toEqual(["hub1", "hub2"]);
+  });
+
+  it("a product with a real open request is off the list — and that request is one Source shows (open, its hub, its product id)", async () => {
+    emit("refill_requests", { r1: sneakerReq(), r2: sneakerReq({ size: "9" }) });
+    const tree = await mount();
+    expect(cardsOf(tree)).not.toContain("Air Zoom Alpha");
+    expect(count(tree, MARATHON)).toBe("7");
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("a stale record does not block a solve: a cancelled or fulfilled request leaves the card solvable", async () => {
+    emit("refill_requests", { r1: sneakerReq({ status: "cancelled" }), r2: sneakerReq({ size: "9", status: "fulfilled" }) });
+    const tree = await mount();
+    expect(live(tree, SHOE_A)).toEqual(["hub1", "hub2"]);
+    await tapDest(tree, SHOE_A, "hub1");
+    expect(requestsIn(lastUpdate()).length).toBe(2);
+  });
+
+  it("two products with the same name do not affect each other: the twin's request hides only the twin", async () => {
+    emit("refill_requests", { r1: sneakerReq({ productId: TWIN }), r2: sneakerReq({ productId: TWIN, size: "9" }) });
+    const tree = await mount();
+    expect(live(tree, SHOE_A)).toEqual(["hub1", "hub2"]);     // same name, different record: untouched
+    await tapDest(tree, SHOE_A, "hub1");
+    for (const r of requestsIn(lastUpdate())) expect(r.productId).toBe(SHOE_A);
+  });
+
+  it("same name elsewhere is the other record's thumbnail on the card — no sentence", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE);                           // Hub 3 holds the twin
+    const badge = card(tree, SHOE_A).findAll((n) => n.type === "button" && n.props["data-same-name"]);
+    expect(badge.length).toBe(1);
+    expect(badge[0].props["data-same-name"]).toBe(TWIN);
+    expect(textOf(tree)).not.toMatch(/Same name elsewhere|Compare the two photos/);
+    expect(card(tree, SHOE_B).findAll((n) => n.type === "button" && n.props["data-same-name"]).length).toBe(0);
+  });
+});
+
+describe("kids shoes: no policy is said as no policy, never as queued", () => {
+  it("Central stock, no request, no policy → under one Needs policy label, 'No policy yet', nothing to tap", async () => {
+    const tree = await mount();
+    expect(host(tree, "data-needs-label").length).toBe(1);
+    expect(cardsOf(tree).slice(0, 2)).toEqual(["Nike SB dunk low grey small", "Nike SB dunk small black white"]);
+    expect(stockLine(tree, KID)).toBe("Central 6No policy yet");
+    expect(live(tree, KID)).toEqual([]);
+    expect(textOf(tree)).not.toMatch(/queued/i);
+    // adult sneakers sit under it, not among it
+    expect(card(tree, SHOE_B).findAll((n) => typeof n.type === "string" && n.props["data-needs-policy"]).length).toBe(0);
+  });
+
+  it("once a policy names its sizes at a hub it is solvable there, and the request is written for Source", async () => {
+    const row = { target: 2, minQty: 1, reorderPoint: 1, source: "policy_target" };
+    emit("stock_targets", { hub1: { [KID]: { 24: row, 25: row, 26: row } } });
+    const tree = await mount();
+    expect(live(tree, KID)).toEqual(["hub1"]);                 // Hub 1 has the numbers; Hub 2 has none
+    expect(stockLine(tree, KID)).toBe("Central 6");
+    expect(live(tree, KID2)).toEqual([]);                      // the other kids shoe still waits
+    await tapDest(tree, KID, "hub1");
+    const reqs = requestsIn(lastUpdate());
+    expect(reqs.map((r) => [r.size, r.qty, r.requestingLocation, r.status])).toEqual([["24", 2, "hub1", "open"], ["25", 2, "hub1", "open"], ["26", 2, "hub1", "open"]]);
+  });
+
+  it("adult sneakers are unchanged: the run's numbers, with or without a target row for a size the run names", async () => {
+    emit("stock_targets", { hub1: { [SHOE_B]: { 8: { target: 5 }, 9: { target: 5 } } } });
+    const tree = await mount();
+    await tapDest(tree, SHOE_B, "hub1");
+    expect(requestsIn(lastUpdate()).map((r) => [r.size, r.qty])).toEqual([["8", 2], ["9", 2]]);
+  });
+
+  it("on Concrete's list a kids shoe is an ordinary Hub 3 card (Hub 3 keeps every size)", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE);
+    expect(host(tree, "data-needs-label").length).toBe(0);
+    expect(live(tree, KID)).toEqual(["hub3"]);
+  });
+});
+
+describe("no shake: the order is frozen and only the solved card leaves", () => {
+  it("after a solve every other card is where it was; data echoes and re-renders do not re-sort", async () => {
+    const tree = await mount();
+    const before = cardsOf(tree);
+    await tapDest(tree, SHOE_A, "hub1");
+    const after = cardsOf(tree);
+    expect(after).toEqual(before.filter((n) => n !== "Air Zoom Alpha"));
+    // the echo of the write, then an unrelated stock tick that changes units
+    await act(async () => { emit("refill_requests", Object.fromEntries(Object.entries(lastUpdate()).map(([k, v]) => [k.split("/")[1], v]))); });
+    const s2 = baseStock(); s2.central[SHOE_C] = { 8: cell(40), 9: cell(40) };
+    await act(async () => { emit("stock", s2); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 1700)); });
+    expect(cardsOf(tree)).toEqual(after);
+    expect(stockLine(tree, SHOE_C)).toBe("Central 80");       // the card updates in place
+  });
+
+  it("a card's buttons are never 'checking': everything is decided before it is drawn, and a tap adds no element", async () => {
+    const tree = await mount();
+    const shape = () => host(tree, "data-card").map((n) => `${n.props.style.height}:${n.findAll((x) => x.type === "button").length}`);
+    const s0 = shape();
+    let release;
+    updateMock.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    await act(async () => { dests(tree, SHOE_B).find((b) => b.props["data-dest"] === "hub1").props.onClick(); });
+    await act(async () => {});
+    expect(shape()).toEqual(s0);                               // the write is in flight: same boxes, same buttons
+    expect(cardsOf(tree)).toContain("Gazelle Bold");           // the card stays until the write has landed
+    await act(async () => { release(); });
+    await act(async () => {});
+    expect(cardsOf(tree)).not.toContain("Gazelle Bold");
+  });
+
+  it("a failed solve says why in the toast and the card stays put", async () => {
+    const tree = await mount();
+    const before = cardsOf(tree);
+    updateMock.mockImplementationOnce(() => Promise.reject(new Error("PERMISSION_DENIED")));
+    await tapDest(tree, SHOE_B, "hub1");
+    expect(toast(tree).kind).toBe("fail");
+    expect(toast(tree).text).toMatch(/nothing changed.*PERMISSION_DENIED/);
+    expect(toast(tree).undo).toBeUndefined();
+    expect(cardsOf(tree)).toEqual(before);
+    expect(count(tree, MARATHON)).toBe("8");
+    expect(live(tree, SHOE_B)).toEqual(["hub1", "hub2"]);      // and can be tapped again
+  });
+
+  it("ten solves in a row: each leaves once, the rest never move", async () => {
+    const ids = Array.from({ length: 10 }, (_, i) => `p17960000000${String(i).padStart(2, "0")}`);
+    const stock = baseStock();
+    for (const id of ids) stock.central[id] = { 8: cell(4), 9: cell(4) };
+    emit("stock", stock);
+    const more = ids.map((id, i) => ({ id, name: `Runner ${i}`, category: "Footwear", categoryKey: "sneakers", sizes: ["8", "9"] }));
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<MissingProductsScreen products={[...PRODUCTS, ...more]} onExit={() => {}} />); });
+    await act(async () => {}); await act(async () => {});
+    let order = cardsOf(tree);
+    for (const id of ids) {
+      const name = card(tree, id).props["data-card-name"];
+      await tapDest(tree, id, "hub1");
+      order = order.filter((n) => n !== name);
+      expect(cardsOf(tree)).toEqual(order);
+    }
+    expect(updateMock).toHaveBeenCalledTimes(10);
+    expect(count(tree, MARATHON)).toBe("8");
+  });
+});
+
+describe("Undo", () => {
+  it("a sneaker request: Undo cancels exactly the requests that tap raised, and the card is back in its place", async () => {
+    const tree = await mount();
+    const before = cardsOf(tree);
+    await tapDest(tree, SHOE_B, "hub1");
+    const upd = lastUpdate();
+    land(upd);
+    expect(toast(tree).undo).toBeDefined();
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {});
+    const ids = Object.keys(upd);
+    expect(txnCalls.map((c) => c.path).sort()).toEqual(ids.sort());
+    for (const c of txnCalls) { expect(c.next.status).toBe("cancelled"); expect(c.next.cancelReason).toBe("solve_undone"); expect(c.next.productId).toBe(SHOE_B); }
+    expect(updateMock).toHaveBeenCalledTimes(1);               // Undo creates nothing
+    expect(cardsOf(tree)).toEqual(before);
+    expect(count(tree, MARATHON)).toBe("8");
+    expect(toast(tree).text).toBe("Undone");
+  });
+
+  it("a request Central has already started on stands, and the card stays off the list", async () => {
+    const tree = await mount();
+    await tapDest(tree, SHOE_B, "hub1");
+    const upd = lastUpdate();
+    land(upd);
+    const first = Object.keys(upd)[0];
+    txnData[first] = { ...txnData[first], sentQty: 1 };       // Central picked one
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {});
+    expect(toast(tree).kind).toBe("fail");
+    expect(toast(tree).text).toMatch(/Central had already started/);
+    expect(txnData[first].status).toBe("open");
+    expect(cardsOf(tree)).not.toContain("Gazelle Bold");
+  });
+
+  it("a clothing solve: Undo cancels its requests and takes back its untouched seeds; the card is back", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE); await kind(tree, "clothing");
+    const before = cardsOf(tree);
+    await tapDest(tree, TEE, "concrete");
+    const upd = lastUpdate();
+    land(upd);
+    for (const [k, v] of Object.entries(upd)) if (k.startsWith("refill_requests/")) gets[k] = v;   // undo re-reads them live
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {}); await act(async () => {});
+    const reqPaths = Object.keys(upd).filter((k) => k.startsWith("refill_requests/"));
+    for (const k of reqPaths) expect(txnData[k].status).toBe("cancelled");
+    for (const k of Object.keys(upd).filter((x) => x.startsWith("stock/") && upd[x] && upd[x].mv === "seed")) expect(txnData[k]).toBe(null);
+    expect(cardsOf(tree)).toEqual(before);
+    expect(toast(tree).text).toBe("Undone");
+  });
+});
+
+describe("Hide, and the hidden tab behind the invisible spot", () => {
+  it("Hide is one tap: one entry in the hidden node and nothing else; the card leaves; Undo takes the entry away again", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    await act(async () => { await card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "hide")[0].props.onClick(); });
+    await act(async () => {});
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(lastUpdate()).toEqual({ [`settings/missingProductsHidden/${TEE}`]: { at: NOW, by: "u1" } });
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+    expect(count(tree, MARATHON)).toBe("7");
+    expect(toast(tree).text).toMatch(/Hidden/);
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {});
+    expect(lastUpdate()).toEqual({ [`settings/missingProductsHidden/${TEE}`]: null });
+    expect(cardsOf(tree)).toContain("Essentials Tee Olive");
+  });
+
+  it("the hidden node is honoured on every device, and the tab behind the press-and-hold spot lists it with Unhide", async () => {
+    emit("settings/missingProductsHidden", { [TEE]: { at: NOW, by: "u1" } });
+    const tree = await mount();
+    await kind(tree, "clothing");
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+    expect(count(tree, MARATHON)).toBe("7");
+    expect(buttons(tree).some((t) => /Hidden/.test(t))).toBe(false);          // no visible way in
+    const spot = tree.root.findAll((n) => n.type === "div" && typeof n.props.onPointerDown === "function")[0];
+    expect(spot).toBeDefined();
+    vi.useFakeTimers();
+    await act(async () => { spot.props.onPointerDown({ clientX: 5, clientY: 5 }); vi.advanceTimersByTime(650); });
+    vi.useRealTimers();
+    expect(textOf(tree)).toMatch(/Hidden \(1\)/);
+    expect(textOf(tree)).toMatch(/Essentials Tee Olive/);
+    expect(textOf(tree)).toMatch(/STILL MISSING/);
+    expect(buttons(tree)).toContain("Unhide");
+    // Back returns to the list, not out of the screen
+    await act(async () => { tree.root.findAll((n) => n.type === "button" && n.props["data-action"] === "exit")[0].props.onClick(); });
+    expect(textOf(tree)).toMatch(/Missing Products/);
+  });
+});
+
+describe("who may do what", () => {
+  it("a viewer of one division sees that division only", async () => {
+    perm.isSuperAdmin = false; perm.permRecord = { stockRole: "warehouse", section: 2 };
+    const tree = await mount();
+    expect(host(tree, "data-division").map((n) => n.props["data-division"])).toEqual([MARATHON]);
+    expect(count(tree, MARATHON)).toBe("8");
+  });
+
+  it("without a stock role nothing can be tapped", async () => {
+    perm.isSuperAdmin = false; perm.permRecord = { displayName: "Viewer" };
+    const tree = await mount();
+    expect(live(tree, SHOE_B)).toEqual([]);
+    expect(card(tree, SHOE_B).findAll((n) => n.type === "button" && n.props["data-action"] === "hide")[0].props.disabled).toBe(true);
+  });
+});

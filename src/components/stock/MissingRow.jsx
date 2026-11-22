@@ -42,8 +42,10 @@ export function Slot({ leaving = false, entering = false, children, ...rest }) {
   const [open, setOpen] = useState(!entering);
   useEffect(() => {
     if (open) return undefined;
-    const t = requestAnimationFrame(() => setOpen(true));
-    return () => cancelAnimationFrame(t);
+    // One frame at height 0, then open (a timer where there is no frame clock).
+    const raf = typeof requestAnimationFrame === "function";
+    const t = raf ? requestAnimationFrame(() => setOpen(true)) : setTimeout(() => setOpen(true), 16);
+    return () => (raf ? cancelAnimationFrame(t) : clearTimeout(t));
   }, [open]);
   const shut = leaving || !open;
   return (
@@ -79,7 +81,7 @@ export function SkeletonRow() {
 function MissingRow({ row, product, twinProduct, busy = null, canAct = true, onTap, onHide, onPhoto }) {
   const live = product || { id: row.pid, photoUrl: row.photo };
   return (
-    <div data-card={row.pid} data-card-name={row.name} data-kind={row.kind} style={shell}>
+    <div data-card={row.pid} data-card-name={row.name} data-card-kind={row.kind} style={shell}>
       <div style={{ display: "flex", gap: 12, height: PHOTO }}>
         <button type="button" aria-label="Look at the photo" onClick={() => onPhoto?.(live)}
           style={{ position: "relative", width: PHOTO, height: PHOTO, borderRadius: 13, flexShrink: 0, overflow: "hidden", border: "none", padding: 0, background: "rgba(60,110,255,.1)", cursor: "zoom-in" }}>

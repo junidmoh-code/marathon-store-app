@@ -53,7 +53,6 @@ export function openRequestsByProduct(requests) {
 }
 
 const qtyIn = (cells, size) => Math.max(Number(cells?.[decodedCellKey(size)]?.qty) || 0, 0);
-const carriesAt = (allStock, loc, pid) => { const n = allStock?.[loc]?.[pid]; return !!n && Object.keys(n).length > 0; };
 
 /**
  * One row for a card of missingProductsCore (everything that is not a
@@ -63,15 +62,14 @@ const carriesAt = (allStock, loc, pid) => { const n = allStock?.[loc]?.[pid]; re
  *   tickable    the shops this card may be solved into (the hook's own list)
  *   planFor     (card, [shop], openByLoc) → planSectionSolve's answer
  *   openByLoc   this product's open requests, lock-table shaped (may be {})
- *   exclusive   the division's shops are one-or-the-other (Pine / Concrete)
+ *
+ * PINE OR CONCRETE is one tap on one card: the card leaves with the tap, so
+ * the same card can never send to both. (A shop that already keeps every size
+ * it needs is a dead button by the plan itself.)
  */
-export function productRow({ card, section, product, dests = [], tickable = [], planFor, openByLoc = {}, allStock, central = "central", routes, exclusive = false, nameOf = (x) => x }) {
+export function productRow({ card, section, product, dests = [], tickable = [], planFor, openByLoc = {}, allStock, central = "central", routes, nameOf = (x) => x }) {
   if (!card || !product || isSneakerOrSlide(product)) return null;
   const can = new Set(tickable);
-  // ONE OR THE OTHER, for good: once Pine keeps a product, this card never
-  // offers Concrete for it (and the reverse). With neither keeping it, both
-  // are offered and one tap decides.
-  const keepers = exclusive ? dests.filter((d) => carriesAt(allStock, d, card.pid)) : [];
   const reserved = centralReservedBySize({ openByLoc, routes });
   const sourceCells = allStock?.[card.source]?.[card.pid];
   const free = (size) => (card.source === central
@@ -80,7 +78,7 @@ export function productRow({ card, section, product, dests = [], tickable = [], 
   const counted = new Map();   // size → free units, over every size any live button sends
   const out = dests.map((id) => {
     const dead = { id, name: nameOf(id), ok: false, sizes: [], units: 0 };
-    if (!can.has(id) || (keepers.length === 1 && keepers[0] !== id)) return dead;
+    if (!can.has(id)) return dead;
     let line;
     try { line = planFor(card, [id], openByLoc)?.lines?.[0]; } catch { line = null; }
     if (!line || !(line.sizes || []).length) return dead;
