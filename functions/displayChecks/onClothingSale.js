@@ -43,7 +43,7 @@ const { onValueCreated } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
 const {
   isTriggerStoreEnabled, isDisplaySale, normStoreSettings, isRegistryStore,
-  isOnlineSaleChannel, saleChannelPath,
+  isOnlineSaleChannel, saleChannelPath, saleOnOrAfterStart,
 } = require("./lib.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 
@@ -85,6 +85,8 @@ exports.onClothingSale = onValueCreated(
     if (!isRegistryStore(store, network)) return;   // hubs, Central: no settings read at all
     const settings = await loadStoreSettings(admin.database(), store);
     if (!isTriggerStoreEnabled(store, network, settings)) return;
+    // A store with a start day: a sale made, or received, before it raises nothing.
+    if (!saleOnOrAfterStart(settings, { nowMs: Date.now(), saleTs: m.ts ?? null })) return;
     const product = (await admin.database().ref(`products/${m.productId}`).get()).val();
     if (!isDisplaySale(product, m.size, normStoreSettings(settings).scope, m.productId)) return;   // one product get
     // The WEBSITE pack sale (channel "online", docs/ONLINE-ORDERS.md): the unit

@@ -16,7 +16,7 @@
 
 const { onValueCreated } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
-const { isTriggerStoreEnabled, isDisplaySale, normStoreSettings, saleLinesForDisplay, saleLineLeaseId } = require("./lib.cjs");
+const { isTriggerStoreEnabled, isDisplaySale, normStoreSettings, saleLinesForDisplay, saleLineLeaseId, saleOnOrAfterStart } = require("./lib.cjs");
 const { processDisplaySale } = require("./processSale.js");
 const { loadStoreSettings } = require("./settings.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
@@ -35,6 +35,11 @@ async function handleDisplaySale({ db, saleId, sale, nowMs = null }) {
   const store = lines[0].loc;
   const settings = await loadStoreSettings(db, store);
   if (!isTriggerStoreEnabled(store, network, settings)) return { lines: lines.length, checked: 0, off: true };
+  // A store with a start day (/displayChecks_settings/{store}/startsOn): a
+  // sale made, or received, before that SA day raises nothing — no backlog.
+  if (!saleOnOrAfterStart(settings, { nowMs: nowMs ?? Date.now(), saleTs: sale.createdAt ?? null })) {
+    return { lines: lines.length, checked: 0, beforeStart: true };
+  }
   const scope = normStoreSettings(settings).scope;
   let checked = 0;
   for (const l of lines) {
