@@ -39,7 +39,7 @@
 // Rows clear when real units ARRIVE at a hub (the rule is unit-based). Neither
 // button moves stock any more, so neither retires a card on its own — the card
 // clears once Central actually picks the request and the units land.
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ref, get, push, update } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { useStockCells, useStockHeld } from "./useStock";
@@ -54,6 +54,7 @@ import { functions } from "../../firebase";
 import { DIVISION_HUB, SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal } from "./concreteDivision";
 import { trustStamp } from "./stockTrust";
 import { switchHubPick } from "./hubChooser";
+import { partitionQueued } from "./missingScreenCore";
 
 // The scan is the only requester (Junid, 1 Nov 2026): the typed-quantity
 // Request button is off; Solve (policy quantity) stays.
@@ -83,6 +84,9 @@ import { policyKeyFor, sectionName } from "../../utils/networkRegistry";
 // component is now destination-parameterised (it was hub2-only because CLOTHING
 // is not kept at Hub 1, not because Hub 1 lacks refills — sneakers make Hub 1 the
 // bigger buffer at 3,967 units vs Hub 2's 3,288).
+// How long a card this device has just queued stays off the list before the
+// live request records alone decide (their echo is normally 1–2 s).
+const QUEUED_HOLD_MS = 90000;
 const KIND_LABEL = { never_introduced: "NEVER INTRODUCED", sold_out: "SOLD OUT AT HUB" };
 
 const destChip = (on) => ({
@@ -156,9 +160,32 @@ export default function MissingFootwear({ products = [] }) {
   // Held (parked-box) units count as hub stock — a fully-in-transit product is
   // not missing, and a Solve on it would double-send (count-integrity hold lane).
   const heldLines = useStockHeld();
-  const cards = useMemo(
+  const cardsAll = useMemo(
     () => computeMissingFootwear({ allStock, products, hubs: HUBS, heldLines, central: CENTRAL }),
     [allStock, products, heldLines, HUBS, CENTRAL],
+  );
+  // QUEUED AT CENTRAL → OFF THIS DIVISION'S LIST (missingScreenCore.js). A card
+  // whose request from this screen is still open at one of THIS division's
+  // hubs has been dealt with; it returns if the request is cancelled or
+  // rejected before stock moves. `justQueued` covers the moment between this
+  // device's own write and its echo, per hub, so the other division's list
+  // keeps the card. Display only — no request is read differently or written.
+  const [justQueued, setJustQueued] = useState({});   // `${hub}|${pid}` → true
+  const queueTimers = useRef({});
+  useEffect(() => () => { for (const t of Object.values(queueTimers.current)) clearTimeout(t); }, []);
+  const noteQueued = (pid, hubs) => {
+    setJustQueued((m) => ({ ...m, ...Object.fromEntries(hubs.map((h) => [`${h}|${pid}`, true])) }));
+    for (const h of hubs) {
+      const k = `${h}|${pid}`;
+      clearTimeout(queueTimers.current[k]);
+      // The backstop: the live requests are the truth once they have echoed.
+      queueTimers.current[k] = setTimeout(() => setJustQueued((m) => { const n = { ...m }; delete n[k]; return n; }), QUEUED_HOLD_MS);
+    }
+  };
+  const { todo: cards, waiting } = useMemo(
+    () => partitionQueued(cardsAll, allRequests, HUBS,
+      Object.fromEntries(Object.keys(justQueued).filter((k) => HUBS.includes(k.split("|")[0])).map((k) => [k.split("|").slice(1).join("|"), true]))),
+    [cardsAll, allRequests, HUBS, justQueued],
   );
 
   const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter((s) => s && s !== "_");
@@ -411,6 +438,7 @@ export default function MissingFootwear({ products = [] }) {
           updates[`refill_requests/${id}`] = stampRecord(updates[`refill_requests/${id}`], "raise");
         }
         await update(ref(database), updates);
+        noteQueued(card.pid, [hub]);
         const short = fresh.filter((l) => l.qty < l.want);
         setSolved((d) => ({
           ...d,
@@ -479,6 +507,7 @@ export default function MissingFootwear({ products = [] }) {
         }
       }
       await update(ref(database), updates);
+      noteQueued(card.pid, hubs.filter((h) => (plan[h] || []).length));
       setSolved((d) => ({ ...d, [card.pid]: { ok: true, msg: `Raised ${hubs.map((h) => `${(plan[h] || []).reduce((t, l) => t + l.qty, 0)} for ${nameOf(h, network)}`).join(" and ")}. Central picks it as part of today's work.` } }));
     } catch (e) {
       if (seated) seat({ location: DIVISION_HUB, pid: card.pid, clear: true, solveId }).catch(() => {});
@@ -498,16 +527,30 @@ export default function MissingFootwear({ products = [] }) {
     </div>
   ) : null;
 
+  // What was just queued — the card has left the list, so its confirmation is
+  // said here (it used to sit on a card that never went away).
+  const shown = new Set(cards.map((c) => c.pid));
+  const queuedStrip = waiting.length > 0 && (
+    <div data-queued-strip style={{ ...GLASS, padding: "9px 12px", marginBottom: 10, fontSize: 12, color: "rgba(255,255,255,.75)" }}>
+      <b style={{ color: GREEN }}>{waiting.length} queued at Central</b> — off this list until Central picks {waiting.length === 1 ? "it" : "them"}; back here if a request is cancelled.
+      {waiting.filter((w) => solved[w.card.pid]?.ok && !shown.has(w.card.pid)).map((w) => (
+        <div key={w.card.pid} style={{ marginTop: 5, color: GRAY }}><b style={{ color: "#fff" }}>{w.card.name}</b>: {solved[w.card.pid].msg}</div>
+      ))}
+    </div>
+  );
+
   if (!cards.length) {
     return <>
       {sectionSwitch}
-      <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>No stranded sneakers — everything at Central is also held by a hub.</div>
+      {queuedStrip}
+      <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>{waiting.length ? "Nothing left to do here — everything else is queued at Central." : "No stranded sneakers — everything at Central is also held by a hub."}</div>
     </>;
   }
 
   return (
     <>
       {sectionSwitch}
+      {queuedStrip}
       {!canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to raise requests — viewing only.</div>}
       {cards.map((card) => {
         const open = openPid === card.pid;
@@ -543,7 +586,8 @@ export default function MissingFootwear({ products = [] }) {
         });
         const submitBlocked = footwearRequestSubmitReason({ canAct, busy: !!busyPid, units: total });
         return (
-          <ProductCard key={card.pid}
+          <div key={card.pid} data-card={card.pid} data-card-name={card.name}>
+          <ProductCard
             photo={card.photo} name={card.name}
             badges={<>
               <Badge tone={card.kind === "never_introduced" ? AMBER : BLUE_L}>{KIND_LABEL[card.kind]}</Badge>
@@ -652,6 +696,7 @@ export default function MissingFootwear({ products = [] }) {
               </div>
             )}
           </ProductCard>
+          </div>
         );
       })}
     </>

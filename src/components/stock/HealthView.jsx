@@ -45,6 +45,7 @@ import ExcessHubToCentral from "./ExcessHubToCentral";
 import NetworkTransfer from "./NetworkTransfer";
 import MissingFootwear from "./MissingFootwear";
 import { computeMissingFootwear } from "./missingFootwearCore";
+import { partitionQueued } from "./missingScreenCore";
 import { computeMissingProducts, buildChips, pickActiveTab } from "./missingProductsCore";
 import { isBufferLike } from "./introduceExistingCore";
 import { nameOf, isStore, solveHubFor } from "./sectionRouting";
@@ -469,9 +470,11 @@ export default function HealthView({ products = [], onExit }) {
   // function, so they cannot drift apart. The clothing pair above now follows the
   // same rule — it used to be the scan's buckets over a carriage-based list, and
   // that is the drift this comment used to describe as live. (PR #308.)
+  // …less the cards already queued at Central (missingScreenCore.js), so the
+  // count is the list's.
   const missingSneakerCards = useMemo(
-    () => computeMissingFootwear({ allStock, products }),
-    [allStock, products],
+    () => partitionQueued(computeMissingFootwear({ allStock, products }), openRequests, ["hub1", "hub2"]).todo,
+    [allStock, products, openRequests],
   );
   // null while stock loads — see missingProductCards. Sneakers alone would be a
   // half-answer, so the whole figure waits rather than under-reporting.
