@@ -108,31 +108,30 @@ describe("the chooser on a Missing Products sneaker card", () => {
     expect(lit(tree)).toEqual(["Hub 1"]);
   });
 
-  it("Hub 3 keeps its state through the Hub 1 / Hub 2 switch", async () => {
+  it("Hub 3 is not offered on Marathon's list (it is requested from the Concrete list)", async () => {
     const tree = mount();
     await act(async () => {});
     await openChooser(tree);
-    await tap(tree, "Hub 3");
-    expect(lit(tree)).toEqual(["Hub 1", "Hub 3"]);
-    await tap(tree, "Hub 2");
-    expect(lit(tree)).toEqual(["Hub 2", "Hub 3"]);
-    await tap(tree, "Hub 3");
-    expect(lit(tree)).toEqual(["Hub 2"]);
+    expect(pills(tree).map((b) => b.props["data-dest"])).toEqual(["hub1", "hub2"]);
   });
 
   it("the Source line, the size grid and the piece count follow the selection", async () => {
+    gets["config/refillEngine/footwearRunByLocation"] = { hub1: { 8: 2, 9: 2 }, hub2: { 8: 3, 9: 1 } };
     const tree = mount();
     await act(async () => {});
     await openChooser(tree);
     const flat = () => allText(tree);
     expect(flat()).toMatch(/Hub 1 Refill/);
     expect(flat()).toMatch(/4 pieces across 2 sizes/);
+    expect(flat()).toMatch(/Request 4 for Hub 1/);
     await tap(tree, "Hub 2");
     expect(flat()).toMatch(/Hub 2 Refill/);
     expect(flat()).not.toMatch(/Hub 1 Refill/);
-    await tap(tree, "Hub 3");
-    expect(flat()).toMatch(/Hub 2 Refill and Hub 3 Refill/);
-    expect(flat()).toMatch(/10 pieces across 4 sizes/);   // 2+2 for Hub 2, 3+3 for Hub 3
+    expect(flat()).toMatch(/Request 4 for Hub 2/);
+    const grid = tree.root.findAll((n) => n.type === "span").map((n) => (n.children || []).filter((c) => typeof c === "string").join("")).join("|");
+    expect(grid).toMatch(/8\|3/);      // Hub 2's own numbers: 8×3, 9×1
+    await tap(tree, "Hub 2");
+    expect(flat()).not.toMatch(/Refill/);   // nothing lit: no line that names a hub
   });
 
   it("no pill is ever disabled, and turning the last one off asks for a hub instead of re-lighting it", async () => {
@@ -158,19 +157,18 @@ describe("the chooser on a Missing Products sneaker card", () => {
     expect([...new Set(reqs.map((r) => r.requestingLocation))]).toEqual(["hub2"]);
   });
 
-  it("Confirm writes exactly the visible selection: Hub 1 + Hub 3, then Hub 2 → Hub 2 + Hub 3, never Hub 1", async () => {
+  it("Confirm writes exactly the visible selection: Hub 2 → Hub 1 raises for Hub 1 only, and never as a pair", async () => {
     const tree = mount();
     await act(async () => {});
     await openChooser(tree);
-    await tap(tree, "Hub 3");
     await tap(tree, "Hub 2");
-    expect(lit(tree)).toEqual(["Hub 2", "Hub 3"]);
+    await tap(tree, "Hub 1");
     await act(async () => { await confirmButton(tree).props.onClick(); });
     expect(update).toHaveBeenCalledTimes(1);
     const reqs = Object.entries(update.mock.calls[0][1]).filter(([k]) => k.startsWith("refill_requests/")).map(([, v]) => v);
-    expect([...new Set(reqs.map((r) => r.requestingLocation))].sort()).toEqual(["hub2", "hub3"]);
-    for (const r of reqs) expect([...r.createdFrom.solveHubs].sort()).toEqual(["hub2", "hub3"]);
-    expect(seatCalls[0].hubs.includes("hub1")).toBe(false);
+    expect([...new Set(reqs.map((r) => r.requestingLocation))]).toEqual(["hub1"]);
+    for (const r of reqs) expect(r.createdFrom.solveHubs).toBeUndefined();
+    expect(seatCalls).toEqual([]);
   });
 
   it("the other Marathon hub already holding it does not kill the pill — the panel says why Confirm is off", async () => {

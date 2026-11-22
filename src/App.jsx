@@ -137,6 +137,8 @@ import { orderCardKey } from "./push/deepLink";
 import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
 import HealthView from "./components/stock/HealthView";
+import MissingProductsScreen from "./components/stock/MissingProductsScreen";
+import { isMissingProductsHash } from "./utils/missingProductsRoute";
 import NetworkTotals from "./components/stock/NetworkTotals";
 import AttentionView from "./components/stock/AttentionView";
 import MarketingView from "./components/stock/MarketingView";
@@ -467,7 +469,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon", CARD_SLIP: "card_slip", TV_AD: "tv_ad", STOCK_AUDIT: "stock_audit" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", MISSING_PRODUCTS: "missing_products", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon", CARD_SLIP: "card_slip", TV_AD: "tv_ad", STOCK_AUDIT: "stock_audit" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (isSuperAdmin — Junid or Jafer)
@@ -3254,6 +3256,14 @@ const RoleIcons = {
       <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
     </svg>
   ),
+  missing_products: (
+    // An empty shelf slot — a dashed outline where a product should be, with
+    // the plus that fills it. The only dashed shape in the set.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3.5" y="5.5" width="17" height="13" rx="3" strokeDasharray="3.2 3"/>
+      <path d="M12 9.2v5.6M9.2 12h5.6"/>
+    </svg>
+  ),
   marketing: (
     // Concentric rings — the shortlist of products picked to push. Checked
     // against the Admin gear, the other round icon: a gear reads as a toothed
@@ -3601,6 +3611,9 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // Inventory Health — the AI refill engine's control centre, promoted to its
       // own primary card (owner decision 2026-07-12). Same access as Stock.
       canAccessStock                                           && { key:"health", icon:RoleIcons.health, name:"Inventory Health", desc:"Refill engine & exceptions", onClick:()=>onSelect(ROLES.HEALTH) },
+      // Missing Products — its own destination since 22 Nov 2026 (it was a tab
+      // inside Inventory Health). Same access as Inventory Health.
+      canAccessStock                                           && { key:"missing_products", icon:RoleIcons.missing_products, name:"Missing Products", desc:"At Central, not in the shops — solve or request", onClick:()=>onSelect(ROLES.MISSING_PRODUCTS) },
       // Attention — the BUYING read of the same stock: what to reorder, what's
       // piled up, what isn't selling. Deliberately separate from Inventory
       // Health, which is the refill engine's operational control centre.
@@ -21210,6 +21223,14 @@ function AppInner() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
   const wantAdmin = hash === "#admin";
+  // A LINK TO MISSING PRODUCTS — the new address, or the old one under
+  // Inventory Health — opens the Missing Products screen (missingProductsRoute.js).
+  // The fragment is cleared so Back from the screen does not bounce back in.
+  useEffect(() => {
+    if (!isMissingProductsHash(hash)) return;
+    setRole(ROLES.MISSING_PRODUCTS);
+    window.location.hash = "";
+  }, [hash]);
   // /#admin/users (list) and /#admin/users/<uid> (detail) are the User
   // Management routes. This constant only recognises the HASH — it grants
   // nothing. Authorization happens at the mount below.
@@ -21277,7 +21298,7 @@ function AppInner() {
     // Attention once would keep landing straight back on it every time they
     // opened the app, tile or no tile.
     if (isRoleHidden(role, permRecord, isSuperAdmin)) { setRole(null); return; }
-    if ((role === ROLES.STOCK || role === ROLES.HEALTH || role === ROLES.ATTENTION || role === ROLES.MARKETING || role === ROLES.TOTAL_STOCK) && !canAccessStock) { setRole(null); return; }
+    if ((role === ROLES.STOCK || role === ROLES.HEALTH || role === ROLES.MISSING_PRODUCTS || role === ROLES.ATTENTION || role === ROLES.MARKETING || role === ROLES.TOTAL_STOCK) && !canAccessStock) { setRole(null); return; }
     // AI Studio is isSuperAdmin-gated (not permission-mapped) — drop anyone
     // else (e.g. a stale persisted role) back to the selector instead of
     // leaving them on the null view.
@@ -21661,7 +21682,9 @@ function AppInner() {
     // photos come off it, so a picture costs the audit snapshot nothing.
     ? <StockAuditView products={products} myShop={myShop} onExit={() => setRole(null)} />
     : null;
-  else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} onOpenMissingProducts={() => setRole(ROLES.MISSING_PRODUCTS)} /> : null;
+  // Missing Products — its own route (22 Nov 2026). Same gate as Inventory Health.
+  else if (role === ROLES.MISSING_PRODUCTS) view = canAccessStock ? <MissingProductsScreen products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.TOTAL_STOCK) view = canAccessStock ? <NetworkTotals products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.ATTENTION) view = canAccessStock ? <AttentionView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.MARKETING) view = canAccessStock ? <MarketingView products={products} onExit={() => setRole(null)} /> : null;

@@ -31,7 +31,9 @@ import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey, stockCellPath, decodedCellKey, stockSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
-import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
+import { SizeStepperChip, CHIP_GRID } from "./healthWidgets";
+import MissingCard, { primaryBtn } from "./MissingCard";
+import { whyProduct, brandOf, categoryLabelOf } from "./missingScreenCore";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
 import { computeMissingProducts, isClothing, cardSection } from "./missingProductsCore";
@@ -59,6 +61,7 @@ import { buildSolveLogEntry, buildConcreteLogEntry, mergeSolved, standing, norma
 import { useSolvedLog, saveSolvedRows, markSolvedUndone } from "./solvedLogStore";
 import { notePendingUpdate } from "../../offline/pendingWrites";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto";
+import { switchShopPick, shopsAreExclusive, destinationProblem } from "./divisionDestinations";
 
 // The section whose list HealthView hands this screen (computeMissingProducts'
 // default) — the other section's list is one tap away for a viewer who may
@@ -86,6 +89,13 @@ const STD_FALLBACK = {
 // function. Do not reintroduce a local copy — that is exactly how the old count
 // and list drifted apart.
 
+// A destination pill: a full-size tap target that plainly reads on or off.
+const bigPill = (on) => ({
+  minHeight: 46, padding: "10px 20px", borderRadius: 999, fontSize: 14.5, fontWeight: 800, cursor: "pointer", fontFamily: FONT,
+  border: on ? "1px solid rgba(60,110,255,.7)" : "1px solid rgba(255,255,255,.16)",
+  background: on ? "rgba(60,110,255,.24)" : "rgba(255,255,255,.03)",
+  color: on ? "#fff" : "rgba(255,255,255,.55)",
+});
 const destChip = (on) => ({
   padding: "8px 13px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
   border: on ? "1px solid rgba(60,110,255,.55)" : "1px solid rgba(255,255,255,.1)",
@@ -100,7 +110,17 @@ const destChip = (on) => ({
 // one — the same count-disagrees-with-list class of bug this tab was just fixed
 // for. One subscription, one snapshot, and one less full-tree listener.
 // (Codex review, PR #308.) HealthView is the only renderer of this component.
-export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null, targetsSettled = false, targetsError = false, view = "list", solvedSession: solvedSessionProp = null, setSolvedSession: setSolvedSessionProp = null, resolving: resolvingProp = null, setResolving: setResolvingProp = null, onOpenSolved = null }) {
+// THE LOGIC, AS A HOOK (Junid, 22 Nov 2026). The Missing Products screen lists
+// sneakers and everything else in ONE list per division, so this component's
+// body is a hook that hands back its cards and a way to draw each one; the
+// screen interleaves them with MissingFootwear's. Every rule about what a
+// Solve writes is exactly where it was — only who calls the render changed.
+//   section   the division list being shown (controlled by the screen). Absent
+//             ⇒ this list keeps its own switch (the stand-alone list, below).
+//   cards     with `section`: that division's cards, as the screen built them
+//             for its counts. Without: the home division's (HealthView's old
+//             contract).
+export function useProductSolve({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null, targetsSettled = false, targetsError = false, solvedSession: solvedSessionProp = null, setSolvedSession: setSolvedSessionProp = null, resolving: resolvingProp = null, setResolving: setResolvingProp = null, onOpenSolved = null, section: sectionProp = null, onPhoto = null }) {
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canAct = ["store", "warehouse", "admin"].includes(actorRole);
@@ -131,7 +151,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     [network, mySections],
   );
   const [sectionPick, setSectionPick] = useState(null);
-  const listSection = sectionPick && sectionPick !== HOME_SECTION && sectionChoices.includes(sectionPick) ? sectionPick : null;
+  const pickedSection = sectionProp || (sectionChoices.includes(sectionPick) ? sectionPick : null);
+  const listSection = pickedSection && pickedSection !== HOME_SECTION ? pickedSection : null;
 
   const [openPid, setOpenPid] = useState(null);
   const [dests, setDests] = useState({});     // pid → chosen destination
@@ -470,7 +491,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // (Senior-architect review, PR #308.)
   // The list before the chip filter — "is this card still live anywhere on
   // this screen" is asked of it, never of one chip's slice.
-  const allLive = useMemo(() => (listSection
+  const allLive = useMemo(() => (sectionProp && allCards ? allCards : listSection
     // The other section's list is built here, on demand, from the same
     // function (it is not HealthView's to count while that section has no
     // live shop).
@@ -728,15 +749,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // sentence that says why and cannot be ticked (solveSections.solveBlocks).
   // The card's division — the list it is on — is the only block offered.
   const divisionOf = (card) => cardSection(card, network);
-  // CONCRETE-ONLY rows (Junid, 20 Nov 2026) — and ONLY those — show BOTH
-  // divisions' stores: a Concrete product is handled by the Concrete division
-  // but Junid may still send it to Marathon locations. Each store keeps its
-  // own division's routing (its own hub). Every other row keeps today's wall.
-  const solveSectionsFor = (card) => {
-    const home = divisionOf(card);
-    const secs = isConcreteProduct(byId.get(card.pid)) && home === concreteSection(network) ? [home, ...[1, 2].filter((x) => x !== home)] : [home];
-    return secs.filter((x) => mySections.includes(x));
-  };
+  // DESTINATIONS FOLLOW THE LIST (Junid, 22 Nov 2026 — divisionDestinations.js):
+  // a card offers its OWN division's shops and nothing else. "Missing from
+  // Concrete" offers Pine and Concrete; "Missing from Marathon" offers
+  // Marathon's shops. (A Concrete-only row used to offer both divisions.)
+  const solveSectionsFor = (card) => [divisionOf(card)].filter((x) => mySections.includes(x));
   const blocksFor = (card) => solveBlocks({ network, sections: solveSectionsFor(card), source: card.source, product: byId.get(card.pid), productId: card.pid, engineConfig: cfg });
   const tickableStores = (card) => blocksFor(card).flatMap((b) => b.stores).filter((st) => !st.blocked).map((st) => st.id);
   // HUB PRESENCE (the hard precondition — firstBatchCore.hub2PresenceSignals),
@@ -800,9 +817,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const raw = solveTicks[card.pid] ?? [defaultStoreFor(card)].filter(Boolean);
     return allocationOrder({ network, ticked: raw, tickable: (st) => tickable.has(st) });
   };
+  // PINE AND CONCRETE ARE ONE OR THE OTHER: on the Concrete list a tap is a
+  // switch (the tapped shop on, the other off). Marathon's shops tick freely,
+  // as they always have. A tap always changes the selection.
   const toggleTick = (card, store) => {
     const cur = ticksFor(card);
-    setSolveTicks((prev) => ({ ...prev, [card.pid]: cur.includes(store) ? cur.filter((x) => x !== store) : [...cur, store] }));
+    setSolveTicks((prev) => ({ ...prev, [card.pid]: switchShopPick(cur, store, { exclusive: shopsAreExclusive(network, divisionOf(card)) }) }));
   };
 
   // CENTRAL'S OPEN RESERVATIONS (2026-09-17, firstBatchCore.js
@@ -922,6 +942,14 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // A Concrete-only row may tick the other division's stores too (see
     // solveSectionsFor) — each still routed through a hub of ITS OWN section.
     const allowed = new Set(solveSectionsFor(card));
+    // THE SECOND GATE (divisionDestinations.js): a shop outside this list's
+    // division, or Pine and Concrete together, is refused here whatever a
+    // screen — a stale one included — offered.
+    const wrong = destinationProblem({ network, section: division, destinations: ticks, kind: "product" });
+    if (wrong) {
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: ticks[0], sizes: [], msg: `Not solved — ${wrong}` } }));
+      return;
+    }
     const stray = ticks.find((st) => !allowed.has(sectionOfStore(st)) || (!cfAt(card, st) && sectionOfStore(hubOf(card, st) || st) !== sectionOfStore(st)));
     if (stray) {
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: stray, sizes: [], msg: `Not solved — ${LOC_LABEL[stray] || stray} is not in ${sectionName(network, division)}. Solve from the "Missing from ${sectionName(network, sectionOfStore(stray))}" list instead.` } }));
@@ -1116,11 +1144,17 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // division's stores. A location with its switches off can be sent to by hand.
   const destOptions = (card) => {
     const p = byId.get(card.pid);
-    // A hub's own division's shops — and only for a viewer of that division
-    // (a Concrete-list card can sit in a Marathon hub; substitute Sonnet review, PR #952).
-    if (!isCentral(card.source, network)) return mySections.includes(sectionOfStore(card.source)) ? storeIds(network, { section: sectionOfStore(card.source) }) : [];
     const home = divisionOf(card);
-    return mySections.includes(home) ? [...solveHubsOfSection(network, home, p, card.pid), ...storeIds(network, { section: home })] : [];
+    if (!mySections.includes(home)) return [];
+    // From a hub: that hub's own division's shops — and only on that
+    // division's list (a Concrete-list card can sit in a Marathon hub; it is
+    // not moved to Marathon's shops from here).
+    if (!isCentral(card.source, network)) return sectionOfStore(card.source) === home ? storeIds(network, { section: home }) : [];
+    // From Central: the list's own shops, and its hubs — except on the
+    // Concrete list, where everything that is not a sneaker goes to Pine or
+    // Concrete and never to a hub (Junid, 22 Nov 2026).
+    const hubs = shopsAreExclusive(network, home) ? [] : solveHubsOfSection(network, home, p, card.pid);
+    return [...hubs, ...storeIds(network, { section: home })];
   };
   // The stored choice counts only while it is one of THIS list's options — a
   // choice made on the other division's list falls back to the first option.
@@ -1201,7 +1235,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
             will refill (it used to sit on the row, which now leaves at once). */}
         {u.msg && u.kind !== "concrete" && <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginTop: 6 }}>{u.msg}</div>}
         {ui.err && <div style={{ fontSize: 11.5, color: RED, lineHeight: 1.4, marginTop: 6 }}>{ui.err}</div>}
-        {u.saved === false && <div style={{ fontSize: 11, color: AMBER, lineHeight: 1.4, marginTop: 6 }}>Not saved to the Solved history ({u.saveErr || "write refused"}) — Undo works until you leave Inventory Health.</div>}
+        {u.saved === false && <div style={{ fontSize: 11, color: AMBER, lineHeight: 1.4, marginTop: 6 }}>Not saved to the Solved history ({u.saveErr || "write refused"}) — Undo works until you leave this screen.</div>}
       </div>
     );
   };
@@ -1224,15 +1258,14 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       {lastRows.map((u) => solvedRow(u, { compact: true }))}
       {onOpenSolved && lastRows.length > 0 && (
         <button onClick={onOpenSolved} style={{ background: "none", border: "none", color: BLUE_L, fontSize: 11.5, fontWeight: 600, cursor: "pointer", padding: "0 2px 10px", fontFamily: FONT }}>
-          Everything solved → Solved tab
+          Everything solved → Queued & solved
         </button>
       )}
     </div>
   ) : null;
 
   // ── THE SOLVED TAB ─────────────────────────────────────────────────────────
-  if (view === "solved") {
-    return (
+  const solvedView = (
       <>
         <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginBottom: 10 }}>
           Everything solved or marked Concrete from Missing Products, newest first. Undo reverses exactly what that action wrote.
@@ -1244,14 +1277,13 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           <button onClick={solvedLog.loadMore} style={{ ...destChip(false), display: "block", margin: "6px auto 0" }}>Show older</button>
         )}
       </>
-    );
-  }
+  );
 
-  // WHICH SECTION'S LIST — only when this viewer has more than one to look at.
-  const sectionSwitch = sectionChoices.length > 1 ? (
+  // WHICH DIVISION'S LIST — only for the stand-alone list (the screen has its own).
+  const sectionSwitch = !sectionProp && sectionChoices.length > 1 ? (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
       {sectionChoices.map((sec) => (
-        <button key={sec} onClick={() => { setSectionPick(sec); setOpenPid(null); setSolvePid(null); setHidePid(null); exitSelect(); }}
+        <button key={sec} data-division={sec} onClick={() => { setSectionPick(sec); setOpenPid(null); setSolvePid(null); setHidePid(null); exitSelect(); }}
                 style={destChip((listSection || HOME_SECTION) === sec)}>
           Missing from {sectionName(network, sec)}
         </button>
@@ -1259,68 +1291,40 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     </div>
   ) : null;
 
-  if (!cards.length) {
-    return <>
-      {undoStrip}
-      {sectionSwitch}
-      <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>No stranded products — everything upstream also exists in at least one shop.</div>
-    </>;
-  }
+  const viewOnly = !canAct ? <div style={{ color: AMBER, fontSize: 12.5, marginBottom: 10 }}>You need a stock role to solve or move — viewing only.</div> : null;
 
-  return (
-    <>
-      {!canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to transfer — viewing only.</div>}
-      {undoStrip}
-      {sectionSwitch}
-      {canAct && (
-        <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", justifyContent: "flex-end" }}>
-          {selectMode ? (
-            <>
-              <span style={{ fontSize: 11.5, color: GRAY, marginRight: "auto" }}>{selectedPids.length} marked — tap cards to mark</span>
-              <button onClick={() => setSelected(Object.fromEntries(cards.map((c) => [c.pid, true])))}
-                      style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-                Mark all ({cards.length})
-              </button>
-              <button onClick={exitSelect}
-                      style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-                Cancel
-              </button>
-            </>
-          ) : (
-            <button onClick={() => { setSelectMode(true); setOpenPid(null); setSolvePid(null); setHidePid(null); }}
-                    style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.4)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-              Mark &amp; hide
-            </button>
-          )}
-        </div>
+  // MARK & HIDE — the bar that turns the list into checkboxes.
+  const smallBtn = { background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.12)", color: "rgba(255,255,255,.6)", borderRadius: 10, padding: "9px 12px", minHeight: 40, fontWeight: 600, fontSize: 12.5, cursor: "pointer", fontFamily: FONT };
+  const selectBar = canAct && cards.length > 0 ? (
+    <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", justifyContent: "flex-end" }}>
+      {selectMode ? (
+        <>
+          <span style={{ fontSize: 12, color: GRAY, marginRight: "auto" }}>{selectedPids.length} marked — tap cards to mark</span>
+          <button data-action="mark-all" onClick={() => setSelected(Object.fromEntries(cards.map((c) => [c.pid, true])))} style={smallBtn}>Mark all ({cards.length})</button>
+          <button data-action="mark-cancel" onClick={exitSelect} style={smallBtn}>Cancel</button>
+        </>
+      ) : (
+        <button data-action="mark-and-hide" onClick={() => { setSelectMode(true); setOpenPid(null); setSolvePid(null); setHidePid(null); }} style={smallBtn}>Mark &amp; hide</button>
       )}
-      {cards.map((card) => {
-        // Select mode: the card IS the checkbox — panels and actions stand
-        // down so a mis-tap can only toggle selection, never move stock.
-        if (selectMode) {
-          const on = !!selected[card.pid];
-          const toggle = () => setSelected((s) => ({ ...s, [card.pid]: !s[card.pid] }));
-          return (
-            <div key={card.pid} role="checkbox" aria-checked={on} tabIndex={0} onClick={toggle}
-                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
-                 style={{ cursor: "pointer" }}>
-              <ProductCard
-                photo={card.photo} name={card.name}
-                badges={<>
-                  <Badge tone={AMBER}>{card.kind.toUpperCase()}</Badge>
-                  <Badge tone={BLUE_L}>{card.units} units at {LOC_LABEL[card.source]}</Badge>
-                </>}
-                right={
-                  <div style={{ width: 26, height: 26, borderRadius: 13, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 14,
-                                border: on ? "1px solid rgba(74,222,128,.6)" : "1px solid rgba(255,255,255,.2)",
-                                background: on ? "rgba(74,222,128,.2)" : "rgba(255,255,255,.03)", color: on ? GREEN : "rgba(255,255,255,.3)" }}>
-                    {on ? "✓" : ""}
-                  </div>
-                }
-              />
-            </div>
-          );
-        }
+    </div>
+  ) : null;
+
+  const nameOfLoc = (l) => LOC_LABEL[l] || l;
+  const metaOf = (pid) => { const p = byId.get(pid); return [brandOf(p), categoryLabelOf(p, effectiveCategoryKey(p))].join(" · "); };
+  // ── ONE CARD ───────────────────────────────────────────────────────────────
+  const renderCard = (card) => {
+    const product = byId.get(card.pid);
+    const { why, holds } = whyProduct(card, { nameOf: nameOfLoc, central: CENTRAL, division: sectionName(network, divisionOf(card)) });
+    // Select mode: the card IS the checkbox — panels and actions stand down so
+    // a mis-tap can only toggle selection, never move stock.
+    if (selectMode) {
+      const on = !!selected[card.pid];
+      return (
+        <MissingCard key={`product:${card.pid}`} pid={card.pid} name={card.name} product={product} photo={card.photo}
+          meta={metaOf(card.pid)} why={why} holds={holds}
+          select={{ on, toggle: () => setSelected((x) => ({ ...x, [card.pid]: !x[card.pid] })) }} />
+      );
+    }
         const open = openPid === card.pid;
         const result = done[card.pid];
         const dest = chosenDest(card);
@@ -1402,65 +1406,31 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           // to go and set a target for a size it does not have. (Sonnet, PR #342.)
           oneSize: catalogSizes(card.pid).length > 0 && catalogSizes(card.pid).every((s) => s === "_"),
         });
-        return (
-          <ProductCard key={card.pid}
-            photo={card.photo} name={card.name}
-            badges={<>
-              <Badge tone={AMBER}>{card.kind.toUpperCase()}</Badge>
-              <Badge tone={BLUE_L}>{card.units} units at {LOC_LABEL[card.source]}</Badge>
-            </>}
-            right={
-              // The action row keeps the card's established language — ONE
-              // green primary (Solve), ONE ghost secondary (Move manually).
-              // Hide is deliberately NOT a third button box: as one it read
-              // as a disabled sibling and crowded the name column (owner
-              // feedback, 2026-08-13). It rides below the row as a small dim
-              // text control — subordinate, but a full-size tap target.
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: 210 }}>
-                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setHidePid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!!solveBlocked}
-                        title={solveBlocked || undefined}
-                        style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: solveBlocked ? "default" : "pointer", opacity: solveBlocked ? 0.4 : 1, fontFamily: FONT }}>
-                  {sOpen ? "Close" : "Solve"}
-                </button>
-                <button onClick={() => { setOpenPid(open ? null : card.pid); setSolvePid(null); setHidePid(null); }}
-                        style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-                  {open ? "Close" : "Move manually"}
-                </button>
-                {/* CONCRETE (Junid, 20 Nov 2026): one tap makes it Concrete-only —
-                    it leaves this Marathon list and appears in the Concrete
-                    division's. Junid / a stockRole admin only. */}
-                {canMarkConcrete && divisionOf(card) !== concreteSection(network) && !isConcreteProduct(byId.get(card.pid)) && (
-                  <button onClick={() => markConcrete(card)} disabled={!!resolving[card.pid]}
-                          title="Concrete-only — sold on the Concrete website only; handled by the Concrete division"
-                          style={{ background: "rgba(229,229,229,.08)", border: "1px solid rgba(229,229,229,.35)", color: "#E5E5E5", borderRadius: 10, padding: "7px 10px", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-                    Concrete
-                  </button>
-                )}
-              </div>
-              {canAct && (
-                <button onClick={() => { setHidePid(hOpen ? null : card.pid); setSolvePid(null); setOpenPid(null); }}
-                        /* dim but not small: the visual is a text link, the
-                           HIT AREA is button-sized (CodeRabbit, PR #359 — a
-                           1px-padded target on a warehouse tablet is a miss) */
-                        style={{ background: "none", border: "none", color: "rgba(255,255,255,.35)", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: "8px 6px 4px", margin: "-6px -4px 0", minHeight: 28, fontFamily: FONT }}>
-                  {hOpen ? "Cancel" : "Hide from list"}
-                </button>
-              )}
-              </div>
-            }
-          >
-            {/* NEVER A SILENTLY DEAD BUTTON. Whenever Solve is greyed the row says
-                why, in the same words the (hover-only, tablet-invisible) tooltip
-                used to hide. It sits above the panels so it is readable with the
-                row collapsed — which is the state an operator meets it in. */}
-            {solveBlocked && (
-              <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: sOpen || open || hOpen ? 8 : 0 }}>
-                Solve unavailable — {solveBlocked}
-              </div>
-            )}
-            {hOpen ? (
-              <>
+
+    const panel = hOpen ? "hide" : sOpen ? "solve" : open ? "move" : null;
+    const closePanels = () => { setSolvePid(null); setOpenPid(null); setHidePid(null); };
+    const links = [];
+    if (destOptions(card).length) links.push({ action: "open-move", label: "Move by hand", onClick: () => { setOpenPid(card.pid); setSolvePid(null); setHidePid(null); setDone((d) => { const n = { ...d }; delete n[card.pid]; return n; }); } });
+    if (canAct) links.push({ action: "open-hide", label: "Hide from list", onClick: () => { setHidePid(card.pid); setSolvePid(null); setOpenPid(null); } });
+    // CONCRETE (Junid, 20 Nov 2026): one tap makes it Concrete-only — it leaves
+    // this Marathon list and appears in the Concrete division's.
+    if (canMarkConcrete && divisionOf(card) !== concreteSection(network) && !isConcreteProduct(product)) {
+      links.push({ action: "mark-concrete", label: "Make Concrete-only", disabled: !!resolving[card.pid], title: "Concrete-only — sold on the Concrete website only; handled by the Concrete division", onClick: () => markConcrete(card) });
+    }
+    const notice = sResult ? { ok: !!sResult.ok, text: sResult.msg }
+      : result ? { ok: !result.failed.length, text: `${result.moved} units → ${LOC_LABEL[result.dest]}${result.failed.length ? ` · failed: ${result.failed.join(" · ")}` : " ✓"}` }
+      : hideErr[card.pid] ? { ok: false, text: hideErr[card.pid] } : null;
+    return (
+      <MissingCard key={`product:${card.pid}`} pid={card.pid} name={card.name} product={product} photo={card.photo}
+        meta={metaOf(card.pid)} why={why} holds={holds}
+        onPhoto={onPhoto ? () => onPhoto(product || { id: card.pid, photoUrl: card.photo }) : undefined}
+        primary={{ label: "Solve", action: "open-solve", tone: GREEN, disabled: !!solveBlocked, title: solveBlocked,
+          onClick: () => { setSolvePid(card.pid); setOpenPid(null); setHidePid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); } }}
+        explains="Starts keeping it at the shop you pick. Central sends the first batch; refills follow by themselves."
+        blocked={solveBlocked ? `Solve unavailable — ${solveBlocked}` : null}
+        notice={panel ? null : notice} links={links}
+        panelOpen={!!panel} onClosePanel={closePanels}>
+        {panel === "hide" && <>
                 {/* Hide = discretion, not action: the sentence says so, and the
                     reason is one optional tap — never a form, never required. */}
                 <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginBottom: 8 }}>
@@ -1479,13 +1449,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 {hideErr[card.pid] && (
                   <div style={{ fontSize: 11.5, color: RED, lineHeight: 1.4, marginTop: 8 }}>{hideErr[card.pid]}</div>
                 )}
-              </>
-            ) : sResult ? (
-              <div style={{ fontSize: 12.5 }}>
-                <span style={{ color: sResult.ok ? GREEN : RED, fontWeight: 700 }}>{sResult.msg}</span>
-              </div>
-            ) : sOpen ? (
-              <>
+</>}
+        {panel === "solve" && <>
                 {/* ONE SCREEN, BOTH SECTIONS: tick the stores this product
                     should be carried at — any in either or both sections —
                     and confirm once. A store that cannot be routed to is
@@ -1501,8 +1466,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                         const on = ticks.includes(st.id);
                         return (
                           <button key={st.id} onClick={() => toggleTick(card, st.id)} disabled={!!st.blocked}
-                                  role="checkbox" aria-checked={on} title={st.blocked || undefined}
-                                  style={{ ...destChip(on), ...(st.blocked ? { opacity: 0.4, cursor: "default" } : null) }}>
+                                  role="checkbox" aria-checked={on} data-dest={st.id} title={st.blocked || undefined}
+                                  style={{ ...bigPill(on), ...(st.blocked ? { opacity: 0.4, cursor: "default" } : null) }}>
                             {on ? `✓ ${st.name}` : st.name}
                           </button>
                         );
@@ -1605,22 +1570,16 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 {confirmBlocked && (
                   <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 8 }}>{confirmBlocked}</div>
                 )}
-                <button onClick={() => solve(card)} disabled={!!confirmBlocked}
+                <button data-action="confirm-solve" onClick={() => solve(card)} disabled={!!confirmBlocked}
                         title={confirmBlocked || undefined}
-                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked ? 0.5 : 1 }}>
+                        style={{ ...primaryBtn(GREEN, !!confirmBlocked), marginTop: 10 }}>
                   {solving[card.pid] ? (anyFirstBatch ? "Requesting…" : "Seeding…")
                     : sPlan.lines.length === 1
                       ? (sPlan.lines[0].firstBatch ? `Solve — send ${sPlan.lines[0].units} to ${LOC_LABEL[sPlan.lines[0].store]} first` : `Solve — carry at ${LOC_LABEL[sPlan.lines[0].store]}`)
                       : `Solve — ${sPlan.lines.length ? `${sPlan.lines.length} stores` : "tick a store"}`}
                 </button>
-              </>
-            ) : result ? (
-              <div style={{ fontSize: 12.5 }}>
-                <span style={{ color: GREEN, fontWeight: 700 }}>{result.moved} units → {LOC_LABEL[result.dest]} ✓</span>
-                {result.failed.length > 0 && <div style={{ color: RED, marginTop: 4 }}>Failed: {result.failed.join(" · ")}</div>}
-              </div>
-            ) : open && (
-              <>
+</>}
+        {panel === "move" && <>
                 <div style={{ fontSize: 10.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", margin: "2px 0 6px" }}>
                   Missing from: {card.missing.map((l) => LOC_LABEL[l]).join(" · ")}
                 </div>
@@ -1636,7 +1595,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 </div>
                 <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
                   {destOptions(card).map((d) => (
-                    <button key={d} onClick={() => setDests((prev) => ({ ...prev, [card.pid]: d }))} style={destChip(dest === d)}>
+                    <button key={d} data-move-dest={d} onClick={() => setDests((prev) => ({ ...prev, [card.pid]: d }))} style={destChip(dest === d)}>
                       → {LOC_LABEL[d]}
                     </button>
                   ))}
@@ -1644,16 +1603,18 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 {moveBlocked && (
                   <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 8 }}>{moveBlocked}</div>
                 )}
-                <button onClick={() => transfer(card)} disabled={!!moveBlocked}
+                <button data-action="confirm-move" onClick={() => transfer(card)} disabled={!!moveBlocked}
                         title={moveBlocked || undefined}
                         style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: moveBlocked ? 0.5 : 1 }}>
                   {busyPid === card.pid ? "Transferring…" : `Transfer ${total} unit${total === 1 ? "" : "s"} to ${LOC_LABEL[dest]}`}
                 </button>
-              </>
-            )}
-          </ProductCard>
-        );
-      })}
+</>}
+      </MissingCard>
+    );
+  };
+
+  const bulkBar = (
+    <>
       {selectMode && selectedPids.length > 0 && (
         <div style={{ ...GLASS, position: "sticky", bottom: 8, padding: "10px 12px", marginTop: 10, background: "rgba(20,22,30,.97)" }}>
           {/* ONE primary action: hide everything marked, no reason attached —
@@ -1674,6 +1635,28 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           {bulkErr && <div style={{ fontSize: 11.5, color: RED, marginTop: 8 }}>{bulkErr}</div>}
         </div>
       )}
+    </>
+  );
+
+  return { cards, renderCard, sectionSwitch, viewOnly, selectBar, bulkBar, strip: undoStrip, solvedView, selectMode, section: listSection || HOME_SECTION, busy: solveBusy != null || busyPid != null };
+}
+
+// THE STAND-ALONE LIST: one division's cards with its own switch (and, with
+// view="solved", the Solved history). The Missing Products screen does not use
+// this — it calls the hook — but it is the same cards drawn by the same function.
+export default function NetworkTransfer(props) {
+  const n = useProductSolve(props);
+  if (props.view === "solved") return n.solvedView;
+  return (
+    <>
+      {n.viewOnly}
+      {n.strip}
+      {n.sectionSwitch}
+      {n.selectBar}
+      {n.cards.length
+        ? n.cards.map(n.renderCard)
+        : <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>No stranded products — everything upstream also exists in at least one shop.</div>}
+      {n.bulkBar}
     </>
   );
 }

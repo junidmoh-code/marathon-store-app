@@ -98,15 +98,15 @@ describe("the Concrete button on a Marathon row", () => {
     const { tree } = render();
     expect(textOf(tree)).toContain("Essentials Tee Olive");
     expect(textOf(tree)).not.toContain("Pant fashion 3306");
-    expect(buttonExactly(tree, "Concrete")).toBeTruthy();
+    expect(buttonExactly(tree, "Make Concrete-only")).toBeTruthy();
   });
   it("one tap: marked through the helper, the row leaves at once, the Solved row offers Undo", async () => {
     let resolve;
     markMock.mockImplementation(() => new Promise((r) => { resolve = r; }));
     const { tree, state } = render();
-    await act(async () => { buttonExactly(tree, "Concrete").props.onClick(); });
+    await act(async () => { buttonExactly(tree, "Make Concrete-only").props.onClick(); });
     // Gone while the write is still in flight.
-    expect(textOf(tree)).not.toMatch(/Essentials Tee Olive.*Move manually/);
+    expect(textOf(tree)).not.toMatch(/Essentials Tee Olive.*Move by hand/);
     expect(buttonExactly(tree, "Solve")).toBeUndefined();
     expect(markMock).toHaveBeenCalledWith("tee1", true);
     await act(async () => { resolve({ ok: true }); });
@@ -121,7 +121,7 @@ describe("the Concrete button on a Marathon row", () => {
   it("a refused mark brings the row back and says why", async () => {
     markMock.mockResolvedValue({ ok: false, message: "Permission denied — the Concrete console rules have not been pasted yet. Nothing was saved." });
     const { tree } = render();
-    await act(async () => { buttonExactly(tree, "Concrete").props.onClick(); });
+    await act(async () => { buttonExactly(tree, "Make Concrete-only").props.onClick(); });
     expect(textOf(tree)).toContain("Essentials Tee Olive");
     expect(textOf(tree)).toMatch(/Not marked Concrete — Permission denied/);
     expect(saveRows).not.toHaveBeenCalled();
@@ -129,23 +129,27 @@ describe("the Concrete button on a Marathon row", () => {
   it("staff without the admin role never see it", () => {
     perm.permRecord = { stockRole: "warehouse" }; perm.isSuperAdmin = false;
     const { tree } = render();
-    expect(buttonExactly(tree, "Concrete")).toBeUndefined();
+    expect(buttonExactly(tree, "Make Concrete-only")).toBeUndefined();
     expect(buttonExactly(tree, "Solve")).toBeTruthy();
   });
 });
 
 describe("Solve on the Concrete division's list", () => {
-  it("a Concrete-only row offers BOTH divisions' stores; Solve to Trophy routes through Hub 2", async () => {
+  // 22 Nov 2026 (Junid): destinations follow the list. A Concrete-only row on
+  // the Concrete list offers Pine and Concrete and nothing else — it used to
+  // offer Marathon PE and Trophy too.
+  it("a Concrete-only row offers Pine and Concrete only — never Marathon's shops; Solve to Concrete routes through Hub 3", async () => {
     const { tree } = render({ products: [PANT], division: 1 });
     expect(textOf(tree)).toContain("Pant fashion 3306");
     await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
-    expect(boxes(tree).map(boxLabel)).toEqual(expect.arrayContaining(["Marathon Pine", "Concrete", "Marathon PE", "Trophy"]));
+    expect(boxes(tree).map(boxLabel)).toEqual(["Marathon Pine", "Concrete"]);
     for (const b of boxes(tree)) if (b.props["aria-checked"]) act(() => { b.props.onClick(); });
-    act(() => { boxes(tree).find((b) => boxLabel(b) === "Trophy").props.onClick(); });
+    act(() => { boxes(tree).find((b) => boxLabel(b) === "Concrete").props.onClick(); });
     await act(async () => { await buttonSaying(tree, "Solve — ").props.onClick(); });
     const upd = updateMock.mock.calls[0][1];
     const locs = new Set(Object.keys(upd).filter((k) => k.startsWith("stock/")).map((k) => k.split("/")[1]));
-    expect([...locs].sort()).toEqual(["hub2", "trophy"]);
+    expect([...locs].every((l) => ["hub3", "concrete"].includes(l))).toBe(true);
+    expect([...locs]).toContain("concrete");
   });
   it("an ordinary row on the same list keeps the wall: Concrete division stores only", async () => {
     const { tree } = render({ products: [TEE], division: 1 });

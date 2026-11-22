@@ -44,8 +44,12 @@ const PRODUCTS = [
 const cell = (qty) => ({ qty, v: 1, mv: "m1", state: "live" });
 
 const buttonsOf = (tree) => tree.root.findAll((n) => n.type === "button");
-const buttonSaying = (tree, needle) =>
-  buttonsOf(tree).filter((b) => (b.children || []).some((c) => typeof c === "string" && c.includes(needle)));
+// 22 Nov 2026: the card's one action is "Request" (it was "Solve"), and its
+// confirm reads "Request N for Hub X". The tests name the actions, not the words.
+const ACTION = { Solve: "open-request", Confirm: "confirm-request" };
+const buttonSaying = (tree, needle) => (ACTION[needle]
+  ? buttonsOf(tree).filter((b) => b.props["data-action"] === ACTION[needle])
+  : buttonsOf(tree).filter((b) => (b.children || []).some((c) => typeof c === "string" && c.includes(needle))));
 
 const mount = () => {
   let tree;
@@ -106,26 +110,31 @@ describe("every disabled button on the sneaker list carries its reason", () => {
   });
 });
 
-describe("SNEAKERS: on the Concrete list, Hub 3 is the default of the three hubs", () => {
-  it("\"Missing from Concrete · Hub 3\": Solve raises refill_requests for hub3 only, never Hub 1 or Hub 2 unless ticked", async () => {
+// 22 Nov 2026 (Junid): DESTINATIONS FOLLOW THE LIST. The chooser used to offer
+// Hub 1, Hub 2 and Hub 3 on every card; it offers this list's own hubs only.
+describe("SNEAKERS: on the Concrete list, Hub 3 is the only hub offered", () => {
+  const toConcrete = async (tree) => { await act(async () => { buttonsOf(tree).find((b) => b.props["data-division"] === 1).props.onClick(); }); };
+  const hubChips = (tree) => buttonsOf(tree).filter((b) => b.props.role === "checkbox").map((b) => [b.props["data-dest"], b.props["aria-checked"]]);
+  it("\"Missing from Concrete\": only Hub 3 is offered, already selected, and the request can only be Hub 3's", async () => {
     const { update } = await import("firebase/database");
     update.mockClear();
     const tree = mount();
-    const chip = (label) => buttonsOf(tree).find((b) => (b.children || []).join("") === label);
-    expect(chip("Missing from Marathon · Hub 1 + Hub 2")).toBeDefined();
-    const concrete = chip("Missing from Concrete · Hub 3");
-    expect(concrete).toBeDefined();
-    await act(async () => { concrete.props.onClick(); });
+    expect(buttonsOf(tree).find((b) => b.props["data-division"] === 2)).toBeDefined();
+    await toConcrete(tree);
     await act(async () => { buttonSaying(tree, "Solve")[0].props.onClick(); });
-    // all three hubs are offered, Hub 3 ticked
-    const hubChips = buttonsOf(tree).filter((b) => b.props.role === "checkbox").map((b) => [(b.children || []).join(""), b.props["aria-checked"]]);
-    expect(hubChips.map(([t]) => t.replace(/ · .*/, ""))).toEqual(["Hub 1", "Hub 2", "Hub 3"]);
-    expect(hubChips.filter(([, on]) => on).map(([t]) => t.replace(/ · .*/, ""))).toEqual(["Hub 3"]);
+    expect(hubChips(tree)).toEqual([["hub3", true]]);
+    expect(JSON.stringify(tree.toJSON())).not.toMatch(/Hub 1|Hub 2/);
     await act(async () => { await buttonSaying(tree, "Confirm")[0].props.onClick(); });
     expect(update).toHaveBeenCalledTimes(1);
     const reqs = Object.entries(update.mock.calls[0][1]).filter(([k]) => k.startsWith("refill_requests/")).map(([, v]) => v);
     expect(reqs.length).toBeGreaterThan(0);
     for (const r of reqs) expect(r).toMatchObject({ requestingLocation: "hub3", status: "open", createdFrom: { source: "central" } });
+    for (const r of reqs) expect(r.createdFrom.solveHubs).toBeUndefined();   // never a pair
+  });
+  it("\"Missing from Marathon\": Hub 1 and Hub 2 only — Hub 3 is never offered there", async () => {
+    const tree = mount();
+    await act(async () => { buttonSaying(tree, "Solve")[0].props.onClick(); });
+    expect(hubChips(tree)).toEqual([["hub1", true], ["hub2", false]]);
   });
 });
 
@@ -164,24 +173,13 @@ describe("Hub 1 and Hub 2 never share a sneaker, across separate Solves", () => 
     await confirmAndText(tree);
     expect(update).toHaveBeenCalledTimes(1);
   });
-  it("ticking the other hub on a card is refused while that hub has it seated", async () => {
-    paths["stock"].hub1 = { shoeA: { 8: cell(2) } };
-    const tree = mount();
-    const concrete = buttonsOf(tree).find((b) => (b.children || []).join("") === "Missing from Concrete · Hub 3");
-    await act(async () => { concrete.props.onClick(); });
-    await act(async () => { buttonSaying(tree, "Solve")[0].props.onClick(); });
-    const chip = buttonsOf(tree).find((b) => b.props.role === "checkbox" && (b.children || []).join("").startsWith("Hub 2"));
-    await act(async () => { chip.props.onClick(); });
-    expect(JSON.stringify(tree.toJSON())).toMatch(/seated at Hub 1, so it cannot be solved to Hub 2/);
-  });
-  it("a zero cell at the other hub does not refuse the chip: it may be switched off, and Confirm reads the rows", async () => {
+  it("a zero cell at the other hub does not stop the switch: it may be switched off, and Confirm reads the rows", async () => {
     paths["stock"].hub1 = { shoeA: { 8: cell(0) } };
     const tree = mount();
-    const concrete = buttonsOf(tree).find((b) => (b.children || []).join("") === "Missing from Concrete · Hub 3");
-    await act(async () => { concrete.props.onClick(); });
     await act(async () => { buttonSaying(tree, "Solve")[0].props.onClick(); });
-    const chip = buttonsOf(tree).find((b) => b.props.role === "checkbox" && (b.children || []).join("").startsWith("Hub 2"));
+    const chip = buttonsOf(tree).find((b) => b.props.role === "checkbox" && b.props["data-dest"] === "hub2");
     await act(async () => { chip.props.onClick(); });
+    expect(chip.props.disabled).toBeFalsy();
     expect(JSON.stringify(tree.toJSON())).not.toMatch(/seated at Hub 1/);
   });
 });

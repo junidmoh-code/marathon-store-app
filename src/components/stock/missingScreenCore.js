@@ -75,3 +75,96 @@ export function partitionQueued(cards, requests, hubs, justQueued = null) {
   }
   return { todo, waiting };
 }
+
+// ── ONE LIST PER DIVISION: BOTH KINDS OF CARD, NEWEST UPLOAD FIRST ───────────
+// A product id is `p<epoch ms>` — the moment it was uploaded — so the id is the
+// upload time (older records with another id shape sort last).
+export function uploadedAtOf(pid) {
+  const m = /^p(\d{11,14})$/.exec(String(pid || ""));
+  return m ? Number(m[1]) : 0;
+}
+
+const titleCase = (s) => String(s).replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+/** The category a person would call it: the category key, else the old leaf. */
+export function categoryLabelOf(product, categoryKey) {
+  if (categoryKey) return titleCase(categoryKey);
+  const sub = typeof product?.subcategory === "string" ? product.subcategory.trim() : "";
+  if (sub && !/uncategori[sz]ed/i.test(sub)) return sub;
+  const cat = typeof product?.category === "string" ? product.category.trim() : "";
+  return cat || "No category";
+}
+export const brandOf = (product) => (typeof product?.brand === "string" && product.brand.trim() ? product.brand.trim() : "No brand");
+
+/**
+ * The rows of one division's list. `productCards` / `sneakerCards` are that
+ * division's cards, already less the hidden and the queued. Each row keeps its
+ * card untouched; `kind` says which core built it (and so which action it has).
+ */
+export function buildRows({ productCards = [], sneakerCards = [], byId, categoryKeyOf }) {
+  const row = (kind) => (card) => {
+    const p = byId?.get ? byId.get(card.pid) : null;
+    return {
+      key: `${kind}:${card.pid}`, kind, pid: card.pid, card,
+      name: card.name || card.pid,
+      brand: brandOf(p),
+      category: categoryLabelOf(p, categoryKeyOf ? categoryKeyOf(p) : null),
+      uploadedAt: uploadedAtOf(card.pid),
+      search: [card.name, p?.brand, p?.styleCode, p?.sku, card.pid].filter(Boolean).join(" ").toLowerCase(),
+    };
+  };
+  return sortRows([...productCards.map(row("product")), ...sneakerCards.map(row("sneaker"))]);
+}
+
+/** Newest upload first; the same moment (or no known moment) by name. */
+export function sortRows(rows) {
+  return [...(rows || [])].sort((a, b) => b.uploadedAt - a.uploadedAt || String(a.name).localeCompare(String(b.name)));
+}
+
+/** Search (every word must appear) and the two filters. "" = no filter. */
+export function filterRows(rows, { search = "", category = "", brand = "" } = {}) {
+  const words = String(search).toLowerCase().split(/\s+/).filter(Boolean);
+  return (rows || []).filter((r) =>
+    (!category || r.category === category) && (!brand || r.brand === brand) && words.every((w) => r.search.includes(w)));
+}
+
+/** The values a filter can take, with how many rows each has, A–Z. */
+export function facet(rows, field) {
+  const n = new Map();
+  for (const r of rows || []) n.set(r[field], (n.get(r[field]) || 0) + 1);
+  return [...n.entries()].map(([value, count]) => ({ value, count })).sort((a, b) => String(a.value).localeCompare(String(b.value)));
+}
+
+// ── WHY IT IS ON THE LIST, IN PLAIN WORDS ────────────────────────────────────
+const list = (names) => (names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`);
+const units = (n) => `${n} unit${n === 1 ? "" : "s"}`;
+
+/** A card from missingProductsCore. `nameOf(loc)` names a location; `central` is Central's id. */
+export function whyProduct(card, { nameOf, central = "central", division = "" }) {
+  const src = nameOf(card.source);
+  const missing = (card.missing || []).map(nameOf);
+  const none = (card.sizes || []).filter((s) => s.centralNone).map((s) => s.size);
+  if (card.centralFed) {
+    const shop = nameOf(card.centralFed);
+    if (/^Sizes missing/.test(card.kind || "")) {
+      const can = (card.sizes || []).filter((s) => !s.centralNone).map((s) => s.size);
+      return { why: `${shop} is short of size${(card.sizes || []).length === 1 ? "" : "s"} ${(card.sizes || []).map((s) => (s.size === "_" ? "one size" : s.size)).join(", ")}.`,
+        holds: can.length ? `${src} holds ${units(card.units)} of them${none.length ? ` — none of ${none.join(", ")}` : ""}.` : `${src} has none of them yet — nothing to send.`,
+        nothingToSend: !can.length };
+    }
+    return { why: `Never sent to ${list(missing)} — ${src} has it.`, holds: `${src} holds ${units(card.units)}.`, nothingToSend: false };
+  }
+  if (card.source === central) {
+    return { why: `Never sent out to ${division || "this division"} — not kept at ${list(missing)}.`, holds: `${src} holds ${units(card.units)}.`, nothingToSend: false };
+  }
+  return { why: `Stuck at ${src} — not kept at ${list(missing)} yet.`, holds: `${src} holds ${units(card.units)}.`, nothingToSend: false };
+}
+
+/** A card from missingFootwearCore. `hubs` is the division's hubs. */
+export function whySneaker(card, { nameOf, central = "central", hubs = [] }) {
+  const all = hubs.map(nameOf);
+  const holds = `${nameOf(central)} holds ${card.centralUnits} pair${card.centralUnits === 1 ? "" : "s"}.`;
+  if (card.kind === "sold_out") {
+    return { why: `Sold out at ${list((card.carriedAt || []).map(nameOf))} — it was kept there before and ${nameOf(central)} has more.`, holds };
+  }
+  return { why: `Never sent out — ${nameOf(central)} has it, ${all.length === 1 ? all[0] : `${list(all).replace(" or ", " and ")}`} ${all.length === 1 ? "does" : "do"} not.`, holds };
+}
