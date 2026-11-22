@@ -67,8 +67,13 @@ const qtyIn = (cells, size) => Math.max(Number(cells?.[decodedCellKey(size)]?.qt
  * the same card can never send to both. (A shop that already keeps every size
  * it needs is a dead button by the plan itself.)
  */
-export function productRow({ card, section, product, dests = [], tickable = [], planFor, openByLoc = {}, allStock, central = "central", routes, nameOf = (x) => x }) {
+export function productRow({ card, section, product, dests = [], tickable = [], planFor, openByLoc = {}, allStock, central = "central", routes, nameOf = (x) => x, owners = null }) {
   if (!card || !product || isSneakerOrSlide(product)) return null;
+  // ONE OWNER (Pine / Concrete — Junid, 22 Nov 2026): a product that already
+  // belongs to one shop is offered to that shop only; one that belongs to
+  // both (a data question for Junid) is offered to neither, so never to both.
+  if (Array.isArray(owners) && owners.length > 1) return null;
+  if (Array.isArray(owners) && owners.length === 1) dests = dests.filter((d) => d === owners[0]);
   const can = new Set(tickable);
   const reserved = centralReservedBySize({ openByLoc, routes });
   const sourceCells = allStock?.[card.source]?.[card.pid];
@@ -98,7 +103,8 @@ export function productRow({ card, section, product, dests = [], tickable = [], 
     name: card.name || card.pid, photo: card.photo || null, card,
     source: card.source, sourceName: nameOf(card.source),
     stock: [...counted.values()].reduce((t, n) => t + n, 0),
-    dests: out, twin: null,
+    // A location is OFFERED or ABSENT — never a dead button on the card.
+    dests: out.filter((d) => d.ok), twin: null,
   };
 }
 
@@ -136,9 +142,9 @@ export function sneakerRow({ card, section, dests = [], planFor, refusal = () =>
   };
   if (!out.some((d) => d.ok)) {
     const unarmed = typeof hasPolicy === "function" && dests.length > 0 && !requested && !dests.some((d) => hasPolicy(card, d));
-    return unarmed ? { ...base, needsPolicy: true, stock: Math.max(Number(card.centralUnits) || 0, 0), dests: out } : null;
+    return unarmed ? { ...base, needsPolicy: true, stock: Math.max(Number(card.centralUnits) || 0, 0), dests: [] } : null;
   }
-  return { ...base, stock: [...counted.values()].reduce((t, n) => t + n, 0), dests: out };
+  return { ...base, stock: [...counted.values()].reduce((t, n) => t + n, 0), dests: out.filter((d) => d.ok) };
 }
 
 // ── THE ORDER IS FROZEN WHILE THE SCREEN IS OPEN ─────────────────────────────
@@ -165,4 +171,24 @@ export function tapProblem({ row, dest }) {
   if (!d) return "That is not a destination on this list.";
   if (!d.ok) return `Nothing to send to ${d.name}.`;
   return null;
+}
+
+// ── WHO OWNS A PRODUCT, AMONG ONE-OR-THE-OTHER SHOPS ─────────────────────────
+// Junid's words (22 Nov 2026): a product belongs to a shop when it has STOCK
+// there (units, not an empty row left by a count), is SEATED there, or has a
+// request QUEUED for it there. Returns the shops of `shops` that own it.
+//   cells     { shop: { size: cell } } for this product (decoded cells)
+//   seated    (shop) → bool
+//   queued    (shop) → bool
+export function shopOwners({ shops = [], cells = {}, seated = () => false, queued = () => false }) {
+  return shops.filter((s) => Object.values(cells[s] || {}).some((c) => Number(c?.qty) > 0) || seated(s) || queued(s));
+}
+
+// ── A CHOICE ON ONE CARD ─────────────────────────────────────────────────────
+// Tap a location: chosen; tap it again: not. Where the locations are one or
+// the other (Pine / Concrete, Hub 1 / Hub 2) a tap switches the other off.
+export function pickNext(current, dest, { exclusive = false } = {}) {
+  const cur = Array.isArray(current) ? current : [];
+  if (cur.includes(dest)) return cur.filter((d) => d !== dest);
+  return exclusive ? [dest] : [...cur, dest];
 }

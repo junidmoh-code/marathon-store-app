@@ -13,7 +13,7 @@
 //                                 down the moment Central has started on it —
 //                                 and takes back only the untouched seeds that
 //                                 tap wrote. It creates nothing.
-import { ref, update, runTransaction } from "firebase/database";
+import { ref, get, update, runTransaction } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { database, auth, functions } from "../../firebase";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
@@ -21,6 +21,24 @@ import { stampTxn } from "../../device/deviceStamp";
 import { HIDDEN_ROOT, hideEntry, unhideUpdate } from "./hiddenProductsCore";
 import { firstBatchUndoCancelTxn, SOLVE_UNDONE_REASON } from "./firstBatchCore";
 import { undoCellTxn } from "./solveUndo";
+import { SEATS_PATH } from "./concreteDivision";
+import { shopOwners } from "./missingListCore";
+
+/**
+ * Which of `shops` own this product RIGHT NOW (Pine / Concrete — Junid,
+ * 22 Nov 2026): stock there, seated there, or a request queued for it there.
+ * Two narrow reads per shop (its row in /stock and its seat); `queued(shop)`
+ * comes from the screen's live request records.
+ */
+export async function shopOwnersNow(pid, shops, queued = () => false) {
+  const reads = await Promise.all(shops.map(async (s) => {
+    const [cells, seat] = await Promise.all([get(ref(database, `stock/${s}/${pid}`)), get(ref(database, `${SEATS_PATH}/${s}/${pid}`))]);
+    return [s, cells.val() || null, seat.val() != null];
+  }));
+  const cells = Object.fromEntries(reads.map(([s, c]) => [s, c]));
+  const seats = Object.fromEntries(reads.map(([s, , x]) => [s, x]));
+  return shopOwners({ shops, cells, seated: (s) => seats[s], queued });
+}
 
 export async function hideProduct(pid) {
   try {

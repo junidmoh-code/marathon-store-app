@@ -39,13 +39,13 @@ import { hubIds, storeIds, centralId, nameOf } from "./sectionRouting";
 import { computeMissingProducts } from "./missingProductsCore";
 import { computeMissingFootwear } from "./missingFootwearCore";
 import { partitionQueued } from "./missingScreenCore";
-import { openingOrder, openRequestsByProduct, productRow, sneakerRow, createFrozenOrder, freezeOrder, tapProblem } from "./missingListCore";
+import { openingOrder, openRequestsByProduct, productRow, sneakerRow, createFrozenOrder, freezeOrder, tapProblem, shopOwners, pickNext } from "./missingListCore";
 import { useSlicedRows } from "./useSlicedRows";
 import { useProductSolve } from "./NetworkTransfer";
 import { useSneakerRequest } from "./MissingFootwear";
-import { shopDestinations, destinationProblem } from "./divisionDestinations";
-import { otherMarathonHub, marathonHubSeated, marathonSolveRefusal } from "./concreteDivision";
-import { hideProduct, unhideProduct, undoSneakerRequest } from "./missingActions";
+import { shopDestinations, shopsAreExclusive, destinationProblem } from "./divisionDestinations";
+import { otherMarathonHub, marathonHubSeated, marathonSolveRefusal, SEATS_PATH, DIVISION_SHOPS } from "./concreteDivision";
+import { hideProduct, unhideProduct, undoSneakerRequest, shopOwnersNow } from "./missingActions";
 import HiddenProducts, { HoldSpot } from "./HiddenProducts";
 import { PhotoLightbox } from "./healthWidgets";
 import MissingRow, { Slot, SkeletonRow, CARD_H, CARD_GAP, LEAVE_MS } from "./MissingRow";
@@ -60,6 +60,7 @@ const KINDS = [["sneakers", "Sneakers"], ["clothing", "Clothing"]];
 const PAGE = 40;
 const TOAST_MS = 7000;
 const NONE = Object.freeze({});
+const NO_PICK = Object.freeze([]);
 const NOOP = () => {};
 // What the buttons call the shops (the registry's "Marathon Pine" is "Pine" to
 // everyone who works there).
@@ -73,6 +74,13 @@ export default function MissingProductsScreen({ products = [], onExit }) {
   const targetsState = useStockTargetsState();
   const hiddenMap = useHiddenMissingProducts();
   const reqState = usePathState("refill_requests");
+  // WHO OWNS A PINE / CONCRETE PRODUCT includes where it is SEATED (Junid, 22
+  // Nov 2026). The two shops' seat nodes only — never the whole seats tree.
+  const seatsA = usePathState(`${SEATS_PATH}/${DIVISION_SHOPS[0]}`);
+  const seatsB = usePathState(`${SEATS_PATH}/${DIVISION_SHOPS[1]}`);
+  const seats = useMemo(() => ({ [DIVISION_SHOPS[0]]: seatsA.value || NONE, [DIVISION_SHOPS[1]]: seatsB.value || NONE }), [seatsA.value, seatsB.value]);
+  const seatsSettled = seatsA.settled && seatsB.settled;
+  const seatsError = !!(seatsA.error || seatsB.error);
   const heldLines = useStockHeld();
   const cfgState = useEngineConfigState();
   const cfg = cfgState.raw;
@@ -142,7 +150,7 @@ export default function MissingProductsScreen({ products = [], onExit }) {
           another division's Solve state, and never remounts the list. */}
       {divisions.map((sec) => <Engine key={sec} section={sec} shared={shared} box={apisBox} report={report} />)}
       <Body apis={apisBox.current} flags={flags} divisions={divisions} network={network} products={products} allStock={allStock} targets={targetsState}
-        hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled} requestsError={!!reqState.error} cfg={cfg} cfgSettled={cfgState.settled}
+        hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled && seatsSettled} requestsError={!!reqState.error || seatsError} seats={seats} cfg={cfg} cfgSettled={cfgState.settled}
         heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} />
     </>
   );
@@ -168,7 +176,7 @@ function Engine({ section, shared, box, report }) {
   return null;
 }
 
-function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, requestsError, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit }) {
+function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, requestsError, seats, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit }) {
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const [pick, setPick] = useState(null);
   const section = divisions.includes(pick) ? pick : divisions[0];
@@ -184,7 +192,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // ── THE ROWS: every card asked, before it is drawn, what a tap would send ──
   const apisRef = useRef(apis); apisRef.current = apis;
   const ctx = useRef(null);
-  ctx.current = { byId, allStock, targets: targets.value, reqByPid, cfg, network, central, label };
+  ctx.current = { byId, allStock, targets: targets.value, reqByPid, cfg, network, central, label, seats };
   const buckets = useMemo(() => divisions.flatMap((sec) => [
     {
       id: bucketId(sec, "sneakers"), cards: cards[sec].sneakers,
@@ -210,10 +218,17 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       id: bucketId(sec, "clothing"), cards: cards[sec].clothing,
       build: (card) => {
         const c = ctx.current, api = apisRef.current[sec].product;
+        const dests = shopDestinations(c.network, sec);
+        const open = c.reqByPid.get(card.pid) || NONE;
+        // ONE-OR-THE-OTHER SHOPS (Pine / Concrete): who already owns it.
+        // Marathon's shops are not one-or-the-other and are left as they were.
+        const owners = shopsAreExclusive(c.network, sec)
+          ? shopOwners({ shops: dests, cells: Object.fromEntries(dests.map((d) => [d, c.allStock?.[d]?.[card.pid]])), seated: (d) => !!c.seats?.[d]?.[card.pid], queued: (d) => !!open[d] })
+          : null;
         return productRow({
-          card, section: sec, product: c.byId.get(card.pid), dests: shopDestinations(c.network, sec), tickable: api.tickableStores(card),
-          planFor: api.planFor, openByLoc: c.reqByPid.get(card.pid) || NONE, allStock: c.allStock, central: c.central,
-          routes: c.cfg?.routes, nameOf: c.label,
+          card, section: sec, product: c.byId.get(card.pid), dests, tickable: api.tickableStores(card),
+          planFor: api.planFor, openByLoc: open, allStock: c.allStock, central: c.central,
+          routes: c.cfg?.routes, nameOf: c.label, owners,
         });
       },
     },
@@ -224,12 +239,15 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // promised, so no list is built — the screen says so and offers a Retry.
   const ready = stockReady && requestsSettled && !requestsError && cfgSettled && targets.settled && enginesReady;
   // Anything a plan reads. A new identity means "work the rows out again".
-  const version = useMemo(() => ({}), [buckets, allStock, requests, cfg, targets.value, heldLines, products, network, canAct]);
+  const version = useMemo(() => ({}), [buckets, allStock, requests, cfg, targets.value, heldLines, products, network, canAct, seats]);
   const sliced = useSlicedRows({ buckets, active, version, ready });
 
   // ── OFF THE LIST FOR THIS VISIT: solved here, or hidden here ───────────────
   const [gone, setGone] = useState({});       // row key → true
-  const [busy, setBusy] = useState({});       // row key → the destination being written
+  const [busy, setBusy] = useState({});       // row key → true while its Solve is written
+  // WHAT IS CHOSEN ON EACH CARD (row key → location ids, in tap order). Lives
+  // and dies with this screen: leaving it clears every choice.
+  const [picks, setPicks] = useState({});
   const inFlight = useRef(new Set());
   const listedOf = (id) => sliced.rows[id].filter((r) => !(hiddenMap && hiddenMap[r.pid]) && !gone[r.key]);
   const countOf = (sec) => (KINDS.every(([k]) => sliced.complete[bucketId(sec, k)])
@@ -318,33 +336,65 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   useEffect(() => () => clearTimeout(toastTimer.current), []);
   const back = (key) => setGone((g) => { const n = { ...g }; delete n[key]; return n; });
 
-  // ── ONE TAP: THE DESTINATION IS THE SOLVE ──────────────────────────────────
+  // ── CHOOSE, THEN SOLVE (Junid, 22 Nov 2026) ────────────────────────────────
+  // A location tap only CHOOSES: it writes nothing. Where the locations are one
+  // or the other — Hub 1 / Hub 2, Pine / Concrete — a tap switches the other
+  // off; Hub 3 is the only location on its list; Marathon's shops may both be
+  // chosen and one Solve sends to both (as that list always allowed).
+  const exclusiveFor = (row) => row.kind === "sneakers" || shopsAreExclusive(ctx.current.network, row.section);
+  const chosen = (row) => (picks[row.key] || NO_PICK).filter((d) => row.dests.some((x) => x.id === d));
   const act = useRef({});
-  act.current.tap = async (row, dest) => {
-    // ONE TAP PER PRODUCT AT A TIME, across both divisions: a Hub 1 tap and a
-    // Hub 3 tap on the same shoe must not both plan from the same free stock.
+  act.current.pick = (row, dest) => {
+    if (!canAct || inFlight.current.has(row.pid) || !row.dests.some((x) => x.id === dest)) return;
+    setPicks((m) => ({ ...m, [row.key]: pickNext(chosen(row), dest, { exclusive: exclusiveFor(row) }) }));
+  };
+  act.current.solve = async (row) => {
+    // ONE SOLVE PER PRODUCT AT A TIME, across both divisions: a Hub 1 and a
+    // Hub 3 solve of the same shoe must not both plan from the same free stock.
     if (inFlight.current.has(row.pid) || !canAct) return;
+    const sel = chosen(row);
+    if (!sel.length) return;                                   // nothing chosen: nothing happens
     const c = ctx.current;
-    // THE GATE AT THE TAP, whatever the card showed: this list's own
-    // destinations only, ONE of them (so never Pine and Concrete both, never
-    // Hub 1 and Hub 2 both), and never a dead button. The hooks ask
-    // destinationProblem again of what they are about to write.
+    // THE GATE AT SOLVE, whatever the card showed: this list's own locations,
+    // never both of a one-or-the-other pair, never a location with nothing to
+    // send. The hooks ask destinationProblem again of what they write.
     const kindOf = row.kind === "sneakers" ? "sneaker" : "product";
-    const problem = tapProblem({ row, dest }) || destinationProblem({ network: c.network, section: row.section, destinations: [dest], kind: kindOf });
-    if (problem) { say({ ok: false, text: problem }); return; }
+    let problem = sel.map((dest) => tapProblem({ row, dest })).find(Boolean)
+      || destinationProblem({ network: c.network, section: row.section, destinations: sel, kind: kindOf });
     inFlight.current.add(row.pid);
-    setBusy((b) => ({ ...b, [row.key]: dest }));
+    setBusy((b) => ({ ...b, [row.key]: true }));
+    // ONE OWNER, CHECKED LIVE (Pine / Concrete): a stale screen — another
+    // device solved it to the other shop a minute ago — must not write a
+    // second shop. Read now, per product: stock and seat at the other shop,
+    // and its queued requests.
+    if (!problem && row.kind === "clothing" && shopsAreExclusive(c.network, row.section)) {
+      const shops = shopDestinations(c.network, row.section);
+      try {
+        const owners = await shopOwnersNow(row.pid, shops, (d) => !!c.reqByPid.get(row.pid)?.[d]);
+        const other = owners.find((o) => !sel.includes(o));
+        if (other) problem = `${c.label(other)} already has this — it is not sent to ${sel.map(c.label).join(" or ")} as well.`;
+      } catch (e) {
+        problem = `Couldn't check where this belongs — nothing sent, retry. (${e?.message || "error"})`;
+      }
+    }
+    if (problem) {
+      inFlight.current.delete(row.pid);
+      setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
+      say({ ok: false, text: problem });
+      return;
+    }
     const api = apisRef.current[row.section];
     let res;
-    try { res = row.kind === "sneakers" ? await api.sneaker.solveTo(row.card, dest) : await api.product.solveTo(row.card, dest); }
+    try { res = row.kind === "sneakers" ? await api.sneaker.solveTo(row.card, sel[0]) : await api.product.solveTo(row.card, sel); }
     catch (e) { res = { ok: false, msg: `Nothing changed — retry. (${e?.message || "error"})` }; }
     inFlight.current.delete(row.pid);
     setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
-    if (!res || !res.ok) { say({ ok: false, text: res?.msg || "Nothing was sent." }); return; }   // the card stays put
+    if (!res || !res.ok) { say({ ok: false, text: res?.msg || "Nothing was sent." }); return; }   // the card stays put, choice kept
     setGone((g) => ({ ...g, [row.key]: true }));
+    setPicks((m) => { const n = { ...m }; delete n[row.key]; return n; });
     const what = res.units > 0 ? ` · ${res.units} ${row.kind === "sneakers" ? "pair" : "unit"}${res.units === 1 ? "" : "s"}` : "";
     say({
-      ok: true, text: `${c.label(dest)}${what}`,
+      ok: true, text: `${sel.map(c.label).join(" + ")}${what}`,
       undo: async function undoIt() {
         let out;
         if (row.kind === "sneakers") out = await undoSneakerRequest(res);
@@ -374,7 +424,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     setGone((g) => ({ ...g, [row.key]: true }));
     say({ ok: true, text: "Hidden", undo: async () => { const r = await unhideProduct(row.pid); if (r.ok) { back(row.key); say({ ok: true, text: "Back on the list" }); } else say({ ok: false, text: r.msg }); } });
   };
-  const onTap = useCallback((row, dest) => act.current.tap(row, dest), []);
+  const onPick = useCallback((row, dest) => act.current.pick(row, dest), []);
+  const onSolve = useCallback((row) => act.current.solve(row), []);
   const onHide = useCallback((row) => act.current.hide(row), []);
   const onPhoto = useCallback((p) => { const url = primaryPhotoUrl(p) || p?.photoUrl; if (url) setLightbox(url); }, []);
 
@@ -451,7 +502,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
                     {i === firstNormal && i > 0 && anyNeeds && <div aria-hidden="true" style={{ height: 14 }} />}
                     <Slot leaving={d.leaving} entering={d.entering} data-slot={d.key}>
                       <MissingRow row={d.row} product={byId.get(d.row.pid)} twinProduct={d.row.twin ? byId.get(d.row.twin) : null}
-                        busy={busy[d.key] || null} canAct={canAct} onTap={onTap} onHide={onHide} onPhoto={onPhoto} />
+                        selected={picks[d.key] || NO_PICK} busy={!!busy[d.key]} canAct={canAct} onPick={onPick} onSolve={onSolve} onHide={onHide} onPhoto={onPhoto} />
                     </Slot>
                   </React.Fragment>
                 ))}

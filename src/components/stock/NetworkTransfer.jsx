@@ -1767,7 +1767,9 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
   // quantity; it hands out the functions that already do.
   const api = {
     canAct, ready: cfg !== null && targetsReady,
-    solveTo: (card, store) => solve(card, [store]),
+    // One shop, or (Marathon's list, where both may be chosen) several: the
+    // same solve the panel's confirm made with those shops ticked.
+    solveTo: (card, stores) => solve(card, [].concat(stores)),
     planFor, tickableStores, undoEntry,
   };
   return { cards, renderCard, sectionSwitch, viewOnly, selectBar, bulkBar, strip: undoStrip, solvedView, selectMode, section: listSection || HOME_SECTION, busy: solveBusy != null || busyPid != null, api };
