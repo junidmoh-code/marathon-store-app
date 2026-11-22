@@ -108,7 +108,7 @@ describe("solve → undo wiring", () => {
     expect(SCREEN).toMatch(/\{solve\.strip\}/);
   });
   it("undo is canAct-gated like every other write on this screen", () => {
-    expect(NETWORK).toMatch(/if \(!canAct \|\| undoUi\[u\.key\]\?\.busy \|\| undoInFlight\.current\.has\(u\.key\)\) return;/);
+    expect(NETWORK).toMatch(/if \(!canAct \|\| undoUi\[u\.key\]\?\.busy \|\| undoInFlight\.current\.has\(u\.key\)\) return \{ ok: false/);
     // …and undoing a Concrete mark is Junid's / an admin's, like the mark.
     expect(NETWORK).toMatch(/if \(!canMarkConcrete \|\| undoInFlight\.current\.has\(u\.key\)\) return;/);
   });
