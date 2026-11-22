@@ -142,7 +142,7 @@ export default function MissingProductsScreen({ products = [], onExit }) {
           another division's Solve state, and never remounts the list. */}
       {divisions.map((sec) => <Engine key={sec} section={sec} shared={shared} box={apisBox} report={report} />)}
       <Body apis={apisBox.current} flags={flags} divisions={divisions} network={network} products={products} allStock={allStock} targets={targetsState}
-        hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled} cfg={cfg} cfgSettled={cfgState.settled}
+        hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled} requestsError={!!reqState.error} cfg={cfg} cfgSettled={cfgState.settled}
         heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} />
     </>
   );
@@ -168,7 +168,7 @@ function Engine({ section, shared, box, report }) {
   return null;
 }
 
-function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit }) {
+function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, requestsError, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit }) {
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const [pick, setPick] = useState(null);
   const section = divisions.includes(pick) ? pick : divisions[0];
@@ -220,7 +220,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   ]), [divisions, cards]);
 
   const enginesReady = divisions.every((s) => flags[s]?.ready && apis[s]);
-  const ready = stockReady && requestsSettled && cfgSettled && targets.settled && enginesReady;
+  // An UNREADABLE request queue is not an empty one: nothing would look
+  // promised, so the list waits (the live listener keeps retrying).
+  const ready = stockReady && requestsSettled && !requestsError && cfgSettled && targets.settled && enginesReady;
   // Anything a plan reads. A new identity means "work the rows out again".
   const version = useMemo(() => ({}), [buckets, allStock, requests, cfg, targets.value, heldLines, products, network, canAct]);
   const sliced = useSlicedRows({ buckets, active, version, ready });
@@ -246,7 +248,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   });
 
   // A write still on its way is a job in hand: no app update under it.
-  const writing = Object.keys(busy).length > 0;
+  // (an Undo's writes count too — undoing holds this until they are done)
+  const [undoing, setUndoing] = useState(0);
+  const writing = Object.keys(busy).length > 0 || undoing > 0;
   useEffect(() => {
     setUpdateBusy("missing-products", writing);
     return () => setUpdateBusy("missing-products", false);
@@ -460,7 +464,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
           {toast.undo && (
             <button data-action="undo" onClick={() => {
               const u = toast.undo; setToast(null); clearTimeout(toastTimer.current);
-              Promise.resolve().then(u).catch((e) => say({ ok: false, text: `Not undone — ${e?.message || "error"}` }));
+              setUndoing((n) => n + 1);
+              Promise.resolve().then(u).catch((e) => say({ ok: false, text: `Not undone — ${e?.message || "error"}` }))
+                .finally(() => setUndoing((n) => n - 1));
             }}
               style={{ height: 44, padding: "0 18px", borderRadius: 12, background: "rgba(251,191,36,.12)", border: "1px solid rgba(251,191,36,.5)", color: AMBER, fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>Undo</button>
           )}

@@ -64,7 +64,9 @@ export async function undoSneakerRequest(done) {
     const paths = done.seedPaths || [];
     const cells = await Promise.all(paths.map((p) => runTransaction(ref(database, p), undoCellTxn)));
     if (done.seat && cells.every((c) => c.committed)) {
-      try { await httpsCallable(functions, "seatDivisionSolve")({ ...done.seat, clear: true }); } catch { /* the seat is the scan's to tidy */ }
+      // A seat left behind would let a later Hub 3 cell count as solved: a
+      // failed clear is a failed Undo, retryable (the retry skips what is done).
+      await httpsCallable(functions, "seatDivisionSolve")({ ...done.seat, clear: true });
     }
     return { ok: true };
   } catch (e) {

@@ -171,6 +171,7 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
   // FOOTWEAR_OWN_NUMBERS_KEYS): the one footwear category the Engine Policy
   // card may give numbers of its own. One small node per such category.
   const [ownPolicy, setOwnPolicy] = useState({});
+  const [ownPolicyErr, setOwnPolicyErr] = useState(false);   // a failed read is not "no policy"
   const allRequests = useRefillRequests();
   useEffect(() => {
     let alive = true;
@@ -178,7 +179,7 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
       .then((s) => { if (alive) setFootwearRun(s.val() || null); })
       .catch(() => { /* leave null — Solve disabled, Request unaffected */ })
       .finally(() => { if (alive) setPolicyRead((r) => ({ ...r, run: true })); });
-    Promise.all(FOOTWEAR_OWN_NUMBERS_KEYS.map((k) => get(ref(database, `config/refillEngine/categoryPolicy/${k}`)).then((s) => [k, s.val() || null], () => [k, null])))
+    Promise.all(FOOTWEAR_OWN_NUMBERS_KEYS.map((k) => get(ref(database, `config/refillEngine/categoryPolicy/${k}`)).then((s) => [k, s.val() || null], () => { if (alive) setOwnPolicyErr(true); return [k, null]; })))
       .then((pairs) => { if (alive) setOwnPolicy(Object.fromEntries(pairs)); })
       .finally(() => { if (alive) setPolicyRead((r) => ({ ...r, own: true })); });
     get(ref(database, "config/refillEngine/policyGroups/footwear-all/policy/hub3"))
@@ -298,7 +299,7 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
   // unless it has its own) the run of the hub it is declared to be like.
   // Hub 3 keeps its own number per declared size (the group's Hub 3 leg).
   const runFor = (card, hub) => (hub === DIVISION_HUB
-    ? (hub3Leg?.target > 0 ? Object.fromEntries(catalogSizes(card.pid).map((s) => [sizeKeyOf(s), hub3Leg.target])) : {})
+    ? (hub3Leg?.target > 0 ? Object.fromEntries(catalogSizes(card.pid).map((s) => [sizeKeyOf(s), hub3Leg.target])) : withRows({}, card, hub))
     : withRows(runAt(hub), card, hub));
   const runAt = (hub) => footwearRun?.[policyKeyFor(network, footwearRun, hub)] || {};
   // A PER-PRODUCT TARGET ROW FILLS WHAT THE RUN DOES NOT NAME (Junid, 22 Nov
@@ -519,9 +520,15 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
         seat: seated ? { location: DIVISION_HUB, pid: card.pid, solveId } : null,
       };
     } catch (e) {
-      if (seated) seat({ location: DIVISION_HUB, pid: card.pid, clear: true, solveId }).catch(() => {});
-      setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: `Couldn't raise the request — nothing changed, retry. (${e?.message || "error"})` } }));
-      outcome = { ok: false, msg: `Couldn't raise the request — nothing changed, retry. (${e?.message || "error"})` };
+      // The seat this Solve claimed is cleared before "nothing changed" is said;
+      // if it cannot be, the message says so (CodeRabbit, PR #964).
+      let seatLeft = false;
+      if (seated) { try { await seat({ location: DIVISION_HUB, pid: card.pid, clear: true, solveId }); } catch { seatLeft = true; } }
+      const msg = seatLeft
+        ? `Couldn't raise the request, and Hub 3's seat for it could not be cleared — retry to finish. (${e?.message || "error"})`
+        : `Couldn't raise the request — nothing changed, retry. (${e?.message || "error"})`;
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg } }));
+      outcome = { ok: false, msg };
     }
     setSolveBusy(null);
     return outcome;
@@ -638,7 +645,13 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
     planFor, pickRefusal,
     // Does ANY of this shoe's sizes have a number at this hub? (No → the card
     // reads "No policy yet" rather than being listed as something to send.)
-    hasPolicy: (card, hub) => { const run = runFor(card, hub); return catalogSizes(card.pid).some((s) => Number(run[sizeKeyOf(s)]) > 0); },
+    // Only Kids Shoes is ever "waiting for a policy" (Junid, 22 Nov 2026); any
+    // other shoe with nothing to send is simply not listed. A policy read that
+    // FAILED is unknown, never "no policy".
+    hasPolicy: (card, hub) => {
+      if (!FOOTWEAR_OWN_NUMBERS_KEYS.includes(effectiveCategoryKey(byId.get(card.pid))) || ownPolicyErr) return true;
+      const run = runFor(card, hub); return catalogSizes(card.pid).some((s) => Number(run[sizeKeyOf(s)]) > 0);
+    },
   };
   return { cards, waiting, renderCard, sectionSwitch, queuedStrip, viewOnly, section, busy: !!solveBusy, api };
 }

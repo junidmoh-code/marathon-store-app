@@ -350,6 +350,17 @@ describe("kids shoes: no policy is said as no policy, never as queued", () => {
     expect(requestsIn(lastUpdate()).map((r) => [r.size, r.qty, r.requestingLocation])).toEqual([["24", 1, "hub2"], ["25", 1, "hub2"]]);
   });
 
+  it("an ADULT shoe with nothing to send (only a size no policy names) is not listed at all — 'needs policy' is Kids Shoes only", async () => {
+    const BIG = "p1796100000000";
+    const stock = baseStock(); stock.central[BIG] = { 15: cell(4) };
+    emit("stock", stock);
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<MissingProductsScreen products={[...PRODUCTS, { id: BIG, name: "Air Max Size 15", category: "Footwear", categoryKey: "sneakers", sizes: ["15"] }]} onExit={() => {}} />); });
+    await act(async () => {}); await act(async () => {});
+    expect(cardsOf(tree)).not.toContain("Air Max Size 15");
+    expect(count(tree, MARATHON)).toBe("8");
+  });
+
   it("adult sneakers are unchanged: the run's numbers, with or without a target row for a size the run names", async () => {
     emit("stock_targets", { hub1: { [SHOE_B]: { 8: { target: 5 }, 9: { target: 5 } } } });
     gets["config/refillEngine/categoryPolicy/kids-shoes"] = { perSize: true, hub1: { sizes: { 8: { target: 9 }, 9: { target: 9 } } } };   // never reaches an adult shoe

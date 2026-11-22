@@ -1514,7 +1514,11 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
                     as a plain, un-tappable chip saying what the leg will do.
                     An ALREADY-ARMED leg keeps the toggle: widening is a second,
                     deliberate edit against a policy whose effect is visible. */}
-                {inDraft && r.armed && (
+                {inDraft && r.armed && ownNumbers(c) && (
+                  // Kids Shoes is carried-only by rule — said, not offered.
+                  <span data-scope-fixed style={{ ...bGray, ...smallBtn, cursor: "default" }}>Carried only</span>
+                )}
+                {inDraft && r.armed && !ownNumbers(c) && (
                   <button onClick={() => onScope(r.loc, !row.carriedOnly)}
                     title={row.carriedOnly
                       ? "Only products this location already stocks get these numbers. Tap for every product in the category."

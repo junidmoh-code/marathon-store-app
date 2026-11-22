@@ -239,10 +239,14 @@ describe("the Engine Policy list", () => {
     expect(tree.root.findAll((n) => n.type === "button" && n.props["data-open-group"]).length).toBe(0);
     // …its size-by-size hubs are laid out on the KIDS run, every number blank,
     // and no adult size (6, 7) is offered on its screen.
-    const inputs = tree.root.findAll((n) => n.type === "input");
-    expect(inputs.length).toBeGreaterThan(0);
-    expect(inputs.every((i) => String(i.props.value ?? "") === "" || i.props.type === "checkbox" || i.props.value === "3" || i.props.value === "2")).toBe(true);
-    expect(flat).toMatch(/26/);
+    const sized = tree.root.findAll((n) => typeof n.type === "function" && n.props && typeof n.props.ariaPrefix === "string" && /^Hub \d+ \d+$/.test(n.props.ariaPrefix));
+    const byHub = {};
+    for (const n of sized) { const [hub, size] = [n.props.ariaPrefix.replace(/ \d+$/, ""), n.props.ariaPrefix.match(/(\d+)$/)[1]]; (byHub[hub] ||= []).push(size); }
+    expect(Object.keys(byHub).length).toBe(2);                         // Hub 1 and Hub 2, size by size
+    for (const sizes of Object.values(byHub)) expect(sizes).toEqual(["26", "27"]);
+    for (const n of sized) expect([n.props.row.target, n.props.row.minQty, n.props.row.reorderPoint]).toEqual(["", "", ""]);
+    // Hub 3 keeps Footwear's one number, carried-only, said as a fixed chip
+    expect(tree.root.findAll((n) => typeof n.type === "string" && n.props["data-scope-fixed"]).length).toBeGreaterThan(0);
   });
 
   it("typing a Kids Shoes size number and previewing sends it carried-only at every location (CodeRabbit, PR #964)", async () => {
