@@ -1414,7 +1414,7 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
     const panel = hOpen ? "hide" : sOpen ? "solve" : open ? "move" : null;
     const closePanels = () => { setSolvePid(null); setOpenPid(null); setHidePid(null); };
     const links = [];
-    if (destOptions(card).length) links.push({ action: "open-move", label: "Move by hand", onClick: () => { setOpenPid(card.pid); setSolvePid(null); setHidePid(null); setDone((d) => { const n = { ...d }; delete n[card.pid]; return n; }); } });
+    if (destOptions(card).length) links.push({ action: "open-move", label: "Move by hand", onClick: () => { setOpenPid(card.pid); setSolvePid(null); setHidePid(null); setDone((d) => { const n = { ...d }; delete n[card.pid]; return n; }); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); } });
     if (canAct) links.push({ action: "open-hide", label: "Hide from list", onClick: () => { setHidePid(card.pid); setSolvePid(null); setOpenPid(null); } });
     // CONCRETE (Junid, 20 Nov 2026): one tap makes it Concrete-only — it leaves
     // this Marathon list and appears in the Concrete division's.

@@ -40,6 +40,7 @@ import { PhotoLightbox } from "./healthWidgets";
 import { CardPhoto } from "./MissingCard";
 import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
+import { setUpdateBusy } from "../../update/updateChecker";
 
 // The division shown first, and the order of the switch: Marathon, Concrete.
 const DIVISION_ORDER = [2, 1];
@@ -152,6 +153,16 @@ export default function MissingProductsScreen({ products = [], onExit }) {
     setNotes((l) => [{ id, pid, section: sec, name: byId.get(pid)?.name || pid, msg }, ...l].slice(0, 5));
     noteTimers.current[id] = setTimeout(() => setNotes((l) => l.filter((x) => x.id !== id)), NOTE_MS);
   };
+
+  // A SOLVE STILL WRITING IS A JOB IN HAND for the whole screen, not only for
+  // the division it was tapped on: switching division unmounts that list (and
+  // its own busy flag) while the write is still on its way, and an app update
+  // must not reload the page under it (CodeRabbit, PR #961).
+  const solvePending = Object.values(resolving).some((m) => Object.values(m || {}).includes("pending"));
+  useEffect(() => {
+    setUpdateBusy("missing-products", solvePending);
+    return () => setUpdateBusy("missing-products", false);
+  }, [solvePending]);
 
   const [view, setView] = useState("todo");   // "todo" | "done" | "hidden"
   const [lightbox, setLightbox] = useState(null);
