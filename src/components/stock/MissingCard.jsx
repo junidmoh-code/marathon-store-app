@@ -20,11 +20,15 @@ const photoBox = { width: PHOTO, height: PHOTO, borderRadius: 13, flexShrink: 0,
 
 export function CardPhoto({ product, productId, snapshot, size = PHOTO, onTap }) {
   const live = product || (productId ? { id: productId, photoUrl: snapshot } : null);
-  return (
-    <div onClick={onTap} style={{ ...photoBox, width: size, height: size, cursor: onTap ? "zoom-in" : "default" }}>
-      {live && <PrimaryPhoto product={live} productId={productId ?? live.id} snapshot={snapshot || null} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
-    </div>
-  );
+  const img = live && <PrimaryPhoto product={live} productId={productId ?? live.id} snapshot={snapshot || null} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />;
+  // Tappable → a real button (focusable, Enter/Space); otherwise a plain box.
+  if (onTap) {
+    return (
+      <button type="button" aria-label="Look at the photo" onClick={(e) => { e.stopPropagation(); onTap(); }}
+        style={{ ...photoBox, width: size, height: size, cursor: "zoom-in", border: "none", padding: 0, display: "block" }}>{img}</button>
+    );
+  }
+  return <div style={{ ...photoBox, width: size, height: size }}>{img}</div>;
 }
 
 const linkBtn = { background: "none", border: "none", color: "rgba(255,255,255,.5)", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: "10px 4px", minHeight: 44, fontFamily: FONT, textDecoration: "underline", textUnderlineOffset: 3 };

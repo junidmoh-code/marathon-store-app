@@ -129,6 +129,20 @@ export default function MissingProductsScreen({ products = [], onExit }) {
     lists[sec] = { all, visible, sneakers, hubs, count: visible.filter((c) => !gone[c.pid]).length + sneakers.todo.length };
   }
 
+  // THE LIVE REQUEST RECORDS ARE THE TRUTH THE MOMENT THEY SHOW IT. A mark is
+  // only the bridge between this device's write and its echo; once the open
+  // request is seen the mark goes, so a cancel inside the hold window brings
+  // the card straight back (CodeRabbit, PR #961). The timer is the backstop.
+  useEffect(() => {
+    const seen = Object.keys(justQueued).filter((k) => {
+      const at = k.indexOf("|");
+      return lists[k.slice(0, at)]?.sneakers.waiting.some((w) => w.queue && w.card.pid === k.slice(at + 1));
+    });
+    if (!seen.length) return;
+    for (const k of seen) { clearTimeout(queueTimers.current[k]); delete queueTimers.current[k]; }
+    setJustQueued((m) => { const n = { ...m }; for (const k of seen) delete n[k]; return n; });
+  });
+
   const onQueued = (sec) => (pid, hubs, msg) => {
     const k = `${sec}|${pid}`;
     setJustQueued((m) => ({ ...m, [k]: true }));

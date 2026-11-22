@@ -101,12 +101,15 @@ describe("every disabled button on the sneaker list carries its reason", () => {
     expect(JSON.stringify(tree.toJSON())).toMatch(/stock role/i);
   });
 
-  it("with the footwear run unset, Solve is disabled and points at Request", () => {
+  it("with the footwear run unset, Request is disabled and says the sizes are not set up", () => {
     gets["config/refillEngine/footwearRunByLocation"] = null;
     const tree = mount();
     const solve = buttonSaying(tree, "Solve")[0];
     expect(solve.props.disabled).toBe(true);
-    expect(solve.props.title).toMatch(/Request/);
+    // (It used to add "Use Request instead" — advice to press the very button
+    // that is disabled, now that the typed request is gone.)
+    expect(solve.props.title).toMatch(/aren't set up yet/);
+    expect(solve.props.title).not.toMatch(/Use Request/);
   });
 });
 

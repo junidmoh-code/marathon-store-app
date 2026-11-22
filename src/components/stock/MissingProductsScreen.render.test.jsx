@@ -335,3 +335,20 @@ describe("a viewer of one division", () => {
     expect(count(tree, MARATHON)).toBe("4 missing");
   });
 });
+
+describe("a request this device raised, then cancelled inside the hold window", () => {
+  it("comes back at once: the mark is retired the moment the live request is seen", async () => {
+    const tree = await mount();
+    await tap(tree, SHOE_B, "open-request");
+    await tap(tree, SHOE_B, "confirm-request");
+    expect(cardsOf(tree)).not.toContain("Gazelle Bold");
+    const written = Object.fromEntries(Object.entries(updateMock.mock.calls[0][1]).map(([k, v]) => [k.split("/")[1], v]));
+    await act(async () => { emit("refill_requests", written); });          // the echo
+    await act(async () => {});
+    expect(cardsOf(tree)).not.toContain("Gazelle Bold");
+    const cancelled = Object.fromEntries(Object.entries(written).map(([k, v]) => [k, { ...v, status: "cancelled" }]));
+    await act(async () => { emit("refill_requests", cancelled); });        // cancelled seconds later
+    expect(cardsOf(tree)).toContain("Gazelle Bold");
+    expect(count(tree, MARATHON)).toBe("4 missing");
+  });
+});

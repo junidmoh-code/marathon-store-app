@@ -21281,18 +21281,6 @@ function AppInner() {
   // set (signed out, switched account, permissions revoked), drop them back
   // to RoleSelector. Prevents a blank screen and avoids exposing a view the
   // user shouldn't see.
-  // A LINK TO MISSING PRODUCTS — the new address, or the old one under
-  // Inventory Health — opens the Missing Products screen (missingProductsRoute.js).
-  // Only once this account is KNOWN to have stock access: acting earlier would
-  // set the role, have the gate below reset it, and lose the link. The fragment
-  // is REPLACED, not pushed, so the browser's Back does not land on the link
-  // again and reopen the screen.
-  useEffect(() => {
-    if (!isMissingProductsHash(hash) || !canAccessStock) return;
-    setRole(ROLES.MISSING_PRODUCTS);
-    window.history.replaceState(null, "", window.location.pathname + window.location.search);
-    setHash("");
-  }, [hash, canAccessStock]);
   useEffect(() => {
     if (!role) return;
     // Stock is stockRole-gated (not permission-mapped) — drop non-stock users back home.
@@ -21332,6 +21320,20 @@ function AppInner() {
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
   }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, displayRegRouteOpen, stockAuditRouteOpen, shopifyRouteOpen, socialRouteOpen, tvAdRouteOpen, aiStudioRouteOpen, permRecord]);
+  // A LINK TO MISSING PRODUCTS — the new address, or the old one under
+  // Inventory Health — opens the Missing Products screen (missingProductsRoute.js).
+  // Only once this account is KNOWN to have stock access: acting earlier would
+  // set the role, have the gate below reset it, and lose the link. The fragment
+  // is REPLACED, not pushed, so the browser's Back does not land on the link
+  // again and reopen the screen. DECLARED AFTER the stored-role guard above on
+  // purpose: both run in one commit, and the later setRole wins — a stored role
+  // the guard resets must not take the link with it (CodeRabbit, PR #961).
+  useEffect(() => {
+    if (!isMissingProductsHash(hash) || !canAccessStock) return;
+    setRole(ROLES.MISSING_PRODUCTS);
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setHash("");
+  }, [hash, canAccessStock]);
 
   // The network registry (/network): one small node, read here once so every
   // writer outside React (applyMovement, order placement) asks the same

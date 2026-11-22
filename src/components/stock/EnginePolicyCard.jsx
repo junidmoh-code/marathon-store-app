@@ -1106,7 +1106,7 @@ function SizeGaps({ category: c, whose }) {
       {locs.length > 0 && <div style={{ color: AMBER, fontWeight: 700, fontSize: ".85rem", marginBottom: 4 }}>Sizes with no number</div>}
       {locs.map((loc) => (
         <div key={loc} style={{ color: "#fde68a", fontSize: ".8rem", lineHeight: 1.5 }}>
-          {locLabel(loc)}: {gaps[loc].all ? "none of its sizes has a number" : "no number"} for {gaps[loc].missing.map(sizeLabel).join(", ")} — nothing of {gaps[loc].all ? "this category" : "those sizes"} is kept there until {whose ? `they are set on ${whose}` : "they are set below"}.
+          {locLabel(loc)}: {gaps[loc].all ? "none of its sizes has a number" : "no number"} for {gaps[loc].missing.map(sizeLabel).join(", ")} — this policy keeps {gaps[loc].all ? "nothing of this category" : "none of those sizes"} there until {whose ? `they are set on ${whose}` : "they are set below"}. (A product with its own target row is still kept by that row.)
         </div>
       ))}
       {extra.length > 0 && (

@@ -82,7 +82,7 @@ export function moveReason({ canAct, busy, units } = {}) {
 // (null = available, string = the words on the row) is identical.
 export function footwearSolveReason({ canAct, runLoaded, linesAtAnyHub } = {}) {
   if (!canAct) return "You need a stock role to solve this — you're viewing only.";
-  if (!runLoaded) return "Sneaker refill sizes aren't set up yet, so there's nothing to raise. Use Request instead.";
+  if (!runLoaded) return "Sneaker refill sizes aren't set up yet, so there's nothing to raise.";
   if (!linesAtAnyHub) return "Nothing left to raise — every size is already queued, or Central has none.";
   return null;
 }

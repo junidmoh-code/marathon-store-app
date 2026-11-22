@@ -1190,6 +1190,9 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
       if (res.ok) moved += qty; else failed.push(`${s.size}: ${res.reason}`);
     }
     setDone((d) => ({ ...d, [card.pid]: { moved, dest, failed } }));
+    // Close the panel so the card shows what moved and what failed (the
+    // result is the card's notice, which an open panel covers).
+    setOpenPid((cur) => (cur === card.pid ? null : cur));
     setBusyPid(null);
   };
 
