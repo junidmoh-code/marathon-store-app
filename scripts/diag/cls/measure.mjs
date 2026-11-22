@@ -35,6 +35,7 @@ await page.evaluateOnNewDocument(() => {
   window.__leaving = [];   // { key, from, until, top }
   window.__headerMoves = [];
   const describe = (n) => {
+    if (n && n.nodeType === 3 && n.parentElement) n = n.parentElement;   // a text node: judge its element
     if (!n || !n.closest) return { slot: null, label: n ? n.nodeName : "?" };
     const slot = n.closest("[data-slot]");
     const lab = n.closest("[data-division],[data-kind],[data-title],[data-toast],[data-skeleton],[data-needs-label],[data-empty],[data-action]");
@@ -75,7 +76,7 @@ await page.evaluateOnNewDocument(() => {
 const t0 = Date.now();
 await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
 // Load is done when both division counts are numbers and the list shows cards.
-await page.waitForFunction(() => [...document.querySelectorAll("[data-division-count]")].every((n) => /^\d+$/.test(n.textContent.trim())) && document.querySelector("[data-slot]"), { timeout: 180000, polling: 100 });
+await page.waitForFunction(() => [...document.querySelectorAll("[data-division-count]")].every((n) => /^\d+$/.test(n.textContent.trim())) && (document.querySelector("[data-slot]") || document.querySelector("[data-empty]")), { timeout: 180000, polling: 100 });
 const loadMs = Date.now() - t0;
 await new Promise((r) => setTimeout(r, 2500));   // let the data settle (re-passes, echoes)
 const counts = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll("[data-division-count]")].map((n) => [n.getAttribute("data-division-count"), n.textContent.trim()])));
@@ -90,15 +91,26 @@ await phase("switch kind");
 for (const k of ["clothing", "sneakers", "clothing", "sneakers"]) await tapSel(`[data-kind="${k}"]`);
 await page.screenshot({ path: path.join(process.env.CLS_OUT || "/tmp", "mp-sneakers.png") });
 
-// TEN SOLVES IN A ROW on Concrete clothing (each card's first live button).
+// CHOOSING A LOCATION: tap, switch, un-tap on several cards — writes nothing,
+// and must not move a single pixel (no leave window is open in this phase).
 await tapSel(`[data-division="1"]`); await tapSel(`[data-kind="clothing"]`);
+await phase("choose locations");
+const chooseKeys = await page.evaluate(() => [...document.querySelectorAll("[data-slot]")].filter((s) => s.getBoundingClientRect().bottom <= window.innerHeight && s.querySelectorAll("button[data-dest]").length).slice(0, 3).map((s) => s.getAttribute("data-slot")));
+for (const k of chooseKeys) {
+  const ds = await page.evaluate((key) => [...document.querySelectorAll(`[data-slot="${key}"] button[data-dest]`)].map((b) => b.getAttribute("data-dest")), k);
+  for (const d of [...ds, ...ds.slice().reverse(), ds[0]]) { await page.tap(`[data-slot="${k}"] button[data-dest="${d}"]`); await new Promise((r) => setTimeout(r, 250)); }
+  await page.tap(`[data-slot="${k}"] button[data-dest="${ds[0]}"]`); await new Promise((r) => setTimeout(r, 250));   // leave it un-chosen
+}
+const wroteWhileChoosing = await page.evaluate(() => window.__writes || 0);
+
+// TEN SOLVES IN A ROW on Concrete clothing: choose the first location, Solve.
 await phase("ten solves");
 const solved = [];
 for (let i = 0; i < 10; i++) {
   const target = await page.evaluate(() => {
     for (const slot of document.querySelectorAll("[data-slot]")) {
       if (slot.style.height === "0px") continue;
-      const b = slot.querySelector("button[data-dest]:not([disabled])");
+      const b = slot.querySelector("button[data-dest]");
       const r = slot.getBoundingClientRect();
       if (b && r.top >= 0 && r.bottom <= window.innerHeight) return { key: slot.getAttribute("data-slot"), dest: b.getAttribute("data-dest"), top: r.top, name: slot.querySelector("[data-card]").getAttribute("data-card-name") };
     }
@@ -108,7 +120,12 @@ for (let i = 0; i < 10; i++) {
   const before = await page.evaluate(() => [...document.querySelectorAll("[data-slot]")].filter((s) => s.style.height !== "0px").map((s) => s.getAttribute("data-slot")));
   // the leave window opens when the write lands (fake latency 250 ms + reads) and lasts the transition
   await page.evaluate((k, top) => { window.__leaving.push({ key: k, from: performance.now(), until: performance.now() + 2500, top }); }, target.key, target.top);
-  await page.tap(`[data-slot="${target.key}"] button[data-dest="${target.dest}"]`);
+  // choose it (only if it is not chosen already — a second tap would un-choose it)
+  const isOn = await page.evaluate((k, d) => document.querySelector(`[data-slot="${k}"] button[data-dest="${d}"]`)?.getAttribute("aria-pressed") === "true", target.key, target.dest);
+  if (!isOn) await page.tap(`[data-slot="${target.key}"] button[data-dest="${target.dest}"]`);
+  await new Promise((r) => setTimeout(r, 200));
+  if (i === 0) await page.screenshot({ path: path.join(process.env.CLS_OUT || "/tmp", "mp-chosen.png") });
+  await page.tap(`[data-slot="${target.key}"] button[data-action="solve"]`);
   await page.waitForFunction((k) => { const s = document.querySelector(`[data-slot="${k}"]`); return !s || s.style.height === "0px"; }, { timeout: 15000 }, target.key);
   await new Promise((r) => setTimeout(r, 700));
   const after = await page.evaluate(() => [...document.querySelectorAll("[data-slot]")].filter((s) => s.style.height !== "0px").map((s) => s.getAttribute("data-slot")));
@@ -121,11 +138,11 @@ const shifts = await page.evaluate(() => window.__shifts);
 const headerMoves = await page.evaluate(() => window.__headerMoves);
 const sum = (xs) => Math.round(xs.reduce((t, s) => t + s.value, 0) * 10000) / 10000;
 const byPhase = {};
-for (const p of ["load", "switch division", "switch kind", "ten solves"]) {
+for (const p of ["load", "switch division", "switch kind", "choose locations", "ten solves"]) {
   const xs = shifts.filter((s) => s.phase === p);
   byPhase[p] = { entries: xs.length, total: sum(xs), fromSolvedCardLeaving: sum(xs.filter((s) => s.explained)), other: sum(xs.filter((s) => !s.explained)), otherEntries: xs.filter((s) => !s.explained).slice(0, 5) };
 }
-const out = { loadMs, counts, byPhase, headerMoves, solved, errors: errors.slice(0, 10) };
+const out = { loadMs, counts, byPhase, headerMoves, solved, wroteWhileChoosing, errors: errors.slice(0, 10) };
 writeFileSync(path.join(process.env.CLS_OUT || "/tmp", "mp-cls.json"), JSON.stringify(out, null, 1));
 console.log(JSON.stringify(out, null, 1));
 await browser.close();

@@ -96,9 +96,15 @@ const cardsOf = (tree) => slots(tree).map((s) => s.findAll((n) => typeof n.type 
 const card = (tree, pid) => host(tree, "data-card", pid)[0];
 const dests = (tree, pid) => card(tree, pid).findAll((n) => n.type === "button" && n.props["data-dest"]);
 const offered = (tree, pid) => dests(tree, pid).map((b) => b.props["data-dest"]);
-const live = (tree, pid) => dests(tree, pid).filter((b) => !b.props.disabled).map((b) => b.props["data-dest"]);
+// (every offered location can be chosen; nothing renders disabled)
+const live = (tree, pid) => dests(tree, pid).map((b) => b.props["data-dest"]);
+const picked = (tree, pid) => dests(tree, pid).filter((b) => b.props["aria-pressed"]).map((b) => b.props["data-dest"]);
+const solveBtn = (tree, pid) => card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "solve")[0];
+const pick = async (tree, pid, dest) => { await act(async () => { dests(tree, pid).find((b) => b.props["data-dest"] === dest).props.onClick(); }); };
+const solve = async (tree, pid) => { await act(async () => { await solveBtn(tree, pid).props.onClick(); }); await act(async () => {}); };
 const stockLine = (tree, pid) => flat(card(tree, pid).findAll((n) => typeof n.type === "string" && n.props["data-stock"])[0].children);
-const tapDest = async (tree, pid, dest) => { await act(async () => { await dests(tree, pid).find((b) => b.props["data-dest"] === dest).props.onClick(); }); await act(async () => {}); };
+// Choose a location, then Solve — the two deliberate steps.
+const tapDest = async (tree, pid, dest) => { await pick(tree, pid, dest); await solve(tree, pid); };
 const division = async (tree, sec) => { await act(async () => { host(tree, "data-division", sec)[0].props.onClick(); }); await act(async () => {}); };
 const kind = async (tree, k) => { await act(async () => { host(tree, "data-kind", k)[0].props.onClick(); }); await act(async () => {}); };
 const count = (tree, sec) => flat(host(tree, "data-division-count", sec)[0].children);
@@ -111,7 +117,7 @@ beforeEach(() => {
   updateMock.mockClear(); pushN = 0; seatCalls.length = 0; txnCalls.length = 0; txnData = {};
   for (const k of Object.keys(gets)) delete gets[k];
   __resetNetworkForTests();
-  for (const p of ["settings/missingProductsHidden", "settings/stockHold/held", "stock_targets"]) emit(p, null);
+  for (const p of ["settings/missingProductsHidden", "settings/stockHold/held", "stock_targets", "refill_engine/seats/concrete", "refill_engine/seats/marathon-pine"]) emit(p, null);
   emit("network", S1_LIVE);
   emit("config/refillEngine", CONFIG);
   emit("refill_requests", null);
@@ -137,7 +143,7 @@ describe("the screen Junid asked for", () => {
     expect(host(tree, "data-view").length).toBe(0);
     const all = textOf(tree);
     for (const gone of [/To do/, /Queued & solved/, /newest uploads first/, /missing from/i, /Move by hand/, /Mark & hide/, /Carry at/, /Starts keeping/, /Never sent/, /One moment/, /Concrete-only/]) expect(all).not.toMatch(gone);
-    for (const b of buttons(tree)) expect(["← Back", "Marathon", "Concrete", "Sneakers", "Clothing", "Hub 1", "Hub 2", "Hide", ""].some((ok) => b === ok || /^(Marathon|Concrete)\d+$/.test(b))).toBe(true);
+    for (const b of buttons(tree)) expect(["← Back", "Marathon", "Concrete", "Sneakers", "Clothing", "✓Hub 1", "✓Hub 2", "Hide", "Solve", ""].some((ok) => b.trim() === ok || /^(Marathon|Concrete)\d+$/.test(b))).toBe(true);
   });
 
   it("the header count is the number of cards on that division's two lists", async () => {
@@ -158,6 +164,7 @@ describe("the screen Junid asked for", () => {
     expect(new Set(heights).size).toBe(1);
     expect(stockLine(tree, SHOE_B)).toBe("Central 18");
     for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "hide").length).toBe(1);
+    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(solveBtn(tree, pid)).toBeDefined();
   });
 });
 
@@ -202,7 +209,7 @@ describe("destinations follow the division — on the card, and in what is writt
     const tree = await mount();
     await division(tree, CONCRETE); await kind(tree, "clothing");
     expect(offered(tree, TEE)).toEqual(["marathon-pine", "concrete"]);
-    expect(flat(dests(tree, TEE)[0].children)).toBe("Pine");
+    expect(flat(dests(tree, TEE)[0].children)).toBe("✓Pine");                 // (the tick is there, unseen, until chosen)
     await tapDest(tree, TEE, "marathon-pine");
     expect(updateMock).toHaveBeenCalledTimes(1);
     const upd = lastUpdate();
@@ -399,7 +406,9 @@ describe("no shake: the order is frozen and only the solved card leaves", () => 
     const s0 = shape();
     let release;
     updateMock.mockImplementationOnce(() => new Promise((r) => { release = r; }));
-    await act(async () => { dests(tree, SHOE_B).find((b) => b.props["data-dest"] === "hub1").props.onClick(); });
+    await pick(tree, SHOE_B, "hub1");
+    expect(shape()).toEqual(s0);                               // chosen: same box, same buttons
+    await act(async () => { solveBtn(tree, SHOE_B).props.onClick(); });
     await act(async () => {});
     expect(shape()).toEqual(s0);                               // the write is in flight: same boxes, same buttons
     expect(cardsOf(tree)).toContain("Gazelle Bold");           // the card stays until the write has landed
@@ -569,7 +578,237 @@ describe("who may do what", () => {
   it("without a stock role nothing can be tapped", async () => {
     perm.isSuperAdmin = false; perm.permRecord = { displayName: "Viewer" };
     const tree = await mount();
+    // no stock role: nothing to choose, no Solve, no Hide — and nothing rendered disabled
     expect(live(tree, SHOE_B)).toEqual([]);
-    expect(card(tree, SHOE_B).findAll((n) => n.type === "button" && n.props["data-action"] === "hide")[0].props.disabled).toBe(true);
+    expect(solveBtn(tree, SHOE_B)).toBeUndefined();
+    expect(card(tree, SHOE_B).findAll((n) => n.type === "button" && n.props["data-action"] === "hide").length).toBe(0);
+  });
+});
+
+describe("choose, then Solve (Junid, 22 Nov 2026)", () => {
+  it("tapping a location writes nothing, sends nothing, and the card stays", async () => {
+    const tree = await mount();
+    await pick(tree, SHOE_B, "hub1");
+    await pick(tree, SHOE_B, "hub2");
+    await pick(tree, SHOE_B, "hub2");
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(txnCalls.length).toBe(0);
+    expect(cardsOf(tree)).toContain("Gazelle Bold");
+    expect(toast(tree)).toBe(null);
+  });
+
+  it("nothing is preselected — not even a lone Hub 3 — and Solve with nothing chosen does nothing", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE);
+    expect(offered(tree, SHOE_B)).toEqual(["hub3"]);
+    expect(picked(tree, SHOE_B)).toEqual([]);
+    expect(solveBtn(tree, SHOE_B).props["aria-disabled"]).toBe(true);
+    await solve(tree, SHOE_B);
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(cardsOf(tree)).toContain("Gazelle Bold");
+  });
+
+  it("a tap chooses (filled, ticked), a second tap un-chooses; Solve wakes only once something is chosen", async () => {
+    const tree = await mount();
+    await pick(tree, SHOE_B, "hub1");
+    expect(picked(tree, SHOE_B)).toEqual(["hub1"]);
+    expect(flat(dests(tree, SHOE_B)[0].children)).toBe("✓Hub 1");
+    // the tick is there, unseen, before choosing too — so nothing moves when it shows
+    expect(flat(dests(tree, SHOE_B)[1].children)).toBe("✓Hub 2");
+    expect(dests(tree, SHOE_B)[1].findAll((n) => n.type === "span")[0].props.style.opacity).toBe(0);
+    expect(solveBtn(tree, SHOE_B).props["aria-disabled"]).toBe(false);
+    await pick(tree, SHOE_B, "hub1");
+    expect(picked(tree, SHOE_B)).toEqual([]);
+    expect(solveBtn(tree, SHOE_B).props["aria-disabled"]).toBe(true);
+  });
+
+  it("Hub 1 and Hub 2 switch each other off", async () => {
+    const tree = await mount();
+    await pick(tree, SHOE_B, "hub1");
+    await pick(tree, SHOE_B, "hub2");
+    expect(picked(tree, SHOE_B)).toEqual(["hub2"]);
+    await solve(tree, SHOE_B);
+    for (const r of requestsIn(lastUpdate())) expect(r.requestingLocation).toBe("hub2");
+  });
+
+  it("Pine and Concrete switch each other off — both chosen is impossible", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE); await kind(tree, "clothing");
+    await pick(tree, TEE, "marathon-pine");
+    await pick(tree, TEE, "concrete");
+    expect(picked(tree, TEE)).toEqual(["concrete"]);
+    await pick(tree, TEE, "marathon-pine");
+    expect(picked(tree, TEE)).toEqual(["marathon-pine"]);
+  });
+
+  it("Solve sends exactly the chosen location", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE); await kind(tree, "clothing");
+    await pick(tree, TEE, "concrete");
+    await solve(tree, TEE);
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(stockLocs(lastUpdate())).toEqual(["concrete"]);
+    for (const r of requestsIn(lastUpdate())) expect(r.requestingLocation).toBe("concrete");
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+  });
+
+  it("Marathon's shops may both be chosen, and one Solve sends to both (as that list always allowed)", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    await pick(tree, TEE, "marathon-pe");
+    await pick(tree, TEE, "trophy");
+    expect(picked(tree, TEE)).toEqual(["marathon-pe", "trophy"]);
+    await solve(tree, TEE);
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const locs = stockLocs(lastUpdate());
+    expect(locs).toContain("marathon-pe"); expect(locs).toContain("trophy");
+    expect(toast(tree).text).toMatch(/Marathon PE \+ Trophy/);
+  });
+
+  it("a choice on one card touches no other card", async () => {
+    const tree = await mount();
+    await pick(tree, SHOE_B, "hub1");
+    expect(picked(tree, SHOE_A)).toEqual([]);
+    expect(picked(tree, SHOE_C)).toEqual([]);
+  });
+
+  it("a choice is cleared when Junid leaves the screen", async () => {
+    let tree = await mount();
+    await pick(tree, SHOE_B, "hub1");
+    await act(async () => { tree.unmount(); });
+    tree = await mount();
+    expect(picked(tree, SHOE_B)).toEqual([]);
+  });
+
+  it("card height is identical before choosing, after choosing and with Solve awake; no button anywhere renders disabled", async () => {
+    const tree = await mount();
+    const h = () => card(tree, SHOE_B).props.style.height;
+    const h0 = h();
+    await pick(tree, SHOE_B, "hub1");
+    expect(h()).toBe(h0);
+    expect(solveBtn(tree, SHOE_B).props["aria-disabled"]).toBe(false);
+    expect(h()).toBe(h0);
+    await division(tree, CONCRETE);
+    for (const k of ["sneakers", "clothing"]) {
+      await kind(tree, k);
+      expect(new Set(host(tree, "data-card").map((n) => n.props.style.height))).toEqual(new Set([h0]));   // one location or two
+    }
+    expect(tree.root.findAll((n) => n.type === "button" && n.props.disabled).length).toBe(0);
+  });
+
+  it("an unchosen location is never green; green is Solve's alone, once something is chosen", async () => {
+    const tree = await mount();
+    const GREEN = "#4ADE80";
+    const styleOf = (b) => JSON.stringify(b.props.style);
+    for (const b of dests(tree, SHOE_B)) expect(styleOf(b)).not.toMatch(new RegExp(GREEN, "i"));
+    expect(styleOf(solveBtn(tree, SHOE_B))).not.toMatch(new RegExp(GREEN, "i"));
+    await pick(tree, SHOE_B, "hub1");
+    for (const b of dests(tree, SHOE_B)) expect(styleOf(b)).not.toMatch(new RegExp(GREEN, "i"));
+    expect(styleOf(solveBtn(tree, SHOE_B))).toMatch(new RegExp(GREEN, "i"));
+  });
+});
+
+describe("one product, one shop — Pine or Concrete, never both", () => {
+  const conc = async () => { const tree = await mount(); await division(tree, CONCRETE); await kind(tree, "clothing"); return tree; };
+  it("at neither shop: both offered, neither chosen", async () => {
+    const tree = await conc();
+    expect(offered(tree, TEE)).toEqual(["marathon-pine", "concrete"]);
+    expect(picked(tree, TEE)).toEqual([]);
+  });
+
+  it("owned by Concrete (stock there) → Pine is not offered at all", async () => {
+    const st = baseStock(); st.concrete[TEE] = { S: cell(2) };     // Concrete keeps S; Central has M and L for it
+    emit("stock", st);
+    const tree = await conc();
+    expect(offered(tree, TEE)).toEqual(["concrete"]);
+  });
+
+  it("owned by Pine (seated there, no units) → Concrete is not offered at all", async () => {
+    emit("refill_engine/seats/marathon-pine", { [TEE]: { at: "2026-11-22T09:00:00.000Z", via: "cell" } });
+    const tree = await conc();
+    expect(offered(tree, TEE)).toEqual(["marathon-pine"]);
+  });
+
+  it("owned by Concrete with nothing to send there → not on the list at all, and never offered to Pine instead", async () => {
+    const st = baseStock(); st.concrete[TEE] = { S: cell(2), M: cell(2), L: cell(2) };
+    emit("stock", st);
+    const tree = await conc();
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+  });
+
+  it("owned by BOTH (a data question for Junid) → offered to neither, not listed", async () => {
+    emit("refill_engine/seats/marathon-pine", { [TEE]: { at: "2026-11-22T09:00:00.000Z" } });
+    emit("refill_engine/seats/concrete", { [TEE]: { at: "2026-11-22T09:00:00.000Z" } });
+    const tree = await conc();
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+  });
+
+  it("after solving to Pine, Concrete is no longer offered — on reload, and on a second device", async () => {
+    const tree = await conc();
+    await pick(tree, TEE, "marathon-pine");
+    await solve(tree, TEE);
+    const upd = lastUpdate();
+    // what the database now holds, as any device sees it
+    const reqs = Object.fromEntries(Object.entries(upd).filter(([k]) => k.startsWith("refill_requests/")).map(([k, v]) => [k.split("/")[1], v]));
+    expect(Object.keys(reqs).length).toBeGreaterThan(0);
+    await act(async () => { tree.unmount(); });
+    emit("refill_requests", reqs);
+    const second = await conc();                                 // a reload, or another phone
+    // still missing at Concrete's end? never offered there: Pine owns it now
+    if (card(second, TEE)) expect(offered(second, TEE)).toEqual(["marathon-pine"]);
+    else expect(cardsOf(second)).not.toContain("Essentials Tee Olive");
+  });
+
+  it("a request to Pine that is fully sent but still open (units on the way) keeps it Pine's", async () => {
+    emit("refill_requests", { r1: { productId: TEE, size: "M", qty: 2, sentQty: 2, requestingLocation: "marathon-pine", status: "open", createdFrom: { source: "central" } } });
+    const tree = await conc();
+    expect(offered(tree, TEE)).toEqual(["marathon-pine"]);
+  });
+
+  it("a choice that stops applying (the product became the other shop's) never leaves Solve green", async () => {
+    const tree = await conc();
+    await pick(tree, TEE, "concrete");
+    expect(solveBtn(tree, TEE).props["aria-disabled"]).toBe(false);
+    await act(async () => { emit("refill_engine/seats/marathon-pine", { [TEE]: { at: "2026-11-22T10:00:00.000Z" } }); });
+    for (let i = 0; i < 40 && offered(tree, TEE).includes("concrete"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+    expect(offered(tree, TEE)).toEqual(["marathon-pine"]);
+    expect(picked(tree, TEE)).toEqual([]);
+    expect(solveBtn(tree, TEE).props["aria-disabled"]).toBe(true);
+    await solve(tree, TEE);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("a card that leaves the list during the live check sends nothing (CodeRabbit, PR #966)", async () => {
+    const tree = await conc();
+    await pick(tree, TEE, "concrete");
+    // while Solve's live read is out, the product stops being listed (hidden on another device)
+    await act(async () => {
+      const p = solveBtn(tree, TEE).props.onClick();
+      emit("settings/missingProductsHidden", { [TEE]: { at: NOW, by: "u2" } });
+      await p;
+    });
+    await act(async () => {});
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(toast(tree).kind).toBe("fail");
+    expect(toast(tree).text).toMatch(/nothing sent/);
+    // nothing is left locked: once it is listed again, it can be chosen and solved
+    await act(async () => { emit("settings/missingProductsHidden", null); });
+    await pick(tree, TEE, "concrete");
+    if (!picked(tree, TEE).length) await pick(tree, TEE, "concrete");
+    await solve(tree, TEE);
+    expect(updateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirm rejects a second shop: a stale screen chooses Concrete after another device solved it to Pine", async () => {
+    const tree = await conc();
+    await pick(tree, TEE, "concrete");
+    // meanwhile, on another phone, Pine took it (its stock row is what the live check reads)
+    gets[`stock/marathon-pine/${TEE}`] = { M: { qty: 0, mv: "seed" } };
+    gets[`refill_engine/seats/marathon-pine/${TEE}`] = { at: "2026-11-22T10:00:00.000Z", via: "solve" };
+    await solve(tree, TEE);
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(toast(tree).kind).toBe("fail");
+    expect(toast(tree).text).toMatch(/Pine already has this/);
+    expect(cardsOf(tree)).toContain("Essentials Tee Olive");
   });
 });

@@ -14,5 +14,8 @@ snap.config = (await restGet("config/refillEngine")) || {};
 snap.network = await restGet("network");
 snap.held = (await restGet("settings/stockHold/held")) || {};
 snap.hidden = await restGet("settings/missingProductsHidden");
+// The two one-or-the-other shops' seats (the screen reads exactly these).
+snap.seats = {};
+for (const shop of ["marathon-pine", "concrete"]) snap.seats[shop] = (await restGet(`refill_engine/seats/${shop}`)) || {};
 writeFileSync(out, JSON.stringify(snap));
 console.log(out, Object.keys(snap.products).length, "products", Object.keys(snap.recentRequests).length, "requests");
