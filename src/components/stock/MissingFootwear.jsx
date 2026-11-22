@@ -53,6 +53,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { DIVISION_HUB, SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal } from "./concreteDivision";
 import { trustStamp } from "./stockTrust";
+import { switchHubPick } from "./hubChooser";
 
 // The scan is the only requester (Junid, 1 Nov 2026): the typed-quantity
 // Request button is off; Solve (policy quantity) stays.
@@ -105,7 +106,6 @@ export default function MissingFootwear({ products = [] }) {
   const [solvePid, setSolvePid] = useState(null);
   const [solveBusy, setSolveBusy] = useState(null);
   const [solveHub, setSolveHub] = useState({});   // pid → chosen hubs for Solve (one, or an allowed pair)
-  const [pairRefused, setPairRefused] = useState({});
   const [solved, setSolved] = useState({});
 
   // ── WHICH SECTION'S SNEAKERS ───────────────────────────────────────────────
@@ -255,9 +255,14 @@ export default function MissingFootwear({ products = [] }) {
   // Every hub a sneaker Solve may name, across both divisions (Central feeds
   // both): Hub 1, Hub 2, Hub 3, each with Solve on and visible to this viewer.
   const SOLVE_HUBS = useMemo(() => SNEAKER_SOLVE_HUBS.filter((h) => hubIds(network, { solveOnly: true }).includes(h) && mySections.includes(network.locations[h]?.section)), [network, mySections]);
+  // Untouched, the panel opens on this list's own first hub. Once a pill has
+  // been tapped the selection is exactly what was tapped — an EMPTY selection
+  // included, so turning the last pill off never re-lights a default behind
+  // the finger (that would be a pill that looks dead).
   const solveHubsOf = (card) => {
-    const picked = (solveHub[card.pid] || []).filter((h) => SOLVE_HUBS.includes(h));
-    return picked.length ? picked : REQUESTABLE_HUBS.slice(0, 1);
+    const stored = solveHub[card.pid];
+    if (stored === undefined) return REQUESTABLE_HUBS.slice(0, 1);
+    return stored.filter((h) => SOLVE_HUBS.includes(h));
   };
   const hubFor = (card) => solveHubsOf(card)[0];
   const openAtHub = (requests, hub, pid) => (requests || []).some((r) => r && r.status === "open" && !r.shadow && r.requestingLocation === hub && r.productId === pid);
@@ -273,25 +278,28 @@ export default function MissingFootwear({ products = [] }) {
     }
     return null;
   };
+  // A TAP ALWAYS CHANGES THE SELECTION (Junid, 22 Nov 2026 — hubChooser.js):
+  // Hub 1 and Hub 2 switch each other off, Hub 3 toggles on its own. The old
+  // version refused the tap when the result was not allowed, which left the
+  // pill dead under the finger.
   const togglePick = (card, hub) => {
-    const cur = solveHubsOf(card);
-    const next = cur.includes(hub) ? cur.filter((h) => h !== hub) : [...cur, hub];
-    if (next.length && !sneakerSolvePairAllowed(next)) {
-      setPairRefused((d) => ({ ...d, [card.pid]: "Hub 1 and Hub 2 cannot be solved together." }));
-      return;
+    setSolveHub((d) => ({ ...d, [card.pid]: switchHubPick(solveHubsOf(card), hub) }));
+  };
+  // Why this selection cannot be confirmed as it stands — said on the panel,
+  // never by ignoring the tap. Units and open requests only, here: this screen
+  // has no target rows, so a zero cell (which may be switched off) is left for
+  // Confirm, which reads them live (seatRefusal).
+  const pickRefusal = (card, hubs) => {
+    for (const h of hubs) {
+      const other = otherMarathonHub(h);
+      if (!other) continue;
+      const seated = marathonHubSeated({
+        cells: Object.fromEntries(Object.entries(allStock?.[other]?.[card.pid] || {}).filter(([, c]) => Number(c?.qty) > 0)),
+        openRequest: openAtHub(allRequests, other, card.pid),
+      });
+      if (seated) return marathonSolveRefusal(h);
     }
-    const seatedOther = !cur.includes(hub) && otherMarathonHub(hub) && marathonHubSeated({
-      // Only units, here: this screen has no target rows, so a zero cell (which
-      // may be switched off) is left for Confirm, which reads them.
-      cells: Object.fromEntries(Object.entries(allStock?.[otherMarathonHub(hub)]?.[card.pid] || {}).filter(([, c]) => Number(c?.qty) > 0)),
-      openRequest: openAtHub(allRequests, otherMarathonHub(hub), card.pid),
-    });
-    if (seatedOther) {
-      setPairRefused((d) => ({ ...d, [card.pid]: marathonSolveRefusal(hub) }));
-      return;
-    }
-    setPairRefused((d) => ({ ...d, [card.pid]: null }));
-    setSolveHub((d) => ({ ...d, [card.pid]: next }));
+    return null;
   };
   // Units already promised to ANY hub for this product. Central's shelf count is
   // not free stock: two hubs solving the same shoe would otherwise each claim it.
@@ -344,6 +352,7 @@ export default function MissingFootwear({ products = [] }) {
   // Stock does NOT move here — Central staff pick it size by size from that queue.
   const solve = async (card) => {
     const picked = solveHubsOf(card);
+    if (!picked.length) return;   // guarded by the disabled Confirm ("Pick a hub first.")
     const hub = picked[0];
     if (picked.length > 1 || picked.includes(DIVISION_HUB)) return solveDivision(card, picked);
     const lines = planFor(card, hub);
@@ -523,7 +532,13 @@ export default function MissingFootwear({ products = [] }) {
         // where the button was grey and the row said nothing, which is the very
         // contract this module exists to keep. Disable and reason now read the
         // SAME flag. (Sonnet review, PR #342.)
-        const confirmBlocked = footwearConfirmReason({
+        // A hub on its own that is not one of THIS list's hubs (Hub 1 alone on
+        // the Concrete list) was a silently dead Confirm: solve() refuses it.
+        // The rule is unchanged — it is now said.
+        const offList = sHubs.length === 1 && !sHubs.includes(DIVISION_HUB) && !REQUESTABLE_HUBS.includes(sHubs[0])
+          ? `${nameOf(sHubs[0], network)} on its own is requested from the ${sectionName(network, network.locations[sHubs[0]]?.section)} list. Here, pick ${REQUESTABLE_HUBS.map((h) => nameOf(h, network)).join(" or ")}${REQUESTABLE_HUBS.length ? `, with or without ${nameOf(sHubs[0], network)}` : ""}.`
+          : null;
+        const confirmBlocked = (sHubs.length ? null : "Pick a hub first.") || offList || pickRefusal(card, sHubs) || footwearConfirmReason({
           canAct, busy: !!solveBusy, lines: solveLines.length, hubLabel: sHubs.map((h) => nameOf(h, network)).join(" + "),
         });
         const submitBlocked = footwearRequestSubmitReason({ canAct, busy: !!busyPid, units: total });
@@ -547,7 +562,7 @@ export default function MissingFootwear({ products = [] }) {
             ].filter(Boolean).join(" · ")}
             right={
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }}
+                <button data-action="open-request" onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }}
                         disabled={!!solveBlocked} title={solveBlocked || undefined}
                         style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: solveBlocked ? "default" : "pointer", opacity: solveBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {sOpen ? "Close" : "Solve"}
@@ -574,12 +589,13 @@ export default function MissingFootwear({ products = [] }) {
                     </button>
                   ))}
                 </div>
-                {pairRefused[card.pid] && <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: 8 }}>{pairRefused[card.pid]}</div>}
-                <div style={{ fontSize: 12, color: GRAY, marginBottom: 8 }}>
-                  Raises this into <b style={{ color: "#fff" }}>Source → {sHubs.map((h) => `${nameOf(h, network)} Refill`).join(" and ")}</b> as today's work.
-                  Central picks it size by size; stock does not move yet.
-                </div>
-                {solveLines.length ? (
+                {sHubs.length > 0 && (
+                  <div style={{ fontSize: 12, color: GRAY, marginBottom: 8 }}>
+                    Raises this into <b style={{ color: "#fff" }}>Source → {sHubs.map((h) => `${nameOf(h, network)} Refill`).join(" and ")}</b> as today's work.
+                    Central picks it size by size; stock does not move yet.
+                  </div>
+                )}
+                {!sHubs.length ? null : solveLines.length ? (
                   <>
                     <div style={CHIP_GRID}>
                       {solveLines.map((l) => (
@@ -599,7 +615,7 @@ export default function MissingFootwear({ products = [] }) {
                   </div>
                 )}
                 {confirmBlocked && <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: 6 }}>{confirmBlocked}</div>}
-                <button onClick={() => solve(card)} disabled={!!confirmBlocked}
+                <button data-action="confirm-request" onClick={() => solve(card)} disabled={!!confirmBlocked}
                         title={confirmBlocked || undefined}
                         style={{ background: "rgba(74,222,128,.14)", border: "1px solid rgba(74,222,128,.45)", color: GREEN, borderRadius: 10, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, cursor: confirmBlocked ? "default" : "pointer", opacity: confirmBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {solveBusy === card.pid ? "Raising…" : "Confirm"}
