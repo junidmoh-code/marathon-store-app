@@ -50,7 +50,8 @@ import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 import { isCentralFedProduct, centralFedPerSize, centralFedSizes } from "./centralFed";
 import { concreteDivisionPolicy, isDivisionFootwear, isDivisionOneSize } from "./concreteDivision";
 import { firstBatchEligible, buildFirstBatchSolveUpdate, trustExistingEmptyUpdates, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, firstBatchSizeHints, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
-import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
+import { solveReason, solveConfirmReason, moveReason, centralFedNoPlanReason, centralFedNothingSentReason } from "./actionReasons";
+import { policyFollowOf, followRows } from "./policyFollow";
 import { setUpdateBusy } from "../../update/updateChecker";
 import { stampRecord, stampTxn } from "../../device/deviceStamp";
 // CONCRETE-ONLY + THE SOLVED TAB (Junid, 20 Nov 2026).
@@ -610,12 +611,16 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
   // exists to prevent. solvePlan.js's own header called this the "one mirror
   // gap that lives elsewhere" back when the cards list was clothing-only; with
   // perfume admitted, "elsewhere" is here. Clothing is byte-for-byte unchanged.
-  const runFor = (pid) => {
+  const runFor = (pid) => runWith(pid, targetRows, catalogSizes(pid));
+  // `targets` and `sizes` are runFor's own for every caller but one: a shop
+  // that FOLLOWS another's policy asks what that shop's policy answers
+  // (followedKeep below), with that shop's switch-off rows left out.
+  const runWith = (pid, targets, sizes) => {
     const ruleEligible = isClothing(byId.get(pid));
     return resolvedRun({
       std: ruleEligible ? stdRun : {}, subRun: ruleEligible ? subRun : undefined,
-      subcategory: byId.get(pid)?.subcategory, sizes: catalogSizes(pid),
-      targets: targetRows, pid, ruleBasedTargets: pcfg?.ruleBasedTargets,
+      subcategory: byId.get(pid)?.subcategory, sizes,
+      targets, pid, ruleBasedTargets: pcfg?.ruleBasedTargets,
       // CATEGORY POLICY (2026-08-13): the engine's standing owner-armed source,
       // between the rules and the explicit rows — a mapped category (perfume)
       // is solvable with NO row, exactly as the engine will refill it. Rides
@@ -659,14 +664,76 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
     const leg = divisionPolicy?.shopOnly;
     return leg ? (isDivisionOneSize(byId.get(card.pid)) ? leg.oneSize : leg.perSize) : null;
   };
+  // PINE FOLLOWS TROPHY (policyFollow.js; Junid, 22 Nov 2026): what the shop a
+  // division shop follows keeps of this size — its rows above zero, its
+  // category policy, its size run — or null where that shop has no policy for
+  // it (the division's own keep then stands). The engine's own answer
+  // (refill-engine.cjs resolveTarget → followedTarget), mirrored on the run
+  // map this screen already builds.
+  const followedKeep = (card, st, sz) => {
+    const leader = divisionCard(card, st) ? policyFollowOf(cfg, st) : null;
+    if (!leader) return null;
+    const rows = followRows(targetRows?.[leader]?.[card.pid]);
+    const run = runWith(card.pid, { [leader]: rows ? { [card.pid]: rows } : {} }, centralFedSizes(byId.get(card.pid)))[leader] || {};
+    const t = run[String(sz).toUpperCase()];
+    return typeof t === "number" ? t : null;
+  };
   // The run a store's lines are planned from: the policy run, with a
   // central-fed store's row replaced by N per declared size.
   // An explicit /stock_targets row for the size wins (0 = excluded) — the
-  // engine's own precedence (resolveTarget: explicit row before central-fed).
+  // engine's own precedence (resolveTarget: explicit row, then the followed
+  // policy, then the division's keep).
   const cfTargetAt = (card, st, sz) => {
     const row = targetRows?.[st]?.[card.pid]?.[encodeSizeKey(sz)];
     if (row && typeof row.target === "number") return row.target;
+    const followed = followedKeep(card, st, sz);
+    if (followed !== null) return followed;
     return divisionCard(card, st) ? divisionShopKeep(card) : centralFedPerSize(cfg, network, st);
+  };
+  // "Marathon Pine keeps this in the shop: …" — the numbers the shop will keep,
+  // size by size when they differ, and whose policy they are.
+  const cfKeepLine = (card, st) => {
+    const sizes = centralFedSizes(byId.get(card.pid));
+    const keeps = sizes.map((sz) => [sz, cfTargetAt(card, st, sz)]);
+    const leader = sizes.some((sz) => followedKeep(card, st, sz) !== null) ? policyFollowOf(cfg, st) : null;
+    const same = keeps.every(([, n]) => n === keeps[0][1]);
+    const numbers = same
+      ? `${keeps[0][1]} ${sizes[0] === "_" ? "per design" : "of every size"}`
+      : keeps.map(([sz, n]) => `${sizeLabel(sz)}×${n}`).join(" · ");
+    return `${LOC_LABEL[st]} keeps this in the shop${leader ? `, the same as ${LOC_LABEL[leader] || leader}` : ""}: ${numbers}, refilled straight from Central.`;
+  };
+  // Why a central-fed shop has nothing to solve for this card, or null when a
+  // size can be solved there (actionReasons.centralFedNoPlanReason).
+  const cfNoPlanWhy = (card, st) => {
+    if (!targetsReady || !cfAt(card, st)) return null;
+    // Units already requested for this shop, when the panel has read the
+    // engine's open requests for the product (it reads them on opening).
+    const locks = openLocks[card.pid]?.[st];
+    const onTheWay = locks && typeof locks === "object"
+      ? Object.values(locks).reduce((t, l) => t + (l && typeof l === "object" ? Math.max(Number(l.qty) || 1, 1) : 0), 0) : 0;
+    const r = centralFedNoPlanReason({
+      storeLabel: LOC_LABEL[st], paused: cfg?.pausedLocations?.[st] === true, onTheWay,
+      sizes: centralFedSizes(byId.get(card.pid)).map((sz) => {
+        const c = allStock?.[st]?.[card.pid]?.[decodedCellKey(sz)];
+        const row = targetRows?.[st]?.[card.pid]?.[encodeSizeKey(sz)];
+        return { size: sz, target: cfTargetAt(card, st, sz), switchedOff: !!row && typeof row.target === "number" && row.target <= 0,
+          hasCell: c != null, trusted: c != null && cellTrusted(c), qty: Number(c?.qty) || 0 };
+      }),
+    });
+    return r ? r.text : null;
+  };
+  // Sizes can be solved but nothing is being sent: where Central's stock is.
+  const cfNothingSentWhy = (card, st, sizes, free) => {
+    const node = allStock?.[CENTRAL]?.[card.pid] || {};
+    const held = Object.keys(node).filter((k) => Number(node[k]?.qty) > 0);
+    const keys = new Set((sizes || []).map((sz) => decodedCellKey(sz)));
+    return centralFedNothingSentReason({
+      storeLabel: LOC_LABEL[st],
+      centralUnits: held.reduce((t, k) => t + Number(node[k].qty), 0),
+      inSizes: (sizes || []).reduce((t, sz) => t + qtyAt(CENTRAL, card.pid, sz), 0),
+      free: (sizes || []).reduce((t, sz) => t + (Number(free(sz)) || 0), 0),
+      otherSizes: held.filter((k) => !keys.has(k)).map(sizeLabel),
+    });
   };
   const runAt = (card, stores) => {
     const run = runFor(card.pid);
@@ -1369,7 +1436,7 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
         // the request written (never a false "2" over a promised 1).
         const confirmBlocked = sOpen ? (
           (ticks.length ? null : (solveConfirmReason({ canAct, busy: !!solving[card.pid], sizesInPlan: 1 }) || "Tick at least one store."))
-          || sPlan.lines.map((l) => solveConfirmReason({ canAct, busy: !!solving[card.pid], sizesInPlan: l.sizes.length, storeLabel: LOC_LABEL[l.store] })).find(Boolean)
+          || sPlan.lines.map((l) => solveConfirmReason({ canAct, busy: !!solving[card.pid], sizesInPlan: l.sizes.length, storeLabel: LOC_LABEL[l.store], why: l.sizes.length ? null : cfNoPlanWhy(card, l.store) })).find(Boolean)
           || (sPlan.lines.some((l) => l.split) && !locksReadyFor(card.pid) ? "One moment — checking what Central has already promised…" : null)
         ) : null;
         const anyFirstBatch = !!sPlan && sPlan.lines.some((l) => l.firstBatch);
@@ -1409,6 +1476,8 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
           // product with no usable catalogue size "one-size" and told the operator
           // to go and set a target for a size it does not have. (Sonnet, PR #342.)
           oneSize: catalogSizes(card.pid).length > 0 && catalogSizes(card.pid).every((s) => s === "_"),
+          // Nothing solvable at any shop: say what is actually in the way.
+          why: policyAtAnyStore ? null : (tickable.map((st) => cfNoPlanWhy(card, st)).find(Boolean) || null),
         });
 
     const panel = hOpen ? "hide" : sOpen ? "solve" : open ? "move" : null;
@@ -1504,17 +1573,28 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
                     const cfSplit = line.split;
                     const sent = cfSplit ? cfSplit.firstBatch : [];
                     const none = cfSplit ? cfSplit.normal : line.sizes;
+                    // Nothing to solve here at all (already carried, uncounted,
+                    // switched off): that sentence stands alone — never "Central
+                    // has none" beside a card that says Central holds 28.
+                    const noPlan = line.sizes.length ? null : cfNoPlanWhy(card, sStore);
+                    if (noPlan) {
+                      return (
+                        <div key={sStore} data-central-fed={sStore} data-no-plan style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>
+                          {noPlan}
+                        </div>
+                      );
+                    }
                     return (
                       <div key={sStore} data-central-fed={sStore} style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>
                         {sent.length > 0
                           ? <><b style={{ color: "#fff" }}>{line.units} unit{line.units === 1 ? "" : "s"}</b> ({sent.map((l) => `${sizeLabel(l.size)}×${l.qty}`).join(" · ")}) go to <b style={{ color: "#fff" }}>{LOC_LABEL[sStore]}</b> — requested from Central now; Central picks it from Source › {sourceTab(sStore)} at the next release.</>
-                          : <>Central has none of this product's sizes — nothing to send to <b style={{ color: "#fff" }}>{LOC_LABEL[sStore]}</b> yet.</>}
+                          : <span data-nothing-sent>{cfNothingSentWhy(card, sStore, line.sizes, sPlan.centralLeft)}</span>}
                         {sent.length > 0 && none.length > 0 && (
                           <div style={{ marginTop: 5, color: AMBER }}>{none.map(sizeLabel).join(" · ")}: Central has none — they stay on the Missing list until it does.</div>
                         )}
                         <div style={{ marginTop: 5, color: GRAY }}>
                           {divisionCard(card, sStore)
-                            ? `${LOC_LABEL[sStore]} keeps this in the shop: ${divisionShopKeep(card)} ${isDivisionOneSize(byId.get(card.pid)) ? "per design" : "of every size"}, refilled straight from Central.`
+                            ? cfKeepLine(card, sStore)
                             : <>{LOC_LABEL[sStore]} keeps this clothing in the shop: {centralFedPerSize(cfg, network, sStore)} of every size, refilled straight from Central.</>}
                         </div>
                       </div>
