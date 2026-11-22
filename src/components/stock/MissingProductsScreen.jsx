@@ -221,7 +221,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
 
   const enginesReady = divisions.every((s) => flags[s]?.ready && apis[s]);
   // An UNREADABLE request queue is not an empty one: nothing would look
-  // promised, so the list waits (the live listener keeps retrying).
+  // promised, so no list is built — the screen says so and offers a Retry.
   const ready = stockReady && requestsSettled && !requestsError && cfgSettled && targets.settled && enginesReady;
   // Anything a plan reads. A new identity means "work the rows out again".
   const version = useMemo(() => ({}), [buckets, allStock, requests, cfg, targets.value, heldLines, products, network, canAct]);
@@ -433,7 +433,15 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
 
         {view === "list" && section != null && (
           <div data-list={active}>
-            {!sliced.complete[active]
+            {requestsError
+              ? (
+                <div data-read-failed style={{ height: CARD_H + CARD_GAP, display: "flex", alignItems: "center", justifyContent: "center", gap: 12, color: GRAY, fontSize: 15 }}>
+                  Couldn't read the refill queue
+                  <button type="button" data-action="retry" onClick={() => window.location.reload()}
+                    style={{ ...box(false, 44), padding: "0 16px", fontSize: 15, fontWeight: 800 }}>Retry</button>
+                </div>
+              )
+              : !sliced.complete[active]
               ? Array.from({ length: 6 }, (_, i) => <SkeletonRow key={i} />)
               : !display.length
                 ? <div data-empty style={{ height: CARD_H + CARD_GAP, display: "flex", alignItems: "center", justifyContent: "center", color: GRAY, fontSize: 15 }}>Nothing to send</div>

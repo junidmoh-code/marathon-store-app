@@ -299,7 +299,7 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
   // unless it has its own) the run of the hub it is declared to be like.
   // Hub 3 keeps its own number per declared size (the group's Hub 3 leg).
   const runFor = (card, hub) => (hub === DIVISION_HUB
-    ? (hub3Leg?.target > 0 ? Object.fromEntries(catalogSizes(card.pid).map((s) => [sizeKeyOf(s), hub3Leg.target])) : withRows({}, card, hub))
+    ? (hub3Leg?.target > 0 ? Object.fromEntries(catalogSizes(card.pid).map((s) => [sizeKeyOf(s), hub3Leg.target])) : {})
     : withRows(runAt(hub), card, hub));
   const runAt = (hub) => footwearRun?.[policyKeyFor(network, footwearRun, hub)] || {};
   // A PER-PRODUCT TARGET ROW FILLS WHAT THE RUN DOES NOT NAME (Junid, 22 Nov
