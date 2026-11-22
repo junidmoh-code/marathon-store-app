@@ -263,15 +263,16 @@ function strRow(e) {
 // location (Hub 1, Hub 2) is laid out on the kids run (24–35), carrying the
 // group's number for any size both name and BLANK for the rest — never the
 // adult sizes a kids shoe does not come in, and never a number nobody chose.
+// Every location is CARRIED-ONLY: Kids Shoes' own numbers keep sizes only where
+// a kids shoe is already kept (the server refuses anything else).
 export function draftForOwnRun(draft, sizeRun) {
   const run = [...new Set(sizeRun || [])].sort(bySizeRank);
-  if (!run.length) return draft || {};
   const out = {};
   for (const [loc, row] of Object.entries(draft || {})) {
-    if (!isPerSizeRow(row)) { out[loc] = row; continue; }
+    if (!isPerSizeRow(row) || !run.length) { out[loc] = { ...row, carriedOnly: true }; continue; }
     const sizes = {};
     for (const k of run) sizes[k] = row.sizes[k] || { target: "", minQty: "", reorderPoint: "" };
-    out[loc] = row.carriedOnly === true ? { sizes, carriedOnly: true } : { sizes };
+    out[loc] = { sizes, carriedOnly: true };
   }
   return out;
 }

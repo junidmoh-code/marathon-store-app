@@ -88,7 +88,7 @@ function MissingRow({ row, product, twinProduct, busy = null, canAct = true, onT
           <PrimaryPhoto product={live} productId={row.pid} snapshot={row.photo || null} alt="" width={PHOTO} height={PHOTO} style={{ width: PHOTO, height: PHOTO, objectFit: "cover", display: "block" }} />
         </button>
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-          <div data-name style={{ fontWeight: 800, fontSize: 16, lineHeight: "20px", height: 40, color: "#fff", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflowWrap: "anywhere" }}>{String(row.name).replace(/ /g, " ")}</div>
+          <div data-name style={{ fontWeight: 800, fontSize: 16, lineHeight: "20px", height: 40, color: "#fff", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflowWrap: "anywhere" }}>{String(row.name).replace(/\u00a0/g, " ")}</div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", height: 36 }}>
             <div data-stock style={{ fontSize: 15, fontWeight: 700, color: BLUE_L, whiteSpace: "nowrap" }}>
               {row.sourceName} {row.stock}{row.needsPolicy && <span data-needs-policy style={{ color: AMBER, marginLeft: 8 }}>No policy yet</span>}
@@ -107,7 +107,7 @@ function MissingRow({ row, product, twinProduct, busy = null, canAct = true, onT
         {row.dests.map((d) => {
           const on = d.ok && canAct && !busy;
           return (
-            <button key={d.id} type="button" data-dest={d.id} disabled={!on} aria-busy={busy === d.id || undefined}
+            <button key={d.id} type="button" data-dest={d.id} disabled={!on} aria-busy={busy === d.id || undefined} aria-label={`Send to ${d.name}`}
               onClick={() => onTap?.(row, d.id)} style={destBtn(d.ok && canAct, busy === d.id)}>{d.name}</button>
           );
         })}

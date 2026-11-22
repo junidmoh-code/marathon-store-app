@@ -131,7 +131,7 @@ describe("the screen Junid asked for", () => {
   it("Marathon | Concrete with counts, Sneakers | Clothing (Sneakers first), then the list — and nothing else", async () => {
     const tree = await mount();
     expect(host(tree, "data-division").map((n) => n.props["data-division"])).toEqual([MARATHON, CONCRETE]);
-    expect(host(tree, "data-kind").map((n) => [n.props["data-kind"], n.props["aria-selected"]])).toEqual([["sneakers", true], ["clothing", false]]);
+    expect(host(tree, "data-kind").map((n) => [n.props["data-kind"], n.props["aria-pressed"]])).toEqual([["sneakers", true], ["clothing", false]]);
     // REMOVED: tabs, search, filters, the count line, Move by hand, Mark & hide, the panel
     expect(tree.root.findAll((n) => n.type === "input" || n.type === "select").length).toBe(0);
     expect(host(tree, "data-view").length).toBe(0);

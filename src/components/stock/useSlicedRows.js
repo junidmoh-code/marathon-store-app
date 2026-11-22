@@ -17,7 +17,11 @@
 import { useEffect, useRef, useState } from "react";
 
 const SLICE_MS = 10;
+// After a change, the next pass starts within this — a THROTTLE, not a
+// debounce: a stock tick every second on a trading day must never hold the
+// rows back (Sonnet architect review, PR #964).
 const QUIET_MS = 1500;
+const PAINT_MS = 100;   // the list is repainted at most this often while a pass runs
 const now = () => (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now());
 
 // What makes two rows "the same card" on screen.
@@ -40,12 +44,14 @@ export function useSlicedRows({ buckets, active, version, ready }) {
   useEffect(() => {
     const s = store.current;
     s.alive = true;
-    return () => { s.alive = false; clearTimeout(s.timer); };
+    // Unmount (or StrictMode's rehearsal) stops a pass outright, so a remount
+    // starts a clean one rather than waiting on a pass that will never finish.
+    return () => { s.alive = false; clearTimeout(s.timer); s.timer = null; s.running = false; };
   }, []);
 
   useEffect(() => {
     const s = store.current;
-    if (!ready) return;
+    if (!ready) { clearTimeout(s.timer); s.timer = null; return; }   // never a pass on half-loaded inputs
     s.wantVersion = version;
     const runPass = () => {
       if (s.running || !s.alive) return;
@@ -85,18 +91,21 @@ export function useSlicedRows({ buckets, active, version, ready }) {
           s.started[j.id] = true;
           s.complete[j.id] = true;
         }
-        bump((n) => n + 1);
+        const t = now();
+        const finished = snap.some((j) => j.i >= j.cards.length && !j.painted);
+        for (const j of snap) if (j.i >= j.cards.length) j.painted = true;
+        if (!left || finished || t - (s.paintedAt || 0) >= PAINT_MS) { s.paintedAt = t; bump((n) => n + 1); }
         if (left) { s.timer = setTimeout(slice, 0); return; }
         s.running = false;
         // The data moved while this pass ran: one more, once it is quiet.
-        if (s.wantVersion !== s.ranVersion) s.timer = setTimeout(runPass, QUIET_MS);
+        if (s.wantVersion !== s.ranVersion) { s.timer = setTimeout(() => { s.timer = null; runPass(); }, QUIET_MS); }
       };
       slice();
     };
     if (s.running) return;                       // the running pass re-arms itself
-    clearTimeout(s.timer);
+    if (s.timer) return;                         // a pass is already due — never pushed back
     const first = !latest.current.buckets.every((b) => s.complete[b.id]);
-    if (first) runPass(); else s.timer = setTimeout(runPass, QUIET_MS);
+    if (first) runPass(); else s.timer = setTimeout(() => { s.timer = null; runPass(); }, QUIET_MS);
   }, [version, ready]);
 
   const s = store.current;

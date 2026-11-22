@@ -46,7 +46,11 @@ await page.evaluateOnNewDocument(() => {
       const sources = (e.sources || []).map((s) => ({ ...describe(s.node), prevTop: s.previousRect.top, curTop: s.currentRect.top, prevH: s.previousRect.height, curH: s.currentRect.height }));
       // Explained by a card leaving: every moved node is a slot (or inside
       // one) BELOW a leaving slot whose window covers this moment.
-      const live = window.__leaving.filter((l) => t >= l.from - 20 && t <= l.until + 120);
+      // The leaving cards as they are NOW: a slot closed to height 0 (or
+      // closing) that is still in the page, at its live position.
+      const closing = [...document.querySelectorAll("[data-slot]")].filter((el) => el.style.height === "0px")
+        .map((el) => ({ key: el.getAttribute("data-slot"), top: el.getBoundingClientRect().top, from: t, until: t }));
+      const live = [...window.__leaving.filter((l) => t >= l.from - 20 && t <= l.until + 120), ...closing];
       // (A card that had no visible box before — coming up into view from
       // under the fold as the others rise — is part of the same move.)
       const below = (s, l) => s.prevTop >= l.top - 1 || (s.prevH === 0 && s.curTop >= l.top - 1);

@@ -1773,6 +1773,18 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       `Footwear is set once, on the Footwear policy — "${categoryKey}" cannot have numbers of its own while that policy is armed. Open Footwear to change it.`,
       { footwearOnePolicy: true, groupKey: FOOTWEAR_GROUP_KEY });
   }
+  // KIDS SHOES' OWN NUMBERS ARM ONLY WHERE A KIDS SHOE IS ALREADY KEPT
+  // (Junid, 22 Nov 2026): every location in its entry must be carried-only, so
+  // the engine keeps sizes at a hub that already holds the product (or that a
+  // Solve has just sent it to) and never spreads it anywhere new.
+  if (FOOTWEAR_OWN_NUMBERS_KEYS.includes(categoryKey) && isPlainObject(d.policy)) {
+    const loose = Object.keys(d.policy).filter((loc) => loc !== "perSize" && isPlainObject(d.policy[loc]) && d.policy[loc].carriedOnly !== true);
+    if (loose.length) {
+      throw httpsError("invalid-argument",
+        `"${categoryKey}" may only be kept where it is already carried — ${loose.join(", ")} must be carried-only.`,
+        { carriedOnlyRequired: true, locations: loose });
+    }
+  }
   const before = cfg.categoryPolicy?.[categoryKey] ?? null;
   const gate = gateNewLegsToSeated(before, normalizePolicy(d.policy));
   const policyAfter = gate.policy;

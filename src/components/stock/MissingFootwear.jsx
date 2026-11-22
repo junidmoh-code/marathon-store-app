@@ -311,7 +311,11 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
   // no row, and for every caller that passes no `targets`, nothing changes.
   // After the row, a category entry of its OWN (Kids Shoes only) — the
   // engine's order: explicit row first, then the category's policy.
+  // KIDS SHOES ONLY: an adult shoe's request is exactly what it always was,
+  // whatever rows it has for sizes the run does not name (Sonnet architect
+  // review, PR #964 — that would change adult request quantities).
   const withRows = (run, card, hub) => {
+    if (!FOOTWEAR_OWN_NUMBERS_KEYS.includes(effectiveCategoryKey(byId.get(card.pid)))) return run;
     const rows = targets?.[hub]?.[card.pid];
     const own = ownPolicy[effectiveCategoryKey(byId.get(card.pid))]?.[hub];
     if ((!rows || typeof rows !== "object") && (!own || typeof own !== "object")) return run;

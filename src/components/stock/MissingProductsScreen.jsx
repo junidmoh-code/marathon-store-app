@@ -126,14 +126,22 @@ export default function MissingProductsScreen({ products = [], onExit }) {
   }), []);
 
   const shared = { products, allStock, targetsState, walked, cards, resolving, setResolvingFor, solvedSession, setSolvedSession };
+  // The one-tap surfaces of each division's hooks, by section. Engines render
+  // before Body in the same pass, so Body always reads this render's; a tap
+  // reads it at the moment of the tap.
+  const apisBox = useRef({});
+  // What Body must re-render for when only an Engine's own state moved.
+  const [flags, setFlags] = useState({});   // section → { ready, canAct }
+  const report = useCallback((sec, f) => setFlags((m) => (m[sec] && m[sec].ready === f.ready && m[sec].canAct === f.canAct ? m : { ...m, [sec]: f })), []);
   return (
-    <Engines sections={divisions} shared={shared}>
-      {(apis) => (
-        <Body apis={apis} divisions={divisions} network={network} products={products} allStock={allStock} targets={targetsState}
-          hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled} cfg={cfg} cfgSettled={cfgState.settled}
-          heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} />
-      )}
-    </Engines>
+    <>
+      {/* KEYED BY DIVISION: a division that loads late, or leaves, never moves
+          another division's Solve state, and never remounts the list. */}
+      {divisions.map((sec) => <Engine key={sec} section={sec} shared={shared} box={apisBox} report={report} />)}
+      <Body apis={apisBox.current} flags={flags} divisions={divisions} network={network} products={products} allStock={allStock} targets={targetsState}
+        hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled} cfg={cfg} cfgSettled={cfgState.settled}
+        heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} />
+    </>
   );
 }
 
@@ -141,16 +149,7 @@ export default function MissingProductsScreen({ products = [], onExit }) {
 // only, and the hooks keep what is in flight per division — so they are
 // mounted once for each, for as long as the screen is open, and the screen
 // reaches them through their one-tap surface (`api`).
-function Engines({ sections, shared, children, acc = NONE }) {
-  if (!sections.length) return children(acc);
-  const [section, ...rest] = sections;
-  return (
-    <Engine section={section} shared={shared}>
-      {(api) => <Engines sections={rest} shared={shared} acc={{ ...acc, [section]: api }}>{children}</Engines>}
-    </Engine>
-  );
-}
-function Engine({ section, shared, children }) {
+function Engine({ section, shared, box, report }) {
   const product = useProductSolve({
     products: shared.products, category: "all", allStock: shared.allStock, cards: shared.walked[section]?.all || [], section,
     targets: shared.targetsState.value, targetsSettled: shared.targetsState.settled, targetsError: shared.targetsState.error,
@@ -158,10 +157,15 @@ function Engine({ section, shared, children }) {
     resolving: shared.resolving[section] || NONE, setResolving: shared.setResolvingFor(section),
   });
   const sneaker = useSneakerRequest({ products: shared.products, section, cards: shared.cards[section]?.sneakers || [], onQueued: NOOP, targets: shared.targetsState.value });
-  return children({ product: product.api, sneaker: sneaker.api });
+  box.current[section] = { product: product.api, sneaker: sneaker.api };
+  const ready = !!(product.api.ready && sneaker.api.ready);
+  const canAct = !!product.api.canAct;
+  useEffect(() => { report(section, { ready, canAct }); }, [report, section, ready, canAct]);
+  useEffect(() => () => { delete box.current[section]; }, [box, section]);
+  return null;
 }
 
-function Body({ apis, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit }) {
+function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit }) {
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const [pick, setPick] = useState(null);
   const section = divisions.includes(pick) ? pick : divisions[0];
@@ -169,7 +173,7 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
   const [view, setView] = useState("list");   // "list" | "hidden"
   const [lightbox, setLightbox] = useState(null);
   const active = bucketId(section, kind);
-  const canAct = divisions.length ? !!apis[divisions[0]]?.product.canAct : false;
+  const canAct = divisions.length ? !!flags[divisions[0]]?.canAct : false;
 
   const label = useCallback((loc) => SHORT[loc] || nameOf(loc, network), [network]);
   const reqByPid = useMemo(() => openRequestsByProduct(requests), [requests]);
@@ -212,7 +216,7 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
     },
   ]), [divisions, cards]);
 
-  const enginesReady = divisions.every((s) => apis[s].product.ready && apis[s].sneaker.ready);
+  const enginesReady = divisions.every((s) => flags[s]?.ready && apis[s]);
   const ready = stockReady && requestsSettled && cfgSettled && targets.settled && enginesReady;
   // Anything a plan reads. A new identity means "work the rows out again".
   const version = useMemo(() => ({}), [buckets, allStock, requests, cfg, targets.value, heldLines, products, network, canAct]);
@@ -225,6 +229,18 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
   const listedOf = (id) => sliced.rows[id].filter((r) => !(hiddenMap && hiddenMap[r.pid]) && !gone[r.key]);
   const countOf = (sec) => (KINDS.every(([k]) => sliced.complete[bucketId(sec, k)])
     ? KINDS.reduce((t, [k]) => t + listedOf(bucketId(sec, k)).length, 0) : null);
+
+  // A card solved or hidden here stays off until the DATA no longer lists it;
+  // then the mark is forgotten, so a product that goes missing again later in
+  // the visit comes back by itself (Sonnet architect review, PR #964).
+  useEffect(() => {
+    const drop = Object.keys(gone).filter((k) => {
+      const [sec, kind, pid] = k.split(":");
+      const id = bucketId(Number(sec), kind);
+      return sliced.complete[id] && !(sliced.rows[id] || []).some((r) => r.pid === pid);
+    });
+    if (drop.length) setGone((g) => { const n = { ...g }; for (const k of drop) delete n[k]; return n; });
+  });
 
   // A write still on its way is a job in hand: no app update under it.
   const writing = Object.keys(busy).length > 0;
@@ -298,7 +314,9 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
   // ── ONE TAP: THE DESTINATION IS THE SOLVE ──────────────────────────────────
   const act = useRef({});
   act.current.tap = async (row, dest) => {
-    if (inFlight.current.has(row.key) || !canAct) return;
+    // ONE TAP PER PRODUCT AT A TIME, across both divisions: a Hub 1 tap and a
+    // Hub 3 tap on the same shoe must not both plan from the same free stock.
+    if (inFlight.current.has(row.pid) || !canAct) return;
     const c = ctx.current;
     // THE GATE AT THE TAP, whatever the card showed: this list's own
     // destinations only, ONE of them (so never Pine and Concrete both, never
@@ -307,13 +325,13 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
     const kindOf = row.kind === "sneakers" ? "sneaker" : "product";
     const problem = tapProblem({ row, dest }) || destinationProblem({ network: c.network, section: row.section, destinations: [dest], kind: kindOf });
     if (problem) { say({ ok: false, text: problem }); return; }
-    inFlight.current.add(row.key);
+    inFlight.current.add(row.pid);
     setBusy((b) => ({ ...b, [row.key]: dest }));
     const api = apisRef.current[row.section];
     let res;
     try { res = row.kind === "sneakers" ? await api.sneaker.solveTo(row.card, dest) : await api.product.solveTo(row.card, dest); }
     catch (e) { res = { ok: false, msg: `Nothing changed — retry. (${e?.message || "error"})` }; }
-    inFlight.current.delete(row.key);
+    inFlight.current.delete(row.pid);
     setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
     if (!res || !res.ok) { say({ ok: false, text: res?.msg || "Nothing was sent." }); return; }   // the card stays put
     setGone((g) => ({ ...g, [row.key]: true }));
@@ -337,11 +355,11 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
     });
   };
   act.current.hide = async (row) => {
-    if (inFlight.current.has(row.key) || !canAct) return;
-    inFlight.current.add(row.key);
+    if (inFlight.current.has(row.pid) || !canAct) return;
+    inFlight.current.add(row.pid);
     setBusy((b) => ({ ...b, [row.key]: "hide" }));
     const res = await hideProduct(row.pid);
-    inFlight.current.delete(row.key);
+    inFlight.current.delete(row.pid);
     setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
     if (!res.ok) { say({ ok: false, text: res.msg }); return; }
     setGone((g) => ({ ...g, [row.key]: true }));
@@ -380,21 +398,21 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
         </div>
 
         <div style={{ position: "sticky", top: 0, zIndex: 5, background: BG, paddingBottom: 10 }}>
-          <div role="tablist" aria-label="Division" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(divisions.length, 1)}, 1fr)`, gap: 8, marginBottom: 8 }}>
+          <div aria-label="Division" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(divisions.length, 1)}, 1fr)`, gap: 8, marginBottom: 8 }}>
             {divisions.map((sec) => {
               const on = sec === section && view === "list";
               const n = countOf(sec);
               return (
-                <button key={sec} role="tab" aria-selected={on} data-division={sec} onClick={() => { setPick(sec); setView("list"); }} style={box(on, 62)}>
+                <button key={sec} aria-pressed={on} data-division={sec} onClick={() => { setPick(sec); setView("list"); }} style={box(on, 62)}>
                   <div style={{ fontSize: 16, fontWeight: 800, lineHeight: "20px" }}>{sectionName(network, sec)}</div>
                   <div data-division-count={sec} style={{ fontSize: 14, fontWeight: 700, lineHeight: "18px", height: 18, marginTop: 2, color: on ? BLUE_L : "rgba(255,255,255,.45)" }}>{n == null ? " " : n}</div>
                 </button>
               );
             })}
           </div>
-          <div role="tablist" aria-label="Kind" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div aria-label="Kind" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             {KINDS.map(([k, name]) => (
-              <button key={k} role="tab" aria-selected={kind === k && view === "list"} data-kind={k} onClick={() => { setKind(k); setView("list"); }}
+              <button key={k} aria-pressed={kind === k && view === "list"} data-kind={k} onClick={() => { setKind(k); setView("list"); }}
                 style={{ ...box(kind === k && view === "list", 44), fontSize: 15, fontWeight: 800 }}>{name}</button>
             ))}
           </div>
@@ -435,7 +453,10 @@ function Body({ apis, divisions, network, products, allStock, targets, hiddenMap
             background: "#10141f", border: `1px solid ${toast.ok ? "rgba(74,222,128,.55)" : "rgba(248,113,113,.6)"}`, boxShadow: "0 18px 50px -12px rgba(0,0,0,.9)", fontFamily: FONT }}>
           <div style={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 700, lineHeight: 1.3, color: toast.ok ? GREEN : RED }}>{toast.ok && toast.undo ? "✓ " : ""}{toast.text}</div>
           {toast.undo && (
-            <button data-action="undo" onClick={() => { const u = toast.undo; setToast(null); clearTimeout(toastTimer.current); u(); }}
+            <button data-action="undo" onClick={() => {
+              const u = toast.undo; setToast(null); clearTimeout(toastTimer.current);
+              Promise.resolve().then(u).catch((e) => say({ ok: false, text: `Not undone — ${e?.message || "error"}` }));
+            }}
               style={{ height: 44, padding: "0 18px", borderRadius: 12, background: "rgba(251,191,36,.12)", border: "1px solid rgba(251,191,36,.5)", color: AMBER, fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>Undo</button>
           )}
         </div>

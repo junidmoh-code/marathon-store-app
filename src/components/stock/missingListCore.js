@@ -88,7 +88,8 @@ export function productRow({ card, section, product, dests = [], tickable = [], 
     const direct = !line.hub;
     const sizes = direct ? (line.got || []).map((g) => String(g.size)) : line.sizes.map(String).filter((s) => free(s) > 0);
     if (!sizes.length) return dead;
-    for (const s of sizes) counted.set(s, free(s));
+    // (never below what the plan sends of that size — the two read one shelf)
+    for (const s of sizes) counted.set(s, Math.max(free(s), direct ? Number((line.got || []).find((g) => String(g.size) === s)?.qty) || 0 : 0));
     return { id, name: nameOf(id), ok: true, sizes, units: line.units || 0 };
   });
   if (!out.some((d) => d.ok)) return null;

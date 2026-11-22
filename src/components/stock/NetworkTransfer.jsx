@@ -1200,7 +1200,9 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
         // THE WRITE HAS LANDED. Nothing below may report "nothing changed":
         // a retry would raise the first batch twice (Sonnet review, PR #952 S4).
         setResolving((m) => ({ ...m, [card.pid]: "done" }));
-        outcome = { ok: true, msg: msgs.join(" "), rows: [], units: plan.lines.reduce((t, l) => t + (l.units || 0), 0) };
+        // The undo records exist from the moment the write lands — before
+        // the history entry is built, so nothing below can lose the Undo.
+        outcome = { ok: true, msg: msgs.join(" "), rows: entries.map((e) => ({ ...e, batch: baseSolveId, saved: false })), units: plan.lines.reduce((t, l) => t + (l.units || 0), 0) };
         try {
           // The offline mirror shows this device its own write at once.
           try { notePendingUpdate(updates); } catch { /* the echo is a courtesy */ }
