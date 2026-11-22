@@ -222,10 +222,17 @@ async function release(db, pid, claimAt, nowMs, reason) {
  * photo, the lane, an approval and anyone else's request are left alone.
  * → { next, mine }
  */
-function landed(cur, { genId, gen, res, at, claimAt }) {
+function landed(cur, { genId, gen, res, at, claimAt, held = false }) {
   const generations = { ...(cur.generations || {}), [genId]: gen };
   const mine = !!cur.generateRequest && cur.generateRequest.at === claimAt && core.SELECT_LANES.includes(cur.status);
   if (!mine) return { next: { ...cur, generations }, mine: false };
+  // HELD (the clothing regeneration run, 22 Nov 2026): the new photo did not pass the garment gate, so the photo
+  // the card shows stays; the new one is only added to the item's generations and the claim is given back.
+  if (held) {
+    const next = { ...cur, generations, lastAttempt: { at, held: true, genId } };
+    delete next.generateRequest;
+    return { next, mine: false };
+  }
   const n = (Number(cur.attempts) || 0) + 1;
   const next = {
     ...cur, ...na._internals.NEW_LAP,
@@ -268,7 +275,7 @@ const atModelCall = (db, image) => async (...args) => {
   return image(...args);
 };
 
-async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = () => {}) {
+async function studioGenerate(db, { pid, method, provider, hold = false }, uid, deps, emit = () => {}) {
   // THE PAUSE SWITCH (Junid, 8 Oct): while generation is paused no image model is called, whoever taps.
   if (await pauseSwitch.isPaused(db, "generation")) throw new HttpsError("failed-precondition", pauseSwitch.PAUSED_MESSAGE);
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
@@ -359,6 +366,9 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
     if (seq && seq.committed) code = record.formatCode(Number(seq.snapshot.val()));
   } catch (e) { console.error(`newArrivalsStudio: ${pid} has no code — ${e.message}`); }
   const reason = item.generateRequest.regenerate ? "regenerate" : "requested";
+  // `hold` is never sent by the card: only the regeneration run asks for it.
+  const passed = studio.passedGarmentGate(res);
+  const held = hold === true && !passed;
   const gen = record.generationEntry(res, { at, cost, model, reason, code, draftCount: res.draftFiles.length });
 
   // `from` is the lane the item was claimed in: a retried landing (the first
@@ -372,7 +382,7 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
       // run's photo if it is still the card's — a second Generate cannot have
       // started in the few hundred ms between tries: the claim was still held.)
       if (cur.generations && cur.generations[genId]) { out.mine = cur.currentGen === genId; return cur; }
-      const l = landed(cur, { genId, gen, res, at, claimAt: t0 });
+      const l = landed(cur, { genId, gen, res, at, claimAt: t0, held });
       out.mine = l.mine;
       if (!l.mine) out.from = cur.status;
       return l.next;
@@ -420,7 +430,7 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
   return {
     ok: true, pid, genId, code, seconds: Math.round((now() - t0) / 100) / 10, costZar: cost.zar, costEstimated: cost.estimated,
     // Not this run's item any more (skipped, or Junid moved on): the photo was added to it, nothing else changed.
-    ...(out.mine ? {} : { addedOnly: true }),
+    ...(out.mine ? {} : { addedOnly: true }), ...(held ? { held: true } : {}), passed, ...(res.qcFlagged ? { flagged: true } : {}), drift: gen.drift || null,
     item: { ...core.cardItem(final), ...core.sourceFields(pid, final, liveProduct) },
   };
 }

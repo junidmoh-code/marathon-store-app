@@ -64,14 +64,16 @@
       "layerTextSha256": "f5a93118c8b4a220dda03cebad2a43da6de3da2d3e1c43117f5a104212eb73a5"
     },
     "garmentFinish": {
-      "for": "EVERY GARMENT (T-shirts, polos, hoodies, jerseys, tracksuits — no exclusions): freshly steamed and pressed, no wrinkles/creases/fold lines, knit texture sharp; hung perfectly straight and centred, shoulders level, hem straight, sleeves even; collar flat, placket straight, buttons aligned, exact colour/collar colour/logo/buttons kept; no rectangles, frame lines, borders, boxes, guide lines or text from the layout diagram or references; soft studio light with a subtle wall shadow on the house-style Marathon wall.",
-      "source": "Junid's clothing-quality brief of 21 Nov 2026 (after the brown knit polo with white collar, p1793617602521, G-? 20 Nov, which he called unprofessional), points 1-5",
+      "for": "EVERY GARMENT (shorts, T-shirts, polos, shirts, jerseys, hoodies, sweaters, jackets, tracksuits, jeans, trousers — no exclusions): an explicit finishing step, as if a stylist steamed and pressed the garment and dressed it for a catalogue before the photo — freshly steamed and pressed, smooth wrinkle-free fabric; natural drape and full shape (not flat or squashed); crisp hems and waistband; hung straight and centred; the exact colour, logos, prints, text, drawstrings and every design detail unchanged, nothing invented; no rectangles or lines from the diagram or references; soft studio light with a subtle wall shadow. Shoes are untouched.",
+      "source": "Junid's clothing-quality brief of 21 Nov 2026 (the brown knit polo, p1793617602521), points 1-5; REWORDED 22 Nov 2026 on his brief of that day (the HUGO Boss shorts HB301#, p1795349696496, came out creased and flat through the 21 Nov wording): his step 2 — 'freshly steamed and pressed, smooth wrinkle-free fabric, natural drape and full shape (not flat or squashed), crisp hems and waistband, as if professionally styled for a catalogue. Keep the exact colour, logos, prints, text, drawstrings and every design detail unchanged, with no new details invented. Apply this to all clothing. Shoes are unchanged.'",
       "requestedBy": "Junid",
-      "requestedAt": "2026-11-21",
+      "requestedAt": "2026-11-22",
       "replaces": "steam (steam told the model never to straighten or level the garment, and skipped T-shirts/polos/jerseys)",
-      "layerTextSha256": "8f6ba80776b5a96002388a183ce79d202fce632fd4f255962ee62afadd233497",
+      "layerTextSha256": "f2ecde6c421510eacfcd0485f6a47da55a41d91a7be00ad5e95bea5b66783d51",
       "provisional": true,
-      "status": "REQUESTED in Junid's brief of 21 Nov 2026 (points 1-5 are his; the wording is the developer's). Switched on at his instruction; proof before/after photos shown to him in the PR. To be confirmed or adjusted on his look at them."
+      "status": "REQUESTED in Junid's briefs of 21 and 22 Nov 2026 (the points are his; the wording is the developer's). On HB301# the wording alone did not steam the garment — the composing call copies the cloth as photographed — so the quality gate (lib/style-kit-catalogue.mjs GARMENT_CHECK_PROMPT) fails a creased or flat photo and its one retry is the steam-and-press pass (GARMENT_RETOUCH, studio.mjs pressGarment). Before/after of HB301# and two others sent to him on WhatsApp, 22 Nov 2026. To be confirmed or adjusted on his look at them.",
+      "firstRequestedAt": "2026-11-21",
+      "previousLayerTextSha256": "8f6ba80776b5a96002388a183ce79d202fce632fd4f255962ee62afadd233497"
     }
   },
   "layersChangedAt": "2026-10-04",

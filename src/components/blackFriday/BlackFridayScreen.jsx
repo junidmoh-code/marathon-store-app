@@ -264,6 +264,7 @@ function Row({ r, busy, gen, on, selectMode, selected }) {
         {r.uploadedAt && <div data-testid={`uploaded-${r.pid}`} style={{ fontSize: 11, color: GRAY }}>Uploaded {dayLabel(r.uploadedAt)}</div>}
         <div style={{ fontSize: 11, color: GRAY, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.sizes}</div>
         {r.changedSinceApproval && <div style={{ fontSize: 11, color: AMBER }}>Photo changed — approve again</div>}
+        {r.flagged && !r.generating && <div data-testid={`flagged-${r.pid}`} title={r.flagged.note} style={{ fontSize: 11, color: AMBER }}>{r.flagged.shown ? "Flagged by the quality check — check this photo" : "New photo flagged by the quality check — the old photo is kept"}</div>}
         {r.failed && !gen && !r.generating && <button data-testid={`failed-${r.pid}`} onClick={(e) => { e.stopPropagation(); on.generate(r); }} title={r.failed.reason} style={{ background: "none", border: "none", padding: 0, color: RED, fontSize: 11, textAlign: "left", cursor: "pointer", textDecoration: "underline" }}>Failed, tap to retry</button>}
         {r.postedN > 0 ? <div data-testid={`posted-${r.pid}`} style={{ fontSize: 11, color: GREEN }}>Posted {r.postedN}× · last {dayLabel(r.postedLast)}</div>
           : r.posted ? <div style={{ fontSize: 11, color: GREEN }}>Posted</div> : null}

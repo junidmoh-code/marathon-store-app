@@ -319,3 +319,56 @@ test("a New Arrival approved on the Black Friday card (his photo) is rejected / 
   assert.deepEqual(m.done, [NA1]);
   assert.equal((await read(db, `${R}/picks/${NA1}`)).state, "rejected");
 });
+
+// ── THE GARMENT GATE ON THE BLACK FRIDAY CARD (Junid, 22 Nov 2026) ───────────
+// Black Friday's Generate is the shared generator: a clothing photo is gated, a creased one is steamed by the
+// second pass, and one that fails twice is kept FLAGGED — and the row says so (the card showed nothing before).
+const gateOf = (answers) => ({ driftCheck: async (o, g, opts = {}) => { assert.deepEqual(opts, { garment: true }); const f = answers.shift(); return f === null ? { checked: false, drift: false, issues: "down" } : { checked: true, drift: f.length > 0, faults: f, crease: f.includes("wrinkles") ? 6 : 1, carried: f.includes("wrinkles") ? 6 : 1, flat: 2, issues: f.join("+") }; } });
+
+test("Black Friday clothing goes through the SAME garment gate: creased → the steam-and-press pass → kept when it passes", async () => {
+  const db = seed(), calls = [];
+  const out = await gen.bfGenerate(db, { pid: "a" }, "junid", { ...(await genDeps(db, calls)), kit: gateOf([["wrinkles"], []]) });
+  const imgs = calls.filter((c) => c[0] === "image");
+  assert.equal(imgs.length, 2);
+  assert.match(imgs[0][3], /GARMENT FINISH — THE STYLIST'S STEP/, "the garment finish is in Black Friday's clothing prompt");
+  assert.match(imgs[1][3], /^RETOUCH THIS PHOTOGRAPH — ONE JOB: STEAM AND PRESS THE GARMENT/);
+  assert.deepEqual([imgs[1][1], imgs[1][2].imageSize], [imgs[0][1], imgs[0][2].imageSize], "the same model and size");
+  const ph = await read(db, `${R}/photos/a`), g = ph.gens[out.genId];
+  assert.equal(g.pressed, true); assert.equal(g.flagged, undefined); assert.equal(out.passed, true);
+  assert.deepEqual([g.drift.first, g.drift.retry, g.drift.how, g.drift.crease, g.drift.retryCrease], ["drifted", "same", "pressed", 6, 1]);
+  assert.match(g.path, /\/black_friday\//, "the steamed photo is stored with the product's Black Friday photos");
+  assert.equal((await bf.list(db)).review.find((x) => x.pid === "a").flagged, null);
+});
+
+test("Black Friday: failed twice → the better photo is kept and the ROW IS FLAGGED; a sneaker is never gated as a garment", async () => {
+  const db = seed(), calls = [];
+  const out = await gen.bfGenerate(db, { pid: "a" }, "junid", { ...(await genDeps(db, calls)), kit: gateOf([["wrinkles"], ["wrinkles"]]) });
+  assert.equal(out.flagged, true); assert.equal(out.passed, false);
+  const ph = await read(db, `${R}/photos/a`);
+  assert.equal(ph.genId, out.genId, "a tap on the card shows the kept photo");
+  assert.equal(ph.gens[out.genId].flagged, true);
+  const row = (await bf.list(db)).review.find((x) => x.pid === "a");
+  assert.equal(row.flagged.shown, true); assert.match(row.flagged.note, /^FLAGGED — this photo did not pass the quality check after two tries \(it still looks creased\)/);
+  assert.equal(calls.filter((c) => c[0] === "image").length, 2, "never a third image");
+  // Both images are counted: the kept one as spend, the other as failed spend.
+  const stats = await read(db, `${R}/stats`);
+  assert.ok(stats.spentZar && stats.failedZar);
+});
+
+test("HOLD on the Black Friday card (the regeneration run): the photo the card shows stays until the new one passes", async () => {
+  const db = seed();
+  const first = await gen.bfGenerate(db, { pid: "a" }, "junid", { ...(await genDeps(db, [])), kit: gateOf([[]]) });
+  const held = await gen.bfGenerate(db, { pid: "a", hold: true }, "regen", { ...(await genDeps(db, [])), kit: gateOf([["wrinkles"], ["wrinkles"]]) });
+  let ph = await read(db, `${R}/photos/a`);
+  assert.equal(held.held, true); assert.equal(ph.genId, first.genId, "the old photo is still the one shown");
+  assert.ok(ph.gens[held.genId].flagged, "the new one waits beside it, flagged");
+  const row = (await bf.list(db)).review.find((x) => x.pid === "a");
+  assert.equal(row.flagged.shown, false, "the row says a NEW photo was flagged and the old one kept");
+  const unchecked = await gen.bfGenerate(db, { pid: "a", hold: true }, "regen", { ...(await genDeps(db, [])), kit: gateOf([null]) });
+  assert.equal(unchecked.held, true, "a photo the gate could not check did not pass");
+  const good = await gen.bfGenerate(db, { pid: "a", hold: true }, "regen", { ...(await genDeps(db, [])), kit: gateOf([["flat"], []]) });
+  ph = await read(db, `${R}/photos/a`);
+  assert.equal(good.held, undefined); assert.equal(good.passed, true); assert.equal(ph.genId, good.genId); assert.equal(ph.use, "generated");
+  // A tap on the card never holds.
+  assert.equal((await gen.bfGenerate(db, { pid: "a" }, "junid", { ...(await genDeps(db, [])), kit: gateOf([["wrinkles"], ["wrinkles"]]) })).held, undefined);
+});

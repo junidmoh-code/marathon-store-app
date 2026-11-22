@@ -66,6 +66,36 @@ How the first version worked, and why it was slow, is in
   `admin/productPriceSave.js` — the same save the admin price editor uses.
 - **Paging**: 30 at a time through `newArrivalsList` ("Load more").
 
+## Clothing: the garment finish, the quality gate and the steam pass (Junid, 21–22 Nov 2026)
+
+Every clothing photo made by the shared generator (`studio.generate` — New
+Arrivals' Generate **and** the Black Friday tab's Generate; the Shopify
+publisher's house style uses the same texts) goes through three things. Shoes
+are untouched by all of it.
+
+| Step | What | Where |
+|---|---|---|
+| **Garment finish** | A paragraph in the prompt, in Junid's words: freshly steamed and pressed, smooth wrinkle-free fabric, natural drape and full shape (not flat or squashed), crisp hems and waistband, as styled for a catalogue; colour, logos, prints, text, drawstrings and every detail frozen, nothing invented. | `GARMENT_FINISH`, `functions/lib/style-kit-catalogue.mjs` (layer `garmentFinish`) |
+| **Quality gate** | One cheap vision call (`gemini-3.7-flash`), the staff photo beside the new photo plus a close-up: a crease score, a "creases carried over from the staff photo" score and a flatness score (0–10), and logos / colour / product against the original, drawn lines, tilt. Passes at crease ≤ 3, carried ≤ 3, flat ≤ 5 and nothing changed. A gate that cannot run is never a fail. | `GARMENT_CHECK_PROMPT`, `parseGarmentAnswer`; transport `style-kit-drift.mjs` |
+| **One retry** | Only the finish wrong (creased, flat) → **the steam-and-press pass**: one more image call that is handed the finished photo and one job. Anything else (logo, colour, lines, tilt) → the photo is made again, told the fix. | `GARMENT_RETOUCH`, `studio.mjs` `pressGarment` / `driftGuard` |
+| **Still failing** | The better of the two is kept and **flagged** (`flagged: true`, a note on the card, both photos on the record). Never the garment cut out on white. | `betterGarment`, `garmentFlagNote` |
+
+Why the steam pass exists: on the HUGO Boss shorts HB301# the composing call
+copied the cloth as photographed — fold lines and all — whatever the brief
+said (it is also told, rightly, never to change the product). A second call
+with one job does it. Measured 22 Nov: the gate gave the un-steamed photos
+"carried" 6–7 and the steamed one 3.
+
+Cost: a clothing photo that passes first time is one image (about R4.30 at
+4K); one that needs the steam pass is two. The gate itself is about 4 cents.
+
+**Regenerating existing clothing photos**: `scripts/photos/regenClothing.mjs`
+(`--plan` lists them) queues one request per product at `/photo_regen/requests`
+(server-only); `photoRegenRun` (`functions/photoRegen/regen.js`) makes each
+photo in the cloud by calling the card's own function with `hold: true` — the
+photo a card shows stays until the new one **passes** the gate. Approved New
+Arrivals items are never touched.
+
 ## The pause switches (Junid, 8 Oct; scope narrowed 12 Oct)
 
 Two switches at the top of the card, flipped by Junid only (`newArrivalsPause`;

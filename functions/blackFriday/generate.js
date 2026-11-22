@@ -93,7 +93,11 @@ function landed(base, { genId, gen, claimAt, keepChoice = false }) {
  * deps (injectable for tests): { bucket, apiKey, now(), engine?, image?, fetchBytes?, assets?, correct?, sharp?, fx? }
  * → { ok, pid, genId, kind, costZar, width, height, mime }
  */
-async function bfGenerate(db, { pid, section, input = "photo", place = false, secondRefUrl = null }, uid, deps, emit = () => {}) {
+/**
+ * hold (the clothing regeneration run of 22 Nov 2026, never a tap on the card): the photo the card shows is left in
+ * place unless the new one PASSED the garment gate — a flagged or unchecked photo is only added beside it.
+ */
+async function bfGenerate(db, { pid, section, input = "photo", place = false, secondRefUrl = null, hold = false }, uid, deps, emit = () => {}) {
   if (!["photo", "cutout"].includes(input)) throw new HttpsError("invalid-argument", "input is photo or cutout.");
   if (await pauseSwitch.isPaused(db, "generation")) throw new HttpsError("failed-precondition", "Paused — generation is switched off on the New Arrivals card.");
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
@@ -192,6 +196,9 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
   }
 
   await keepFailedCost(res.wastedUsages || []);
+  // What the tries before the kept photo cost (booked apart as failedZar above) — reported to the caller.
+  let wastedZar = 0;
+  for (const u of res.wastedUsages || []) { if (!u) continue; const c = record.generationCost({ model, usage: u, prices: e.prices, fx: await fxAt(now()), imageSize: e.generation.imageSize }); if (Number.isFinite(c.zar)) wastedZar += c.zar; }
   const at = now();
   const cost = record.generationCost({ model, usage: res.usage, prices: e.prices, fx: await fxAt(at), imageSize: e.generation.imageSize });
   const gen = {
@@ -202,7 +209,12 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
     ...(final || {}), ...(res.note ? { note: res.note } : {}),
     ...(source ? { fromSrc: source.id, fromSrcKind: source.src } : {}),
     ...(res.styleKit ? { styleKit: res.styleKit } : {}), ...(res.drift ? { drift: res.drift } : {}), ...(res.driftFallback ? { driftFallback: res.driftFallback } : {}),
+    // The garment gate (22 Nov 2026): steamed by the second pass; kept as the better of two failed tries, FLAGGED.
+    ...(res.pressed ? { pressed: true } : {}), ...(res.qcFlagged ? { flagged: true } : {}), ...(res.qcOther ? { qcOther: res.qcOther } : {}),
   };
+  // Did it pass the garment gate? (Only a garment is gated; an unchecked photo did not pass.)
+  const passed = studio.passedGarmentGate(res);
+  const held = hold === true && !passed;
   for (const [k, v] of Object.entries(gen)) if (v === null || v === undefined) delete gen[k];
   const ref = db.ref(`${core.ROOT}/photos/${pid}`);
   const pre = (await ref.once("value")).val();
@@ -211,7 +223,7 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
     const done = await studio.withRetries(() => ref.transaction((cur) => {
       const base = cur === null ? pre : cur;
       if (base && base.gens && base.gens[genId]) return undefined;
-      return landed(base, { genId, gen, claimAt: t0, keepChoice });
+      return landed(base, { genId, gen, claimAt: t0, keepChoice: keepChoice || held });
     }));
     saved = done && done.snapshot && done.snapshot.val();
   } catch (err) { console.error(`bfGenerate: ${pid} landing failed — ${err.message}`); }
@@ -224,7 +236,8 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
     throw new HttpsError("internal", `No photo — the photo was made (${res.generated.path}) but could not be put on the card. It was charged; tap Generate to make another.`);
   }
   await db.ref(`${core.ROOT}/decisions`).push().set({ at: t0, by: uid || null, action: "generate", pid, genId, kind }).catch(() => {});
-  return { ok: true, pid, genId, kind, url: gen.url, costZar: gen.costZar || null, width: gen.width || null, height: gen.height || null, mime: gen.mime || null, ...(source ? { fromSrc: source.id } : {}), ...(keepChoice ? { keptApproved: true } : {}) };
+  return { ok: true, pid, genId, kind, url: gen.url, costZar: gen.costZar || null, width: gen.width || null, height: gen.height || null, mime: gen.mime || null, ...(source ? { fromSrc: source.id } : {}), ...(keepChoice ? { keptApproved: true } : {}),
+    ...(res.qcFlagged ? { flagged: true, note: gen.note || null } : {}), ...(held ? { held: true } : {}), passed, drift: gen.drift || null, wastedZar };
 }
 
 const bfGenerateFn = onCall(

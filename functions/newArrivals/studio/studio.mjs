@@ -1,8 +1,10 @@
 // ── ONE GENERATION, START TO FINISH ─────────────────────────────────────────
 // Junid taps Generate; this makes ONE photo from the ORIGINAL staff photo —
 // never from an earlier generation — and reports what Gemini is doing while it
-// works. No source check, no checker, no measuring call, no retry: the only
-// Gemini call is the image call (EVERYTHING IS MANUAL, 4 Oct).
+// works. One tap, one photo; nothing here starts by itself (EVERYTHING IS MANUAL,
+// 4 Oct). Since 20–22 Nov 2026 the photo is checked against the staff photo
+// before it lands (driftGuard) and a garment may get ONE steam-and-press pass
+// or ONE remake — see "THE DRIFT GUARD AND THE GARMENT GATE" below.
 //
 // Every side effect is injected (deps), so the whole path runs in tests with
 // no network, no Storage and no key.
@@ -17,7 +19,7 @@ import { objectiveMeasurements } from "./measure.mjs";
 import { correctFootwear } from "./correct.mjs";
 import sourcePhoto from "../sourcePhoto.cjs";
 import staging from "./staging.cjs";
-import { isGarment, garmentFixNote, GARMENT_FINISH } from "../../lib/style-kit-catalogue.mjs";
+import { isGarment, garmentFixNote, garmentFlagNote, betterGarment, finishOnly, GARMENT_FINISH, GARMENT_RETOUCH } from "../../lib/style-kit-catalogue.mjs";
 
 export const METHODS = Object.freeze(["full", "split"]);
 export const PROVIDERS = Object.freeze(["gemini", "openai"]);
@@ -306,7 +308,7 @@ export async function generate({ item, product, genId, method = "full", provider
     try { const k = await deps.styleKitFor(product || { categoryKey: item.categoryKey, name: item.name }, item.pid); if (k?.dedicated && k.refs?.length) kit = k; }
     catch (e) { deps.log?.(`the Style Kit could not be read (${String(e.message).slice(0, 80)}) — using the house look`); }
   }
-  // THE GARMENT CHECK (Junid, 21 Nov 2026): clothing is checked for finish as well as drift, and its retry is told the fix.
+  // THE GARMENT GATE (Junid, 21–22 Nov 2026): clothing is checked for finish as well as drift; see driftGuard.
   // (A product made through a staging `look` gets no garment finish, so it is never judged as a garment either.)
   // A kit in the clothing family (a category Junid re-routed there included) gets the finish, so it gets the check.
   const garment = kit ? (kit.promptFamily === "clothing" || isGarment(product || { categoryKey: item.categoryKey }))
@@ -339,7 +341,9 @@ export async function generate({ item, product, genId, method = "full", provider
   const first = withKit(await attempt(genId), kit);
   // (Split places the product by code from Gemini's cut-out — nothing for the check to judge against a scene.)
   if (first?.method === "split") return first;
-  return driftGuard({ first, again: async (fix) => withKit(await attempt(`${genId}-drift`, fix), kit), item, product, garment, deps, emit, startedMs });
+  return driftGuard({ first, again: async (fix) => withKit(await attempt(`${genId}-drift`, fix), kit), item, product, garment, deps, emit, startedMs,
+    // The steam-and-press pass (a garment whose only fault is its finish): one more call over the photo just made.
+    retouch: garment ? (res, raw) => pressGarment({ res, raw, item, deps, emit }) : null });
 }
 
 /** Stamp which Style Kit made the photo on its result (and so on the record). Pure. */
@@ -347,17 +351,19 @@ function withKit(res, kit) {
   return kit ? { ...res, styleKit: { kit: kit.kit, label: kit.label, refs: kit.refIds?.length ?? kit.refs.length } } : res;
 }
 
-// ── THE DRIFT GUARD (Junid, 20 Nov 2026) ────────────────────────────────────
-// Every generated photo is compared with the ORIGINAL staff photo. Drifted (a different colour, logo, shape or
-// product) → ONE more generation; drifted again → the product cut out of its own photo, on white. The check
-// that cannot run is never a drift; the guard can never lose a photo that was made.
+// ── THE DRIFT GUARD (Junid, 20 Nov 2026) AND THE GARMENT GATE (21–22 Nov 2026) ─
+// Every generated photo is compared with the ORIGINAL staff photo.
+//   NOT A GARMENT — drifted (a different colour, logo, shape or product) → ONE more generation; drifted again →
+//     the product cut out of its own photo, on white.
+//   A GARMENT — the gate (crease score, flatness score, logos, colour, product, drawn lines, tilt). Failed → ONE
+//     retry: the steam-and-press pass over the photo when its only fault is its finish (creased, flat), else the
+//     photo made again told the fix. Failed again → THE BETTER OF THE TWO IS KEPT AND FLAGGED (Junid, 22 Nov 2026).
+//     Never the cut-out: that is the creased garment itself, on white.
+// A check that cannot run is never a fail; the guard can never lose a photo that was made.
 export const DRIFT_NOTE = "The generated photo changed the product twice, so this is the product cut out of its own photo — tap Regenerate to try again.";
-export const GARMENT_QC_NOTE = "The generated photo failed the quality check twice (lines, wrinkles, a crooked hang or the wrong colour), so this is the product cut out of its own photo — tap Regenerate to try again.";
-/** The garment check failed twice and no clean cut-out could be made: the failed photo is NEVER kept as the photo. */
-export const GARMENT_QC_REFUSAL = "the photo failed the quality check twice and the product could not be cut out cleanly — tap Generate to try again";
 // The callables run for at most 540 s: a retry is only started while there is clearly time for it.
 export const DRIFT_RETRY_BUDGET_MS = 240_000;
-export async function driftGuard({ first, again, item, product, garment = false, deps, emit = () => {}, startedMs = Date.now(), clockMs = () => Date.now() }) {
+export async function driftGuard({ first, again, retouch = null, item, product, garment = false, deps, emit = () => {}, startedMs = Date.now(), clockMs = () => Date.now() }) {
   if (!deps.driftCheck || !first?.generated?.url) return first;
   const say = (text) => { try { emit({ type: "status", text }); } catch { /* view only */ } };
   let raw;
@@ -367,57 +373,108 @@ export async function driftGuard({ first, again, item, product, garment = false,
     catch (e) { return { checked: false, drift: false, issues: String(e.message || e).slice(0, 80) }; }
   };
   const tag = (d) => (d.checked ? (d.drift ? "drifted" : "same") : "unchecked");
-  say(garment ? "Checking the garment: same product, colour, no lines, no wrinkles, hanging straight…" : "Checking the product against the original photo…");
+  say(garment ? "Quality check: steamed and pressed, full shape, same logos and colour…" : "Checking the product against the original photo…");
   const d1 = await check(first);
   const faultsOf = (d) => (garment && Array.isArray(d.faults) ? { faults: d.faults } : {});
-  if (!d1.drift) return { ...first, drift: { first: tag(d1), ...(garment ? { check: "garment" } : {}) } };
-  deps.log?.(`the photo ${garment ? `failed the garment check [${(d1.faults || []).join(", ")}]` : "drifted from the original"} (${d1.issues}) — trying once more`);
+  // The gate's scores, kept on the record (0 = perfect, 10 = worst).
+  const scoresOf = (d, pre = "") => { if (!garment || !Number.isFinite(d?.crease)) return {}; const k = (n) => (pre ? `${pre}${n[0].toUpperCase()}${n.slice(1)}` : n);
+    return { [k("crease")]: d.crease, ...(Number.isFinite(d.carried) ? { [k("carried")]: d.carried } : {}), ...(Number.isFinite(d.flat) ? { [k("flat")]: d.flat } : {}) }; };
+  if (!d1.drift) return { ...first, drift: { first: tag(d1), ...(garment ? { check: "garment", ...scoresOf(d1) } : {}) } };
+  // A garment that is right in everything but its finish: the retry is the steam-and-press pass over this photo.
+  const press = garment && !!retouch && finishOnly(d1.faults);
+  deps.log?.(`the photo ${garment ? `failed the quality check [${(d1.faults || []).join(", ")}; crease ${d1.crease ?? "?"}, carried ${d1.carried ?? "?"}, flat ${d1.flat ?? "?"}]` : "drifted from the original"} (${d1.issues}) — ${press ? "steaming and pressing it" : "trying once more"}`);
   // The retry is told exactly what to fix.
   const fix = garment ? { note: garmentFixNote(d1.faults) } : null;
   // Every image paid for along the way, so the caller books all of them and nothing twice.
   const paid = [...(first.wastedUsages || []), first.usage || null];
   let second = null, retry = "skipped";
   if (clockMs() - startedMs < DRIFT_RETRY_BUDGET_MS) {
-    say(garment ? "The photo failed the quality check — trying once more with the fix…" : "The product changed in the photo — trying once more…");
-    try { second = await again(fix); retry = "made"; }
+    say(press ? "It still looks creased — steaming and pressing the garment…" : garment ? "The photo failed the quality check — trying once more with the fix…" : "The product changed in the photo — trying once more…");
+    try { second = press ? await retouch(first, raw) : await again(fix); retry = "made"; }
     catch (e) {
-      // The retry failed outright: anything it was charged is still booked, then the cut-out.
+      // The retry failed outright: anything it was charged is still booked.
       paid.push(...(e.wastedUsages || []), ...(e.paid || e.echo ? [e.usage || null] : []));
-      retry = "failed"; deps.log?.(`the drift retry failed (${String(e.message).slice(0, 80)})`);
+      retry = "failed"; deps.log?.(`the ${press ? "steam-and-press pass" : "drift retry"} failed (${String(e.message).slice(0, 80)})`);
     }
-  } else deps.log?.("no time left for a drift retry — using the cut-out");
+  } else deps.log?.(garment ? "no time left for a retry — keeping the photo, flagged" : "no time left for a drift retry — using the cut-out");
+  let d2 = null;
   if (second) {
-    const d2 = await check(second);
-    if (!d2.drift) return { ...second, drift: { first: "drifted", issues: d1.issues || "", ...faultsOf(d1), retry: tag(d2), ...(garment ? { check: "garment" } : {}) }, wastedUsages: [...paid, ...(second.wastedUsages || [])] };
+    d2 = await check(second);
+    if (!d2.drift) {
+      return { ...second, drift: { first: "drifted", issues: d1.issues || "", ...faultsOf(d1), ...scoresOf(d1), retry: tag(d2), ...(garment ? { check: "garment", how: press ? "pressed" : "remade", ...scoresOf(d2, "retry") } : {}) }, wastedUsages: [...paid, ...(second.wastedUsages || [])] };
+    }
     d1.retryIssues = d2.issues || "";
     if (garment) d1.retryFaults = d2.faults || [];
     paid.push(...(second.wastedUsages || []), second.usage || null);
   }
-  const driftRec = { first: "drifted", issues: d1.issues || "", ...faultsOf(d1), retry: second ? "drifted" : retry, ...(d1.retryIssues ? { retryIssues: d1.retryIssues } : {}),
-    ...(d1.retryFaults ? { retryFaults: d1.retryFaults } : {}), ...(garment ? { check: "garment" } : {}) };
+  const driftRec = { first: "drifted", issues: d1.issues || "", ...faultsOf(d1), ...scoresOf(d1), retry: second ? "drifted" : retry, ...(d1.retryIssues ? { retryIssues: d1.retryIssues } : {}),
+    ...(d1.retryFaults ? { retryFaults: d1.retryFaults } : {}), ...(garment ? { check: "garment", ...(second ? { how: press ? "pressed" : "remade" } : {}), ...scoresOf(d2, "retry") } : {}) };
   // The LAST paid image is this result's own cost; the rest are wasted — the total booked is exactly what was paid.
   const ownUsage = paid.length ? paid[paid.length - 1] : null;
   const wastedUsages = paid.slice(0, -1);
+  if (garment) {
+    // KEEP THE BEST VERSION AND FLAG IT (Junid, 22 Nov 2026). Both photos are stored; the better one is the photo.
+    const kept = second && betterGarment(d1, d2) === "retry" ? "retry" : "first";
+    const keep = kept === "retry" ? second : first;
+    const verdict = kept === "retry" ? d2 : d1;
+    say("It did not pass the quality check twice — keeping the better photo, flagged…");
+    const out = { ...keep, usage: ownUsage, wastedUsages, qcFlagged: true, note: garmentFlagNote(verdict), drift: { ...driftRec, kept, flagged: true } };
+    const other = kept === "retry" ? first : second;
+    if (other?.generated?.url) out.qcOther = { url: other.generated.url, path: other.generated.path || null };
+    return out;
+  }
   const base = second || first;
-  say(garment ? "It failed the quality check again — using the product cut out of its own photo…" : "It changed the product again — using the product cut out of its own photo…");
+  say("It changed the product again — using the product cut out of its own photo…");
   try {
     const up = await cutoutResult({ raw, item, deps });
-    const out = { ...base, generated: up, usage: ownUsage, driftFallback: "cutout", note: garment ? GARMENT_QC_NOTE : DRIFT_NOTE, draftFiles: [], drift: driftRec, wastedUsages };
+    const out = { ...base, generated: up, usage: ownUsage, driftFallback: "cutout", note: DRIFT_NOTE, draftFiles: [], drift: driftRec, wastedUsages };
     delete out.uncorrected; delete out.corrected; // the cut-out is not a corrected generation
     return out;
   } catch (e) {
     // No clean cut-out: keep the generated photo (it was paid for) and say plainly that it drifted.
     deps.log?.(`no cut-out for the drift fallback (${String(e.message).slice(0, 80)})`);
-    // A garment that failed the check twice is NEVER kept as the photo (Junid, 21 Nov 2026: never post a failed
-    // image). Every image paid for is booked by the caller as wasted.
-    if (garment) {
-      const r = new StudioRefusal(GARMENT_QC_REFUSAL);
-      r.wastedUsages = paid; r.usage = null; r.drift = driftRec;
-      throw r;
-    }
     return { ...base, usage: ownUsage, drift: { ...driftRec, fallback: "no-cutout" }, wastedUsages,
       note: "The check says this photo may not match the real product (colour, logo or shape) and no clean cut-out could be made — check it by eye." };
   }
+}
+
+/** Did this result pass the garment gate (checked, and "same" on the first try or on the retry)? Pure. */
+export function passedGarmentGate(res) {
+  const d = res?.drift;
+  if (!d || d.check !== "garment" || res.qcFlagged) return false;
+  return d.first === "same" || (d.first === "drifted" && d.retry === "same");
+}
+
+// ── THE STEAM-AND-PRESS PASS (Junid, 22 Nov 2026) ───────────────────────────
+// The gate's retry for a garment photo that is right in everything but its finish. ONE more image call, through
+// the same model, size and finishing step as the photo itself: it is handed the finished photo and the staff
+// photo and one job (lib/style-kit-catalogue.mjs GARMENT_RETOUCH). The gate judges the result like any other photo.
+export async function pressGarment({ res, raw, item, deps, emit = () => {} }) {
+  const say = (ev) => { try { emit(ev); } catch { /* the card's view never affects the generation */ } };
+  const { generation } = deps;
+  const photo = (await deps.fetchBytes(res.generated.url)).buffer;
+  const m = await sharp(photo).metadata();
+  if (!m.width || !m.height) throw new Error("the photo to steam could not be read");
+  const parts = [
+    textPart([GARMENT_RETOUCH, deps.conditionClause].filter(Boolean).join("\n\n")),
+    textPart("IMAGE 1 — the photograph to retouch:"), imagePart(await forModel(photo)),
+    textPart("IMAGE 2 — the real garment (details only):"), imagePart(await forModel(raw)),
+  ];
+  const imageConfig = { aspectRatio: closestAspect(m.width, m.height), imageSize: generation.imageSize };
+  say({ type: "status", text: "Steaming and pressing the garment…" });
+  const gen = await deps.image(generation.imageModel, parts, imageConfig, { onEvent: (ev) => { if (ev && ev.type === "thought" && ev.text) say({ type: "thought", text: ev.text }); } });
+  let generated, gm = {};
+  try {
+    gm = await sharp(gen.buffer).metadata().catch(() => ({}));
+    if (!gm.width || !gm.height) throw new Error("the image model's answer was not a readable image");
+    // THE ONE FINISHING STEP: full resolution, JPEG q92, cropped (never stretched) to the photo's own frame.
+    const out = await toMaster(gen.buffer, { width: m.width, height: m.height });
+    generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${deps.now()}.jpg`, out, "image/jpeg"));
+  } catch (e) { e.paid = true; e.usage = gen.usage || null; throw e; }
+  const out = { ...res, generated, usage: gen.usage || null, wastedUsages: [], draftFiles: [], pressed: true, measurements: null,
+    trace: { ...(res.trace || {}), press: { promptText: GARMENT_RETOUCH, from: res.generated.path || res.generated.url, usage: gen.usage || null, requestMs: gen.requestMs ?? null, resolution: { width: gm.width, height: gm.height } } } };
+  delete out.uncorrected; delete out.corrected;
+  return out;
 }
 
 /** The product cut out of the staff photo, on white, at full resolution — stored like any generated photo. */

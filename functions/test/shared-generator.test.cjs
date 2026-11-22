@@ -178,9 +178,15 @@ test("NO GENERATE PATH HAS ITS OWN MODEL, PROMPT, SIZE OR FINISHING: both callab
   const studioSrc = read("newArrivals/studio/studio.mjs");
   assert.doesNotMatch(studioSrc, /imageSize\s*:\s*["'`]/, "the shared generator takes its size from generation.json");
   assert.doesNotMatch(studioSrc, /deps\.finish|deps\.lossless|toCanvas\(/, "no caller-supplied or plate-sized finishing");
-  // generateOne, generateOther and (Style Kit Catalogue, 20 Nov 2026) generateKit: the same finishing, the same size.
-  assert.equal((studioSrc.match(/await toMaster\(/g) || []).length, 3, "generateOne, generateOther and generateKit all finish with toMaster");
-  assert.equal((studioSrc.match(/imageSize: generation\.imageSize/g) || []).length, 3, "generateOne, generateOther and generateKit all ask generation.imageSize");
+  // generateOne, generateOther, (Style Kit Catalogue, 20 Nov 2026) generateKit and (22 Nov 2026) the garment
+  // steam-and-press pass, pressGarment: the same finishing, the same size, the same model.
+  assert.equal((studioSrc.match(/await toMaster\(/g) || []).length, 4, "generateOne, generateOther, generateKit and pressGarment all finish with toMaster");
+  assert.equal((studioSrc.match(/imageSize: generation\.imageSize/g) || []).length, 4, "generateOne, generateOther, generateKit and pressGarment all ask generation.imageSize");
+  assert.match(studioSrc, /deps\.image\(generation\.imageModel, parts, imageConfig/, "the steam pass uses generation.json's model");
+  // The steam pass and the gate's texts live in ONE place (lib/style-kit-catalogue.mjs), shared with the Shopify publisher.
+  const pubSrc = read("index.js");
+  assert.match(pubSrc, /cat\.GARMENT_RETOUCH/); assert.match(pubSrc, /cat\.GARMENT_FINISH/); assert.match(pubSrc, /cat\.betterGarment\(/); assert.match(pubSrc, /cat\.finishOnly\(/);
+  assert.doesNotMatch(pubSrc.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n"), /STEAM AND PRESS THE GARMENT|GARMENT FINISH —/, "the publisher writes no garment wording of its own");
 });
 
 // The fake RTDB stores a ServerValue.increment as its sentinel: read its amount.

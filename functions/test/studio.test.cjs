@@ -772,14 +772,16 @@ test("paused AFTER the tap was accepted, while the photo was being prepared: the
   assert.equal(Object.keys(it.generations || {}).length, 0);
 });
 
-// ── THE GARMENT QUALITY CHECK (Junid, 21 Nov 2026) ──────────────────────────
-// After every clothing photo: lines/borders, wrinkles, tilt, colour, same product. Failed → ONE retry told the fix
-// (lines → no layout diagram); failed again → the cut-out; no cut-out → no photo at all. Never a failed image kept.
+// ── THE GARMENT QUALITY GATE (Junid, 21–22 Nov 2026) ────────────────────────
+// After every clothing photo: creases, flatness, lines, tilt, colour, logos, same product. Failed → ONE retry: the
+// steam-and-press pass when only the finish is wrong, else the photo made again told the fix. Failed again → the
+// better of the two is KEPT AND FLAGGED (22 Nov: never the creased garment cut out on white).
 function garmentCheck(answers) {
   const seen = [];
   return { seen, driftCheck: async (orig, gen, opts = {}) => { seen.push(opts); const f = answers.shift(); return f === null ? { checked: false, drift: false, issues: "down" } : { checked: true, drift: f.length > 0, faults: f, issues: f.length ? `found ${f.join("+")}` : "" }; } };
 }
 const textsOf = (call) => call[3].filter((p) => p.text).map((p) => p.text);
+// (an image call is recorded as ["image", model, imageConfig, parts])
 
 test("garment check: a clothing photo is checked AS A GARMENT; a pass keeps it with one image call", async () => {
   const w = await world();
@@ -813,7 +815,7 @@ test("garment check: lines + wrinkles → ONE retry with the fix said; the retry
   assert.equal(imgs.length, 2, "one retry, never more");
   assert.ok(!textsOf(imgs[0]).some((t) => t.startsWith("FIX FROM")), "the first request carries no fix");
   const fix = textsOf(imgs[1]).find((t) => t.startsWith("FIX FROM THE LAST ATTEMPT"));
-  assert.match(fix, /DREW A RECTANGLE OR LINES/); assert.match(fix, /LEFT WRINKLED/);
+  assert.match(fix, /DREW A RECTANGLE OR LINES/); assert.match(fix, /LEFT CREASED/);
   assert.doesNotMatch(fix, /HUNG CROOKED|COLOUR DRIFTED/);
   const gen = (await itemOf(w.db)).generations[out.genId];
   assert.equal(gen.drift.first, "drifted"); assert.deepEqual(gen.drift.faults, ["lines", "wrinkles"]); assert.equal(gen.drift.retry, "same");
@@ -828,33 +830,91 @@ test("garment check: a crooked hang only → the retry is told to hang it straig
   assert.match(textsOf(imgs[1]).find((t) => t.startsWith("FIX FROM")), /HUNG CROOKED/);
 });
 
-test("garment check: failed twice → the product cut out of its own photo, with the quality note", async () => {
+test("garment gate: creased only → the retry is the STEAM-AND-PRESS PASS over the photo just made; it is kept when it passes", async () => {
+  const w = await world();
+  const g = garmentCheck([["wrinkles", "flat"], []]);
+  w.deps.kit = { driftCheck: g.driftCheck };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const imgs = w.calls.filter((c) => c[0] === "image");
+  assert.equal(imgs.length, 2, "one retry, never more");
+  const t = textsOf(imgs[1]);
+  assert.match(t[0], /^RETOUCH THIS PHOTOGRAPH — ONE JOB: STEAM AND PRESS THE GARMENT/);
+  assert.match(t[0], /ABSOLUTE RULE/, "the condition rule goes with the steam pass too");
+  assert.ok(t.includes("IMAGE 1 — the photograph to retouch:")); assert.ok(t.includes("IMAGE 2 — the real garment (details only):"));
+  assert.ok(!t.some((x) => x.startsWith("BACKGROUND PLATE")), "the steam pass re-sends no plate: it retouches the finished photo");
+  assert.equal(imgs[1][1], imgs[0][1], "the same model as the photo itself");
+  assert.equal(imgs[1][2].imageSize, imgs[0][2].imageSize, "the same size as the photo itself");
+  const item = await itemOf(w.db), gen = item.generations[out.genId];
+  assert.equal(gen.pressed, true); assert.equal(gen.flagged, undefined);
+  assert.deepEqual(gen.drift, { first: "drifted", issues: "found wrinkles+flat", faults: ["wrinkles", "flat"], retry: "same", check: "garment", how: "pressed" });
+  assert.equal(item.generatedUrl, gen.url, "the steamed photo is the card's photo");
+  assert.equal(out.passed, true);
+});
+
+test("garment gate: failed twice → THE BETTER OF THE TWO IS KEPT AND FLAGGED — never the cut-out", async () => {
   const w = await world();
   const g = garmentCheck([["wrinkles"], ["tilt"]]);
   w.deps.kit = { driftCheck: g.driftCheck };
-  w.deps.cutout = async () => ({ png: await sharp({ create: { width: 120, height: 160, channels: 4, background: { r: 120, g: 70, b: 40, alpha: 1 } } }).extend({ top: 10, bottom: 10, left: 10, right: 10, background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer() });
+  let cut = 0; w.deps.cutout = async () => { cut++; return null; };
   const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
-  const gen = (await itemOf(w.db)).generations[out.genId];
-  assert.equal(gen.driftFallback, "cutout");
-  assert.match(gen.note || "", /failed the quality check twice/);
-  assert.deepEqual(gen.drift.retryFaults, ["tilt"]);
+  const item = await itemOf(w.db), gen = item.generations[out.genId];
+  assert.equal(cut, 0, "the creased garment itself, cut out on white, is never the answer");
+  assert.equal(gen.driftFallback, undefined);
+  assert.equal(gen.flagged, true);
+  assert.match(gen.note || "", /^FLAGGED — this photo did not pass the quality check after two tries \(it hangs crooked\)/);
+  assert.deepEqual(gen.drift.retryFaults, ["tilt"]); assert.equal(gen.drift.kept, "retry"); assert.equal(gen.drift.flagged, true); assert.equal(gen.drift.how, "pressed");
+  assert.ok(gen.qcOther && gen.qcOther.url, "the other try is kept on the record too");
   assert.equal(w.calls.filter((c) => c[0] === "image").length, 2, "never a third generation");
+  assert.equal(item.generatedUrl, gen.url, "a tap on the card shows the kept photo, flagged");
+  assert.equal(out.flagged, true); assert.equal(out.passed, false);
 });
 
-test("garment check: failed twice and no clean cut-out → NO photo lands; both images are booked as spend", async () => {
+test("garment gate: a retry that changed a logo is never the better photo — the first one is kept, flagged as creased", async () => {
+  const w = await world();
+  const g = garmentCheck([["wrinkles"], ["product"]]);
+  w.deps.kit = { driftCheck: g.driftCheck };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.drift.kept, "first"); assert.equal(gen.flagged, true); assert.equal(gen.pressed, undefined);
+  assert.match(gen.note, /it still looks creased/); assert.doesNotMatch(gen.note, /logo/);
+});
+
+test("garment gate: both images of a flagged photo are booked as spend, once", async () => {
   const w = await world();
   const g = garmentCheck([["lines"], ["lines"]]);
   w.deps.kit = { driftCheck: g.driftCheck };
-  w.deps.cutout = async () => null;
-  // Every spend write, not just the last (the fake database keeps only the last increment).
   const spends = [];
   const ref = w.db.ref.bind(w.db);
   w.db.ref = (path) => { const r = ref(path); if (path === core.ROOT) { const up = r.update.bind(r); r.update = (v) => { if (v["stats/totalSpentZar"]) spends.push(v["stats/totalSpentZar"][".sv"].increment); return up(v); }; } return r; };
-  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /quality check twice and the product could not be cut out cleanly/);
-  const item = await itemOf(w.db);
-  assert.ok(!item.generations || !Object.keys(item.generations).length, "the failed photo is never put on the card");
-  assert.equal(spends.length, 2, "both paid images are booked, once each");
-  assert.ok(spends.every((z) => z > 0));
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.flagged, true); assert.equal(gen.drift.how, "remade");
+  assert.equal(spends.length, 1);
+  assert.ok(Math.abs(spends[0] - 2 * gen.costZar) < 0.02, `two images booked (${spends[0]} vs 2 × ${gen.costZar})`);
+});
+
+test("HOLD (the regeneration run): the card's photo stays in place until the new one PASSES the gate", async () => {
+  // A flagged photo is only added beside the photo the card shows.
+  const w = await world();
+  w.deps.kit = { driftCheck: garmentCheck([[]]).driftCheck };
+  const first = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const before = await itemOf(w.db);
+  w.deps.kit = { driftCheck: garmentCheck([["wrinkles"], ["wrinkles"]]).driftCheck };
+  const held = await studio.studioGenerate(w.db, { pid: PID, hold: true }, "regen", w.deps);
+  const after = await itemOf(w.db);
+  assert.equal(held.held, true); assert.equal(held.passed, false); assert.equal(held.addedOnly, true);
+  assert.equal(after.currentGen, first.genId); assert.equal(after.generatedUrl, before.generatedUrl); assert.equal(after.status, before.status);
+  assert.ok(after.generations[held.genId].flagged, "the new photo is kept on the item, flagged");
+  assert.equal(after.generateRequest, undefined, "the claim is given back");
+  // An unchecked photo did not pass either.
+  w.deps.kit = { driftCheck: garmentCheck([null]).driftCheck };
+  const unchecked = await studio.studioGenerate(w.db, { pid: PID, hold: true }, "regen", w.deps);
+  assert.equal(unchecked.held, true); assert.equal((await itemOf(w.db)).currentGen, first.genId);
+  // One that passes replaces it.
+  w.deps.kit = { driftCheck: garmentCheck([["wrinkles"], []]).driftCheck };
+  const good = await studio.studioGenerate(w.db, { pid: PID, hold: true }, "regen", w.deps);
+  assert.equal(good.held, undefined); assert.equal(good.passed, true);
+  assert.equal((await itemOf(w.db)).currentGen, good.genId);
 });
 
 test("garment check: a check that cannot run never costs a retry (fail-open, as the drift check)", async () => {

@@ -147,11 +147,19 @@ test("EVERY GARMENT — T-shirts and polos too — gets the garment finish befor
   assert.deepEqual(studioPrompt({ kind: "twopiece", categoryKey: "tracksuits", productName: "Set", conditionClause: CONDITION_CLAUSE, placement: placementText("twopiece", spec.twopiece), layers: gen.layers }).layers, ["garmentFinish"]);
   assert.deepEqual(layersFor({ kind: "footwear", categoryKey: "sneakers", layers: { garmentFinish: true } }), []);
   // Junid's five points, each said.
-  assert.match(GARMENT_FINISH_LAYER, /FRESHLY STEAMED AND PRESSED: no wrinkles, creases, fold lines/);
-  assert.match(GARMENT_FINISH_LAYER, /knit, piqué or rib texture is\s+sharp/);
-  assert.match(GARMENT_FINISH_LAYER, /perfectly straight and centred on a straight hanger — shoulders level and\s+symmetrical, the hem straight/);
-  assert.match(GARMENT_FINISH_LAYER, /collar lies flat with sharp, even edges/);
-  assert.match(GARMENT_FINISH_LAYER, /EXACT colour, collar colour, trims, logo and\s+buttons/);
+  // Junid's finishing step of 22 Nov 2026 (HB301#), in his words, for every kind of garment:
+  assert.match(GARMENT_FINISH_LAYER, /FRESHLY STEAMED AND PRESSED — smooth, wrinkle-free fabric/);
+  assert.match(GARMENT_FINISH_LAYER, /NATURAL DRAPE AND FULL SHAPE/); assert.match(GARMENT_FINISH_LAYER, /Never flat like a paper\s+cut-out, never squashed/);
+  assert.match(GARMENT_FINISH_LAYER, /CRISP HEMS AND WAISTBAND/);
+  assert.match(GARMENT_FINISH_LAYER, /professional\s+stylist[^.]*steamed and pressed it[^.]*catalogue/);
+  assert.match(GARMENT_FINISH_LAYER, /shorts, T-shirts, polos, shirts, jerseys, hoodies, sweaters, jackets, tracksuits, jeans and trousers/);
+  // …and nothing about the design moves:
+  assert.match(GARMENT_FINISH_LAYER, /THE DESIGN IS FROZEN/);
+  assert.match(GARMENT_FINISH_LAYER, /logo, print, graphic, word of text, label, badge, drawstring/);
+  assert.match(GARMENT_FINISH_LAYER, /Invent NOTHING/);
+  assert.match(GARMENT_FINISH_LAYER, /knit, piqué, rib, fleece, denim or woven\s+texture stays sharp/);
+  assert.match(GARMENT_FINISH_LAYER, /perfectly straight and centred on a straight hanger/);
+  assert.doesNotMatch(GARMENT_FINISH_LAYER, /shoe|sneaker|footwear/i, "shoes are untouched by the garment finish");
   assert.match(GARMENT_FINISH_LAYER, /never a rectangle, frame line, border,\s+box, dashed or guide line/);
   assert.match(GARMENT_FINISH_LAYER, /subtle, soft shadow of the garment on the wall/);
   // The condition rule still comes last and still overrides it (worn-in creases stay).
