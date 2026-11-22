@@ -398,9 +398,12 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     // The choice is judged again after the live read: what is sent is what is
     // chosen NOW (a location that left the card meanwhile is not sent to).
     if (!problem) {
-      const cur = latestRows.current.get(row.key) || row;
-      const now = (latestPicks.current[row.key] || []).filter((d) => cur.dests.some((x) => x.id === d));
-      if (now.length !== sel.length || now.some((d, i) => d !== sel[i])) problem = "The choice changed — check it and Solve again.";
+      const cur = latestRows.current.get(row.key);
+      if (!cur) problem = "This product changed while it was being checked — nothing sent.";   // (CodeRabbit, PR #966)
+      else {
+        const now = (latestPicks.current[row.key] || []).filter((d) => cur.dests.some((x) => x.id === d));
+        if (now.length !== sel.length || now.some((d, i) => d !== sel[i])) problem = "The choice changed — check it and Solve again.";
+      }
     }
     if (problem) {
       inFlight.current.delete(row.pid);

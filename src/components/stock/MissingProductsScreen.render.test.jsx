@@ -778,6 +778,25 @@ describe("one product, one shop — Pine or Concrete, never both", () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
+  it("a card that leaves the list during the live check sends nothing (CodeRabbit, PR #966)", async () => {
+    const tree = await conc();
+    await pick(tree, TEE, "concrete");
+    // while Solve's live read is out, the product stops being missing (it is hidden on another device)
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    gets[`stock/marathon-pine/${TEE}`] = null;
+    const realGet = gets;
+    await act(async () => {
+      const p = solveBtn(tree, TEE).props.onClick();
+      emit("settings/missingProductsHidden", { [TEE]: { at: NOW, by: "u2" } });
+      await new Promise((r) => setTimeout(r, 0));
+      release(); await gate; await p;
+    });
+    await act(async () => {});
+    expect(updateMock).not.toHaveBeenCalled();
+    void realGet;
+  });
+
   it("confirm rejects a second shop: a stale screen chooses Concrete after another device solved it to Pine", async () => {
     const tree = await conc();
     await pick(tree, TEE, "concrete");
