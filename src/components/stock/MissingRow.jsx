@@ -26,8 +26,8 @@ const NO_PICK = Object.freeze([]);
 // A location: a neutral outline until chosen, then filled blue with a tick.
 // Never green: green means one thing on this screen — Solve, ready to go.
 const chip = (on) => ({
-  position: "relative", flex: 1, minWidth: 0, height: 48, borderRadius: 13, fontFamily: FONT, fontSize: 15.5, fontWeight: 800,
-  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", padding: "0 16px", cursor: "pointer",
+  position: "relative", flex: 1, minWidth: 0, height: 48, borderRadius: 13, fontFamily: FONT, fontSize: 15, fontWeight: 800,
+  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", padding: "0 20px", cursor: "pointer",
   WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
   background: on ? BLUE : "transparent",
   border: `1px solid ${on ? BLUE : "rgba(255,255,255,.2)"}`,
@@ -35,7 +35,7 @@ const chip = (on) => ({
 });
 // Solve: the main action. Green and solid only once a location is chosen.
 const solveBtn = (ready, busy) => ({
-  width: 96, flexShrink: 0, height: 48, borderRadius: 13, fontFamily: FONT, fontSize: 16, fontWeight: 800,
+  width: 88, flexShrink: 0, height: 48, borderRadius: 13, fontFamily: FONT, fontSize: 16, fontWeight: 800,
   cursor: ready ? "pointer" : "default", WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
   background: ready || busy ? GREEN : "transparent",
   border: `1px solid ${ready || busy ? GREEN : "rgba(255,255,255,.1)"}`,
@@ -44,7 +44,7 @@ const solveBtn = (ready, busy) => ({
 });
 // Hide: small and secondary — a quiet word beside the stock line.
 const hideLink = {
-  flexShrink: 0, height: 36, padding: "0 4px 0 10px", background: "none", border: "none", fontFamily: FONT,
+  flexShrink: 0, height: 44, margin: "-4px 0", padding: "0 4px 0 12px", background: "none", border: "none", fontFamily: FONT,
   fontSize: 13.5, fontWeight: 600, color: "rgba(255,255,255,.42)", cursor: "pointer", WebkitTapHighlightColor: "transparent",
 };
 
@@ -129,10 +129,10 @@ function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = fals
         {canAct && row.dests.map((d) => {
           const on = selected.includes(d.id);
           return (
-            <button key={d.id} type="button" data-dest={d.id} aria-pressed={on} aria-label={on ? `${d.name}, selected` : `Choose ${d.name}`}
+            <button key={d.id} type="button" data-dest={d.id} aria-pressed={on} aria-label={d.name}
               onClick={() => { if (!busy) onPick?.(row, d.id); }} style={chip(on)}>
               {/* The tick sits at the chip's edge, so the name never moves when chosen. */}
-              <span aria-hidden="true" style={{ position: "absolute", left: 9, top: 0, bottom: 0, display: "flex", alignItems: "center", opacity: on ? 1 : 0 }}>✓</span>{d.name}
+              <span aria-hidden="true" style={{ position: "absolute", left: 7, top: 0, bottom: 0, display: "flex", alignItems: "center", opacity: on ? 1 : 0 }}>✓</span>{d.name}
             </button>
           );
         })}

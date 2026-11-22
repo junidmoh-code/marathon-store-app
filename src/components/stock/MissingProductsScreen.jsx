@@ -39,7 +39,7 @@ import { hubIds, storeIds, centralId, nameOf } from "./sectionRouting";
 import { computeMissingProducts } from "./missingProductsCore";
 import { computeMissingFootwear } from "./missingFootwearCore";
 import { partitionQueued } from "./missingScreenCore";
-import { openingOrder, openRequestsByProduct, productRow, sneakerRow, createFrozenOrder, freezeOrder, tapProblem, shopOwners, pickNext } from "./missingListCore";
+import { openingOrder, openRequestsByProduct, openLocationsByProduct, isSeat, productRow, sneakerRow, createFrozenOrder, freezeOrder, tapProblem, shopOwners, pickNext } from "./missingListCore";
 import { useSlicedRows } from "./useSlicedRows";
 import { useProductSolve } from "./NetworkTransfer";
 import { useSneakerRequest } from "./MissingFootwear";
@@ -76,11 +76,8 @@ export default function MissingProductsScreen({ products = [], onExit }) {
   const reqState = usePathState("refill_requests");
   // WHO OWNS A PINE / CONCRETE PRODUCT includes where it is SEATED (Junid, 22
   // Nov 2026). The two shops' seat nodes only — never the whole seats tree.
-  const seatsA = usePathState(`${SEATS_PATH}/${DIVISION_SHOPS[0]}`);
-  const seatsB = usePathState(`${SEATS_PATH}/${DIVISION_SHOPS[1]}`);
-  const seats = useMemo(() => ({ [DIVISION_SHOPS[0]]: seatsA.value || NONE, [DIVISION_SHOPS[1]]: seatsB.value || NONE }), [seatsA.value, seatsB.value]);
-  const seatsSettled = seatsA.settled && seatsB.settled;
-  const seatsError = !!(seatsA.error || seatsB.error);
+  // (read only while a one-or-the-other division is open to this viewer — a
+  // Marathon-only list never waits on them)
   const heldLines = useStockHeld();
   const cfgState = useEngineConfigState();
   const cfg = cfgState.raw;
@@ -90,6 +87,12 @@ export default function MissingProductsScreen({ products = [], onExit }) {
     () => DIVISION_ORDER.filter((s) => mySections.includes(s) && (storeIds(network, { section: s }).length > 0 || hubIds(network, { section: s }).length > 0)),
     [network, mySections],
   );
+  const needSeats = divisions.some((s) => shopsAreExclusive(network, s));
+  const seatsA = usePathState(`${SEATS_PATH}/${DIVISION_SHOPS[0]}`, needSeats);
+  const seatsB = usePathState(`${SEATS_PATH}/${DIVISION_SHOPS[1]}`, needSeats);
+  const seats = useMemo(() => ({ [DIVISION_SHOPS[0]]: seatsA.value || NONE, [DIVISION_SHOPS[1]]: seatsB.value || NONE }), [seatsA.value, seatsB.value]);
+  const seatsSettled = !needSeats || (seatsA.settled && seatsB.settled);
+  const seatsError = needSeats && !!(seatsA.error || seatsB.error);
   const requests = useMemo(() => (reqState.value ? Object.entries(reqState.value).map(([id, r]) => ({ id, ...r })) : []), [reqState.value]);
 
   // Never count against a half-loaded /stock: a zero then would say "nothing
@@ -192,7 +195,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // ── THE ROWS: every card asked, before it is drawn, what a tap would send ──
   const apisRef = useRef(apis); apisRef.current = apis;
   const ctx = useRef(null);
-  ctx.current = { byId, allStock, targets: targets.value, reqByPid, cfg, network, central, label, seats };
+  // Where each product has ANY open request (fully sent or not): ownership.
+  const openAt = useMemo(() => openLocationsByProduct(requests), [requests]);
+  ctx.current = { byId, allStock, targets: targets.value, reqByPid, openAt, cfg, network, central, label, seats };
   const buckets = useMemo(() => divisions.flatMap((sec) => [
     {
       id: bucketId(sec, "sneakers"), cards: cards[sec].sneakers,
@@ -220,10 +225,11 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
         const c = ctx.current, api = apisRef.current[sec].product;
         const dests = shopDestinations(c.network, sec);
         const open = c.reqByPid.get(card.pid) || NONE;
+        const openAt = c.openAt;
         // ONE-OR-THE-OTHER SHOPS (Pine / Concrete): who already owns it.
         // Marathon's shops are not one-or-the-other and are left as they were.
         const owners = shopsAreExclusive(c.network, sec)
-          ? shopOwners({ shops: dests, cells: Object.fromEntries(dests.map((d) => [d, c.allStock?.[d]?.[card.pid]])), seated: (d) => !!c.seats?.[d]?.[card.pid], queued: (d) => !!open[d] })
+          ? shopOwners({ shops: dests, cells: Object.fromEntries(dests.map((d) => [d, c.allStock?.[d]?.[card.pid]])), seated: (d) => isSeat(c.seats?.[d]?.[card.pid]), queued: (d) => !!openAt.get(card.pid)?.has(d) })
           : null;
         return productRow({
           card, section: sec, product: c.byId.get(card.pid), dests, tickable: api.tickableStores(card),
@@ -345,13 +351,13 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const chosen = (row) => (picks[row.key] || NO_PICK).filter((d) => row.dests.some((x) => x.id === d));
   const act = useRef({});
   act.current.pick = (row, dest) => {
-    if (!canAct || inFlight.current.has(row.pid) || !row.dests.some((x) => x.id === dest)) return;
+    if (!canAct || gone[row.key] || inFlight.current.has(row.pid) || !row.dests.some((x) => x.id === dest)) return;
     setPicks((m) => ({ ...m, [row.key]: pickNext(chosen(row), dest, { exclusive: exclusiveFor(row) }) }));
   };
   act.current.solve = async (row) => {
     // ONE SOLVE PER PRODUCT AT A TIME, across both divisions: a Hub 1 and a
     // Hub 3 solve of the same shoe must not both plan from the same free stock.
-    if (inFlight.current.has(row.pid) || !canAct) return;
+    if (inFlight.current.has(row.pid) || !canAct || gone[row.key]) return;   // (a leaving card takes no second Solve)
     const sel = chosen(row);
     if (!sel.length) return;                                   // nothing chosen: nothing happens
     const c = ctx.current;
@@ -370,7 +376,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     if (!problem && row.kind === "clothing" && shopsAreExclusive(c.network, row.section)) {
       const shops = shopDestinations(c.network, row.section);
       try {
-        const owners = await shopOwnersNow(row.pid, shops, (d) => !!c.reqByPid.get(row.pid)?.[d]);
+        const owners = await shopOwnersNow(row.pid, shops, (d) => !!ctx.current.openAt.get(row.pid)?.has(d));
         const other = owners.find((o) => !sel.includes(o));
         if (other) problem = `${c.label(other)} already has this — it is not sent to ${sel.map(c.label).join(" or ")} as well.`;
       } catch (e) {
@@ -502,7 +508,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
                     {i === firstNormal && i > 0 && anyNeeds && <div aria-hidden="true" style={{ height: 14 }} />}
                     <Slot leaving={d.leaving} entering={d.entering} data-slot={d.key}>
                       <MissingRow row={d.row} product={byId.get(d.row.pid)} twinProduct={d.row.twin ? byId.get(d.row.twin) : null}
-                        selected={picks[d.key] || NO_PICK} busy={!!busy[d.key]} canAct={canAct} onPick={onPick} onSolve={onSolve} onHide={onHide} onPhoto={onPhoto} />
+                        selected={d.leaving ? NO_PICK : chosen(d.row)} busy={!!busy[d.key]} canAct={canAct} onPick={onPick} onSolve={onSolve} onHide={onHide} onPhoto={onPhoto} />
                     </Slot>
                   </React.Fragment>
                 ))}

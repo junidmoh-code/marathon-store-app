@@ -759,6 +759,25 @@ describe("one product, one shop — Pine or Concrete, never both", () => {
     else expect(cardsOf(second)).not.toContain("Essentials Tee Olive");
   });
 
+  it("a request to Pine that is fully sent but still open (units on the way) keeps it Pine's", async () => {
+    emit("refill_requests", { r1: { productId: TEE, size: "M", qty: 2, sentQty: 2, requestingLocation: "marathon-pine", status: "open", createdFrom: { source: "central" } } });
+    const tree = await conc();
+    expect(offered(tree, TEE)).toEqual(["marathon-pine"]);
+  });
+
+  it("a choice that stops applying (the product became the other shop's) never leaves Solve green", async () => {
+    const tree = await conc();
+    await pick(tree, TEE, "concrete");
+    expect(solveBtn(tree, TEE).props["aria-disabled"]).toBe(false);
+    await act(async () => { emit("refill_engine/seats/marathon-pine", { [TEE]: { at: "2026-11-22T10:00:00.000Z" } }); });
+    for (let i = 0; i < 40 && offered(tree, TEE).includes("concrete"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+    expect(offered(tree, TEE)).toEqual(["marathon-pine"]);
+    expect(picked(tree, TEE)).toEqual([]);
+    expect(solveBtn(tree, TEE).props["aria-disabled"]).toBe(true);
+    await solve(tree, TEE);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
   it("confirm rejects a second shop: a stale screen chooses Concrete after another device solved it to Pine", async () => {
     const tree = await conc();
     await pick(tree, TEE, "concrete");

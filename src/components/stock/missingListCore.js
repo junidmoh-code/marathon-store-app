@@ -173,6 +173,21 @@ export function tapProblem({ row, dest }) {
   return null;
 }
 
+// pid → Set(location) of every OPEN request (fully sent or not — units in
+// transit still mean the product belongs there). For ownership, not reserving.
+export function openLocationsByProduct(requests) {
+  const out = new Map();
+  for (const r of Array.isArray(requests) ? requests : Object.values(requests || {})) {
+    if (!r || typeof r !== "object" || r.status !== "open" || r.shadow || !r.productId || !r.requestingLocation) continue;
+    let s = out.get(r.productId);
+    if (!s) { s = new Set(); out.set(r.productId, s); }
+    s.add(r.requestingLocation);
+  }
+  return out;
+}
+// A seat is a record (an object) — the engine's own test (concreteDivision.js).
+export const isSeat = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+
 // ── WHO OWNS A PRODUCT, AMONG ONE-OR-THE-OTHER SHOPS ─────────────────────────
 // Junid's words (22 Nov 2026): a product belongs to a shop when it has STOCK
 // there (units, not an empty row left by a count), is SEATED there, or has a

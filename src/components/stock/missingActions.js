@@ -22,7 +22,7 @@ import { HIDDEN_ROOT, hideEntry, unhideUpdate } from "./hiddenProductsCore";
 import { firstBatchUndoCancelTxn, SOLVE_UNDONE_REASON } from "./firstBatchCore";
 import { undoCellTxn } from "./solveUndo";
 import { SEATS_PATH } from "./concreteDivision";
-import { shopOwners } from "./missingListCore";
+import { shopOwners, isSeat } from "./missingListCore";
 
 /**
  * Which of `shops` own this product RIGHT NOW (Pine / Concrete — Junid,
@@ -33,7 +33,7 @@ import { shopOwners } from "./missingListCore";
 export async function shopOwnersNow(pid, shops, queued = () => false) {
   const reads = await Promise.all(shops.map(async (s) => {
     const [cells, seat] = await Promise.all([get(ref(database, `stock/${s}/${pid}`)), get(ref(database, `${SEATS_PATH}/${s}/${pid}`))]);
-    return [s, cells.val() || null, seat.val() != null];
+    return [s, cells.val() || null, isSeat(seat.val())];
   }));
   const cells = Object.fromEntries(reads.map(([s, c]) => [s, c]));
   const seats = Object.fromEntries(reads.map(([s, , x]) => [s, x]));
