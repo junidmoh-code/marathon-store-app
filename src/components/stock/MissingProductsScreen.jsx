@@ -254,6 +254,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // WHAT IS CHOSEN ON EACH CARD (row key → location ids, in tap order). Lives
   // and dies with this screen: leaving it clears every choice.
   const [picks, setPicks] = useState({});
+  const latestPicks = useRef(picks); latestPicks.current = picks;
+  const latestRows = useRef(new Map());
   const inFlight = useRef(new Set());
   const listedOf = (id) => sliced.rows[id].filter((r) => !(hiddenMap && hiddenMap[r.pid]) && !gone[r.key]);
   const countOf = (sec) => (KINDS.every(([k]) => sliced.complete[bucketId(sec, k)])
@@ -289,6 +291,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const onScreen = view === "list" && section != null && !!sliced.complete[active];
   const listed = onScreen ? listedOf(active) : [];
   const listedBy = new Map(listed.map((r) => [r.key, r]));
+  latestRows.current = listedBy;   // the rows as drawn, for Solve's second look
   // Shoes waiting for a policy sit together at the top, under one label.
   const before = new Set(fz.seen);
   freezeOrder(fz, listed.map((r) => r.key));
@@ -348,7 +351,16 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // off; Hub 3 is the only location on its list; Marathon's shops may both be
   // chosen and one Solve sends to both (as that list always allowed).
   const exclusiveFor = (row) => row.kind === "sneakers" || shopsAreExclusive(ctx.current.network, row.section);
-  const chosen = (row) => (picks[row.key] || NO_PICK).filter((d) => row.dests.some((x) => x.id === d));
+  // The same array while it still applies (so a card does not redraw for
+  // nothing); filtered only when a chosen location has left the card.
+  const chosen = (row) => {
+    const p = picks[row.key];
+    if (!p || !p.length) return NO_PICK;
+    const ok = (d) => row.dests.some((x) => x.id === d);
+    if (p.every(ok)) return p;
+    const left = p.filter(ok);
+    return left.length ? left : NO_PICK;
+  };
   const act = useRef({});
   act.current.pick = (row, dest) => {
     if (!canAct || gone[row.key] || inFlight.current.has(row.pid) || !row.dests.some((x) => x.id === dest)) return;
@@ -382,6 +394,13 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       } catch (e) {
         problem = `Couldn't check where this belongs — nothing sent, retry. (${e?.message || "error"})`;
       }
+    }
+    // The choice is judged again after the live read: what is sent is what is
+    // chosen NOW (a location that left the card meanwhile is not sent to).
+    if (!problem) {
+      const cur = latestRows.current.get(row.key) || row;
+      const now = (latestPicks.current[row.key] || []).filter((d) => cur.dests.some((x) => x.id === d));
+      if (now.length !== sel.length || now.some((d, i) => d !== sel[i])) problem = "The choice changed — check it and Solve again.";
     }
     if (problem) {
       inFlight.current.delete(row.pid);
