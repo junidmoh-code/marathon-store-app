@@ -43,6 +43,13 @@ export const FOOTWEAR_CATEGORY_KEYS = Object.freeze([
   "sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes",
 ]);
 
+// The one footwear category that may be given numbers of its own on the Engine
+// Policy card while the footwear policy is armed (Junid, 22 Nov 2026): kids
+// shoes are sized 24–35 and the footwear policy speaks for 3–13. The server's
+// copy is functions/lib/policy-resolve.cjs FOOTWEAR_OWN_NUMBERS_KEYS, pinned
+// equal by test.
+export const FOOTWEAR_OWN_NUMBERS_KEYS = Object.freeze(["kids-shoes"]);
+
 // The legacy top-level category that means footwear. Agrees with the size
 // evidence on 3,718 of 3,723 live products (99.9%).
 export const FOOTWEAR_LEGACY_CATEGORY = "Footwear";
