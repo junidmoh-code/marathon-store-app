@@ -1,109 +1,94 @@
-// ─── MISSING PRODUCTS — ITS OWN SCREEN ────────────────────────────────────────
-// Junid, 22 Nov 2026. Missing Products used to be a tab inside Inventory
-// Health: three chips (Clothing / Perfume / Sneakers), a second switch for the
-// division nested inside each, two different card layouts and a button that
-// read "Close" where "Solve" had been. It is its own destination now — a home
-// tile and a route — and it is built to be read on an iPhone between shops:
+// ─── MISSING PRODUCTS — THE SCREEN (rebuilt, Junid 22 Nov 2026) ───────────────
+// What Junid asked for after the first redesign shook under his finger:
 //
-//   ONE switch at the top: Marathon / Concrete, each with how many are left.
-//   ONE list per division — sneakers and everything else together, newest
-//   upload first — with a search and two filters (category, brand).
-//   ONE card shape (MissingCard.jsx): why it is here, what Central holds, one
-//   action. Solve (everything that is not a sneaker) starts keeping it at a
-//   shop; Request (sneakers) asks Central for the policy pairs into a hub.
-//   After an action the card leaves; a strip at the top says what was just
-//   queued, and "Queued & solved" keeps the rest.
+//   Marathon | Concrete            each with how many cards are on its list
+//   Sneakers | Clothing            two low boxes, edge to edge
+//   the list                       nothing else above it
+//
+// THE CARD (MissingRow.jsx) is a fixed box: photo, name, one stock line, and
+// the destinations as buttons. Tapping a destination IS the solve.
+//
+// WHAT IS ON THE LIST is decided before a card is drawn (missingListCore.js):
+// only a product a tap would send something for. The count on a division is
+// the number of cards on its two lists, nothing else.
+//
+// NO SHAKE, by construction:
+//   • every availability question is answered in the data layer, before the
+//     card exists — there is no "checking…" state on a card and no panel;
+//   • the order of a list is frozen while the screen is open (new rows join at
+//     the end; nothing visible is re-sorted);
+//   • a solved card stays exactly where it is until its write has landed, then
+//     its slot closes in ONE transition and the cards below move up once;
+//   • the confirmation is a toast fixed over the bottom of the screen (Undo for
+//     a few seconds). It overlays; it pushes nothing.
 //
 // THIS FILE DECIDES NOTHING ABOUT STOCK. What is missing comes from the two
-// cores that always decided it; what an action writes is the two hooks'
-// (NetworkTransfer.jsx useProductSolve, MissingFootwear.jsx useSneakerRequest),
-// unchanged. Here: which division, which cards to show, in what order.
+// cores that always decided it; what a tap writes is the two hooks'
+// (NetworkTransfer.jsx useProductSolve, MissingFootwear.jsx useSneakerRequest)
+// through their one-shop / one-hub entry; the quantities are the ones policy
+// already computes.
 //
-// READS: exactly the nodes the old tab subscribed to through Inventory Health
-// and its children — /stock, /stock_targets, /refill_requests, the small
-// hidden / held / engine-config nodes — through the same shared, mirror-backed
-// hooks (one listener per path for the whole app). Nothing new is opened.
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { BG, FONT, GLASS, GRAY, GREEN, AMBER, BLUE_L, input } from "./ui";
-import { useStockCells, useStockTargetsState, useHiddenMissingProducts, useRefillRequests, useStockHeld, useEngineConfigState } from "./useStock";
+// READS: the nodes the screen always subscribed to, through the same shared,
+// mirror-backed hooks (one listener per path for the whole app). Nothing new.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BG, FONT, GRAY, GREEN, RED, AMBER, BLUE_L } from "./ui";
+import { useStockCells, useStockTargetsState, useHiddenMissingProducts, usePathState, useStockHeld, useEngineConfigState } from "./useStock";
 import { useMySections } from "../../utils/useMySections";
 import { sectionName } from "../../utils/networkRegistry";
 import { hubIds, storeIds, centralId, nameOf } from "./sectionRouting";
 import { computeMissingProducts } from "./missingProductsCore";
 import { computeMissingFootwear } from "./missingFootwearCore";
-import { partitionHidden } from "./hiddenProductsCore";
-import { partitionQueued, buildRows, filterRows, facet } from "./missingScreenCore";
+import { partitionQueued } from "./missingScreenCore";
+import { openingOrder, openRequestsByProduct, productRow, sneakerRow, createFrozenOrder, freezeOrder, tapProblem } from "./missingListCore";
+import { useSlicedRows } from "./useSlicedRows";
 import { useProductSolve } from "./NetworkTransfer";
 import { useSneakerRequest } from "./MissingFootwear";
+import { shopDestinations, shopsAreExclusive, destinationProblem } from "./divisionDestinations";
+import { otherMarathonHub, marathonHubSeated, marathonSolveRefusal } from "./concreteDivision";
+import { hideProduct, unhideProduct, undoSneakerRequest } from "./missingActions";
 import HiddenProducts, { HoldSpot } from "./HiddenProducts";
 import { PhotoLightbox } from "./healthWidgets";
-import { CardPhoto } from "./MissingCard";
+import MissingRow, { Slot, SkeletonRow, CARD_H, CARD_GAP, LEAVE_MS } from "./MissingRow";
 import { primaryPhotoUrl } from "../../utils/primaryPhoto";
-import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
+import { stockSizeKey } from "../../utils/sizeKey";
 import { setUpdateBusy } from "../../update/updateChecker";
 
 // The division shown first, and the order of the switch: Marathon, Concrete.
 const DIVISION_ORDER = [2, 1];
-// How long a card this device has just queued stays off the list before the
-// live request records alone decide (their echo is normally 1–2 s).
-const QUEUED_HOLD_MS = 90000;
-// How long "just queued" stays at the top of the list.
-const NOTE_MS = 120000;
-// Cards drawn at once; the rest are one tap away (a phone draws 40 instantly,
-// 400 with a stutter).
+const KINDS = [["sneakers", "Sneakers"], ["clothing", "Clothing"]];
+// Cards drawn at once; the rest follow as the list is scrolled.
 const PAGE = 40;
-// "Nothing is resolving" — one object, so a division with nothing in flight
-// hands the Solve hook the same value on every render.
+const TOAST_MS = 7000;
 const NONE = Object.freeze({});
+const NOOP = () => {};
+// What the buttons call the shops (the registry's "Marathon Pine" is "Pine" to
+// everyone who works there).
+const SHORT = { "marathon-pine": "Pine" };
 
-const select = { ...input, width: "100%", boxSizing: "border-box", fontSize: 16, minHeight: 46, padding: "10px 12px", appearance: "none", WebkitAppearance: "none" };
-const tab = (on) => ({
-  minHeight: 42, padding: "9px 15px", borderRadius: 999, fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
-  border: on ? "1px solid rgba(60,110,255,.55)" : "1px solid rgba(255,255,255,.12)",
-  background: on ? "rgba(60,110,255,.16)" : "rgba(255,255,255,.03)", color: on ? BLUE_L : "rgba(255,255,255,.55)",
-});
+const bucketId = (section, kind) => `${section}:${kind}`;
 
 export default function MissingProductsScreen({ products = [], onExit }) {
   const { registry: network, sections: mySections } = useMySections();
   const allStock = useStockCells();
   const targetsState = useStockTargetsState();
   const hiddenMap = useHiddenMissingProducts();
-  const requests = useRefillRequests();
+  const reqState = usePathState("refill_requests");
   const heldLines = useStockHeld();
-  const cfg = useEngineConfigState().raw;
-  const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+  const cfgState = useEngineConfigState();
+  const cfg = cfgState.raw;
   const CENTRAL = centralId(network);
 
   const divisions = useMemo(
     () => DIVISION_ORDER.filter((s) => mySections.includes(s) && (storeIds(network, { section: s }).length > 0 || hubIds(network, { section: s }).length > 0)),
     [network, mySections],
   );
-  const [pick, setPick] = useState(null);
-  const section = divisions.includes(pick) ? pick : divisions[0];
+  const requests = useMemo(() => (reqState.value ? Object.entries(reqState.value).map(([id, r]) => ({ id, ...r })) : []), [reqState.value]);
 
   // Never count against a half-loaded /stock: a zero then would say "nothing
   // is missing" at the moment nothing is known.
   const stockReady = !!allStock && Object.keys(allStock).length > 0;
 
-  // Cards this device has just queued, per division: `${section}|${pid}`.
-  const [justQueued, setJustQueued] = useState({});
-  const queueTimers = useRef({});
-  // Cards just solved, hidden at once, per division (useProductSolve's
-  // `resolving`): { [section]: { pid: "pending" | "done" } }. Per division so
-  // a Marathon solve never hides the same product's card on Concrete.
-  const [resolving, setResolving] = useState({});
-  const [solvedSession, setSolvedSession] = useState([]);
-  const [notes, setNotes] = useState([]);   // what was just requested: { id, pid, name, msg }
-  const noteTimers = useRef({});
-  useEffect(() => () => {
-    for (const t of Object.values(queueTimers.current)) clearTimeout(t);
-    for (const t of Object.values(noteTimers.current)) clearTimeout(t);
-  }, []);
-
-  // ── EVERY DIVISION'S CARDS, ONCE — the counts and the list read the same ──
-  // THE WALKS (the catalogue against /stock) are memoised on what they read,
-  // and nothing else: a request echo, a just-queued mark or a card resolving
-  // re-runs only the cheap partition below, never the walk.
+  // ── WHAT IS MISSING, per division — the two cores, memoised on what they read.
   const walked = useMemo(() => {
     const out = {};
     for (const sec of divisions) {
@@ -119,236 +104,340 @@ export default function MissingProductsScreen({ products = [], onExit }) {
     return out;
   }, [divisions, stockReady, allStock, products, network, cfg, heldLines, CENTRAL]);
 
-  const lists = {};
-  for (const sec of divisions) {
-    const { all, sneakers: allSneakers, hubs } = walked[sec];
-    // HIDE — a view filter, strictly downstream of the compute (hiddenProductsCore.js).
-    const visible = partitionHidden(all, hiddenMap).visible;
-    const local = Object.fromEntries(Object.keys(justQueued).filter((k) => k.startsWith(`${sec}|`)).map((k) => [k.slice(String(sec).length + 1), true]));
-    const sneakers = partitionQueued(allSneakers, requests, hubs, local);
-    const gone = resolving[sec] || {};
-    lists[sec] = { all, visible, sneakers, hubs, count: visible.filter((c) => !gone[c.pid]).length + sneakers.todo.length };
-  }
+  // QUEUED AT CENTRAL → OFF THAT DIVISION'S LIST. One source of truth: a real
+  // open request at one of the division's hubs (missingScreenCore.js). There
+  // is no other "queued" mark anywhere — nothing is stored but the request.
+  const cards = useMemo(() => {
+    const out = {};
+    for (const sec of divisions) {
+      const w = walked[sec];
+      out[sec] = { clothing: openingOrder(w.all), sneakers: openingOrder(partitionQueued(w.sneakers, requests, w.hubs).todo) };
+    }
+    return out;
+  }, [divisions, walked, requests]);
 
-  // THE LIVE REQUEST RECORDS ARE THE TRUTH THE MOMENT THEY SHOW IT. A mark is
-  // only the bridge between this device's write and its echo; once the open
-  // request is seen the mark goes, so a cancel inside the hold window brings
-  // the card straight back (CodeRabbit, PR #961). The timer is the backstop.
-  useEffect(() => {
-    const seen = Object.keys(justQueued).filter((k) => {
-      const at = k.indexOf("|");
-      return lists[k.slice(0, at)]?.sneakers.waiting.some((w) => w.queue && w.card.pid === k.slice(at + 1));
-    });
-    if (!seen.length) return;
-    for (const k of seen) { clearTimeout(queueTimers.current[k]); delete queueTimers.current[k]; }
-    setJustQueued((m) => { const n = { ...m }; for (const k of seen) delete n[k]; return n; });
-  });
+  // Per division, as the Solve hooks expect it (see Engines below).
+  const [resolving, setResolving] = useState({});
+  const [solvedSession, setSolvedSession] = useState([]);
+  const setResolvingFor = useCallback((section) => (fn) => setResolving((all) => {
+    const cur = all[section] || NONE;
+    const next = typeof fn === "function" ? fn(cur) : fn;
+    return next === cur ? all : { ...all, [section]: next };
+  }), []);
 
-  const onQueued = (sec) => (pid, hubs, msg) => {
-    const k = `${sec}|${pid}`;
-    setJustQueued((m) => ({ ...m, [k]: true }));
-    clearTimeout(queueTimers.current[k]);
-    queueTimers.current[k] = setTimeout(() => setJustQueued((m) => { const n = { ...m }; delete n[k]; return n; }), QUEUED_HOLD_MS);
-    const id = `${k}|${Date.now()}`;
-    setNotes((l) => [{ id, pid, section: sec, name: byId.get(pid)?.name || pid, msg }, ...l].slice(0, 5));
-    noteTimers.current[id] = setTimeout(() => setNotes((l) => l.filter((x) => x.id !== id)), NOTE_MS);
-  };
-
-  // A SOLVE STILL WRITING IS A JOB IN HAND for the whole screen, not only for
-  // the division it was tapped on: switching division unmounts that list (and
-  // its own busy flag) while the write is still on its way, and an app update
-  // must not reload the page under it (CodeRabbit, PR #961).
-  const solvePending = Object.values(resolving).some((m) => Object.values(m || {}).includes("pending"));
-  useEffect(() => {
-    setUpdateBusy("missing-products", solvePending);
-    return () => setUpdateBusy("missing-products", false);
-  }, [solvePending]);
-
-  const [view, setView] = useState("todo");   // "todo" | "done" | "hidden"
-  const [lightbox, setLightbox] = useState(null);
-  const onPhoto = (p) => { const url = primaryPhotoUrl(p) || p?.photoUrl; if (url) setLightbox(url); };
-
-  const hiddenCards = useMemo(() => {
-    const seen = new Set();
-    return divisions.flatMap((s) => walked[s]?.all || []).filter((c) => (seen.has(c.pid) ? false : (seen.add(c.pid), true)));
-  }, [divisions, walked]);
-
+  const shared = { products, allStock, targetsState, walked, cards, resolving, setResolvingFor, solvedSession, setSolvedSession };
   return (
-    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
-      <div style={{ maxWidth: 720, margin: "0 auto", padding: "12px 12px 80px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-          <button data-action="exit" onClick={onExit} style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 11, padding: "10px 14px", minHeight: 44, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: FONT }}>← Back</button>
-          <div style={{ fontSize: 19, fontWeight: 800 }}>Missing Products</div>
-        </div>
-
-        {/* THE ONE SWITCH: which division's list, and how many are left on each. */}
-        <div role="tablist" aria-label="Division" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(divisions.length, 1)}, 1fr)`, gap: 8, marginBottom: 12, position: "sticky", top: 0, zIndex: 5, background: BG, padding: "6px 0" }}>
-          {divisions.map((sec) => {
-            const on = sec === section;
-            return (
-              <button key={sec} role="tab" aria-selected={on} data-division={sec} onClick={() => { setPick(sec); setView("todo"); }}
-                style={{ minHeight: 64, borderRadius: 15, cursor: "pointer", fontFamily: FONT, textAlign: "center", padding: "8px 6px",
-                  border: on ? "1px solid rgba(60,110,255,.75)" : "1px solid rgba(255,255,255,.12)",
-                  background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)", color: on ? "#fff" : "rgba(255,255,255,.55)" }}>
-                <div style={{ fontSize: 16, fontWeight: 800 }}>{sectionName(network, sec)}</div>
-                <div data-division-count={sec} style={{ fontSize: 12.5, fontWeight: 700, marginTop: 2, color: on ? BLUE_L : "rgba(255,255,255,.45)" }}>
-                  {stockReady ? `${lists[sec].count} missing` : "…"}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
-        {!divisions.length && <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 14 }}>No division is open to this account.</div>}
-
-        {section != null && (
-          <DivisionList key={section} section={section} network={network} products={products} byId={byId} allStock={allStock}
-            list={lists[section]} stockReady={stockReady} targetsState={targetsState} hiddenMap={hiddenMap} hiddenCards={hiddenCards}
-            resolving={resolving[section] || NONE}
-            setResolving={(fn) => setResolving((all) => {
-              const cur = all[section] || NONE;
-              const next = typeof fn === "function" ? fn(cur) : fn;
-              return next === cur ? all : { ...all, [section]: next };
-            })}
-            solvedSession={solvedSession} setSolvedSession={setSolvedSession}
-            notes={notes.filter((n) => n.section === section)} dismissNote={(id) => setNotes((l) => l.filter((x) => x.id !== id))}
-            onQueued={onQueued(section)} view={view} setView={setView} onPhoto={onPhoto} />
-        )}
-      </div>
-      <PhotoLightbox url={lightbox} onClose={() => setLightbox(null)} />
-    </div>
+    <Engines sections={divisions} shared={shared}>
+      {(apis) => (
+        <Body apis={apis} divisions={divisions} network={network} products={products} allStock={allStock} targets={targetsState}
+          hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled} cfg={cfg} cfgSettled={cfgState.settled}
+          heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} />
+      )}
+    </Engines>
   );
 }
 
-// One division's list. Keyed by the division, so switching starts every open
-// panel, tick and filter afresh — nothing chosen on Marathon can ride into a
-// Concrete confirm.
-function DivisionList({ section, network, products, byId, allStock, list, stockReady, targetsState, hiddenMap, hiddenCards, resolving, setResolving, solvedSession, setSolvedSession, notes, dismissNote, onQueued, view, setView, onPhoto }) {
-  const division = sectionName(network, section);
-  const solve = useProductSolve({
-    products, category: "all", allStock, cards: list.visible, section,
-    targets: targetsState.value, targetsSettled: targetsState.settled, targetsError: targetsState.error,
-    solvedSession, setSolvedSession, resolving, setResolving, onOpenSolved: () => setView("done"), onPhoto,
-  });
-  const request = useSneakerRequest({ products, section, cards: list.sneakers.todo, onQueued, onPhoto });
-
-  const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("");
-  const [brand, setBrand] = useState("");
-  const [shown, setShown] = useState(PAGE);
-
-  const rows = useMemo(
-    () => buildRows({ productCards: solve.cards, sneakerCards: solve.selectMode ? [] : request.cards, byId, categoryKeyOf: effectiveCategoryKey }),
-    [solve.cards, request.cards, solve.selectMode, byId],
+// ONE PAIR OF SOLVE HOOKS PER DIVISION. Each list solves into its own division
+// only, and the hooks keep what is in flight per division — so they are
+// mounted once for each, for as long as the screen is open, and the screen
+// reaches them through their one-tap surface (`api`).
+function Engines({ sections, shared, children, acc = NONE }) {
+  if (!sections.length) return children(acc);
+  const [section, ...rest] = sections;
+  return (
+    <Engine section={section} shared={shared}>
+      {(api) => <Engines sections={rest} shared={shared} acc={{ ...acc, [section]: api }}>{children}</Engines>}
+    </Engine>
   );
-  const categories = useMemo(() => facet(rows, "category"), [rows]);
-  const brands = useMemo(() => facet(rows, "brand"), [rows]);
-  // A filter whose last card has just left falls back to "all" rather than
-  // showing an empty list under a value that is no longer offered.
-  const cat = categories.some((c) => c.value === category) ? category : "";
-  const br = brands.some((b) => b.value === brand) ? brand : "";
-  const filtered = useMemo(() => filterRows(rows, { search, category: cat, brand: br }), [rows, search, cat, br]);
-  const filtering = !!(search.trim() || cat || br);
+}
+function Engine({ section, shared, children }) {
+  const product = useProductSolve({
+    products: shared.products, category: "all", allStock: shared.allStock, cards: shared.walked[section]?.all || [], section,
+    targets: shared.targetsState.value, targetsSettled: shared.targetsState.settled, targetsError: shared.targetsState.error,
+    solvedSession: shared.solvedSession, setSolvedSession: shared.setSolvedSession,
+    resolving: shared.resolving[section] || NONE, setResolving: shared.setResolvingFor(section),
+  });
+  const sneaker = useSneakerRequest({ products: shared.products, section, cards: shared.cards[section]?.sneakers || [], onQueued: NOOP, targets: shared.targetsState.value });
+  return children({ product: product.api, sneaker: sneaker.api });
+}
 
-  // Marking to hide works on the WHOLE division's list ("Mark all" marks every
-  // card), so the search and filters are cleared and put away while marking —
-  // a filtered view must never sit over a wider selection.
-  // (The page limit stays: "Mark all" marks by product, not by what is drawn.)
-  useEffect(() => { if (solve.selectMode) { setSearch(""); setCategory(""); setBrand(""); } setShown(PAGE); }, [solve.selectMode]);
+function Body({ apis, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit }) {
+  const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+  const [pick, setPick] = useState(null);
+  const section = divisions.includes(pick) ? pick : divisions[0];
+  const [kind, setKind] = useState("sneakers");
+  const [view, setView] = useState("list");   // "list" | "hidden"
+  const [lightbox, setLightbox] = useState(null);
+  const active = bucketId(section, kind);
+  const canAct = divisions.length ? !!apis[divisions[0]]?.product.canAct : false;
 
-  const waiting = list.sneakers.waiting;
+  const label = useCallback((loc) => SHORT[loc] || nameOf(loc, network), [network]);
+  const reqByPid = useMemo(() => openRequestsByProduct(requests), [requests]);
+
+  // ── THE ROWS: every card asked, before it is drawn, what a tap would send ──
+  const apisRef = useRef(apis); apisRef.current = apis;
+  const ctx = useRef(null);
+  ctx.current = { byId, allStock, targets: targets.value, reqByPid, cfg, network, central, label };
+  const buckets = useMemo(() => divisions.flatMap((sec) => [
+    {
+      id: bucketId(sec, "sneakers"), cards: cards[sec].sneakers,
+      build: (card) => {
+        const c = ctx.current, api = apisRef.current[sec].sneaker;
+        const open = c.reqByPid.get(card.pid);
+        return sneakerRow({
+          card, section: sec, dests: api.destinations, planFor: api.planFor, blocked: !!api.notLive, central: c.central, nameOf: c.label,
+          hasPolicy: api.hasPolicy, requested: !!open && Object.keys(open).length > 0,
+          // Hub 1 and Hub 2 never share a sneaker: the same test the write
+          // makes (cells, target rows and open requests at the OTHER hub),
+          // asked here so a hub that would be refused is never a live button.
+          refusal: (cd, [hub]) => {
+            const other = otherMarathonHub(hub);
+            if (!other) return null;
+            const cells = Object.fromEntries(Object.entries(c.allStock?.[other]?.[cd.pid] || {}).map(([k, v]) => [stockSizeKey(k), v]));
+            return marathonHubSeated({ cells, rows: c.targets?.[other]?.[cd.pid], openRequest: !!open?.[other] }) ? marathonSolveRefusal(hub) : api.pickRefusal(cd, [hub]);
+          },
+        });
+      },
+    },
+    {
+      id: bucketId(sec, "clothing"), cards: cards[sec].clothing,
+      build: (card) => {
+        const c = ctx.current, api = apisRef.current[sec].product;
+        return productRow({
+          card, section: sec, product: c.byId.get(card.pid), dests: shopDestinations(c.network, sec), tickable: api.tickableStores(card),
+          planFor: api.planFor, openByLoc: c.reqByPid.get(card.pid) || NONE, allStock: c.allStock, central: c.central,
+          routes: c.cfg?.routes, exclusive: shopsAreExclusive(c.network, sec), nameOf: c.label,
+        });
+      },
+    },
+  ]), [divisions, cards]);
+
+  const enginesReady = divisions.every((s) => apis[s].product.ready && apis[s].sneaker.ready);
+  const ready = stockReady && requestsSettled && cfgSettled && targets.settled && enginesReady;
+  // Anything a plan reads. A new identity means "work the rows out again".
+  const version = useMemo(() => ({}), [buckets, allStock, requests, cfg, targets.value, heldLines, products, network, canAct]);
+  const sliced = useSlicedRows({ buckets, active, version, ready });
+
+  // ── OFF THE LIST FOR THIS VISIT: solved here, or hidden here ───────────────
+  const [gone, setGone] = useState({});       // row key → true
+  const [busy, setBusy] = useState({});       // row key → the destination being written
+  const inFlight = useRef(new Set());
+  const listedOf = (id) => sliced.rows[id].filter((r) => !(hiddenMap && hiddenMap[r.pid]) && !gone[r.key]);
+  const countOf = (sec) => (KINDS.every(([k]) => sliced.complete[bucketId(sec, k)])
+    ? KINDS.reduce((t, [k]) => t + listedOf(bucketId(sec, k)).length, 0) : null);
+
+  // A write still on its way is a job in hand: no app update under it.
+  const writing = Object.keys(busy).length > 0;
+  useEffect(() => {
+    setUpdateBusy("missing-products", writing);
+    return () => setUpdateBusy("missing-products", false);
+  }, [writing]);
+
+  // ── THE FROZEN ORDER, AND THE ONE MOVEMENT (a card leaving) ────────────────
+  const frozen = useRef({});
+  const [, repaint] = useState(0);
+  const fz = (frozen.current[active] ||= { ...createFrozenOrder(), last: new Map(), shown: null, leaving: new Map() });
+  const listed = view === "list" && section != null && sliced.complete[active] ? listedOf(active) : [];
+  const listedBy = new Map(listed.map((r) => [r.key, r]));
+  // Shoes waiting for a policy sit together at the top, under one label.
+  const before = new Set(fz.seen);
+  freezeOrder(fz, listed.map((r) => r.key));
+  for (const r of listed) fz.last.set(r.key, r);
+  if (fz.shown) for (const k of fz.shown) if (!listedBy.has(k) && !fz.leaving.has(k)) fz.leaving.set(k, null);
+  for (const k of [...fz.leaving.keys()]) if (listedBy.has(k)) { clearTimeout(fz.leaving.get(k)); fz.leaving.delete(k); }
+  const inOrder = fz.order.filter((k) => listedBy.has(k) || fz.leaving.has(k)).map((k) => ({
+    key: k, row: listedBy.get(k) || fz.last.get(k), leaving: !listedBy.has(k),
+    // put back by Undo (seen before, not on screen a moment ago): its slot opens
+    entering: !!fz.shown && before.has(k) && listedBy.has(k) && !fz.shown.has(k),
+  }));
+  const display = [...inOrder.filter((d) => d.row.needsPolicy), ...inOrder.filter((d) => !d.row.needsPolicy)];
+  useEffect(() => {
+    fz.shown = new Set(listedBy.keys());
+    for (const [k, t] of fz.leaving) {
+      if (t) continue;
+      fz.leaving.set(k, setTimeout(() => { fz.leaving.delete(k); repaint((n) => n + 1); }, LEAVE_MS + 60));
+    }
+  });
+  // A list that was off screen starts clean: nothing "leaves" on arrival.
+  const lastActive = useRef(active);
+  if (lastActive.current !== active) {
+    const prev = frozen.current[lastActive.current];
+    if (prev) { for (const t of prev.leaving.values()) clearTimeout(t); prev.leaving.clear(); prev.shown = null; }
+    lastActive.current = active;
+  }
+  useEffect(() => () => { for (const f of Object.values(frozen.current)) for (const t of f.leaving.values()) clearTimeout(t); }, []);
+
+  const [shownN, setShownN] = useState({});
+  const limit = shownN[active] || PAGE;
+  const more = useRef(null);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined" || !more.current) return undefined;
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) setShownN((m) => ({ ...m, [active]: (m[active] || PAGE) + PAGE })); }, { rootMargin: "600px" });
+    io.observe(more.current);
+    return () => io.disconnect();
+  }, [active, display.length > limit]);
+
+  // ── THE TOAST ──────────────────────────────────────────────────────────────
+  const [toast, setToast] = useState(null);   // { id, ok, text, undo }
+  const toastTimer = useRef(null);
+  const say = useCallback((t) => {
+    clearTimeout(toastTimer.current);
+    const id = Date.now() + Math.random();
+    setToast({ id, ...t });
+    toastTimer.current = setTimeout(() => setToast((cur) => (cur && cur.id === id ? null : cur)), TOAST_MS);
+  }, []);
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
+  const back = (key) => setGone((g) => { const n = { ...g }; delete n[key]; return n; });
+
+  // ── ONE TAP: THE DESTINATION IS THE SOLVE ──────────────────────────────────
+  const act = useRef({});
+  act.current.tap = async (row, dest) => {
+    if (inFlight.current.has(row.key) || !canAct) return;
+    const c = ctx.current;
+    // THE GATE AT THE TAP, whatever the card showed: this list's own
+    // destinations only; never Pine and Concrete both; never a dead button.
+    const kindOf = row.kind === "sneakers" ? "sneaker" : "product";
+    let problem = tapProblem({ row, dest }) || destinationProblem({ network: c.network, section: row.section, destinations: [dest], kind: kindOf });
+    if (!problem && row.kind === "clothing" && shopsAreExclusive(c.network, row.section)) {
+      const kept = shopDestinations(c.network, row.section).filter((s) => s !== dest && Object.keys(c.allStock?.[s]?.[row.pid] || {}).length > 0);
+      const mine = Object.keys(c.allStock?.[dest]?.[row.pid] || {}).length > 0;
+      if (kept.length && !mine) problem = `${c.label(kept[0])} already keeps this — it is not sent to ${c.label(dest)} as well.`;
+    }
+    if (problem) { say({ ok: false, text: problem }); return; }
+    inFlight.current.add(row.key);
+    setBusy((b) => ({ ...b, [row.key]: dest }));
+    const api = apisRef.current[row.section];
+    let res;
+    try { res = row.kind === "sneakers" ? await api.sneaker.solveTo(row.card, dest) : await api.product.solveTo(row.card, dest); }
+    catch (e) { res = { ok: false, msg: `Nothing changed — retry. (${e?.message || "error"})` }; }
+    inFlight.current.delete(row.key);
+    setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
+    if (!res || !res.ok) { say({ ok: false, text: res?.msg || "Nothing was sent." }); return; }   // the card stays put
+    setGone((g) => ({ ...g, [row.key]: true }));
+    const what = res.units > 0 ? ` · ${res.units} ${row.kind === "sneakers" ? "pair" : "unit"}${res.units === 1 ? "" : "s"}` : "";
+    say({
+      ok: true, text: `${c.label(dest)}${what}`,
+      undo: async () => {
+        let out;
+        if (row.kind === "sneakers") out = await undoSneakerRequest(res);
+        else {
+          out = { ok: true };
+          for (const u of res.rows || []) {
+            // eslint-disable-next-line no-await-in-loop
+            const r = await apisRef.current[row.section].product.undoEntry(u);
+            if (!r || !r.ok) { out = { ok: false, msg: r?.msg || "Not undone." }; break; }
+          }
+          if (!(res.rows || []).length) out = { ok: false, msg: "Nothing to undo." };
+        }
+        if (out.ok) { back(row.key); say({ ok: true, text: "Undone" }); } else say({ ok: false, text: out.msg });
+      },
+    });
+  };
+  act.current.hide = async (row) => {
+    if (inFlight.current.has(row.key) || !canAct) return;
+    inFlight.current.add(row.key);
+    setBusy((b) => ({ ...b, [row.key]: "hide" }));
+    const res = await hideProduct(row.pid);
+    inFlight.current.delete(row.key);
+    setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
+    if (!res.ok) { say({ ok: false, text: res.msg }); return; }
+    setGone((g) => ({ ...g, [row.key]: true }));
+    say({ ok: true, text: "Hidden", undo: async () => { const r = await unhideProduct(row.pid); if (r.ok) { back(row.key); say({ ok: true, text: "Back on the list" }); } else say({ ok: false, text: r.msg }); } });
+  };
+  const onTap = useCallback((row, dest) => act.current.tap(row, dest), []);
+  const onHide = useCallback((row) => act.current.hide(row), []);
+  const onPhoto = useCallback((p) => { const url = primaryPhotoUrl(p) || p?.photoUrl; if (url) setLightbox(url); }, []);
+
+  // The hidden tab lists every hidden product against the cards still missing.
+  const hiddenCards = useMemo(() => {
+    const seen = new Set();
+    return divisions.flatMap((s) => [...(walked[s]?.all || []), ...(walked[s]?.sneakers || []).map((c) => ({ ...c, units: c.centralUnits }))])
+      .filter((c) => (seen.has(c.pid) ? false : (seen.add(c.pid), true)));
+  }, [divisions, walked]);
   const hiddenCount = Object.keys(hiddenMap || {}).length;
 
+  const box = (on, h) => ({
+    height: h, borderRadius: 14, cursor: "pointer", fontFamily: FONT, textAlign: "center", padding: 0, WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
+    border: on ? "1px solid rgba(60,110,255,.75)" : "1px solid rgba(255,255,255,.12)",
+    background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)", color: on ? "#fff" : "rgba(255,255,255,.55)",
+  });
+  const firstNormal = display.findIndex((d) => !d.row.needsPolicy);
+  const anyNeeds = display.some((d) => d.row.needsPolicy && !d.leaving);
+
   return (
-    <>
-      <div style={{ display: "flex", gap: 7, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
-        <button data-view="todo" onClick={() => setView("todo")} style={tab(view === "todo")}>To do</button>
-        <button data-view="done" onClick={() => setView("done")} style={tab(view === "done")}>Queued &amp; solved{waiting.length ? ` (${waiting.length} waiting)` : ""}</button>
-        {/* Once OPEN the hidden tab announces itself; its entrance stays the
-            unlabelled press-and-hold spot at the end of this row
-            (HiddenProducts.jsx HoldSpot — discretion, not access control). */}
-        {view === "hidden" && <button data-view="hidden" onClick={() => setView("hidden")} style={tab(true)}>Hidden ({hiddenCount})</button>}
-        <HoldSpot onTrigger={() => setView("hidden")} />
+    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "12px 12px 120px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, height: 44, marginBottom: 10 }}>
+          <button data-action="exit" onClick={() => (view === "hidden" ? setView("list") : onExit?.())}
+            style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 11, padding: "0 14px", height: 44, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>← Back</button>
+          <div data-title style={{ fontSize: 19, fontWeight: 800, whiteSpace: "nowrap" }}>{view === "hidden" ? `Hidden (${hiddenCount})` : "Missing Products"}</div>
+          {/* The hidden tab's entrance: the unlabelled press-and-hold spot
+              (HiddenProducts.jsx HoldSpot — discretion, not access control). */}
+          <HoldSpot onTrigger={() => setView("hidden")} />
+        </div>
+
+        <div style={{ position: "sticky", top: 0, zIndex: 5, background: BG, paddingBottom: 10 }}>
+          <div role="tablist" aria-label="Division" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(divisions.length, 1)}, 1fr)`, gap: 8, marginBottom: 8 }}>
+            {divisions.map((sec) => {
+              const on = sec === section && view === "list";
+              const n = countOf(sec);
+              return (
+                <button key={sec} role="tab" aria-selected={on} data-division={sec} onClick={() => { setPick(sec); setView("list"); }} style={box(on, 62)}>
+                  <div style={{ fontSize: 16, fontWeight: 800, lineHeight: "20px" }}>{sectionName(network, sec)}</div>
+                  <div data-division-count={sec} style={{ fontSize: 14, fontWeight: 700, lineHeight: "18px", height: 18, marginTop: 2, color: on ? BLUE_L : "rgba(255,255,255,.45)" }}>{n == null ? " " : n}</div>
+                </button>
+              );
+            })}
+          </div>
+          <div role="tablist" aria-label="Kind" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {KINDS.map(([k, name]) => (
+              <button key={k} role="tab" aria-selected={kind === k && view === "list"} data-kind={k} onClick={() => { setKind(k); setView("list"); }}
+                style={{ ...box(kind === k && view === "list", 44), fontSize: 15, fontWeight: 800 }}>{name}</button>
+            ))}
+          </div>
+        </div>
+
+        {!divisions.length && <div style={{ padding: 18, color: GRAY, fontSize: 14 }}>No division is open to this account.</div>}
+
+        {view === "hidden" && <HiddenProducts products={products} cards={hiddenCards} hiddenMap={hiddenMap} />}
+
+        {view === "list" && section != null && (
+          <div data-list={active}>
+            {!sliced.complete[active]
+              ? Array.from({ length: 6 }, (_, i) => <SkeletonRow key={i} />)
+              : !display.length
+                ? <div data-empty style={{ height: CARD_H + CARD_GAP, display: "flex", alignItems: "center", justifyContent: "center", color: GRAY, fontSize: 15 }}>Nothing to send</div>
+                : display.slice(0, limit).map((d, i) => (
+                  <React.Fragment key={d.key}>
+                    {i === 0 && anyNeeds && <div data-needs-label style={{ height: 26, fontSize: 12.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: AMBER }}>Needs policy</div>}
+                    {i === firstNormal && i > 0 && anyNeeds && <div aria-hidden="true" style={{ height: 14 }} />}
+                    <Slot leaving={d.leaving} entering={d.entering} data-slot={d.key}>
+                      <MissingRow row={d.row} product={byId.get(d.row.pid)} twinProduct={d.row.twin ? byId.get(d.row.twin) : null}
+                        busy={busy[d.key] || null} canAct={canAct} onTap={onTap} onHide={onHide} onPhoto={onPhoto} />
+                    </Slot>
+                  </React.Fragment>
+                ))}
+            {sliced.complete[active] && display.length > limit && (
+              <button ref={more} data-action="show-more" onClick={() => setShownN((m) => ({ ...m, [active]: limit + PAGE }))}
+                style={{ ...box(false, 48), display: "block", width: "100%", fontSize: 14, fontWeight: 700 }}>More</button>
+            )}
+          </div>
+        )}
       </div>
 
-      {view === "hidden" && <HiddenProducts products={products} cards={hiddenCards} hiddenMap={hiddenMap} />}
-
-      {view === "done" && (
-        <>
-          <div style={{ fontSize: 13, fontWeight: 800, margin: "2px 2px 8px" }}>Waiting at Central — {division}</div>
-          {!waiting.length && <div style={{ ...GLASS, padding: 14, color: GRAY, fontSize: 13, marginBottom: 14 }}>No sneaker request from this list is waiting at Central.</div>}
-          {waiting.map(({ card, queue }) => (
-            <div key={card.pid} data-waiting={card.pid} style={{ ...GLASS, display: "flex", gap: 11, alignItems: "center", padding: "10px 12px", marginBottom: 8 }}>
-              <CardPhoto product={byId.get(card.pid)} productId={card.pid} snapshot={card.photo} size={52} />
-              <div style={{ flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.4 }}>
-                <b>{card.name}</b>
-                <div style={{ color: GRAY, fontSize: 12.5 }}>
-                  {queue
-                    ? `${queue.units} pair${queue.units === 1 ? "" : "s"} requested into ${queue.hubs.map((h) => nameOf(h, network)).join(" and ")} — ${queue.sizes.map((x) => `${x.size}×${x.qty}`).join(" · ")}. Central picks it from Source; it comes back to the list if the request is cancelled.`
-                    : "Requested a moment ago — Central picks it from Source."}
-                </div>
-              </div>
-            </div>
-          ))}
-          <div style={{ fontSize: 13, fontWeight: 800, margin: "16px 2px 8px" }}>Solved</div>
-          {solve.solvedView}
-        </>
-      )}
-
-      {view === "todo" && (
-        <>
-          {solve.viewOnly}
-          {/* JUST QUEUED — the card has left the list; this says what happened to it. */}
-          {notes.map((n) => (
-            <div key={n.id} data-just-queued={n.pid} style={{ ...GLASS, display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", marginBottom: 8, border: "1px solid rgba(74,222,128,.4)" }}>
-              <div style={{ flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.4, color: "rgba(255,255,255,.8)" }}>
-                <b style={{ color: GREEN }}>Queued ✓</b> <b style={{ color: "#fff" }}>{n.name}</b> — {n.msg}
-              </div>
-              <button aria-label="Dismiss" onClick={() => dismissNote(n.id)} style={{ background: "none", border: "none", color: GRAY, fontSize: 20, lineHeight: 1, cursor: "pointer", minWidth: 40, minHeight: 40, fontFamily: FONT }}>×</button>
-            </div>
-          ))}
-          {solve.strip}
-
-          {!solve.selectMode && <>
-          <input type="search" value={search} onChange={(e) => { setSearch(e.target.value); setShown(PAGE); }} placeholder={`Search ${division}'s list…`} aria-label="Search"
-            enterKeyHint="search" autoCapitalize="none" autoCorrect="off"
-            style={{ ...input, width: "100%", boxSizing: "border-box", fontSize: 16, minHeight: 46, marginBottom: 8 }} />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-            <select aria-label="Category" value={cat} onChange={(e) => { setCategory(e.target.value); setShown(PAGE); }} style={select}>
-              <option value="">All categories</option>
-              {categories.map((c) => <option key={c.value} value={c.value}>{c.value} ({c.count})</option>)}
-            </select>
-            <select aria-label="Brand" value={br} onChange={(e) => { setBrand(e.target.value); setShown(PAGE); }} style={select}>
-              <option value="">All brands</option>
-              {brands.map((b) => <option key={b.value} value={b.value}>{b.value} ({b.count})</option>)}
-            </select>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 2px 10px", minHeight: 40 }}>
-            <div data-list-count style={{ flex: 1, fontSize: 12.5, color: GRAY }}>
-              {!stockReady ? "Loading live stock…" : filtering ? `${filtered.length} of ${rows.length} shown · newest uploads first` : `${rows.length} missing from ${division} · newest uploads first`}
-            </div>
-            {filtering && <button data-action="clear-filters" onClick={() => { setSearch(""); setCategory(""); setBrand(""); }} style={{ ...tab(false), minHeight: 38, padding: "7px 12px", fontSize: 12.5 }}>Clear</button>}
-          </div>
-          </>}
-          {solve.selectBar}
-          {solve.selectMode && <div style={{ fontSize: 12, color: AMBER, margin: "0 2px 8px" }}>Marking to hide — sneakers are left out here; they have no Hide.</div>}
-
-          {stockReady && !filtered.length && (
-            <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 14, lineHeight: 1.45 }}>
-              {filtering ? "Nothing on this list matches." : waiting.length
-                ? `Nothing left to do for ${division} — the rest is queued at Central.`
-                : `Nothing is missing from ${division}.`}
-            </div>
+      {toast && (
+        <div data-toast={toast.ok ? "ok" : "fail"} role="status" aria-live="polite"
+          style={{ position: "fixed", left: 12, right: 12, bottom: "calc(16px + env(safe-area-inset-bottom, 0px))", zIndex: 60, maxWidth: 696, margin: "0 auto",
+            display: "flex", alignItems: "center", gap: 12, minHeight: 56, padding: "8px 8px 8px 16px", borderRadius: 16, boxSizing: "border-box",
+            background: "#10141f", border: `1px solid ${toast.ok ? "rgba(74,222,128,.55)" : "rgba(248,113,113,.6)"}`, boxShadow: "0 18px 50px -12px rgba(0,0,0,.9)", fontFamily: FONT }}>
+          <div style={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 700, lineHeight: 1.3, color: toast.ok ? GREEN : RED }}>{toast.ok && toast.undo ? "✓ " : ""}{toast.text}</div>
+          {toast.undo && (
+            <button data-action="undo" onClick={() => { const u = toast.undo; setToast(null); clearTimeout(toastTimer.current); u(); }}
+              style={{ height: 44, padding: "0 18px", borderRadius: 12, background: "rgba(251,191,36,.12)", border: "1px solid rgba(251,191,36,.5)", color: AMBER, fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>Undo</button>
           )}
-          {filtered.slice(0, shown).map((r) => (r.kind === "sneaker" ? request.renderCard(r.card) : solve.renderCard(r.card)))}
-          {filtered.length > shown && (
-            <button data-action="show-more" onClick={() => setShown((n) => n + PAGE)} style={{ ...tab(false), display: "block", width: "100%", minHeight: 50, marginTop: 4 }}>
-              Show {Math.min(PAGE, filtered.length - shown)} more ({filtered.length - shown} left)
-            </button>
-          )}
-          {solve.bulkBar}
-        </>
+        </div>
       )}
-    </>
+      <PhotoLightbox url={lightbox} onClose={() => setLightbox(null)} />
+    </div>
   );
 }
