@@ -26,7 +26,7 @@ describe("the screen's wiring — the partition is downstream and the lists don'
     // STILL MISSING vs NO LONGER MISSING needs cards the main list no longer shows.
     expect(SCREEN).toMatch(/const visible = partitionHidden\(all, hiddenMap\)\.visible;/);
     expect(SCREEN).toMatch(/useProductSolve\(\{\s*products, category: "all", allStock, cards: list\.visible, section,/);
-    expect(SCREEN).toMatch(/divisions\.flatMap\(\(s\) => lists\[s\]\?\.all \|\| \[\]\)/);
+    expect(SCREEN).toMatch(/divisions\.flatMap\(\(s\) => walked\[s\]\?\.all \|\| \[\]\)/);
     expect(SCREEN).toMatch(/<HiddenProducts products=\{products\} cards=\{hiddenCards\} hiddenMap=\{hiddenMap\} \/>/);
   });
   it("the count on the division switch is built from the visible set", () => {

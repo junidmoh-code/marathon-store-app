@@ -176,8 +176,9 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
   // not missing, and a Solve on it would double-send (count-integrity hold lane).
   const heldLines = useStockHeld();
   const cardsAll = useMemo(
-    () => computeMissingFootwear({ allStock, products, hubs: HUBS, heldLines, central: CENTRAL }),
-    [allStock, products, heldLines, HUBS, CENTRAL],
+    // (not walked when the screen hands the cards in)
+    () => (cardsProp ? [] : computeMissingFootwear({ allStock, products, hubs: HUBS, heldLines, central: CENTRAL })),
+    [allStock, products, heldLines, HUBS, CENTRAL, cardsProp],
   );
   // QUEUED AT CENTRAL → OFF THIS DIVISION'S LIST (missingScreenCore.js). A card
   // whose request from this screen is still open at one of THIS division's

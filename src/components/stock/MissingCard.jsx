@@ -90,7 +90,7 @@ export default function MissingCard({
           </>
         )}
         {!select && !panelOpen && links.length > 0 && (
-          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 2 }}>
+          <div style={{ display: "flex", gap: "0 16px", flexWrap: "wrap", marginTop: 2 }}>
             {links.map((l) => <button key={l.action} data-action={l.action} onClick={l.onClick} disabled={!!l.disabled} title={l.title || undefined} style={linkBtn}>{l.label}</button>)}
           </div>
         )}

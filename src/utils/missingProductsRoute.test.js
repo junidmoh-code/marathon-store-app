@@ -28,12 +28,15 @@ describe("App wiring", () => {
     // a stored role cannot outlive the stock role that opened it
     expect(APP).toMatch(/role === ROLES\.HEALTH \|\| role === ROLES\.MISSING_PRODUCTS \|\|[^)]*\) && !canAccessStock\) \{ setRole\(null\); return; \}/);
   });
-  it("an old Inventory Health link redirects: the hash opens the screen and is cleared", () => {
-    const at = APP.indexOf("if (!isMissingProductsHash(hash)) return;");
+  it("an old Inventory Health link redirects: the hash opens the screen, once access is known, and is replaced (Back does not bounce)", () => {
+    const at = APP.indexOf("if (!isMissingProductsHash(hash) || !canAccessStock) return;");
     expect(at).toBeGreaterThan(-1);
-    const effect = APP.slice(at, at + 200);
+    const effect = APP.slice(at, at + 320);
     expect(effect).toContain("setRole(ROLES.MISSING_PRODUCTS);");
-    expect(effect).toContain('window.location.hash = "";');
+    expect(effect).toContain('window.history.replaceState(null, "", window.location.pathname + window.location.search);');
+    expect(effect).toContain('setHash("");');
+    expect(effect).toContain("}, [hash, canAccessStock]);");
+    expect(effect).not.toContain('window.location.hash = ""');
   });
   it("Inventory Health no longer has the tab — its tile takes you to the screen", () => {
     expect(APP).toContain("onOpenMissingProducts={() => setRole(ROLES.MISSING_PRODUCTS)}");

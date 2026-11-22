@@ -98,13 +98,13 @@ describe("the Concrete button on a Marathon row", () => {
     const { tree } = render();
     expect(textOf(tree)).toContain("Essentials Tee Olive");
     expect(textOf(tree)).not.toContain("Pant fashion 3306");
-    expect(buttonExactly(tree, "Make Concrete-only")).toBeTruthy();
+    expect(buttonExactly(tree, "Concrete-only")).toBeTruthy();
   });
   it("one tap: marked through the helper, the row leaves at once, the Solved row offers Undo", async () => {
     let resolve;
     markMock.mockImplementation(() => new Promise((r) => { resolve = r; }));
     const { tree, state } = render();
-    await act(async () => { buttonExactly(tree, "Make Concrete-only").props.onClick(); });
+    await act(async () => { buttonExactly(tree, "Concrete-only").props.onClick(); });
     // Gone while the write is still in flight.
     expect(textOf(tree)).not.toMatch(/Essentials Tee Olive.*Move by hand/);
     expect(buttonExactly(tree, "Solve")).toBeUndefined();
@@ -121,7 +121,7 @@ describe("the Concrete button on a Marathon row", () => {
   it("a refused mark brings the row back and says why", async () => {
     markMock.mockResolvedValue({ ok: false, message: "Permission denied — the Concrete console rules have not been pasted yet. Nothing was saved." });
     const { tree } = render();
-    await act(async () => { buttonExactly(tree, "Make Concrete-only").props.onClick(); });
+    await act(async () => { buttonExactly(tree, "Concrete-only").props.onClick(); });
     expect(textOf(tree)).toContain("Essentials Tee Olive");
     expect(textOf(tree)).toMatch(/Not marked Concrete — Permission denied/);
     expect(saveRows).not.toHaveBeenCalled();
@@ -129,7 +129,7 @@ describe("the Concrete button on a Marathon row", () => {
   it("staff without the admin role never see it", () => {
     perm.permRecord = { stockRole: "warehouse" }; perm.isSuperAdmin = false;
     const { tree } = render();
-    expect(buttonExactly(tree, "Make Concrete-only")).toBeUndefined();
+    expect(buttonExactly(tree, "Concrete-only")).toBeUndefined();
     expect(buttonExactly(tree, "Solve")).toBeTruthy();
   });
 });

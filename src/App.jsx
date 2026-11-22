@@ -21223,14 +21223,6 @@ function AppInner() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
   const wantAdmin = hash === "#admin";
-  // A LINK TO MISSING PRODUCTS — the new address, or the old one under
-  // Inventory Health — opens the Missing Products screen (missingProductsRoute.js).
-  // The fragment is cleared so Back from the screen does not bounce back in.
-  useEffect(() => {
-    if (!isMissingProductsHash(hash)) return;
-    setRole(ROLES.MISSING_PRODUCTS);
-    window.location.hash = "";
-  }, [hash]);
   // /#admin/users (list) and /#admin/users/<uid> (detail) are the User
   // Management routes. This constant only recognises the HASH — it grants
   // nothing. Authorization happens at the mount below.
@@ -21289,6 +21281,18 @@ function AppInner() {
   // set (signed out, switched account, permissions revoked), drop them back
   // to RoleSelector. Prevents a blank screen and avoids exposing a view the
   // user shouldn't see.
+  // A LINK TO MISSING PRODUCTS — the new address, or the old one under
+  // Inventory Health — opens the Missing Products screen (missingProductsRoute.js).
+  // Only once this account is KNOWN to have stock access: acting earlier would
+  // set the role, have the gate below reset it, and lose the link. The fragment
+  // is REPLACED, not pushed, so the browser's Back does not land on the link
+  // again and reopen the screen.
+  useEffect(() => {
+    if (!isMissingProductsHash(hash) || !canAccessStock) return;
+    setRole(ROLES.MISSING_PRODUCTS);
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setHash("");
+  }, [hash, canAccessStock]);
   useEffect(() => {
     if (!role) return;
     // Stock is stockRole-gated (not permission-mapped) — drop non-stock users back home.

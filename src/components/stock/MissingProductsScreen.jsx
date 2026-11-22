@@ -51,6 +51,9 @@ const NOTE_MS = 120000;
 // Cards drawn at once; the rest are one tap away (a phone draws 40 instantly,
 // 400 with a stutter).
 const PAGE = 40;
+// "Nothing is resolving" — one object, so a division with nothing in flight
+// hands the Solve hook the same value on every render.
+const NONE = Object.freeze({});
 
 const select = { ...input, width: "100%", boxSizing: "border-box", fontSize: 16, minHeight: 46, padding: "10px 12px", appearance: "none", WebkitAppearance: "none" };
 const tab = (on) => ({
@@ -97,27 +100,34 @@ export default function MissingProductsScreen({ products = [], onExit }) {
   }, []);
 
   // ── EVERY DIVISION'S CARDS, ONCE — the counts and the list read the same ──
-  const lists = useMemo(() => {
+  // THE WALKS (the catalogue against /stock) are memoised on what they read,
+  // and nothing else: a request echo, a just-queued mark or a card resolving
+  // re-runs only the cheap partition below, never the walk.
+  const walked = useMemo(() => {
     const out = {};
     for (const sec of divisions) {
+      const hubs = hubIds(network, { section: sec });
       // Marathon's is the call this list has always made; Concrete's names
       // its section and takes the engine config (central-fed shops).
       const all = !stockReady ? [] : sec === 2
         ? computeMissingProducts({ allStock, products })
         : computeMissingProducts({ allStock, products, network, section: sec, centralFed: cfg });
-      // HIDE — a view filter, strictly downstream of the compute (hiddenProductsCore.js).
-      const visible = partitionHidden(all, hiddenMap).visible;
-      const hubs = hubIds(network, { section: sec });
-      const local = Object.fromEntries(Object.keys(justQueued).filter((k) => k.startsWith(`${sec}|`)).map((k) => [k.slice(String(sec).length + 1), true]));
-      const sneakers = !stockReady ? { todo: [], waiting: [] }
-        : partitionQueued(computeMissingFootwear({ allStock, products, hubs, heldLines, central: CENTRAL }), requests, hubs, local);
-      const gone = resolving[sec] || {};
-      out[sec] = { all, visible, sneakers, hubs, count: visible.filter((c) => !gone[c.pid]).length + sneakers.todo.length };
+      const sneakers = !stockReady ? [] : computeMissingFootwear({ allStock, products, hubs, heldLines, central: CENTRAL });
+      out[sec] = { all, sneakers, hubs };
     }
     return out;
-  // `requests` is a fresh array each render by construction (useRefillRequests);
-  // the memo still saves the two catalogue walks whenever nothing else moved.
-  }, [divisions, stockReady, allStock, products, network, cfg, hiddenMap, heldLines, CENTRAL, requests, justQueued, resolving]);
+  }, [divisions, stockReady, allStock, products, network, cfg, heldLines, CENTRAL]);
+
+  const lists = {};
+  for (const sec of divisions) {
+    const { all, sneakers: allSneakers, hubs } = walked[sec];
+    // HIDE — a view filter, strictly downstream of the compute (hiddenProductsCore.js).
+    const visible = partitionHidden(all, hiddenMap).visible;
+    const local = Object.fromEntries(Object.keys(justQueued).filter((k) => k.startsWith(`${sec}|`)).map((k) => [k.slice(String(sec).length + 1), true]));
+    const sneakers = partitionQueued(allSneakers, requests, hubs, local);
+    const gone = resolving[sec] || {};
+    lists[sec] = { all, visible, sneakers, hubs, count: visible.filter((c) => !gone[c.pid]).length + sneakers.todo.length };
+  }
 
   const onQueued = (sec) => (pid, hubs, msg) => {
     const k = `${sec}|${pid}`;
@@ -125,7 +135,7 @@ export default function MissingProductsScreen({ products = [], onExit }) {
     clearTimeout(queueTimers.current[k]);
     queueTimers.current[k] = setTimeout(() => setJustQueued((m) => { const n = { ...m }; delete n[k]; return n; }), QUEUED_HOLD_MS);
     const id = `${k}|${Date.now()}`;
-    setNotes((l) => [{ id, pid, name: byId.get(pid)?.name || pid, msg }, ...l].slice(0, 5));
+    setNotes((l) => [{ id, pid, section: sec, name: byId.get(pid)?.name || pid, msg }, ...l].slice(0, 5));
     noteTimers.current[id] = setTimeout(() => setNotes((l) => l.filter((x) => x.id !== id)), NOTE_MS);
   };
 
@@ -135,8 +145,8 @@ export default function MissingProductsScreen({ products = [], onExit }) {
 
   const hiddenCards = useMemo(() => {
     const seen = new Set();
-    return divisions.flatMap((s) => lists[s]?.all || []).filter((c) => (seen.has(c.pid) ? false : (seen.add(c.pid), true)));
-  }, [divisions, lists]);
+    return divisions.flatMap((s) => walked[s]?.all || []).filter((c) => (seen.has(c.pid) ? false : (seen.add(c.pid), true)));
+  }, [divisions, walked]);
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
@@ -169,10 +179,14 @@ export default function MissingProductsScreen({ products = [], onExit }) {
         {section != null && (
           <DivisionList key={section} section={section} network={network} products={products} byId={byId} allStock={allStock}
             list={lists[section]} stockReady={stockReady} targetsState={targetsState} hiddenMap={hiddenMap} hiddenCards={hiddenCards}
-            resolving={resolving[section] || {}}
-            setResolving={(fn) => setResolving((all) => ({ ...all, [section]: typeof fn === "function" ? fn(all[section] || {}) : fn }))}
+            resolving={resolving[section] || NONE}
+            setResolving={(fn) => setResolving((all) => {
+              const cur = all[section] || NONE;
+              const next = typeof fn === "function" ? fn(cur) : fn;
+              return next === cur ? all : { ...all, [section]: next };
+            })}
             solvedSession={solvedSession} setSolvedSession={setSolvedSession}
-            notes={notes} dismissNote={(id) => setNotes((l) => l.filter((x) => x.id !== id))}
+            notes={notes.filter((n) => n.section === section)} dismissNote={(id) => setNotes((l) => l.filter((x) => x.id !== id))}
             onQueued={onQueued(section)} view={view} setView={setView} onPhoto={onPhoto} />
         )}
       </div>
@@ -214,7 +228,8 @@ function DivisionList({ section, network, products, byId, allStock, list, stockR
   // Marking to hide works on the WHOLE division's list ("Mark all" marks every
   // card), so the search and filters are cleared and put away while marking —
   // a filtered view must never sit over a wider selection.
-  useEffect(() => { if (solve.selectMode) { setSearch(""); setCategory(""); setBrand(""); setShown(1e9); } else setShown(PAGE); }, [solve.selectMode]);
+  // (The page limit stays: "Mark all" marks by product, not by what is drawn.)
+  useEffect(() => { if (solve.selectMode) { setSearch(""); setCategory(""); setBrand(""); } setShown(PAGE); }, [solve.selectMode]);
 
   const waiting = list.sneakers.waiting;
   const hiddenCount = Object.keys(hiddenMap || {}).length;

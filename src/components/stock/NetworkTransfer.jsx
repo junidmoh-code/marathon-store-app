@@ -939,8 +939,7 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
     // ONE DIVISION PER SOLVE — the list's own. A tick from the other division
     // (or a hub across the wall) is refused here, whatever the panel offered.
     const division = divisionOf(card);
-    // A Concrete-only row may tick the other division's stores too (see
-    // solveSectionsFor) — each still routed through a hub of ITS OWN section.
+    // (Since 22 Nov 2026 every row offers its own division's shops only.)
     const allowed = new Set(solveSectionsFor(card));
     // THE SECOND GATE (divisionDestinations.js): a shop outside this list's
     // division, or Pine and Concrete together, is refused here whatever a
@@ -1295,7 +1294,9 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
 
   // MARK & HIDE — the bar that turns the list into checkboxes.
   const smallBtn = { background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.12)", color: "rgba(255,255,255,.6)", borderRadius: 10, padding: "9px 12px", minHeight: 40, fontWeight: 600, fontSize: 12.5, cursor: "pointer", fontFamily: FONT };
-  const selectBar = canAct && cards.length > 0 ? (
+  // Shown while marking even if the last card has just gone (another device
+  // solved it) — its Cancel is the way out of the mode.
+  const selectBar = canAct && (cards.length > 0 || selectMode) ? (
     <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", justifyContent: "flex-end" }}>
       {selectMode ? (
         <>
@@ -1415,7 +1416,7 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
     // CONCRETE (Junid, 20 Nov 2026): one tap makes it Concrete-only — it leaves
     // this Marathon list and appears in the Concrete division's.
     if (canMarkConcrete && divisionOf(card) !== concreteSection(network) && !isConcreteProduct(product)) {
-      links.push({ action: "mark-concrete", label: "Make Concrete-only", disabled: !!resolving[card.pid], title: "Concrete-only — sold on the Concrete website only; handled by the Concrete division", onClick: () => markConcrete(card) });
+      links.push({ action: "mark-concrete", label: "Concrete-only", disabled: !!resolving[card.pid], title: "Concrete-only — sold on the Concrete website only; handled by the Concrete division", onClick: () => markConcrete(card) });
     }
     const notice = sResult ? { ok: !!sResult.ok, text: sResult.msg }
       : result ? { ok: !result.failed.length, text: `${result.moved} units → ${LOC_LABEL[result.dest]}${result.failed.length ? ` · failed: ${result.failed.join(" · ")}` : " ✓"}` }
