@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 // renderer in this environment; see hiddenProducts.gate.test.js).
 const here = dirname(fileURLToPath(import.meta.url));
 const NETWORK = readFileSync(join(here, "NetworkTransfer.jsx"), "utf8");
-const HEALTH = readFileSync(join(here, "HealthView.jsx"), "utf8");
+const SCREEN = readFileSync(join(here, "MissingProductsScreen.jsx"), "utf8");
 
 describe("solve → undo wiring", () => {
   it("a solve is recorded as undoable ONLY when it actually wrote cells, with the exact written paths and the prior-lock snapshot", () => {
@@ -101,9 +101,11 @@ describe("solve → undo wiring", () => {
     expect(NETWORK).toMatch(/refill_engine\/open\/\$\{loc\}\/\$\{u\.pid\}/);
   });
   it("the last action's undo survives the empty list — solving the last card is when it matters most", () => {
-    const start = NETWORK.indexOf("if (!cards.length) {");
-    const block = NETWORK.slice(start, NETWORK.indexOf("\n  }", start));
-    expect(block).toMatch(/\{undoStrip\}/);
+    // The strip is handed out of the hook on its own, so the stand-alone list
+    // and the Missing Products screen both draw it whether or not a card is left.
+    expect(NETWORK).toMatch(/strip: undoStrip/);
+    expect(NETWORK).toMatch(/\{n\.strip\}\s+\{n\.sectionSwitch\}/);
+    expect(SCREEN).toMatch(/\{solve\.strip\}/);
   });
   it("undo is canAct-gated like every other write on this screen", () => {
     expect(NETWORK).toMatch(/if \(!canAct \|\| undoUi\[u\.key\]\?\.busy \|\| undoInFlight\.current\.has\(u\.key\)\) return;/);
@@ -114,8 +116,10 @@ describe("solve → undo wiring", () => {
     // NetworkTransfer unmounts on those chips; its local state would die with
     // it. HealthView persists for the whole Inventory Health visit.
     // (20 Nov 2026: the session list is the Solved rows of this visit.)
-    expect(HEALTH).toMatch(/const \[solvedSession, setSolvedSession\] = useState\(\[\]\)/);
-    expect(HEALTH).toMatch(/<NetworkTransfer[^>]*solvedSession=\{solvedSession\} setSolvedSession=\{setSolvedSession\}/);
+    // (22 Nov 2026: the owner is the Missing Products screen, which outlives
+    // a switch of division, of view, and the Hidden tab.)
+    expect(SCREEN).toMatch(/const \[solvedSession, setSolvedSession\] = useState\(\[\]\)/);
+    expect(SCREEN).toMatch(/solvedSession=\{solvedSession\} setSolvedSession=\{setSolvedSession\}/);
     expect(NETWORK).toMatch(/const solvedSession = solvedSessionProp \?\? localSession;/);
     // The siblings an undo spares are every row still standing — saved or session.
     expect(NETWORK).toMatch(/const undoables = useMemo\(\(\) => standing\(solvedAll\), \[solvedAll\]\);/);

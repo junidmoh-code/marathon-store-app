@@ -221,38 +221,47 @@ describe("SOLVE TRUSTS WHAT IT INTRODUCES at a \"solved\" location", () => {
 });
 
 describe("two stores of ONE division in one confirm — the division's hub is seeded once", () => {
-  it("Pine + Concrete: ONE update; Hub 3 seeded once, each shop's own request naming Hub 3", async () => {
+  // 22 Nov 2026 (Junid): PINE AND CONCRETE ARE ONE OR THE OTHER. The same
+  // product is never solved to both — the tick is a switch on the Concrete
+  // list. (This used to be "Pine + Concrete in one confirm".)
+  it("Pine then Concrete gives Concrete only — and the write is Concrete's alone, Hub 3 seeded once", async () => {
     paths.network = S1_LIVE;
     const tree = renderConcrete();
     await open(tree);
     setTicks(tree, ["Marathon Pine", "Concrete"]);
+    expect(boxes(tree).filter((b) => b.props["aria-checked"]).map((b) => b.props["data-dest"])).toEqual(["concrete"]);
     const text = textOf(tree);
-    expect(text).toMatch(/Central's stock is dealt in the order ticked: Marathon Pine → Concrete\./);
-    expect(text).toMatch(/6 units \(S×2 · M×2 · L×2\) go to Marathon Pine first — requested from Central now; Central picks it from Source › Marathon Pine/);
+    expect(text).not.toMatch(/dealt in the order ticked/);
     expect(text).toMatch(/6 units \(S×2 · M×2 · L×2\) go to Concrete first/);
-    expect(text).toMatch(/Hub 3 is seeded now; its own ~8 units follow/);
-    expect(buttonSaying(tree, "Solve — 2 stores")).toBeTruthy();
     await confirm(tree);
     expect(updateMock).toHaveBeenCalledTimes(1);
     const upd = written();
     expect(Object.keys(upd).filter((k) => k.startsWith("stock/")).sort()).toEqual([
       "stock/concrete/tee1/L", "stock/concrete/tee1/M", "stock/concrete/tee1/S",
       "stock/hub3/tee1/L", "stock/hub3/tee1/M", "stock/hub3/tee1/S",
-      "stock/marathon-pine/tee1/L", "stock/marathon-pine/tee1/M", "stock/marathon-pine/tee1/S",
     ]);
     const reqs = requests(upd);
-    expect(reqs).toHaveLength(6);
-    for (const r of reqs) {
-      expect(r).toMatchObject({ productId: TEE, status: "open", qty: 2, createdFrom: { firstBatch: true, source: "central", hub: "hub3" } });
-      expect(r.createdFrom.store).toBe(r.requestingLocation);
-      expect(["marathon-pine", "concrete"]).toContain(r.requestingLocation);
-    }
-    const ids = new Set(reqs.map((r) => `${r.requestingLocation}|${r.createdFrom.solveId}`));
-    expect([...ids].sort()).toEqual([
-      `concrete|fb_${TEE}_${NOW.toString(36)}_concrete`,
-      `marathon-pine|fb_${TEE}_${NOW.toString(36)}_marathon-pine`,
-    ]);
+    expect(reqs).toHaveLength(3);
+    for (const r of reqs) expect(r).toMatchObject({ productId: TEE, status: "open", qty: 2, requestingLocation: "concrete", createdFrom: { firstBatch: true, source: "central", hub: "hub3", store: "concrete" } });
     expect(applyMovementMock).not.toHaveBeenCalled();
+  });
+
+  it("Concrete then Pine gives Pine only; a tap on the lit shop turns it off and Confirm asks for a store — never a dead tap, never both", async () => {
+    paths.network = S1_LIVE;
+    const tree = renderConcrete();
+    await open(tree);
+    const lit = () => boxes(tree).filter((b) => b.props["aria-checked"]).map((b) => b.props["data-dest"]);
+    setTicks(tree, ["Concrete", "Marathon Pine"]);
+    expect(lit()).toEqual(["marathon-pine"]);
+    tick(tree, "Concrete");
+    expect(lit()).toEqual(["concrete"]);
+    tick(tree, "Concrete");
+    expect(lit()).toEqual([]);
+    expect(textOf(tree)).toMatch(/Tick at least one store\./);
+    tick(tree, "Marathon Pine");
+    expect(lit()).toEqual(["marathon-pine"]);
+    await confirm(tree);
+    expect(requests(written()).every((r) => r.requestingLocation === "marathon-pine")).toBe(true);
   });
 
   it("Marathon PE + Trophy: Hub 2 seeded once; nothing for Section 1", async () => {
@@ -287,58 +296,59 @@ describe("two stores of ONE division in one confirm — the division's hub is se
     paths.network = { ...S1_LIVE, backStock: { concrete: { "t-shirts": "concrete-stockroom" } }, locations: { ...S1_LIVE.locations, "concrete-stockroom": { type: "hub", section: 1, live: true } } };
     const tree = renderConcrete();
     await open(tree);
-    setTicks(tree, ["Concrete", "Marathon Pine"]);
+    setTicks(tree, ["Concrete"]);
     await confirm(tree);
     const upd = written();
     const hubOfReq = Object.fromEntries(requests(upd).map((r) => [r.requestingLocation, r.createdFrom.hub]));
-    expect(hubOfReq).toEqual({ concrete: "hub3", "marathon-pine": "hub3" });
+    expect(hubOfReq).toEqual({ concrete: "hub3" });
     expect(Object.keys(upd).some((k) => k.includes("concrete-stockroom"))).toBe(false);
   });
 });
 
+// (22 Nov 2026: on Marathon's list — Pine and Concrete are one or the other now.)
 describe("Central runs short across two stores of one division", () => {
   // 3 S, 2 M, 0 L. Every shop's policy is 2 of each.
   const SHORT = { S: cell(3), M: cell(2), L: cell(0) };
 
   it("shows what each store will actually get BEFORE the confirm — dealt in tick order — and writes exactly that", async () => {
     paths.network = S1_LIVE;
-    const tree = renderConcrete({ stock: stockWith(SHORT) });
+    const tree = render({ stock: stockWith(SHORT) });
     await open(tree);
-    setTicks(tree, ["Marathon Pine", "Concrete"]);
+    setTicks(tree, ["Marathon PE", "Trophy"]);
     const text = textOf(tree);
-    expect(text).toMatch(/4 units \(S×2 · M×2\) go to Marathon Pine first/);
-    expect(text).toMatch(/1 unit \(S×1\) go to Concrete first/);
+    expect(text).toMatch(/4 units \(S×2 · M×2\) go to Marathon PE first/);
+    expect(text).toMatch(/1 unit \(S×1\) go to Trophy first/);
     expect(text).toMatch(/Central is short: S 1 of 2\./);
     await confirm(tree);
     const reqs = requests(written()).map((r) => [r.requestingLocation, r.size, r.qty]).sort();
-    expect(reqs).toEqual([["concrete", "S", 1], ["marathon-pine", "M", 2], ["marathon-pine", "S", 2]]);
+    expect(reqs).toEqual([["marathon-pe", "M", 2], ["marathon-pe", "S", 2], ["trophy", "S", 1]]);
     const dealt = (sz) => requests(written()).filter((r) => r.size === sz).reduce((t, r) => t + r.qty, 0);
     expect(dealt("S")).toBe(3);
     expect(dealt("M")).toBe(2);
-    expect(Object.keys(written())).toEqual(expect.arrayContaining(["stock/concrete/tee1/M", "stock/concrete/tee1/L", "stock/hub3/tee1/M", "stock/hub3/tee1/L"]));
+    expect(Object.keys(written())).toEqual(expect.arrayContaining(["stock/trophy/tee1/M", "stock/trophy/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/L"]));
   });
 
-  it("the order ticked decides who is served first: Concrete ticked first, Pine gets the remainder", async () => {
+  it("the order ticked decides who is served first: Trophy ticked first, Marathon PE gets the remainder", async () => {
     paths.network = S1_LIVE;
-    const tree = renderConcrete({ stock: stockWith(SHORT) });
+    const tree = render({ stock: stockWith(SHORT) });
     await open(tree);
-    setTicks(tree, ["Concrete", "Marathon Pine"]);
-    expect(textOf(tree)).toMatch(/dealt in the order ticked: Concrete → Marathon Pine\./);
+    setTicks(tree, ["Trophy", "Marathon PE"]);
+    expect(textOf(tree)).toMatch(/dealt in the order ticked: Trophy → Marathon PE\./);
     await confirm(tree);
     const reqs = requests(written()).map((r) => [r.requestingLocation, r.size, r.qty]).sort();
-    expect(reqs).toEqual([["concrete", "M", 2], ["concrete", "S", 2], ["marathon-pine", "S", 1]]);
+    expect(reqs).toEqual([["marathon-pe", "S", 1], ["trophy", "M", 2], ["trophy", "S", 2]]);
   });
 
-  it("an engine lock already promising Central's units — at a MARATHON hub — is netted before Concrete's are dealt (Central is shared)", async () => {
+  it("an engine lock already promising Central's units — at the CONCRETE hub — is netted before Marathon's are dealt (Central is shared)", async () => {
     paths.network = S1_LIVE;
-    gets[`refill_engine/open/hub1/${TEE}`] = { S: { qty: 2, source: "central", createdAt: "2026-10-02T08:00:00.000Z", runId: "scan1" } };
-    const tree = renderConcrete({ stock: stockWith(SHORT) });
+    gets[`refill_engine/open/hub3/${TEE}`] = { S: { qty: 2, source: "central", createdAt: "2026-10-02T08:00:00.000Z", runId: "scan1" } };
+    const tree = render({ stock: stockWith(SHORT) });
     await open(tree);
-    setTicks(tree, ["Marathon Pine", "Concrete"]);
+    setTicks(tree, ["Marathon PE", "Trophy"]);
     await confirm(tree);
     const reqs = requests(written()).map((r) => [r.requestingLocation, r.size, r.qty]).sort();
-    // S: 3 − 2 reserved = 1 free → Pine takes it; Concrete gets no S request.
-    expect(reqs).toEqual([["marathon-pine", "M", 2], ["marathon-pine", "S", 1]]);
+    // S: 3 − 2 reserved = 1 free → Marathon PE takes it; Trophy gets no S request.
+    expect(reqs).toEqual([["marathon-pe", "M", 2], ["marathon-pe", "S", 1]]);
   });
 });
 
@@ -379,16 +389,18 @@ describe("the hub's own presence, and the wall, per list", () => {
     ]);
   });
 
-  it("Move manually offers the list's own division only: Marathon → Hub 2 / Marathon PE / Trophy; Concrete → Hub 3 / Marathon Pine / Concrete; from Hub 2 Marathon's shops", async () => {
+  it("Move manually offers the list's own division only: Marathon → Hub 2 / Marathon PE / Trophy; Concrete → Marathon Pine / Concrete (no hub); from Hub 2 Marathon's shops", async () => {
     paths.network = S1_LIVE;
     const tree = render();
-    await act(async () => { buttonExactly(tree, "Move manually").props.onClick(); });
+    await act(async () => { buttonExactly(tree, "Move by hand").props.onClick(); });
     expect(destsOf(tree)).toEqual(["→ Hub 2", "→ Marathon PE", "→ Trophy"]);
     const cTree = renderConcrete();
-    await act(async () => { buttonExactly(cTree, "Move manually").props.onClick(); });
-    expect(destsOf(cTree)).toEqual(["→ Hub 3", "→ Marathon Pine", "→ Concrete"]);
+    await act(async () => { buttonExactly(cTree, "Move by hand").props.onClick(); });
+    // 22 Nov 2026: on the Concrete list everything that is not a sneaker goes
+    // to Pine or Concrete — never to a hub.
+    expect(destsOf(cTree)).toEqual(["→ Marathon Pine", "→ Concrete"]);
     const hubTree = render({ stock: { hub2: { [TEE]: { M: cell(4) } } } });
-    await act(async () => { buttonExactly(hubTree, "Move manually").props.onClick(); });
+    await act(async () => { buttonExactly(hubTree, "Move by hand").props.onClick(); });
     expect(destsOf(hubTree)).toEqual(["→ Marathon PE", "→ Trophy"]);
   });
 });
@@ -437,8 +449,9 @@ describe("the other division's list", () => {
     expect(boxes(tree).map(boxLabel)).toEqual(["Marathon Pine", "Concrete"]);
     expect(box(tree, "Marathon Pine").props.disabled).toBe(true);
     expect(box(tree, "Concrete").props.disabled).toBe(true);
-    await act(async () => { buttonExactly(tree, "Move manually").props.onClick(); });
-    expect(destsOf(tree)).toEqual(["→ Hub 3", "→ Marathon Pine", "→ Concrete"]);
+    await act(async () => { buttonExactly(tree, "Cancel").props.onClick(); });   // one panel at a time: close Solve, then Move
+    await act(async () => { buttonExactly(tree, "Move by hand").props.onClick(); });
+    expect(destsOf(tree)).toEqual(["→ Marathon Pine", "→ Concrete"]);
     expect(updateMock).not.toHaveBeenCalled();
   });
 });
@@ -455,11 +468,11 @@ describe("PERFUME follows the same per-division rule", () => {
     const tree = renderConcrete({ products: SCENTS, stock: SCENT_STOCK, category: "perfume" });
     await open(tree);
     expect(boxes(tree).map(boxLabel)).toEqual(["Marathon Pine", "Concrete"]);
-    setTicks(tree, ["Marathon Pine", "Concrete"]);
+    setTicks(tree, ["Marathon Pine", "Concrete"]);   // one or the other: Concrete is what is left lit
     await confirm(tree);
     const upd = written();
     const keys = Object.keys(upd);
-    expect(keys.filter((k) => k.startsWith("stock/")).sort()).toEqual([`stock/concrete/${SCENT}/_`, `stock/hub3/${SCENT}/_`, `stock/marathon-pine/${SCENT}/_`]);
+    expect(keys.filter((k) => k.startsWith("stock/")).sort()).toEqual([`stock/concrete/${SCENT}/_`, `stock/hub3/${SCENT}/_`]);
     expect(keys.some((k) => /hub2|hub1|marathon-pe\/|trophy/.test(k))).toBe(false);
     for (const r of requests(upd)) expect(["marathon-pine", "concrete"]).toContain(r.requestingLocation);
   });
