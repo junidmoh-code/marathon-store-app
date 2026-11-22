@@ -615,8 +615,8 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
   // `targets` and `sizes` are runFor's own for every caller but one: a shop
   // that FOLLOWS another's policy asks what that shop's policy answers
   // (followedKeep below), with that shop's switch-off rows left out.
-  const runWith = (pid, targets, sizes) => {
-    const ruleEligible = isClothing(byId.get(pid));
+  const runWith = (pid, targets, sizes, { rules = true } = {}) => {
+    const ruleEligible = rules && isClothing(byId.get(pid));
     return resolvedRun({
       std: ruleEligible ? stdRun : {}, subRun: ruleEligible ? subRun : undefined,
       subcategory: byId.get(pid)?.subcategory, sizes,
@@ -674,7 +674,14 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
     const leader = divisionCard(card, st) ? policyFollowOf(cfg, st) : null;
     if (!leader) return null;
     const rows = followRows(targetRows?.[leader]?.[card.pid]);
-    const run = runWith(card.pid, { [leader]: rows ? { [card.pid]: rows } : {} }, centralFedSizes(byId.get(card.pid)))[leader] || {};
+    const rowMap = { [leader]: rows ? { [card.pid]: rows } : {} };
+    const sizes = centralFedSizes(byId.get(card.pid));
+    // The engine applies the size run and the subcategory rule only to a size
+    // the product's catalogue DECLARES (resolveTarget: productSizes). A product
+    // declaring none is answered "_" here, so for it only the category policy
+    // and rows count — never Trophy's subcategory run.
+    const declared = (byId.get(card.pid)?.sizes || []).map(String).includes(String(sz));
+    const run = runWith(card.pid, rowMap, sizes, { rules: declared })[leader] || {};
     const t = run[String(sz).toUpperCase()];
     return typeof t === "number" ? t : null;
   };
@@ -727,12 +734,17 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
     const node = allStock?.[CENTRAL]?.[card.pid] || {};
     const held = Object.keys(node).filter((k) => Number(node[k]?.qty) > 0);
     const keys = new Set((sizes || []).map((sz) => decodedCellKey(sz)));
+    // Listed in the catalogue but outside this solve (carried / switched off)
+    // vs not listed at all: only the second is a catalogue problem.
+    const listed = new Set(centralFedSizes(byId.get(card.pid)).map((sz) => decodedCellKey(sz)));
+    const rest = held.filter((k) => !keys.has(k));
     return centralFedNothingSentReason({
       storeLabel: LOC_LABEL[st],
       centralUnits: held.reduce((t, k) => t + Number(node[k].qty), 0),
       inSizes: (sizes || []).reduce((t, sz) => t + qtyAt(CENTRAL, card.pid, sz), 0),
       free: (sizes || []).reduce((t, sz) => t + (Number(free(sz)) || 0), 0),
-      otherSizes: held.filter((k) => !keys.has(k)).map(sizeLabel),
+      otherSizes: rest.filter((k) => !listed.has(k)).map(sizeLabel),
+      excludedSizes: rest.filter((k) => listed.has(k)).map(sizeLabel),
     });
   };
   const runAt = (card, stores) => {
@@ -1589,8 +1601,14 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
                         {sent.length > 0
                           ? <><b style={{ color: "#fff" }}>{line.units} unit{line.units === 1 ? "" : "s"}</b> ({sent.map((l) => `${sizeLabel(l.size)}×${l.qty}`).join(" · ")}) go to <b style={{ color: "#fff" }}>{LOC_LABEL[sStore]}</b> — requested from Central now; Central picks it from Source › {sourceTab(sStore)} at the next release.</>
                           : <span data-nothing-sent>{cfNothingSentWhy(card, sStore, line.sizes, sPlan.centralLeft)}</span>}
-                        {sent.length > 0 && none.length > 0 && (
-                          <div style={{ marginTop: 5, color: AMBER }}>{none.map(sizeLabel).join(" · ")}: Central has none — they stay on the Missing list until it does.</div>
+                        {/* "Central has none" only for sizes Central truly holds
+                            none of; a size it holds but has promised elsewhere is
+                            said as that. */}
+                        {sent.length > 0 && none.some((sz) => !(qtyAt(CENTRAL, card.pid, sz) > 0)) && (
+                          <div data-central-none style={{ marginTop: 5, color: AMBER }}>{none.filter((sz) => !(qtyAt(CENTRAL, card.pid, sz) > 0)).map(sizeLabel).join(" · ")}: Central has none — they stay on the Missing list until it does.</div>
+                        )}
+                        {sent.length > 0 && none.some((sz) => qtyAt(CENTRAL, card.pid, sz) > 0) && (
+                          <div data-central-promised style={{ marginTop: 5, color: AMBER }}>{none.filter((sz) => qtyAt(CENTRAL, card.pid, sz) > 0).map(sizeLabel).join(" · ")}: Central holds these, all already promised to other requests — they stay on the Missing list until units are free.</div>
                         )}
                         <div style={{ marginTop: 5, color: GRAY }}>
                           {divisionCard(card, sStore)

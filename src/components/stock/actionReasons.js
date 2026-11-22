@@ -128,13 +128,20 @@ export function centralFedNoPlanReason({ sizes = [], storeLabel, paused = false,
 // The sizes CAN be solved but nothing is being sent now — say where Central's
 // stock actually is. `centralUnits` is everything Central holds of the product,
 // `inSizes` what it holds in the sizes being solved, `free` what is left of
-// those after requests already promised, `otherSizes` the sizes holding the rest.
-export function centralFedNothingSentReason({ storeLabel, centralUnits = 0, inSizes = 0, free = 0, otherSizes = [] } = {}) {
+// those after requests already promised. The rest of Central's stock is in
+// `otherSizes` — sizes the product's catalogue does NOT list — or in
+// `excludedSizes` — listed sizes outside this solve (the shop already carries
+// them, or has them switched off). Only the first is a catalogue problem.
+export function centralFedNothingSentReason({ storeLabel, centralUnits = 0, inSizes = 0, free = 0, otherSizes = [], excludedSizes = [] } = {}) {
   const shop = storeLabel || "this shop";
   const n = (u) => `${u} unit${u === 1 ? "" : "s"}`;
   if (!(centralUnits > 0)) return `Central has none of this product — nothing to send to ${shop} yet.`;
   if (!(inSizes > 0)) {
-    return `Central holds ${n(centralUnits)}, but in ${otherSizes.length === 1 ? "a size" : "sizes"} this product does not list${otherSizes.length ? ` (${otherSizes.join(", ")})` : ""} — nothing to send to ${shop} until the product's sizes are corrected.`;
+    const parts = [];
+    if (excludedSizes.length) parts.push(`in ${excludedSizes.length === 1 ? "a size" : "sizes"} ${shop} already carries or has switched off (${excludedSizes.join(", ")}) — the scan refills those when the shelf runs low`);
+    if (otherSizes.length) parts.push(`in ${otherSizes.length === 1 ? "a size" : "sizes"} this product does not list (${otherSizes.join(", ")}) — those wait until the product's sizes are corrected`);
+    if (!parts.length) parts.push("in a size this panel cannot place");
+    return `Central holds ${n(centralUnits)}, but ${parts.join("; and ")}. Nothing more to send to ${shop} now.`;
   }
   if (!(free > 0)) return `Central holds ${n(inSizes)} of these sizes, all already promised to other requests — nothing to send to ${shop} yet.`;
   return `Nothing is sent to ${shop} now. It is marked as carried there and the scan asks Central for it.`;

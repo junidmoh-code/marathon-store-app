@@ -95,7 +95,11 @@ describe("sizes can be solved but nothing is sent: where Central's stock is", ()
   it("none at all; in sizes the product does not list; all promised; or simply marked carried", () => {
     expect(centralFedNothingSentReason({ storeLabel: "Marathon Pine", centralUnits: 0 })).toBe("Central has none of this product — nothing to send to Marathon Pine yet.");
     expect(centralFedNothingSentReason({ storeLabel: "Marathon Pine", centralUnits: 28, inSizes: 0, otherSizes: ["XL", "XXL"] }))
-      .toBe("Central holds 28 units, but in sizes this product does not list (XL, XXL) — nothing to send to Marathon Pine until the product's sizes are corrected.");
+      .toBe("Central holds 28 units, but in sizes this product does not list (XL, XXL) — those wait until the product's sizes are corrected. Nothing more to send to Marathon Pine now.");
+    // A listed size Pine already carries is NOT a catalogue problem.
+    const carried = centralFedNothingSentReason({ storeLabel: "Marathon Pine", centralUnits: 5, inSizes: 0, excludedSizes: ["S"] });
+    expect(carried).toBe("Central holds 5 units, but in a size Marathon Pine already carries or has switched off (S) — the scan refills those when the shelf runs low. Nothing more to send to Marathon Pine now.");
+    expect(carried).not.toMatch(/does not list|corrected/);
     expect(centralFedNothingSentReason({ storeLabel: "Marathon Pine", centralUnits: 28, inSizes: 28, free: 0 }))
       .toBe("Central holds 28 units of these sizes, all already promised to other requests — nothing to send to Marathon Pine yet.");
     expect(centralFedNothingSentReason({ storeLabel: "Marathon Pine", centralUnits: 28, inSizes: 28, free: 28 })).toMatch(/marked as carried there and the scan asks Central/);

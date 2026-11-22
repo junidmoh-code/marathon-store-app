@@ -29,7 +29,7 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 const linked = { ...clone(d.config), policyFollow: { [PINE]: LEADER } };
 const run = (L, config, { uncap = false, unpause = false } = {}) => {
   const cfg = clone(config);
-  if (unpause) delete cfg.pausedLocations;
+  if (unpause && cfg.pausedLocations) delete cfg.pausedLocations[PINE];   // Pine's pause alone; Hub 3's stays
   if (uncap) Object.assign(cfg, { maxIntentsPerRun: 1e6, maxFootwearIntentsPerRun: 1e6, maxDivisionIntentsPerRun: 1e6 });
   const network = L.reg.normalizeNetwork(d.network);
   const seatPlan = L.dv.planSeats({ rawStock: d.stock, seats: d.seats, movements, releases: d.seatReleases || {}, nowIso: d.readAt, products: d.products });

@@ -963,7 +963,14 @@ async function buildCensus(db, { config, taxonomy, knownLocations, network: hand
     const { stock: stockView } = maskUntrustedStock(stock, network);
     // Hub 3's counted view decides which sizes it serves — as the scan does.
     const division = divisionContext({ config, rawStock: stock, seats, openIndex, heldLines: null, refillRequests: null, hub3View: stockView.hub3, nowMs: Date.now() });
-    divisionKeeps = divisionKeepCounts({ division, stockView, products });
+    // A linked location (Pine follows Trophy) is counted through the engine's
+    // resolver, so the card's "keeps N units" is the number the scan will use.
+    const linkedTargetAt = {};
+    for (const loc of Object.keys(policyFollowMap(config))) {
+      if (!DIVISION_LOCATIONS.includes(loc)) continue;
+      linkedTargetAt[loc] = (pid, size) => resolveTarget({ targets, config, products, stock: stockView, network, division }, loc, pid, size);
+    }
+    divisionKeeps = divisionKeepCounts({ division, stockView, products, linkedTargetAt });
   }
   return { categories, groupEntries, destinations, groups, rowLocations: rowLocs, footwearDrift, divisionKeeps };
 }
@@ -1042,6 +1049,9 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       // Pine follows Trophy (lib/policy-follow.cjs): the links that are on,
       // and the only ones there can be.
       policyFollow: policyFollowMap(cfg),
+      // The value as STORED, unfiltered: the card's drift check sends this, so
+      // an ignored leftover (say "marathon-pe") can still be replaced.
+      policyFollowStored: isPlainObject(cfg[POLICY_FOLLOW_KEY]) ? cfg[POLICY_FOLLOW_KEY] : null,
       policyFollowAllowed: POLICY_FOLLOW_ALLOWED,
       history: await readHistory(db),
       serverNowMs: nowMs,
@@ -1154,12 +1164,22 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     }
     const historyRef = db.ref(HISTORY_PATH).push();
     await historyRef.set({ kind: "policyFollow", location: loc, at: nowMs, by: callerEmail, byUid: callerUid || null, before, after, status: "pending" });
-    const liveNow = await val(db, `${POLICY_FOLLOW_PATH}/${loc}`);
-    if (!sameValue(liveNow ?? null, before)) {
+    // Drift check and write in ONE transaction, so a second save between a read
+    // and a set can never be overwritten. A value that is not `before` is handed
+    // back unchanged (never `undefined`: the first pass may see a cached null,
+    // and aborting there would refuse a save that was in fact current), and the
+    // committed value then says whether this save landed.
+    let sawDrift = false;
+    const claim = await db.ref(`${POLICY_FOLLOW_PATH}/${loc}`).transaction((current) => {
+      if (sameValue(current ?? null, before)) { sawDrift = false; return after; }
+      sawDrift = true;
+      return current;
+    });
+    const liveNow = claim.snapshot.val();
+    if (!claim.committed || sawDrift || !sameValue(liveNow ?? null, after)) {
       await historyRef.update({ status: "aborted_on_drift", liveAtAbort: liveNow ?? null });
       throw httpsError("failed-precondition", "This changed while it was being saved. Nothing was written.", { drift: true, live: liveNow ?? null, historyId: historyRef.key });
     }
-    await db.ref(`${POLICY_FOLLOW_PATH}/${loc}`).set(after);
     invalidateCensusCache();
     const written = await val(db, `${POLICY_FOLLOW_PATH}/${loc}`);
     const verified = sameValue(written ?? null, after);

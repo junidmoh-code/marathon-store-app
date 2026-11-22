@@ -999,7 +999,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
             {!loading && !error && Object.keys(census?.policyFollowAllowed || {}).map((loc) => (
               <PolicyFollowPanel key={loc} location={loc} follows={census?.policyFollow?.[loc] ?? null}
                 options={census.policyFollowAllowed[loc] || []} busy={busy}
-                onSave={(leader) => savePolicyFollow(loc, leader, census?.policyFollow?.[loc] ?? null)} />
+                onSave={(leader) => savePolicyFollow(loc, leader, census?.policyFollowStored ? (census.policyFollowStored[loc] ?? null) : (census?.policyFollow?.[loc] ?? null))} />
             ))}
 
             {!loading && !error && !census?.concreteDivision && (census?.centralFedStores || []).map((loc) => (

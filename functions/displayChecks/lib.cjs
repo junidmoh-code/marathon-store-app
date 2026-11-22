@@ -72,6 +72,13 @@ function saleOnOrAfterStart(settings, { nowMs, saleTs } = {}) {
   return true;
 }
 
+// The moment a database event happened (Functions v2 `event.time`, RFC 3339),
+// in ms; null when absent or unreadable.
+function eventTimeMs(event) {
+  const t = event && typeof event.time === "string" ? Date.parse(event.time) : NaN;
+  return Number.isFinite(t) ? t : null;
+}
+
 // Is this id a STORE in the registry (the only kind display checks ever run at)?
 function isRegistryStore(storeId, network) {
   if (typeof storeId !== "string" || !storeId) return false;
@@ -815,6 +822,7 @@ module.exports = {
   onlineOrderOutcomeUpdates,
   TRIGGER_STORE_FLAGS,
   saleOnOrAfterStart,
+  eventTimeMs,
   triggerStoreFlags,
   triggerStores,
   WAKE_DEFAULT_DELAY_MINUTES,

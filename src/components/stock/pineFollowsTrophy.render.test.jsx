@@ -136,6 +136,15 @@ describe("a no-size product Central holds is sendable to Pine", () => {
     expect(textOf(tree)).toMatch(/5 units \(S×2 · M×2 · XL×1\) go to Marathon Pine/);
     expect(textOf(tree)).toContain("the same as Trophy: S×2 · M×2 · XL×1, refilled straight from Central.");
   });
+  it("clothing that declares no sizes never takes Trophy's subcategory run (the engine applies it only to declared sizes)", async () => {
+    const WATCH0 = { id: "w0", name: "Watch no size", productType: "clothing", categoryKey: "watches", subcategory: "Watches", sizes: [] };
+    const tree = render({ products: [WATCH0], stock: { central: { w0: { _: cell(10) } } },
+      config: { ...CONFIG, policyFollow: LINK, subcategoryRunByLocation: { trophy: { Watches: 3 } } } });
+    await openAt(tree, "Pine");
+    const t = textOf(tree);
+    expect(t).toMatch(/5 units \(One size×5\) go to Marathon Pine/);
+    expect(t).toContain("Marathon Pine keeps this in the shop: 5 per design, refilled straight from Central.");
+  });
   it("Concrete is untouched by the link: its own 5 per design, 2 of every size", async () => {
     const tree = render({ products: [BAG], stock: { central: { bag1: { _: cell(12) } } }, config: { ...CONFIG, policyFollow: LINK } });
     await openAt(tree, "Concrete");
@@ -190,7 +199,28 @@ describe("a shop that already carries the product: Pine picked on a card listed 
   it("Central's units sit in a size the product does not list: the panel says which, not 'none'", async () => {
     const tree = render({ products: [WRONG], stock: { central: { tee2: { XL: cell(3) } } }, config: { ...CONFIG, policyFollow: LINK } });
     await openAt(tree, "Pine");
-    expect(textOf(tree)).toContain("Central holds 3 units, but in a size this product does not list (XL) — nothing to send to Marathon Pine until the product's sizes are corrected.");
+    expect(textOf(tree)).toContain("Central holds 3 units, but in a size this product does not list (XL) — those wait until the product's sizes are corrected. Nothing more to send to Marathon Pine now.");
+  });
+  it("Central's units sit only in a size Pine already carries: said as that, never 'does not list'", async () => {
+    const stock = { central: { tee1: { S: cell(5) } }, "marathon-pine": { tee1: { S: counted(0), M: counted(0) } } };
+    const tree = render({ products: [TEE], stock, config: FED });
+    await openAt(tree, "Pine");
+    const t = textOf(tree);
+    expect(t).toContain("Central holds 5 units, but in a size Marathon Pine already carries or has switched off (S)");
+    expect(t).not.toMatch(/does not list/);
+  });
+  it("a size Central holds but has promised elsewhere is never called 'Central has none'", async () => {
+    gets["refill_engine/open/trophy/tee1"] = { M: { qty: 4, source: "central", refillId: "rT", createdAt: "2026-11-20T17:27:04.850Z" } };
+    gets["refill_requests/rT"] = { status: "open", productId: "tee1", size: "M", qty: 4, requestingLocation: "trophy" };
+    const stock = { central: { tee1: { S: cell(6), M: cell(4) } } };
+    const tree = render({ products: [TEE], stock, config: { ...CONFIG, policyFollow: LINK } });
+    await openAt(tree, "Pine");
+    const t = textOf(tree);
+    expect(t).toMatch(/go to Marathon Pine/);
+    // Only XL (Central holds none of it) is called absent; M is not on that line.
+    expect(t).toMatch(/(^|[^·\w])XL: Central has none/);
+    expect(t).not.toMatch(/\bM\b[^:]*: Central has none/);
+    expect(t).toMatch(/M: Central holds these, all already promised/);
   });
 });
 

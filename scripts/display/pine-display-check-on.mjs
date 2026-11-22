@@ -2,8 +2,9 @@
 // Pine's display check was off because no switch had ever been written for it:
 // a shop follows the registry's "fully live" flag unless
 // /displayChecks_settings/{shop}/enabled says otherwise, and Pine is not fully
-// live. This writes Pine's three small settings, each at its own key (the
-// roster and cover beside them are never touched):
+// live. This writes Pine's three small settings in ONE multi-path update, so a
+// sale can never see enabled without its start day (the roster and cover beside
+// them are never touched):
 //     /displayChecks_settings/marathon-pine/enabled  = true
 //     /displayChecks_settings/marathon-pine/scope    = "all_but_sneakers"
 //     /displayChecks_settings/marathon-pine/startsOn = "2026-11-23"
@@ -32,6 +33,7 @@ const before = await read();
 console.log("before:", JSON.stringify(before));
 console.log("want:  ", JSON.stringify(WANT));
 if (!APPLY) { console.log("DRY RUN — nothing written"); process.exit(0); }
-for (const k of Object.keys(WANT)) await at(k).set(WANT[k]);
+// One atomic multi-path update: all three keys land together or none do.
+await db.ref(`displayChecks_settings/${STORE}`).update(WANT);
 console.log("after: ", JSON.stringify(await read()));
 process.exit(0);

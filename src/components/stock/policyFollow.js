@@ -18,7 +18,7 @@ function policyFollowOf(config, loc) {
   const map = followIsObj(config) && followIsObj(config[POLICY_FOLLOW_KEY]) ? config[POLICY_FOLLOW_KEY] : null;
   if (!map || typeof loc !== "string" || !loc) return null;
   const leader = map[loc];
-  const allowed = POLICY_FOLLOW_ALLOWED[loc];
+  const allowed = Object.prototype.hasOwnProperty.call(POLICY_FOLLOW_ALLOWED, loc) ? POLICY_FOLLOW_ALLOWED[loc] : null;
   return typeof leader === "string" && !!allowed && allowed.includes(leader) ? leader : null;
 }
 
@@ -35,7 +35,7 @@ function policyFollowMap(config) {
 // A proposed link: null when it may be written, else the sentence to show.
 // `follows` null = switch the link off.
 function validatePolicyFollow(location, follows) {
-  const allowed = typeof location === "string" ? POLICY_FOLLOW_ALLOWED[location] : null;
+  const allowed = typeof location === "string" && Object.prototype.hasOwnProperty.call(POLICY_FOLLOW_ALLOWED, location) ? POLICY_FOLLOW_ALLOWED[location] : null;
   if (!allowed) return "Only Marathon Pine can follow another shop's policy.";
   if (follows === null) return null;
   if (typeof follows !== "string" || !allowed.includes(follows)) return "Marathon Pine can follow Trophy only.";

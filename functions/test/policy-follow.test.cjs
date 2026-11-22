@@ -211,6 +211,23 @@ test("a Pine switch-off row still wins", () => {
   assert.equal(p.intents.some((i) => i.dest === PINE && i.productId === "tee" && i.sizeKey === "S"), true);
 });
 
+test("a hand-made Pine row above zero still outranks the link (an explicit row is the source of truth; none exist at Pine today)", () => {
+  const config = cfg({ policyFollow: LINK });
+  const t = targets();
+  t[PINE] = { tee: { S: { target: 3, minQty: 2 } } };
+  assert.deepEqual(three(ask(config, PINE, "tee", "S", { t })), [3, 2, null]);
+  assert.equal(ask(config, PINE, "tee", "S", { t }).source, "explicit");
+  assert.equal(ask(config, PINE, "tee", "M", { t }).target, 2);   // the other sizes follow Trophy
+});
+
+test("an inherited object key is never an allowed pair", () => {
+  for (const loc of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+    assert.equal(pf.validatePolicyFollow(loc, "trophy"), "Only Marathon Pine can follow another shop's policy.");
+    assert.equal(pf.validatePolicyFollow(loc, null), "Only Marathon Pine can follow another shop's policy.");
+    assert.equal(pf.policyFollowOf({ policyFollow: { [loc]: "trophy" } }, loc), null);
+  }
+});
+
 test("a product carried at Trophy and not at Pine raises nothing for Pine, and is never seated there", () => {
   const config = cfg({ policyFollow: LINK });
   assert.ok(atTrophy(config, "trophyOnly", "").target > 0);
@@ -338,6 +355,55 @@ test("setPolicyFollow: any other pair, a stale screen and a missing field are re
   await assert.rejects(call(db, { action: "setPolicyFollow", location: PINE, follows: "trophy", expectedBefore: "trophy" }), /changed while it was open/);
   assert.equal(stored(db), undefined);
   assert.equal(db.state.root.engine_policy_history, undefined);
+});
+
+test("setPolicyFollow: a save that lands between the drift read and the write is never overwritten", async () => {
+  const { makeFakeDb: mk } = require("./helpers/fake-rtdb.cjs");
+  __resetNetworkCacheForTests();
+  let armed = false;
+  const db = mk({ config: { refillEngine: { ...cfg() } }, settings: { productTaxonomy: { cats: {} } }, locations: { trophy: { name: "Trophy" }, [PINE]: { name: "Marathon Pine" } } }, {
+    // Another save switches the link on the instant before this one writes.
+    beforeRead: async (path, state) => {
+      if (armed && path === `config/refillEngine/policyFollow/${PINE}`) {
+        armed = false;
+        state.root.config.refillEngine.policyFollow = { [PINE]: "trophy" };
+      }
+    },
+  });
+  const realRef = db.ref.bind(db);
+  db.ref = (path) => { const r = realRef(path); if (path === `config/refillEngine/policyFollow/${PINE}`) { const t = r.transaction.bind(r); r.transaction = (fn) => { armed = true; return t(fn); }; } return r; };
+  // This screen believes the link is OFF and switches it on; the other save
+  // got there first. The write must notice, and the history must not say applied.
+  await assert.rejects(call(db, { action: "setPolicyFollow", location: PINE, follows: "trophy", expectedBefore: null }), /changed while it was being saved/);
+  const hist = Object.values(db.state.root.engine_policy_history || {});
+  assert.equal(hist.length, 1);
+  assert.equal(hist[0].status, "aborted_on_drift");
+});
+
+test("setPolicyFollow: an ignored leftover link is reported off but can be replaced with the stored value as expectedBefore", async () => {
+  const db = world({ policyFollow: { [PINE]: "marathon-pe" } });
+  const census = await call(db, { action: "census", refresh: true });
+  assert.deepEqual(census.policyFollow, {});
+  assert.equal(census.policyFollowStored[PINE], "marathon-pe");
+  await assert.rejects(call(db, { action: "setPolicyFollow", location: PINE, follows: "trophy", expectedBefore: null }), /changed while it was open/);
+  const on = await call(db, { action: "setPolicyFollow", location: PINE, follows: "trophy", expectedBefore: census.policyFollowStored[PINE] });
+  assert.equal(on.ok, true);
+  assert.equal(stored(db)[PINE], "trophy");
+});
+
+test("the census's division keep count for Pine is the linked (resolved) number; every other location's is unchanged", async () => {
+  const census = async (engine) => {
+    __resetNetworkCacheForTests();
+    const db = makeFakeDb({ config: { refillEngine: { ...cfg(), ...engine } }, products, stock: stock(), stock_targets: targets(), refill_engine: { seats: seatsOf(stock()) },
+      settings: { productTaxonomy: { cats: {} } }, locations: { trophy: { name: "Trophy" }, [PINE]: { name: "Marathon Pine" } } });
+    return (await call(db, { action: "census", refresh: true })).divisionKeeps;
+  };
+  const off = await census({});
+  const on = await census({ policyFollow: LINK });
+  assert.ok(off && on, "the census reports division keeps");
+  assert.ok(off[PINE].units > 0, "Pine has a division keep to compare against");
+  assert.notDeepEqual(on[PINE], off[PINE]);
+  for (const loc of Object.keys(off)) if (loc !== PINE) assert.deepEqual(on[loc], off[loc], loc);
 });
 
 test("the census says which links are on and which are possible", async () => {

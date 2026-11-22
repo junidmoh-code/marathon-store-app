@@ -105,6 +105,19 @@ test("a Pine sale on 22 Nov creates nothing", async () => {
   assert.equal(db.state.root.displayChecks_active, undefined);
 });
 
+test("a sale with no readable time, received at 23:59 on 22 Nov and processed after midnight, creates nothing", async () => {
+  const { eventTimeMs } = require("../displayChecks/lib.cjs");
+  const db = world(PINE_ON);
+  const received = sast("2026-11-22T23:59:30");
+  const noTime = { ...sale(received, LINES), createdAt: null };
+  const r = await handleDisplaySale({ db, saleId: "SX", sale: noTime, nowMs: sast("2026-11-23T00:00:20"), eventMs: received });
+  assert.equal(r.checked, 0);
+  assert.equal(db.state.root.displayChecks_active, undefined);
+  assert.equal(eventTimeMs({ time: new Date(received).toISOString() }), received);
+  assert.equal(eventTimeMs({}), null);
+  assert.equal(eventTimeMs({ time: "nonsense" }), null);
+});
+
 test("a Pine non-sneaker sale on 23 Nov creates a display task; a sneaker sale creates none", async () => {
   const db = world(PINE_ON);
   const at = sast("2026-11-23T09:15:00");

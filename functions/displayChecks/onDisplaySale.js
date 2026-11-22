@@ -16,7 +16,7 @@
 
 const { onValueCreated } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
-const { isTriggerStoreEnabled, isDisplaySale, normStoreSettings, saleLinesForDisplay, saleLineLeaseId, saleOnOrAfterStart } = require("./lib.cjs");
+const { isTriggerStoreEnabled, isDisplaySale, normStoreSettings, saleLinesForDisplay, saleLineLeaseId, saleOnOrAfterStart, eventTimeMs } = require("./lib.cjs");
 const { processDisplaySale } = require("./processSale.js");
 const { loadStoreSettings } = require("./settings.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
@@ -28,7 +28,7 @@ if (!admin.apps.length) {
 }
 
 // Core — injectable db + now so the test drives it without admin.
-async function handleDisplaySale({ db, saleId, sale, nowMs = null }) {
+async function handleDisplaySale({ db, saleId, sale, nowMs = null, eventMs = null }) {
   const network = await loadNetwork(db);
   const lines = saleLinesForDisplay({ sale, network });
   if (!lines.length) return { lines: 0, checked: 0 };
@@ -37,7 +37,10 @@ async function handleDisplaySale({ db, saleId, sale, nowMs = null }) {
   if (!isTriggerStoreEnabled(store, network, settings)) return { lines: lines.length, checked: 0, off: true };
   // A store with a start day (/displayChecks_settings/{store}/startsOn): a
   // sale made, or received, before that SA day raises nothing — no backlog.
-  if (!saleOnOrAfterStart(settings, { nowMs: nowMs ?? Date.now(), saleTs: sale.createdAt ?? null })) {
+  // The start day is judged at the moment the sale was RECEIVED (the event's
+  // own time), not when this run got round to it: a sale received at 23:59 on
+  // the day before must not pass because the settings read ended after midnight.
+  if (!saleOnOrAfterStart(settings, { nowMs: eventMs ?? nowMs ?? Date.now(), saleTs: sale.createdAt ?? null })) {
     return { lines: lines.length, checked: 0, beforeStart: true };
   }
   const scope = normStoreSettings(settings).scope;
@@ -68,6 +71,6 @@ exports.onDisplaySale = onValueCreated(
   async (event) => {
     const sale = event.data.val();
     if (!sale || typeof sale !== "object") return;
-    await handleDisplaySale({ db: admin.database(), saleId: event.params.saleId, sale });
+    await handleDisplaySale({ db: admin.database(), saleId: event.params.saleId, sale, eventMs: eventTimeMs(event) });
   }
 );
