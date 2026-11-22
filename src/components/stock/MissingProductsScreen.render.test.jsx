@@ -341,8 +341,18 @@ describe("kids shoes: no policy is said as no policy, never as queued", () => {
     expect(reqs.map((r) => [r.size, r.qty, r.requestingLocation, r.status])).toEqual([["24", 2, "hub1", "open"], ["25", 2, "hub1", "open"], ["26", 2, "hub1", "open"]]);
   });
 
+  it("once Junid gives Kids Shoes numbers of its own on the Engine Policy card, a Request uses them", async () => {
+    gets["config/refillEngine/categoryPolicy/kids-shoes"] = { perSize: true, hub2: { carriedOnly: true, sizes: { 24: { target: 1, minQty: 1 }, 25: { target: 1, minQty: 1 } } } };
+    const tree = await mount();
+    expect(live(tree, KID)).toEqual(["hub2"]);
+    expect(stockLine(tree, KID)).toBe("Central 4");
+    await tapDest(tree, KID, "hub2");
+    expect(requestsIn(lastUpdate()).map((r) => [r.size, r.qty, r.requestingLocation])).toEqual([["24", 1, "hub2"], ["25", 1, "hub2"]]);
+  });
+
   it("adult sneakers are unchanged: the run's numbers, with or without a target row for a size the run names", async () => {
     emit("stock_targets", { hub1: { [SHOE_B]: { 8: { target: 5 }, 9: { target: 5 } } } });
+    gets["config/refillEngine/categoryPolicy/kids-shoes"] = { perSize: true, hub1: { sizes: { 8: { target: 9 }, 9: { target: 9 } } } };   // never reaches an adult shoe
     const tree = await mount();
     await tapDest(tree, SHOE_B, "hub1");
     expect(requestsIn(lastUpdate()).map((r) => [r.size, r.qty])).toEqual([["8", 2], ["9", 2]]);

@@ -64,6 +64,7 @@ import { sneakerDestinations, destinationProblem } from "./divisionDestinations"
 // were dead weight on the card and are gone. What remains raises the POLICY
 // quantity, and is what the card calls Request.)
 import { isDeactivated } from "../../utils/deactivation";
+import { FOOTWEAR_OWN_NUMBERS_KEYS } from "../../utils/footwearLine.js";
 import { useRefillRequests } from "./useStock";
 import { readPathOnce } from "../../offline/localReads";
 import { stampRecord } from "../../device/deviceStamp";
@@ -165,7 +166,11 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
   // Have the two policy reads ANSWERED (value or not)? The one-tap screen
   // draws no button until they have — a card must never light up, or drop
   // out, a moment after it was shown.
-  const [policyRead, setPolicyRead] = useState({ run: false, hub3: false });
+  const [policyRead, setPolicyRead] = useState({ run: false, hub3: false, own: false });
+  // KIDS SHOES' OWN NUMBERS (Junid, 22 Nov 2026 — policy-resolve.cjs
+  // FOOTWEAR_OWN_NUMBERS_KEYS): the one footwear category the Engine Policy
+  // card may give numbers of its own. One small node per such category.
+  const [ownPolicy, setOwnPolicy] = useState({});
   const allRequests = useRefillRequests();
   useEffect(() => {
     let alive = true;
@@ -173,6 +178,9 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
       .then((s) => { if (alive) setFootwearRun(s.val() || null); })
       .catch(() => { /* leave null — Solve disabled, Request unaffected */ })
       .finally(() => { if (alive) setPolicyRead((r) => ({ ...r, run: true })); });
+    Promise.all(FOOTWEAR_OWN_NUMBERS_KEYS.map((k) => get(ref(database, `config/refillEngine/categoryPolicy/${k}`)).then((s) => [k, s.val() || null], () => [k, null])))
+      .then((pairs) => { if (alive) setOwnPolicy(Object.fromEntries(pairs)); })
+      .finally(() => { if (alive) setPolicyRead((r) => ({ ...r, own: true })); });
     get(ref(database, "config/refillEngine/policyGroups/footwear-all/policy/hub3"))
       .then((s) => { if (alive) setHub3Leg(s.val() || null); })
       .catch(() => { /* leave null — Hub 3 offers nothing to raise */ })
@@ -301,14 +309,20 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
   // Policy override), that row IS the policy for the sizes the run is silent
   // on. A size the run names keeps the run's number, exactly as before; with
   // no row, and for every caller that passes no `targets`, nothing changes.
+  // After the row, a category entry of its OWN (Kids Shoes only) — the
+  // engine's order: explicit row first, then the category's policy.
   const withRows = (run, card, hub) => {
     const rows = targets?.[hub]?.[card.pid];
-    if (!rows || typeof rows !== "object") return run;
+    const own = ownPolicy[effectiveCategoryKey(byId.get(card.pid))]?.[hub];
+    if ((!rows || typeof rows !== "object") && (!own || typeof own !== "object")) return run;
     let out = run;
     for (const s of catalogSizes(card.pid)) {
       const k = sizeKeyOf(s);
-      const t = Number(rows[k]?.target);
-      if (k in run || !(t > 0)) continue;
+      if (k in run) continue;
+      const row = Number(rows?.[k]?.target);
+      const pol = own && typeof own === "object" ? Number(own.sizes && typeof own.sizes === "object" ? own.sizes[k]?.target : own.target) : NaN;
+      const t = rows?.[k] && Number.isFinite(row) ? row : pol;
+      if (!(t > 0)) continue;
       if (out === run) out = { ...run };
       out[k] = t;
     }
@@ -612,7 +626,7 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
   // Marathon hub already has the shoe (pickRefusal), and to raise it in one
   // tap (solveTo → solve above, one hub). No quantity is decided here.
   const api = {
-    canAct, ready: policyRead.run && policyRead.hub3, notLive,
+    canAct, ready: policyRead.run && policyRead.hub3 && policyRead.own, notLive,
     destinations: SOLVE_HUBS,
     solveTo: (card, hub) => solve(card, [hub]),
     planFor, pickRefusal,

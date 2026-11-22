@@ -181,6 +181,18 @@ const FOOTWEAR_GROUP_KEY = "footwear-all";
 const FOOTWEAR_CATEGORY_KEYS = Object.freeze([
   "boots", "designer-shoes", "kids-shoes", "loafers", "running-shoes", "slides", "sneakers", "soccer-boots",
 ]);
+// THE ONE FOOTWEAR CATEGORY THAT MAY HAVE NUMBERS OF ITS OWN (Junid, 22 Nov
+// 2026). Kids shoes are sized 24–35; the footwear policy is sized 3–13, and
+// its size-by-size map cannot take the kids run as well (the members would
+// carry more sizes than a size-by-size policy may cover). So a kids shoe had
+// no number anywhere at Hub 1 or Hub 2, and no screen could give it one: the
+// category could not have its own, and the policy could not be widened. Junid
+// asked for Kids Shoes to be armable from the Engine Policy card with its own
+// size run. It stays a MEMBER of the footwear policy (so that policy is still
+// complete) and, once Junid saves numbers for it, follows its own entry —
+// "own beats group", as for any category. Every other footwear category is
+// refused an own entry exactly as before, and reported as drift if it has one.
+const FOOTWEAR_OWN_NUMBERS_KEYS = Object.freeze(["kids-shoes"]);
 // The two locations the footwear policy speaks for. Central is the source and
 // carries no target; no shop is armed through it.
 const FOOTWEAR_POLICY_HUBS = Object.freeze(["hub1", "hub2"]);
@@ -274,7 +286,7 @@ function footwearPolicyDrift(config, network) {
   }
   for (const key of FOOTWEAR_CATEGORY_KEYS) {
     const own = config?.categoryPolicy?.[key];
-    if (own !== undefined && own !== null) {
+    if (own !== undefined && own !== null && !FOOTWEAR_OWN_NUMBERS_KEYS.includes(key)) {
       issues.push({ kind: "own_entry", key, detail: `${key} has its own numbers, which override the footwear policy` });
     }
     for (const gk of Object.keys(groups).sort()) {
@@ -298,5 +310,5 @@ function footwearPolicyDrift(config, network) {
 
 module.exports = {
   locationEntryMode, carriedOnlyOf, armedGroupForCategory, effectivePolicyFor, locationPolicyFor,
-  FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, FOOTWEAR_POLICY_HUBS, footwearPolicyDrift, footwearFollowers,
+  FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, FOOTWEAR_OWN_NUMBERS_KEYS, FOOTWEAR_POLICY_HUBS, footwearPolicyDrift, footwearFollowers,
 };

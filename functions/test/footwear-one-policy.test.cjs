@@ -211,6 +211,29 @@ test("write: a footwear category cannot get its own numbers while the footwear p
   assert.equal(readAt(db.state.root, "config/refillEngine/categoryPolicy/boots"), null);
 });
 
+test("write: Kids Shoes is the ONE footwear category that may have its own numbers while the policy is armed (Junid, 22 Nov 2026)", async () => {
+  invalidateCensusCache();
+  const db = dbWorld();
+  // every other footwear category is still refused…
+  for (const key of ["sneakers", "slides", "running-shoes", "loafers", "soccer-boots", "designer-shoes", "boots"]) {
+    // eslint-disable-next-line no-await-in-loop
+    await rejects(() => call(db, { categoryKey: key, policy: OWN, dryRun: true }), /Footwear is set once/);
+  }
+  // …and Kids Shoes is not refused BY THIS RULE (whatever else the write
+  // checks, the answer is never "Footwear is set once").
+  let refusedByRule = false;
+  try { await call(db, { categoryKey: "kids-shoes", policy: OWN, dryRun: true }); }
+  catch (e) { refusedByRule = /Footwear is set once/.test(String(e && e.message)); }
+  assert.equal(refusedByRule, false);
+});
+
+test("drift: Kids Shoes with its own numbers is NOT drift; any other footwear category with its own still is", () => {
+  const base = () => W.world().config;
+  const leg = { perSize: true, hub1: W.standingLeg() };
+  assert.deepEqual(kinds({ ...base(), categoryPolicy: { "kids-shoes": leg } }), []);
+  assert.deepEqual(kinds({ ...base(), categoryPolicy: { "kids-shoes": leg, boots: leg } }), ["own_entry:boots"]);
+});
+
 test("write: a non-footwear category is untouched by the rule", async () => {
   invalidateCensusCache();
   const db = dbWorld();

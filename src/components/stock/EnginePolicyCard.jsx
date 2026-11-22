@@ -75,8 +75,11 @@ import {
   nextScanAt, previewVerdict, firstSentence, lastChange, defaultMinQty,
   isPerSizeRow, fillAllSizes, seedPerSizeLocation, seedArmedLocation, bySizeRank, sizeLabel,
   perSizeMode, setEverySize,
-  mainListEntries, previewFromArmModel, policyGaps, armedInTruth, catalogueOutsideTheList,
+  mainListEntries, previewFromArmModel, policyGaps, armedInTruth, catalogueOutsideTheList, draftForOwnRun,
 } from "./enginePolicyCore";
+import { FOOTWEAR_OWN_NUMBERS_KEYS } from "../../utils/footwearLine.js";
+// May this category be given numbers of its own although it is footwear?
+const ownNumbers = (c) => !!c && !c.isGroup && (c.ownNumbersAllowed === true || FOOTWEAR_OWN_NUMBERS_KEYS.includes(c.key));
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
 import ArmingTab from "./ArmingTab";
@@ -333,7 +336,11 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     // are the numbers in force. Saving them writes an entry of its own, which
     // takes the category out of the group — said in one line on its screen.
     // A GROUP opens on its own policy.
-    setDraft(draftFromEntry({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations }));
+    const start = draftFromEntry({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations });
+    // KIDS SHOES (Junid, 22 Nov 2026) has its own size run and may have its
+    // own numbers: with none saved yet, its editor is the Footwear policy laid
+    // out on the KIDS sizes — blank where nobody has chosen a number.
+    setDraft(ownNumbers(c) && !c.entry ? draftForOwnRun(start, c.sizeRun) : start);
   };
   // Back from a member returns to its group; Back from anything else to the list.
   const closeCategory = () => {
@@ -576,7 +583,8 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     // a round trip, is the honest version of the same answer.
     // A null `proposed` (every location dropped) DELETES a stray own entry —
     // always allowed, it is how a copy is removed. (CodeRabbit, PR #646.)
-    if (open && !open.isGroup && open.footwearMember && proposed !== null && census?.groups?.["footwear-all"]?.armed === true) {
+    // (Kids Shoes is the one footwear category with numbers of its own.)
+    if (open && !open.isGroup && open.footwearMember && !ownNumbers(open) && proposed !== null && census?.groups?.["footwear-all"]?.armed === true) {
       flash("bad", `Footwear is set once, on ${parent?.label || open.groupLabel || "Footwear"} — change the numbers there.`);
       return;
     }
@@ -1240,7 +1248,7 @@ function CategoryDetail({
 
       {/* A MEMBER opened from inside its group: one line, because it is the
           one thing about this screen that is not obvious from the numbers. */}
-      {!c.isGroup && c.footwearMember ? (
+      {!c.isGroup && c.footwearMember && !ownNumbers(c) ? (
         <div style={{ color: "#dbe6ff", fontSize: ".82rem", marginBottom: ".9rem" }}>
           Footwear is set once, on {parent?.label || c.groupLabel || "Footwear"} — change the numbers there.
           {parent && (
