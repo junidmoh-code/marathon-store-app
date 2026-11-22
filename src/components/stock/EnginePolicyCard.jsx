@@ -311,7 +311,14 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // DERIVED, not read back from what was saved last time — see perSizeMode.
   const perSize = perSizeMode(open);
   const keyNow = useMemo(() => previewKey(openKey, draft, { perSize }), [openKey, draft, perSize]);
-  const proposed = useMemo(() => policyFromDraft(draft, { perSize }), [draft, perSize]);
+  // Kids Shoes' own numbers are carried-only at every location, whatever edit
+  // reshaped a draft row (the server refuses anything else) — set once, here,
+  // where the draft becomes the policy that is previewed and saved.
+  const proposed = useMemo(() => {
+    const p = policyFromDraft(draft, { perSize });
+    if (!p || !ownNumbers(open)) return p;
+    return Object.fromEntries(Object.entries(p).map(([loc, e]) => [loc, loc !== "perSize" && e && typeof e === "object" ? { ...e, carriedOnly: true } : e]));
+  }, [draft, perSize, open]);
   const banner = useMemo(() => changedFields(open?.entry || null, proposed, { perSize }), [open, proposed, perSize]);
   const saveable = canSave({ preview, previewKeyNow: keyNow, errors, busy: !!busy });
   const scan = nextScanAt(serverNowMs());

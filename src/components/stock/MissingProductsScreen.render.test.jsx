@@ -465,6 +465,31 @@ describe("Undo", () => {
     expect(cardsOf(tree)).not.toContain("Gazelle Bold");
   });
 
+  it("an Undo that fails part-way keeps its Undo, and the retry finishes — this tap's own cancels are not 'Central's work'", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE);
+    await tapDest(tree, SHOE_B, "hub3");                       // requests AND Hub 3 seeds
+    const upd = lastUpdate();
+    land(upd);
+    const ids = Object.keys(upd).filter((k) => k.startsWith("refill_requests/"));
+    expect(Object.keys(upd).some((k) => k.startsWith("stock/hub3/"))).toBe(true);
+    // first attempt: every cancel commits, then the first seed clean-up throws
+    const realRun = txnCalls.push;
+    let thrown = false;
+    txnCalls.push = function (c) { realRun.call(this, c); if (!thrown && String(c.path).startsWith("stock/")) { thrown = true; throw new Error("network"); } return this.length; };
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {});
+    txnCalls.push = realRun;
+    expect(toast(tree).kind).toBe("fail");
+    expect(toast(tree).undo).toBeDefined();                    // the Undo is still there
+    for (const k of ids) expect(txnData[k].status).toBe("cancelled");
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {}); await act(async () => {});
+    expect(toast(tree).text).toBe("Undone");
+    for (const k of Object.keys(upd).filter((x) => x.startsWith("stock/hub3/"))) expect(txnData[k]).toBe(null);
+    expect(cardsOf(tree)).toContain("Gazelle Bold");
+  });
+
   it("a clothing solve: Undo cancels its requests and takes back its untouched seeds; the card is back", async () => {
     const tree = await mount();
     await division(tree, CONCRETE); await kind(tree, "clothing");

@@ -332,16 +332,18 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
     }
     return out;
   };
-  const planFor = (card, hub = hubFor(card)) => footwearSolvePlan({
+  // `requests` (optional): the LIVE request read a write makes — so a size
+  // someone queued since the render is never raised twice (CodeRabbit, PR #964).
+  const planFor = (card, hub = hubFor(card), requests = null) => footwearSolvePlan({
     catalogSizes: catalogSizes(card.pid),
     policy: runFor(card, hub),
     centralCells: allStock?.[CENTRAL]?.[card.pid] || {},
-    openSizes: openSizesFor(card.pid, hub),
-    reserved: reservedFor(card.pid, allRequests),
+    openSizes: requests ? (requests || []).filter((r) => r && r.status === "open" && r.requestingLocation === hub && r.productId === card.pid).map((r) => r.size) : openSizesFor(card.pid, hub),
+    reserved: reservedFor(card.pid, requests || allRequests),
   });
   // One line list per picked hub. A single hub is the plan it always was.
   const planOf = (card, hubs, requests = allRequests) => {
-    if (hubs.length < 2) return { [hubs[0]]: planFor(card, hubs[0]) };
+    if (hubs.length < 2) return { [hubs[0]]: planFor(card, hubs[0], requests === allRequests ? null : requests) };
     return footwearPairPlan({
       catalogSizes: catalogSizes(card.pid), hubs,
       policies: Object.fromEntries(hubs.map((h) => [h, runFor(card, h)])),

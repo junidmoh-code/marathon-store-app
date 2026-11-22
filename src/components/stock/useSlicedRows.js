@@ -59,6 +59,7 @@ export function useSlicedRows({ buckets, active, version, ready }) {
       s.ranVersion = s.wantVersion;
       const snap = latest.current.buckets.map((b) => ({ id: b.id, cards: b.cards, i: 0 }));
       const slice = () => {
+        s.timer = null;   // this callback IS the pending timer — a finished pass leaves none (CodeRabbit, PR #964)
         if (!s.alive) return;
         const until = now() + SLICE_MS;
         for (;;) {

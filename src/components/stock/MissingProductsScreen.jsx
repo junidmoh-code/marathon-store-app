@@ -86,7 +86,10 @@ export default function MissingProductsScreen({ products = [], onExit }) {
 
   // Never count against a half-loaded /stock: a zero then would say "nothing
   // is missing" at the moment nothing is known.
-  const stockReady = !!allStock && Object.keys(allStock).length > 0;
+  // Ready once the read has ANSWERED — an empty node included (CodeRabbit, PR #964).
+  const stockState = usePathState("stock");
+  // (A read that FAILED is not "nothing missing": the skeletons stay.)
+  const stockReady = (stockState.settled && !stockState.error) || (!!allStock && Object.keys(allStock).length > 0);
 
   // ── WHAT IS MISSING, per division — the two cores, memoised on what they read.
   const walked = useMemo(() => {
@@ -338,7 +341,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     const what = res.units > 0 ? ` · ${res.units} ${row.kind === "sneakers" ? "pair" : "unit"}${res.units === 1 ? "" : "s"}` : "";
     say({
       ok: true, text: `${c.label(dest)}${what}`,
-      undo: async () => {
+      undo: async function undoIt() {
         let out;
         if (row.kind === "sneakers") out = await undoSneakerRequest(res);
         else {
@@ -350,7 +353,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
           }
           if (!(res.rows || []).length) out = { ok: false, msg: "Nothing to undo." };
         }
-        if (out.ok) { back(row.key); say({ ok: true, text: "Undone" }); } else say({ ok: false, text: out.msg });
+        // A failure that can be retried keeps its Undo; a refusal (Central has
+        // started) does not.
+        if (out.ok) { back(row.key); say({ ok: true, text: "Undone" }); } else say({ ok: false, text: out.msg, ...(out.retry ? { undo: undoIt } : {}) });
       },
     });
   };

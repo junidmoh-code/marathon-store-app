@@ -19,7 +19,7 @@ import { database, auth, functions } from "../../firebase";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { stampTxn } from "../../device/deviceStamp";
 import { HIDDEN_ROOT, hideEntry, unhideUpdate } from "./hiddenProductsCore";
-import { firstBatchUndoCancelTxn } from "./firstBatchCore";
+import { firstBatchUndoCancelTxn, SOLVE_UNDONE_REASON } from "./firstBatchCore";
 import { undoCellTxn } from "./solveUndo";
 
 export async function hideProduct(pid) {
@@ -52,7 +52,10 @@ export async function undoSneakerRequest(done) {
   try {
     const txn = stampTxn(firstBatchUndoCancelTxn({ nowIso: serverNowIso(), uid: auth.currentUser?.uid || null }), "solve-undo");
     const outcomes = await Promise.all(ids.map((id) => runTransaction(ref(database, `refill_requests/${id}`), txn)));
-    const stood = outcomes.filter((o) => !o.committed).length;
+    // A request THIS Undo already cancelled (an earlier attempt that failed
+    // later on) is done, not "Central's work" — so a retry goes on to finish.
+    const mine = (o) => { const v = o.snapshot?.val?.(); return !!v && v.status === "cancelled" && v.cancelReason === SOLVE_UNDONE_REASON; };
+    const stood = outcomes.filter((o) => !o.committed && !mine(o)).length;
     if (stood) {
       return { ok: false, msg: `Central had already started — ${stood} of ${ids.length} request${ids.length === 1 ? "" : "s"} stand${stood === 1 ? "s" : ""}.` };
     }
@@ -65,6 +68,6 @@ export async function undoSneakerRequest(done) {
     }
     return { ok: true };
   } catch (e) {
-    return { ok: false, msg: `Couldn't undo — retry. (${e?.message || "error"})` };
+    return { ok: false, retry: true, msg: `Couldn't undo — retry. (${e?.message || "error"})` };
   }
 }

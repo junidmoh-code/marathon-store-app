@@ -245,6 +245,25 @@ describe("the Engine Policy list", () => {
     expect(flat).toMatch(/26/);
   });
 
+  it("typing a Kids Shoes size number and previewing sends it carried-only at every location (CodeRabbit, PR #964)", async () => {
+    const tree = await mount();
+    await act(async () => { row(tree, "kids-shoes").findAll((n) => n.type === "button")[0].props.onClick(); });
+    // the size-26 rows are NumInputs whose onChange is (field, value)
+    const sized = tree.root.findAll((n) => typeof n.type === "function" && n.props && typeof n.props.ariaPrefix === "string" && / 26$/.test(n.props.ariaPrefix));
+    expect(sized.length).toBeGreaterThan(0);
+    // every size-by-size hub needs a number (the card's own rule) — Hub 1 and Hub 2
+    for (const n of sized) await act(async () => { n.props.onChange("target", "2"); });
+    const run = tree.root.findAll((n) => typeof n.type === "function" && n.props && typeof n.props.onRun === "function")[0];
+    calls.length = 0;
+    await act(async () => { await run.props.onRun(); });
+    const sent = calls.find((c) => c.categoryKey === "kids-shoes" && c.dryRun === true);
+    expect(sent).toBeDefined();
+    const legs = Object.entries(sent.policy).filter(([k]) => k !== "perSize");
+    expect(legs.length).toBeGreaterThan(0);
+    for (const [, e] of legs) expect(e.carriedOnly).toBe(true);
+    expect(Object.values(sent.policy).some((e) => e && e.sizes && e.sizes["26"] && e.sizes["26"].target === 2)).toBe(true);
+  });
+
   it("Sneakers (any other footwear category) still says Footwear is set once, and points to Footwear", async () => {
     const tree = await mount();
     await act(async () => { row(tree, "sneakers").findAll((n) => n.type === "button")[0].props.onClick(); });
