@@ -42,12 +42,41 @@ const TRIGGER_STORE_FLAGS = Object.freeze(triggerStoreFlags(SEED_REGISTRY));
 const DISPLAY_SCOPES = Object.freeze(["clothing", "all_but_sneakers"]);
 const DEFAULT_SCOPE = "clothing";
 
+// /displayChecks_settings/{store}/startsOn — "YYYY-MM-DD", an SA calendar day
+// (Junid, 22 Nov 2026: Pine's checks start with the sales of 23 Nov, no
+// backlog). Absent or not a date ⇒ no start day, today's behaviour exactly.
+const START_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 function normStoreSettings(raw) {
   const r = raw && typeof raw === "object" ? raw : {};
   return {
     enabled: typeof r.enabled === "boolean" ? r.enabled : null,
     scope: DISPLAY_SCOPES.includes(r.scope) ? r.scope : DEFAULT_SCOPE,
+    startsOn: typeof r.startsOn === "string" && START_DAY_RE.test(r.startsOn) ? r.startsOn : null,
   };
+}
+
+// ── THE START DAY ────────────────────────────────────────────────────────────
+// Does this sale count for a display check at a store with a start day? Only
+// when BOTH hold: the server received it on or after that SA day, and the sale
+// itself was not made before it. The second test is what keeps a sale rung up
+// the evening before (or a till that synced late) from becoming a backlog task
+// on the first morning. A sale with no readable time of its own is judged on
+// the server's day alone. No start day ⇒ always true.
+function saleOnOrAfterStart(settings, { nowMs, saleTs } = {}) {
+  const start = normStoreSettings(settings).startsOn;
+  if (!start) return true;
+  if (saDateStringFromMs(nowMs) < start) return false;
+  const soldMs = typeof saleTs === "number" ? saleTs : (typeof saleTs === "string" && saleTs ? Date.parse(saleTs) : NaN);
+  if (Number.isFinite(soldMs) && saDateStringFromMs(soldMs) < start) return false;
+  return true;
+}
+
+// The moment a database event happened (Functions v2 `event.time`, RFC 3339),
+// in ms; null when absent or unreadable.
+function eventTimeMs(event) {
+  const t = event && typeof event.time === "string" ? Date.parse(event.time) : NaN;
+  return Number.isFinite(t) ? t : null;
 }
 
 // Is this id a STORE in the registry (the only kind display checks ever run at)?
@@ -792,6 +821,8 @@ module.exports = {
   saleChannelPath,
   onlineOrderOutcomeUpdates,
   TRIGGER_STORE_FLAGS,
+  saleOnOrAfterStart,
+  eventTimeMs,
   triggerStoreFlags,
   triggerStores,
   WAKE_DEFAULT_DELAY_MINUTES,

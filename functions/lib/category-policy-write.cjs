@@ -68,6 +68,23 @@ const { CENTRAL_FED_KEY, CENTRAL_FED_MAX, centralFedPerSize } = require("./centr
 const CENTRAL_FED_PATH = `config/refillEngine/${CENTRAL_FED_KEY}`;
 const { CONCRETE_DIVISION_KEY, concreteDivisionPolicy, divisionContext, divisionKeepCounts, DIVISION_LOCATIONS, SEATS_PATH } = require("./concrete-division.cjs");
 const CONCRETE_DIVISION_PATH = `config/refillEngine/${CONCRETE_DIVISION_KEY}`;
+const { POLICY_FOLLOW_KEY, POLICY_FOLLOW_ALLOWED, policyFollowMap, validatePolicyFollow } = require("./policy-follow.cjs");
+const POLICY_FOLLOW_PATH = `config/refillEngine/${POLICY_FOLLOW_KEY}`;
+
+// PINE FOLLOWS TROPHY on the card (lib/policy-follow.cjs): which location a
+// row's numbers are read from, for the "follows Trophy" chip. With the link
+// on, a non-footwear category that Trophy has numbers for is Trophy's at Pine;
+// one Trophy has none for is the Concrete division's own keep there — never
+// Marathon PE's, whatever the older template says. Display only.
+function linkedFollows(cfg, categoryKey, effEntry, base) {
+  const out = { ...(base || {}) };
+  if (FOOTWEAR_CATEGORY_KEYS.includes(categoryKey)) return out;
+  for (const [loc, leader] of Object.entries(policyFollowMap(cfg))) {
+    if (isPlainObject(effEntry) && locationEntryMode(effEntry[leader]) !== "invalid") out[loc] = leader;
+    else if (concreteDivisionPolicy(cfg)) delete out[loc];
+  }
+  return out;
+}
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
@@ -790,7 +807,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations, network: hand
       // show — it is NOT in `entry` / `effectiveEntry`, which stay exactly
       // what is stored, so a save can never write a follower's numbers down
       // and stop it following. A location that is not live is never here.
-      follows: m ? m.follows : {},
+      follows: linkedFollows(config, key, effEntry, m ? m.follows : {}),
       // The shape each armed location holds — "uniform" or "per-size".
       shapes: isPlainObject(effEntry)
         ? Object.fromEntries(effArmed.map((l) => [l, locationEntryMode(effEntry[l])])) : {},
@@ -946,7 +963,14 @@ async function buildCensus(db, { config, taxonomy, knownLocations, network: hand
     const { stock: stockView } = maskUntrustedStock(stock, network);
     // Hub 3's counted view decides which sizes it serves — as the scan does.
     const division = divisionContext({ config, rawStock: stock, seats, openIndex, heldLines: null, refillRequests: null, hub3View: stockView.hub3, nowMs: Date.now() });
-    divisionKeeps = divisionKeepCounts({ division, stockView, products });
+    // A linked location (Pine follows Trophy) is counted through the engine's
+    // resolver, so the card's "keeps N units" is the number the scan will use.
+    const linkedTargetAt = {};
+    for (const loc of Object.keys(policyFollowMap(config))) {
+      if (!DIVISION_LOCATIONS.includes(loc)) continue;
+      linkedTargetAt[loc] = (pid, size) => resolveTarget({ targets, config, products, stock: stockView, network, division }, loc, pid, size);
+    }
+    divisionKeeps = divisionKeepCounts({ division, stockView, products, linkedTargetAt });
   }
   return { categories, groupEntries, destinations, groups, rowLocations: rowLocs, footwearDrift, divisionKeeps };
 }
@@ -1001,7 +1025,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // served the list from before it did.
     const key = canonical({ policy: cfg.categoryPolicy ?? null, groups: cfg.policyGroups ?? null,
       cap: cfg.maxIntentsPerRun ?? null, mode: cfg.mode ?? null, routed: policyRouting(cfg, network).added,
-      division: cfg[CONCRETE_DIVISION_KEY] ?? null });
+      division: cfg[CONCRETE_DIVISION_KEY] ?? null, follow: cfg[POLICY_FOLLOW_KEY] ?? null });
     const fresh = !!censusCache && censusCache.key === key && (nowMs - censusCache.at) < CENSUS_TTL_MS;
     const census = fresh && d.refresh !== true
       ? censusCache.payload
@@ -1022,6 +1046,13 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       centralFedClothing: isPlainObject(cfg[CENTRAL_FED_KEY]) ? cfg[CENTRAL_FED_KEY] : null,
       centralFedStores: centralFedCandidates(cfg, network),
       concreteDivision: isPlainObject(cfg[CONCRETE_DIVISION_KEY]) ? cfg[CONCRETE_DIVISION_KEY] : null,
+      // Pine follows Trophy (lib/policy-follow.cjs): the links that are on,
+      // and the only ones there can be.
+      policyFollow: policyFollowMap(cfg),
+      // The value as STORED, unfiltered: the card's drift check sends this, so
+      // an ignored leftover (say "marathon-pe") can still be replaced.
+      policyFollowStored: isPlainObject(cfg[POLICY_FOLLOW_KEY]) ? cfg[POLICY_FOLLOW_KEY] : null,
+      policyFollowAllowed: POLICY_FOLLOW_ALLOWED,
       history: await readHistory(db),
       serverNowMs: nowMs,
     };
@@ -1109,6 +1140,52 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     await historyRef.update({ status: verified ? "applied" : "unverified", verifiedAt: nowMs });
     if (!verified) throw httpsError("internal", "The numbers were written but did not read back as expected.", { historyId: historyRef.key, written: written ?? null });
     return { ok: true, action: "setConcreteDivision", before, after, historyId: historyRef.key, history: await readHistory(db) };
+  }
+
+  // ── PINE FOLLOWS TROPHY — the link (lib/policy-follow.cjs; Junid, 22 Nov 2026)
+  // One value at config/refillEngine/policyFollow/{location}: the location
+  // whose policy it resolves from, or null to switch the link off (the
+  // rollback: the location is back on its own numbers at the next scan). Only
+  // the pair that file allows is ever written. Same discipline as every write
+  // on this card: history first (holding `before`), drift check, write, read
+  // back. The card's Revert sends the history entry's `before`.
+  if (d.action === "setPolicyFollow") {
+    const loc = d.location;
+    if (!("follows" in d)) throw httpsError("invalid-argument", "follows is required — send `follows: null` to switch the link off.");
+    const after = d.follows === null ? null : d.follows;
+    const bad = validatePolicyFollow(loc, after);
+    if (bad) throw httpsError("invalid-argument", bad);
+    const stored = isPlainObject(cfg[POLICY_FOLLOW_KEY]) ? cfg[POLICY_FOLLOW_KEY][loc] : undefined;
+    const before = stored === undefined || stored === null ? null : stored;
+    if (dryRun) return { ok: true, dryRun: true, action: "setPolicyFollow", location: loc, before, after };
+    if (sameValue(before, after)) return { ok: true, action: "setPolicyFollow", noChange: true, location: loc, before, after };
+    if (d.expectedBefore !== undefined && !sameValue(before, d.expectedBefore)) {
+      throw httpsError("failed-precondition", "This changed while it was open. Close and re-open it to see how it stands now.", { drift: true, live: before });
+    }
+    const historyRef = db.ref(HISTORY_PATH).push();
+    await historyRef.set({ kind: "policyFollow", location: loc, at: nowMs, by: callerEmail, byUid: callerUid || null, before, after, status: "pending" });
+    // Drift check and write in ONE transaction, so a second save between a read
+    // and a set can never be overwritten. A value that is not `before` is handed
+    // back unchanged (never `undefined`: the first pass may see a cached null,
+    // and aborting there would refuse a save that was in fact current), and the
+    // committed value then says whether this save landed.
+    let sawDrift = false;
+    const claim = await db.ref(`${POLICY_FOLLOW_PATH}/${loc}`).transaction((current) => {
+      if (sameValue(current ?? null, before)) { sawDrift = false; return after; }
+      sawDrift = true;
+      return current;
+    });
+    const liveNow = claim.snapshot.val();
+    if (!claim.committed || sawDrift || !sameValue(liveNow ?? null, after)) {
+      await historyRef.update({ status: "aborted_on_drift", liveAtAbort: liveNow ?? null });
+      throw httpsError("failed-precondition", "This changed while it was being saved. Nothing was written.", { drift: true, live: liveNow ?? null, historyId: historyRef.key });
+    }
+    invalidateCensusCache();
+    const written = await val(db, `${POLICY_FOLLOW_PATH}/${loc}`);
+    const verified = sameValue(written ?? null, after);
+    await historyRef.update({ status: verified ? "applied" : "unverified", verifiedAt: nowMs });
+    if (!verified) throw httpsError("internal", "The link was written but did not read back as expected.", { historyId: historyRef.key, written: written ?? null });
+    return { ok: true, action: "setPolicyFollow", location: loc, before, after, historyId: historyRef.key, history: await readHistory(db) };
   }
 
   // ── THE EXPLICIT-ROW LIST — "N with their own rows", opened for editing ───

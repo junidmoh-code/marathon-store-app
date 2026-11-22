@@ -34,7 +34,8 @@ const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_C
 const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, pickInProgress, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 const { withPolicyTemplates } = require("./policy-template.cjs");
 const { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } = require("./central-fed.cjs");
-const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict, divisionNeverKeeps, hub3Refuses } = require("./concrete-division.cjs");
+const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict, divisionNeverKeeps, hub3Refuses, concreteDivisionPolicy, divisionShopCarries } = require("./concrete-division.cjs");
+const { policyFollowOf, followedTarget } = require("./policy-follow.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -550,6 +551,26 @@ function categoryPolicyTarget(config, products, stock, dest, pid, size) {
   return shaped(sizeUnitsAnywhere(stock, pid, size) > 0 ? entry.target : 0);
 }
 
+// ═══ PINE FOLLOWS TROPHY (Junid, 22 Nov 2026) — lib/policy-follow.cjs ═════════
+// Does the follower CARRY this cell — the only cells a followed policy may
+// speak for (HOW MANY, never WHERE)? Never footwear (Pine's sneakers are
+// Hub 3's). At a Concrete-division shop with the division key on, carriage is
+// the division's own: the product is SEATED there (or, for a caller with no
+// seats, holds a cell) and the size is one it is kept in. Anywhere else, a
+// stock cell.
+function followCarries({ config, products, division }, stock, dest, pid, size) {
+  const product = products?.[pid];
+  if (!product || isFootwear(product) || isDivisionFootwear(product)) return false;
+  if (DIVISION_SHOPS.includes(dest)) {
+    const dv = division || (concreteDivisionPolicy(config) ? { policy: concreteDivisionPolicy(config) } : null);
+    if (dv) {
+      const key = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size);
+      return divisionSizes(product).includes(key) && divisionShopCarries(dv, dest, pid, stock);
+    }
+  }
+  return storeCarries(stock, dest, pid);
+}
+
 function resolveTarget({ targets, config, products, stock: baseStock, network, division, stockFor }, dest, pid, size) {
   // Hub 3's seated sneakers are read from the plan's seated view (see
   // computeRefillPlan); every other destination reads the one stock view.
@@ -573,6 +594,16 @@ function resolveTarget({ targets, config, products, stock: baseStock, network, d
       reorderPoint: typeof rp === "number" && Number.isFinite(rp) && rp >= 0 ? rp : null,
       source: "explicit",
     };
+  }
+  // ── PINE FOLLOWS TROPHY (Junid, 22 Nov 2026) — lib/policy-follow.cjs ───────
+  // With config.policyFollow on, a product Pine CARRIES keeps what Trophy's
+  // policy says for it: under Pine's own row (so a switch-off there still
+  // wins) and above the division's own numbers, which stand wherever Trophy
+  // has no policy for the cell. Never a product Pine does not carry, never
+  // footwear, and nothing about where the stock comes from.
+  if (policyFollowOf(config, dest) && followCarries({ config, products, division }, stock, dest, pid, size)) {
+    const ft = followedTarget(resolveTarget, { targets, config, products, stock, network }, dest, pid, size);
+    if (ft !== undefined) return ft;
   }
   // ── THE CONCRETE DIVISION (Junid, 9 Nov 2026) — lib/concrete-division.cjs ──
   // Non-footwear at Pine and Concrete (2 per size / 5 per design, from Central),
@@ -3128,7 +3159,13 @@ function computeRefillPlan(snapshot) {
           // A keep with no route at all (no live source for this size) raises
           // nothing, whatever it says: that is a mismatch, not "kept".
           const unrouted = loc !== DIVISION_HUB && !!expected && !explicitZero && !srcOf(loc, pid, size);
-          const v = unrouted ? { ok: false, reason: "unrouted" } : divisionAuditVerdict({ expected, effective, explicitZero, deadSize });
+          // A cell that FOLLOWS another shop's policy (Pine follows Trophy,
+          // policy-follow.cjs) carries that shop's numbers by Junid's decision:
+          // correct, whatever the division's own pair says.
+          const followed = !!effective && effective.source === "follows";
+          const v = unrouted ? { ok: false, reason: "unrouted" }
+            : followed ? { ok: true, reason: "follows" }
+            : divisionAuditVerdict({ expected, effective, explicitZero, deadSize });
           tally.cells += 1;
           if (v.reason === "switched_off") tally.switchedOff += 1;
           if (v.ok) continue;

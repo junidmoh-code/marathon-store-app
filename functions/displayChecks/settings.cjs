@@ -1,6 +1,6 @@
 // ─── DISPLAY CHECKS — PER-STORE SETTINGS, READ ONCE AND KEPT ─────────────────
-// /displayChecks_settings/{store}/enabled and /scope (lib.cjs normStoreSettings).
-// Two small keyed reads per store (never the roster or the whole node),
+// /displayChecks_settings/{store}/enabled, /scope and /startsOn (lib.cjs
+// normStoreSettings). Three small keyed reads per store (never the roster or the whole node),
 // cached per function instance for a minute like lib/network-load.cjs. A
 // failed read is not cached and answers "nothing stored" — the store then
 // follows the registry's live rule, exactly today's behaviour.
@@ -13,11 +13,12 @@ async function loadStoreSettings(db, store, { nowMs = Date.now(), ttlMs = TTL_MS
   const hit = cache.get(store);
   if (hit && nowMs - hit.atMs < ttlMs && nowMs >= hit.atMs) return hit.value;
   try {
-    const [enabled, scope] = await Promise.all([
+    const [enabled, scope, startsOn] = await Promise.all([
       db.ref(`displayChecks_settings/${store}/enabled`).once("value").then((s) => s.val()),
       db.ref(`displayChecks_settings/${store}/scope`).once("value").then((s) => s.val()),
+      db.ref(`displayChecks_settings/${store}/startsOn`).once("value").then((s) => s.val()),
     ]);
-    const value = { enabled, scope };
+    const value = { enabled, scope, startsOn };
     cache.set(store, { atMs: nowMs, value });
     return value;
   } catch (e) {

@@ -707,6 +707,9 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     if (h.kind === "targets") return revertTargets(h);
     if (h.kind === "centralFed") return revertCentralFed(h);
     if (h.kind === "concreteDivision") return saveConcreteDivision(h.before ?? null, h.after ?? null);
+    // The link reverts through the action that made it: back to what it was
+    // (off, when the entry switched it on), expecting what it became.
+    if (h.kind === "policyFollow") return savePolicyFollow(h.location, h.before ?? null, h.after ?? null);
     const what = h.kind === "group" ? h.groupKey : h.categoryKey;
     const ok = window.confirm(
       `Put ${what} back to how it was before this change?\n\n` +
@@ -751,6 +754,23 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
       setError(e?.message || String(e));
     }
     setBusy(false);
+  };
+  // ── PINE FOLLOWS TROPHY (policyFollow.js) — the link, on or off. Through the
+  // same callable, history and Revert as every write here.
+  const savePolicyFollow = async (location, follows, expectedBefore) => {
+    if (busy) return;
+    const ok = window.confirm(follows
+      ? `Make ${locLabel(location)} follow ${locLabel(follows)}?\n\nEvery product ${locLabel(location)} already carries will keep what ${locLabel(follows)}'s policy says, from the next scan. No product is added to ${locLabel(location)} and where its stock comes from does not change.`
+      : `Stop ${locLabel(location)} following ${locLabel(expectedBefore)}?\n\n${locLabel(location)} goes back to its own numbers from the next scan.`);
+    if (!ok) return;
+    setBusy("policyFollow");
+    try {
+      await setCategoryPolicyFn()({ action: "setPolicyFollow", location, follows, expectedBefore });
+      flash("ok", follows ? `${locLabel(location)} follows ${locLabel(follows)}.` : `${locLabel(location)} no longer follows ${locLabel(expectedBefore)}.`);
+      await load(true);
+    } catch (e) {
+      flash("bad", e?.message || String(e));
+    } finally { setBusy(""); }
   };
   const saveCentralFed = async (location, perSize) => {
     setBusy("centralFed");
@@ -976,6 +996,12 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
               <ConcreteDivisionPanel policy={census.concreteDivision} keeps={census.divisionKeeps} />
             )}
 
+            {!loading && !error && Object.keys(census?.policyFollowAllowed || {}).map((loc) => (
+              <PolicyFollowPanel key={loc} location={loc} follows={census?.policyFollow?.[loc] ?? null}
+                options={census.policyFollowAllowed[loc] || []} busy={busy}
+                onSave={(leader) => savePolicyFollow(loc, leader, census?.policyFollowStored ? (census.policyFollowStored[loc] ?? null) : (census?.policyFollow?.[loc] ?? null))} />
+            ))}
+
             {!loading && !error && !census?.concreteDivision && (census?.centralFedStores || []).map((loc) => (
               <CentralFedPanel key={loc} location={loc} perSize={census?.centralFedClothing?.[loc] ?? null}
                 busy={busy} onSave={(n) => saveCentralFed(loc, n)} />
@@ -1188,6 +1214,8 @@ function CategoryDetail({
   onScope, onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert, onOpenMember,
 }) {
   const armed = c.armedEffective || [];
+  // The links that are on (policyFollow.js): { "marathon-pine": "trophy" }.
+  const linkedTo = census?.policyFollow || null;
   const locRows = editorRows({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations, follows: c.follows });
   const headline = armed.length
     ? armed.map((l) => `${locLabel(l)} ${headlineNumber(c.effectiveEntry?.[l])}`).join(" · ")
@@ -1265,7 +1293,7 @@ function CategoryDetail({
         </div>
       ) : (
         <>
-          <LocationBoxes
+          <LocationBoxes linkedTo={linkedTo}
             category={c} rows={locRows} draft={draft} errors={errors}
             onField={onField} onArm={onArm} onDrop={onDrop}
             onQuickFill={onQuickFill} onSetAll={onSetAll} onSwitchShape={onSwitchShape} onScope={onScope}
@@ -1428,7 +1456,7 @@ function NumInputs({ row, err, onChange, ariaPrefix, small = false }) {
   );
 }
 
-function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSetAll, onSwitchShape, onScope }) {
+function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSetAll, onSwitchShape, onScope, linkedTo = null }) {
   const sizeRun = c.sizeRun || [];
   // NOT `c.perSize && …`. The stored flag is what made this screen unable to
   // arm soccer jerseys per size at all; the category's own run is the condition
@@ -1450,7 +1478,9 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
                 {/* Armed through the policy template: no numbers of its own,
                     so nothing here is saved for it and it keeps following. */}
                 {!inDraft && r.follows && (
-                  <span data-follows={r.follows} title={`${locLabel(r.loc)} has no numbers of its own for this category, so it uses ${locLabel(r.follows)}'s. Change ${locLabel(r.follows)}'s and it follows. Give it numbers here only if it should differ.`}
+                  <span data-follows={r.follows} title={linkedTo?.[r.loc] === r.follows
+                    ? `${locLabel(r.loc)} follows ${locLabel(r.follows)}: the products ${locLabel(r.loc)} carries keep ${locLabel(r.follows)}'s numbers. Change ${locLabel(r.follows)}'s and ${locLabel(r.loc)} follows.`
+                    : `${locLabel(r.loc)} has no numbers of its own for this category, so it uses ${locLabel(r.follows)}'s. Change ${locLabel(r.follows)}'s and it follows. Give it numbers here only if it should differ.`}
                     style={{ fontSize: ".72rem", color: "rgba(233,238,255,.6)" }}>
                     follows {locLabel(r.follows)}
                   </span>
@@ -1809,7 +1839,7 @@ function History({ entries, onRevert, busy }) {
         <div key={h.id} style={{ ...GLASS, padding: ".7rem 1rem", marginBottom: 6, display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: ".86rem", fontWeight: 600 }}>
-              {h.kind === "targets" ? (h.productName || h.pid) : h.kind === "centralFed" ? `${locLabel(h.location)} clothing per size` : (h.categoryKey || h.groupKey || "rows")}
+              {h.kind === "targets" ? (h.productName || h.pid) : h.kind === "centralFed" ? `${locLabel(h.location)} clothing per size` : h.kind === "policyFollow" ? `${locLabel(h.location)} follows` : (h.categoryKey || h.groupKey || "rows")}
               {h.kind === "group" && <Chip tone="blue">group</Chip>}
               {h.kind === "rows" && <Chip tone="amber">{h.rowCount} rows</Chip>}
               {/* A product override names the shop it was made at: the same
@@ -1831,7 +1861,7 @@ function History({ entries, onRevert, busy }) {
                   yields no label would otherwise print a bare separator with a
                   blank name after it. (CodeRabbit, PR #469.) */}
               {fmtWhen(h.at)}{whoLabel(h.by) ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
-                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : h.kind === "centralFed" ? `${h.before ?? "off"} -> ${h.after ?? "off"}` : h.kind === "concreteDivision" ? divisionHistoryLine(h) : "no field changes")}
+                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : h.kind === "centralFed" ? `${h.before ?? "off"} -> ${h.after ?? "off"}` : h.kind === "concreteDivision" ? divisionHistoryLine(h) : h.kind === "policyFollow" ? policyFollowHistoryLine(h) : "no field changes")}
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>
           </div>
@@ -1867,6 +1897,40 @@ export function divisionRevertRetired(h) {
   if (h?.kind !== "concreteDivision") return false;
   const b = h.before;
   return !!(b && typeof b === "object" && ("fromHub3" in b || "hub3Keep" in b));
+}
+
+// ── PINE FOLLOWS TROPHY ──────────────────────────────────────────────────────
+// The link (policyFollow.js; Junid, 22 Nov 2026). On: every product the shop
+// already carries keeps what the other shop's policy says, resolved at each
+// scan, so an edit to that shop's numbers needs no second step. Off: the shop
+// is back on its own numbers. The history's Revert undoes either in one tap.
+export function policyFollowHistoryLine(h) {
+  const side = (v) => (v ? `follows ${locLabel(v)}` : "own numbers");
+  return `${side(h?.before)} -> ${side(h?.after)}`;
+}
+
+const SHORT_LOC = { "marathon-pine": "Pine" };
+export function PolicyFollowPanel({ location, follows, options = [], busy, onSave }) {
+  const name = SHORT_LOC[location] || locLabel(location);
+  const leader = follows || options[0] || null;
+  if (!leader) return null;
+  return (
+    <div data-policy-follow-panel={location} data-follows={follows || ""} style={{ ...GLASS, padding: ".9rem 1rem", marginBottom: "1rem", border: follows ? "1px solid rgba(74,222,128,.4)" : GLASS.border }}>
+      <div style={{ fontWeight: 700, color: "#fff", marginBottom: ".3rem" }}>
+        {follows ? `${name} follows ${locLabel(follows)}` : `${name} does not follow ${locLabel(leader)}`}
+      </div>
+      <div style={{ color: GRAY, fontSize: ".85rem", lineHeight: 1.5 }}>
+        {follows
+          ? <>Every product {name} already carries keeps what {locLabel(follows)}'s policy says for it: the same keep, minimum and ask-at, by category, by size and by product. Change {locLabel(follows)}'s numbers and {name} follows at the next scan. Nothing is added to {name}, a product switched off at {name} stays off, and its stock still comes from Central (sneakers from Hub 3). Where {locLabel(follows)} has no policy, {name} keeps the Concrete division numbers.</>
+          : <>{name} is on its own numbers. Switch this on and every product {name} already carries keeps what {locLabel(leader)}'s policy says for it.</>}
+      </div>
+      <div style={{ marginTop: ".6rem" }}>
+        {follows
+          ? <button data-action="policy-follow-off" disabled={!!busy} onClick={() => onSave(null)} style={{ ...bGhost, opacity: busy ? .5 : 1 }}>Stop following {locLabel(follows)}</button>
+          : <button data-action="policy-follow-on" disabled={!!busy} onClick={() => onSave(leader)} style={{ ...bGray, opacity: busy ? .5 : 1 }}>Make {name} follow {locLabel(leader)}</button>}
+      </div>
+    </div>
+  );
 }
 
 // ── THE CONCRETE DIVISION ────────────────────────────────────────────────────

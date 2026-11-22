@@ -344,15 +344,20 @@ function planSeats({ rawStock, seats, movements, nowIso, releases = {}, products
 // the units it asks for. Reads what the scan reads (the same targets, the same
 // managed list); Hub 3 keeps no non-footwear, so it always counts 0. `stockView`
 // is the engine's own trust-masked stock; `seats` the seated products per location.
-function divisionKeepCounts({ division, stockView, products }) {
+// `linkedTargetAt` (optional): { [loc]: (pid, size) => target|null } for a
+// location whose policy is LINKED (Pine follows Trophy, lib/policy-follow.cjs),
+// so the count there is the engine's resolved keep. Every other location, and
+// every caller that passes none, counts the division keep exactly as before.
+function divisionKeepCounts({ division, stockView, products, linkedTargetAt = null }) {
   const out = {};
   for (const loc of DIVISION_LOCATIONS) {
     let cells = 0, units = 0;
     const pids = new Set();
     for (const pid of division ? divisionManagedPids(division, loc, stockView, products) : []) {
       for (const size of divisionSizes(products[pid])) {
-        const t = divisionTarget(division, loc, pid, size, products, stockView);
-        if (!t) continue;
+        const linked = linkedTargetAt && typeof linkedTargetAt[loc] === "function" ? linkedTargetAt[loc] : null;
+        const t = linked ? linked(pid, size) : divisionTarget(division, loc, pid, size, products, stockView);
+        if (!t || (linked && !(t.target > 0))) continue;
         cells += 1;
         units += t.target;
         pids.add(pid);
