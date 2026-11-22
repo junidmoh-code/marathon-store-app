@@ -17,7 +17,9 @@
 //   node scripts/display/pine-display-check-on.mjs --apply
 //   node scripts/display/pine-display-check-on.mjs --apply --off   back to how it was
 import { adminRequire } from "../adminRequire.mjs";
-const req = adminRequire(import.meta.url);
+// One folder below scripts/: resolve from scripts/ itself, so "../functions" is
+// the repo's functions folder (adminRequire looks beside the URL it is given).
+const req = adminRequire(new URL("../adminRequire.mjs", import.meta.url).href);
 const admin = req("firebase-admin");
 admin.initializeApp({ credential: admin.credential.applicationDefault(), databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 
