@@ -216,7 +216,7 @@ test("a product that falls through to the house default keeps the restored reque
 });
 
 // ── THE GARMENT FINISH + CHECK (Junid, 21 Nov 2026) ─────────────────────────
-import { isGarment, parseGarmentAnswer, garmentFixNote, GARMENT_FINISH, GARMENT_CHECK_PROMPT, GARMENT_FAULTS } from "../lib/style-kit-catalogue.mjs";
+import { isGarment, parseGarmentAnswer, garmentFixNote, garmentFlagNote, betterGarment, finishOnly, GARMENT_FINISH, GARMENT_RETOUCH, GARMENT_CHECK_PROMPT, GARMENT_FAULTS, GARMENT_CREASE_MAX, GARMENT_CARRIED_MAX, GARMENT_FLAT_MAX, GARMENT_CHECK_EDGE } from "../lib/style-kit-catalogue.mjs";
 import { checkDrift } from "../lib/style-kit-drift.mjs";
 
 test("garments: clothing by category, product type or catalogue key; never footwear or accessories", () => {
@@ -226,13 +226,67 @@ test("garments: clothing by category, product type or catalogue key; never footw
     assert.equal(isGarment(p), false, JSON.stringify(p));
 });
 
-test("garment answer: the named faults only, in fixed order; unreadable or no list → unchecked, never a fail", () => {
-  assert.deepEqual(parseGarmentAnswer('{"faults":["Wrinkles","lines","nonsense"],"issues":"a box on the wall"}'), { drift: true, faults: ["lines", "wrinkles"], issues: "a box on the wall" });
-  assert.deepEqual(parseGarmentAnswer('```json\n{"faults":[],"issues":""}\n```'), { drift: false, faults: [], issues: "" });
+const gateAnswer = (o = {}) => JSON.stringify({ crease: 1, carried: 1, flat: 2, logos: "same", colour: "same", product: "same", lines: false, tilt: false, issues: "", ...o });
+test("THE GATE (22 Nov 2026): crease, carried-over crease and flatness scores, logos and colour against the original → the faults, in fixed order", () => {
+  assert.deepEqual(GARMENT_FAULTS, ["product", "colour", "lines", "wrinkles", "flat", "tilt"]);
+  assert.deepEqual(parseGarmentAnswer(gateAnswer()), { drift: false, faults: [], crease: 1, carried: 1, flat: 2, issues: "" });
+  // A score AT the line passes; one over fails.
+  assert.equal(parseGarmentAnswer(gateAnswer({ crease: GARMENT_CREASE_MAX, carried: GARMENT_CARRIED_MAX, flat: GARMENT_FLAT_MAX })).drift, false);
+  assert.deepEqual(parseGarmentAnswer(gateAnswer({ crease: GARMENT_CREASE_MAX + 1 })).faults, ["wrinkles"]);
+  // HB301#: the absolute score sat on the line (3) while the creases of the staff photo were plainly still there.
+  assert.deepEqual(parseGarmentAnswer(gateAnswer({ crease: 3, carried: 6 })).faults, ["wrinkles"]);
+  assert.deepEqual(parseGarmentAnswer(gateAnswer({ flat: GARMENT_FLAT_MAX + 1 })).faults, ["flat"]);
+  // A changed logo is a changed product; colour, drawn lines and a crooked hang are their own faults.
+  assert.deepEqual(parseGarmentAnswer(gateAnswer({ logos: "changed" })).faults, ["product"]);
+  assert.deepEqual(parseGarmentAnswer(gateAnswer({ product: "Changed", colour: "changed", lines: true, tilt: true, crease: 9, issues: "all wrong" })),
+    { drift: true, faults: ["product", "colour", "lines", "wrinkles", "tilt"], crease: 9, carried: 1, flat: 2, issues: "all wrong" });
+  // Scores are clamped to 0–10 and rounded; fenced JSON is read.
+  assert.equal(parseGarmentAnswer("```json\n" + gateAnswer({ crease: 14.6, flat: -2 }) + "\n```").crease, 10);
+  // A missing, null, empty or boolean score is NOT a perfect score: the answer is unreadable (architect review).
+  for (const bad of [null, "", true, false, [], "n/a"]) assert.equal(parseGarmentAnswer(gateAnswer({ crease: bad })), null, `crease ${JSON.stringify(bad)}`);
+  assert.equal(parseGarmentAnswer(gateAnswer({ crease: "7" })).crease, 7, "a numeric string is a score");
+  assert.equal(parseGarmentAnswer(gateAnswer({ carried: null })).drift, false, "no carried score: the crease score alone decides");
+  // true sent as a word is still true.
+  assert.deepEqual(parseGarmentAnswer(gateAnswer({ lines: "true", tilt: "True" })).faults, ["lines", "tilt"]);
+  // Unreadable → null: unchecked, never a fail.
   assert.equal(parseGarmentAnswer('{"verdict":"same"}'), null);
   assert.equal(parseGarmentAnswer("looks fine"), null);
-  assert.deepEqual(GARMENT_FAULTS, ["product", "colour", "lines", "wrinkles", "tilt"]);
-  for (const f of GARMENT_FAULTS) assert.ok(GARMENT_CHECK_PROMPT.includes(`"${f}"`), f);
+  // The answer shape of 21 Nov (a list of faults, no scores) is still read.
+  assert.deepEqual(parseGarmentAnswer('{"faults":["Wrinkles","lines","nonsense"],"issues":"a box on the wall"}'), { drift: true, faults: ["lines", "wrinkles"], crease: null, carried: null, flat: null, issues: "a box on the wall" });
+  for (const k of ["crease", "carried", "flat", "logos", "colour", "product", "lines", "tilt"]) assert.ok(GARMENT_CHECK_PROMPT.includes(`"${k}"`), k);
+  assert.ok(GARMENT_CHECK_EDGE >= 1536, "the gate must be sent photos large enough to see a crease");
+});
+
+test("KEEP THE BEST VERSION (22 Nov 2026): the real product first, then no drawn lines, then fewest faults, then the lower crease scores; a tie keeps the retry", () => {
+  const d = (faults, crease = 5, carried = 5, flat = 3) => ({ faults, crease, carried, flat });
+  assert.equal(betterGarment(d(["wrinkles"], 6, 7), d(["product"], 1, 1)), "first", "a changed logo is never the better photo, however smooth");
+  assert.equal(betterGarment(d(["colour"]), d(["wrinkles"])), "retry");
+  assert.equal(betterGarment(d(["wrinkles"]), d(["lines"])), "first");
+  assert.equal(betterGarment(d(["wrinkles", "flat"]), d(["wrinkles"])), "retry");
+  assert.equal(betterGarment(d(["wrinkles"], 6, 6), d(["wrinkles"], 4, 4)), "retry");
+  assert.equal(betterGarment(d(["wrinkles"], 4, 4), d(["wrinkles"], 6, 6)), "first");
+  assert.equal(betterGarment(d(["wrinkles"], 4, 4, 2), d(["wrinkles"], 4, 4, 6)), "first");
+  assert.equal(betterGarment(d(["wrinkles"]), d(["wrinkles"])), "retry");
+  assert.equal(betterGarment({ faults: ["tilt"] }, { faults: ["tilt"] }), "retry", "an answer with no scores still compares");
+});
+
+test("the steam-and-press pass is the retry for a photo whose ONLY fault is its finish; its text freezes the design", () => {
+  assert.equal(finishOnly(["wrinkles"]), true); assert.equal(finishOnly(["flat"]), true); assert.equal(finishOnly(["wrinkles", "flat"]), true);
+  assert.equal(finishOnly(["wrinkles", "tilt"]), false); assert.equal(finishOnly(["product"]), false); assert.equal(finishOnly([]), false); assert.equal(finishOnly(undefined), false);
+  assert.match(GARMENT_RETOUCH, /ONE JOB: STEAM AND PRESS THE GARMENT/);
+  assert.match(GARMENT_RETOUCH, /NOTHING ELSE CHANGES/);
+  assert.match(GARMENT_RETOUCH, /every logo, print, graphic, word of text,\s+label, badge, drawstring/);
+  assert.match(GARMENT_RETOUCH, /Invent nothing/);
+  assert.match(GARMENT_RETOUCH, /natural drape and its full shape/); assert.match(GARMENT_RETOUCH, /hems are straight, level and crisp; the waistband/);
+  assert.match(GARMENT_RETOUCH, /never copy them/);
+});
+
+test("the flag says, in plain words, what is still wrong with the kept photo", () => {
+  const n = garmentFlagNote({ faults: ["wrinkles", "flat"] });
+  assert.match(n, /^FLAGGED — this photo did not pass the quality check after two tries \(it still looks creased; it still looks flat\)/);
+  assert.match(n, /better of the two/);
+  assert.match(garmentFlagNote({ faults: ["product"] }), /a logo or detail may have changed/);
+  assert.match(garmentFlagNote(null), /^FLAGGED — this photo did not pass the quality check after two tries\./);
 });
 
 test("garment fix note: one sentence per fault found; nothing found → no note", () => {
@@ -257,7 +311,7 @@ test("a clothing Style Kit photo carries the garment finish before the condition
   const src = await sharp({ create: { width: 600, height: 800, channels: 3, background: { r: 100, g: 60, b: 30 } } }).jpeg().toBuffer();
   const answer = await sharp({ create: { width: 1600, height: 1600, channels: 3, background: { r: 230, g: 230, b: 225 } } }).composite([{ input: await sharp({ create: { width: 500, height: 500, channels: 3, background: { r: 100, g: 60, b: 30 } } }).png().toBuffer(), left: 550, top: 550 }]).jpeg().toBuffer();
   const refBuf = await sharp({ create: { width: 1000, height: 1000, channels: 3, background: { r: 90, g: 90, b: 90 } } }).jpeg().toBuffer();
-  const calls = [], checks = [["wrinkles"], []];
+  const calls = [], checks = [["tilt"], []];
   const deps = {
     generation: { imageModel: "gemini-3-pro-image", imageSize: "4K", layers: {} }, conditionClause: "CONDITION.",
     fetchBytes: async () => ({ buffer: src }),
@@ -272,8 +326,8 @@ test("a clothing Style Kit photo carries the garment finish before the condition
   const first = calls[0].parts[0].text, second = calls[1].parts[0].text;
   assert.ok(first.includes(GARMENT_FINISH)); assert.ok(first.indexOf(GARMENT_FINISH) < first.indexOf("CONDITION."));
   assert.doesNotMatch(first, /FIX FROM THE LAST ATTEMPT/);
-  assert.match(second, /FIX FROM THE LAST ATTEMPT.*LEFT WRINKLED/); assert.ok(second.endsWith("CONDITION."));
-  assert.deepEqual(res.drift.faults, ["wrinkles"]); assert.equal(res.drift.retry, "same");
+  assert.match(second, /FIX FROM THE LAST ATTEMPT.*HUNG CROOKED/); assert.ok(second.endsWith("CONDITION."));
+  assert.deepEqual(res.drift.faults, ["tilt"]); assert.equal(res.drift.retry, "same"); assert.equal(res.drift.how, "remade");
 });
 
 test("a product made through a staging look is never checked as a garment (it got no garment finish)", async () => {
@@ -312,6 +366,8 @@ test("a category re-routed to a clothing-family kit gets the garment check as we
 });
 
 test("the garment check keeps the condition rule: worn-in creasing is not a fault; packing/fold/hanger creases are", () => {
-  assert.match(GARMENT_CHECK_PROMPT, /WORN INTO the fabric by use/);
-  assert.match(GARMENT_CHECK_PROMPT, /packing creases, fold lines and hanger creases are ALWAYS faults/);
+  assert.match(GARMENT_CHECK_PROMPT, /Do NOT count creasing worn\s+into the fabric by use that IMAGE 1 also shows \(a permanent knee or elbow break, a stretched hem\)/);
+  assert.match(GARMENT_CHECK_PROMPT, /fold line \(for example the straight line down or across a garment that was folded in a bag\)/);
+  // What is MADE into the garment is never scored as a crease.
+  assert.match(GARMENT_CHECK_PROMPT, /Do NOT count what is\s+made into the garment: seams, stitch lines, darts, pleats/);
 });

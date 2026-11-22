@@ -131,6 +131,10 @@ function viewItem(pid, it, { pick = null, photo = null, posted = null, styles = 
     styleApproved: ESTABLISHED_STYLES.includes(kind) || !!(styles[kind] && styles[kind].approvedAt), canGenerate: true,
     // The last Generate failed (photos/{pid}/failed, set by bfGenerate; the next success clears it).
     failed: photo && photo.failed && photo.failed.at ? { at: photo.failed.at, reason: String(photo.failed.reason || "") } : null,
+    // THE GARMENT GATE (Junid, 22 Nov 2026): the photo the row shows — or its newest AI photo, waiting beside an
+    // approved one — failed the quality check twice and was kept as the better of the two. The card says so.
+    flagged: gen && gen.flagged ? { genId: sig, shown: true, note: String(gen.note || "").slice(0, 240) }
+      : latest && latest.flagged && latest !== gen ? { genId: aiId, shown: false, note: String(latest.note || "").slice(0, 240) } : null,
     tab: approved ? "approved" : "review",
     changedSinceApproval: !!pick && pick.state === "approved" && !approved,
     posted: approved && postedFor(pick, posted) ? (posted.at || true) : null,

@@ -111,6 +111,8 @@ export function generationEntry(res, { at, cost, model, reason, code = null, dra
     ...(res.styleKit ? { styleKit: res.styleKit } : {}),
     ...(res.drift ? { drift: res.drift } : {}),
     ...(res.driftFallback ? { driftFallback: res.driftFallback } : {}),
+    // The garment gate (22 Nov 2026): steamed by the second pass; kept as the better of two failed tries, FLAGGED.
+    ...(res.pressed ? { pressed: true } : {}), ...(res.qcFlagged ? { flagged: true } : {}), ...(res.qcOther ? { qcOther: res.qcOther } : {}),
     // Footwear: placed on the fixed plate by code (true) or kept as Gemini made it (false); Gemini's own photo beside it.
     ...(res.corrected !== undefined ? { corrected: !!res.corrected } : {}),
     ...(res.uncorrected?.url ? { uncorrected: { url: res.uncorrected.url, path: res.uncorrected.path || null } } : {}),

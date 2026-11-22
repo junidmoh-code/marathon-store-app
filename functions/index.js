@@ -2548,7 +2548,7 @@ const OAI_IMAGE_OUT_PER_MTOK = 40;
 // is used here ONLY as buildPhotoPrompt's base for the white path — never
 // handed to an engine directly, since the raw body carries no condition rule.
 // DEFAULT_WHITE_PROMPT is the composed one the adapters fall back to.
-const { PHOTO_PROMPT, DEFAULT_WHITE_PROMPT, buildPhotoPrompt } = require("./lib/photo-prompt.cjs");
+const { PHOTO_PROMPT, DEFAULT_WHITE_PROMPT, buildPhotoPrompt, CONDITION_CLAUSE } = require("./lib/photo-prompt.cjs");
 
 // DEFAULT house-style locked prompts — code fallbacks only, and since the
 // Style Kit Catalogue (20 Nov 2026) ONE copy, in lib/style-kit-catalogue.mjs
@@ -2637,6 +2637,21 @@ async function generateHouseStyleImage(apiKey, prompt, product, box, refs) {
     parts.push({ text: "STYLE REFERENCES — match this exact scene, backdrop, lighting and layout:" });
     for (const r of refs) parts.push(inlineImagePart(r.buffer, r.contentType));
   }
+  return geminiGenerateImage(apiKey, NBPRO_MODEL, parts, {
+    outPerMtok: NBPRO_OUT_PER_MTOK, flatUsd: NBPRO_FLAT_IMAGE_USD,
+    imageConfig: { aspectRatio: "1:1", imageSize: "2K" },
+  });
+}
+
+// THE STEAM-AND-PRESS PASS (Junid, 22 Nov 2026) — the garment gate's retry for a house-style clothing photo that
+// is right in everything but its finish: the finished photo back through the SAME model with one job
+// (lib/style-kit-catalogue.mjs GARMENT_RETOUCH — the text the shared New Arrivals / Black Friday generator sends).
+async function pressHouseStyleImage(apiKey, retouchPrompt, photo, truth) {
+  const parts = [
+    { text: `${retouchPrompt}\n\n${CONDITION_CLAUSE}` },
+    { text: "IMAGE 1 — the photograph to retouch:" }, inlineImagePart(photo.buffer, photo.contentType),
+    { text: "IMAGE 2 — the real garment (details only):" }, inlineImagePart(truth.buffer, truth.contentType),
+  ];
   return geminiGenerateImage(apiKey, NBPRO_MODEL, parts, {
     outPerMtok: NBPRO_OUT_PER_MTOK, flatUsd: NBPRO_FLAT_IMAGE_USD,
     imageConfig: { aspectRatio: "1:1", imageSize: "2K" },
@@ -3053,24 +3068,49 @@ exports.generateProductPhotos = onCall(
           }
           if (kit) {
             const d1 = await drift.checkDrift({ original: truth, generated: rawBuf }, { apiKey: geminiApiKey.value(), sharp: sharpLib, garment });
-            driftInfo = { first: d1.checked ? (d1.drift ? "drifted" : "same") : "unchecked", issues: d1.issues || "", ...(garment ? { check: "garment", faults: d1.faults || [] } : {}) };
+            const scores = (d) => (garment && Number.isFinite(d.crease) ? { crease: d.crease, ...(Number.isFinite(d.carried) ? { carried: d.carried } : {}), ...(Number.isFinite(d.flat) ? { flat: d.flat } : {}) } : {});
+            driftInfo = { first: d1.checked ? (d1.drift ? "drifted" : "same") : "unchecked", issues: d1.issues || "", ...(garment ? { check: "garment", faults: d1.faults || [], ...scores(d1) } : {}) };
             if (d1.drift) {
-              console.warn(`generateProductPhotos: ${id} drifted (${d1.issues}) — retrying once`);
+              // THE GARMENT GATE (Junid, 22 Nov 2026): creased or flat only → the steam-and-press pass over the
+              // photo; anything else → made again told the fix. Failed twice → the better one is kept, FLAGGED.
+              const press = garment && cat.finishOnly(d1.faults);
+              console.warn(`generateProductPhotos: ${id} ${garment ? `failed the quality check [${(d1.faults || []).join(", ")}]` : "drifted"} (${d1.issues}) — ${press ? "steaming and pressing it" : "retrying once"}`);
               let second = null;
-              // A retry that fails outright never costs the product: the cut-out stands in for the drifted photo.
-              try { second = await runOnce(garment ? cat.garmentFixNote(d1.faults) : null); costUSD += second.costUSD; }
-              catch (err) { console.warn(`generateProductPhotos: ${id} drift retry failed:`, err && err.message); driftInfo.retry = "failed"; driftFallback = true; }
+              try {
+                second = press
+                  ? await pressHouseStyleImage(geminiApiKey.value(), cat.GARMENT_RETOUCH, { buffer: rawBuf, contentType: rawMime }, { buffer: truth, contentType: "image/jpeg" })
+                  : await runOnce(garment ? cat.garmentFixNote(d1.faults) : null);
+                costUSD += second.costUSD;
+                if (garment) driftInfo.how = press ? "pressed" : "remade";
+              } catch (err) {
+                // A retry that fails outright never costs the product: a garment keeps its photo, flagged; anything else gets the cut-out.
+                console.warn(`generateProductPhotos: ${id} drift retry failed:`, err && err.message); driftInfo.retry = "failed";
+                if (garment) { driftInfo.flagged = true; driftInfo.kept = "first"; driftInfo.note = cat.garmentFlagNote(d1); } else driftFallback = true;
+              }
               if (second) {
                 const d2 = await drift.checkDrift({ original: truth, generated: second.buffer }, { apiKey: geminiApiKey.value(), sharp: sharpLib, garment });
                 driftInfo.retry = d2.checked ? (d2.drift ? "drifted" : "same") : "unchecked";
-                if (d2.drift) { driftInfo.retryIssues = d2.issues || ""; if (garment) driftInfo.retryFaults = d2.faults || []; driftFallback = true; }
-                else { rawBuf = second.buffer; rawMime = second.mime; }
+                if (garment && Number.isFinite(d2.crease)) { driftInfo.retryCrease = d2.crease; if (Number.isFinite(d2.carried)) driftInfo.retryCarried = d2.carried; if (Number.isFinite(d2.flat)) driftInfo.retryFlat = d2.flat; }
+                if (garment && !d2.checked) {
+                  // A retry the gate could not check has not passed: it is kept (it was told the fix), flagged.
+                  driftInfo.flagged = true; driftInfo.kept = "retry"; rawBuf = second.buffer; rawMime = second.mime;
+                  driftInfo.note = "FLAGGED — the first photo failed the quality check and the second could not be checked.";
+                } else if (d2.drift) {
+                  driftInfo.retryIssues = d2.issues || "";
+                  if (garment) {
+                    // KEEP THE BEST VERSION AND FLAG IT — never the creased garment cut out on white.
+                    driftInfo.retryFaults = d2.faults || []; driftInfo.flagged = true;
+                    driftInfo.kept = cat.betterGarment(d1, d2);
+                    if (driftInfo.kept === "retry") { rawBuf = second.buffer; rawMime = second.mime; }
+                    driftInfo.note = cat.garmentFlagNote(driftInfo.kept === "retry" ? d2 : d1);
+                  } else driftFallback = true;
+                } else { rawBuf = second.buffer; rawMime = second.mime; }
               }
             }
           }
           // White: trim + centre on a uniform white square so the catalogue grid is
           // consistent. House: keep the generated scene — resize only. Drifted
-          // twice: the real product cut out of its photo.
+          // twice (not a garment): the real product cut out of its photo.
           // (No clean cut-out: the generated photo is kept — it was paid for — and the record says it drifted.)
           let cut = null;
           if (driftFallback) {
@@ -3078,12 +3118,6 @@ exports.generateProductPhotos = onCall(
             try { cut = await cutoutOnWhite(truth); }
             catch (err) {
               console.warn(`generateProductPhotos: ${id} no cut-out for the drift fallback:`, err && err.message);
-              // A garment that failed the check twice is never proposed (Junid, 21 Nov 2026: never post a failed image).
-              if (garment) {
-                estCostUSD += costUSD;
-                costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
-                throw new Error("failed the quality check twice and the product could not be cut out cleanly");
-              }
               driftFallback = false; driftInfo.fallback = "no-cutout";
             }
           }
@@ -6760,6 +6794,12 @@ exports.insightsRollupSweep = onSchedule(
   // existing Shopify publisher (the Mac mini's bf-web runner).  firebase deploy --only functions:bfWebQueue,functions:bfCardIndexWeb
   exports.bfWebQueue = require("./blackFriday/webQueue.js").bfWebQueue;
 }
+
+// ─── THE CLOTHING-PHOTO REGENERATION QUEUE (Junid, 22 Nov 2026) ──────────────
+// One queued request = one product's photo made again through the shared generator and the garment gate, the
+// card's photo held until the new one passes. Server-only path; queued by scripts/photos/regenClothing.mjs.
+//   firebase deploy --only functions:photoRegenRun --project=marathon-club
+exports.photoRegenRun = require("./photoRegen/regen.js").photoRegenRun;
 
 // ── ALTERNATIVES: automatic enrichment + per-product profile (2026-10-09) ────
 // See alternativesProfile.js. Deploy by name:
