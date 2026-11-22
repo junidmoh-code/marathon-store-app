@@ -140,6 +140,17 @@ describe.skipIf(!SNAP)("census of the real Missing Products lists", () => {
         console.log("PID", k, JSON.stringify(s.row ? s.row.dests : null), "tickable", JSON.stringify(s.a.tickable), "openByLoc", JSON.stringify(s.a.openByLoc), "plans", JSON.stringify(plans));
       }
     }
+    // ONE OWNER on the Concrete clothing list: how each card's owners decided it.
+    const own = { neither: 0, neitherListed: 0, one: 0, oneListed: 0, oneNothingToSend: 0, both: 0 };
+    for (const [k, s2] of last) {
+      if (!k.startsWith("1:clothing:")) continue;
+      const o = s2.a.owners;
+      if (!Array.isArray(o) || o.length === 0) { own.neither += 1; if (s2.row) own.neitherListed += 1; }
+      else if (o.length === 1) { own.one += 1; if (s2.row) own.oneListed += 1; else own.oneNothingToSend += 1; }
+      else own.both += 1;
+    }
+    out.concreteOwnership = own;
+    console.log("OWNERSHIP", JSON.stringify(own));
     if (process.env.CENSUS_OUT) writeFileSync(process.env.CENSUS_OUT, JSON.stringify(out, null, 1));
     console.log(JSON.stringify({ ...out, divisions: Object.fromEntries(Object.entries(out.divisions).map(([k, v]) => [k, { ...v, needsPolicy: v.needsPolicy.length }])) }, null, 1));
     expect(seen.length).toBeGreaterThan(0);
