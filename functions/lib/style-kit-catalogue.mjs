@@ -498,7 +498,9 @@ export const GARMENT_CHECK_PROMPT = [
   "\"issues\":\"<one short sentence naming what is wrong, empty if nothing>\"}",
 ].join(" ");
 
-const score10 = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(10, Math.round(n))) : null; };
+// A score is a number (or a numeric string). null, "", true, [] are NOT a score: Number() would read them as 0 — a perfect mark.
+const score10 = (v) => { if (!(typeof v === "number" || (typeof v === "string" && v.trim() !== ""))) return null; const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(10, Math.round(n))) : null; };
+const yes = (v) => v === true || String(v).toLowerCase().trim() === "true";
 
 /**
  * Read the garment gate's answer. Unreadable → null (unchecked, never a fail).
@@ -520,8 +522,8 @@ export function parseGarmentAnswer(text) {
     }
     const changed = (v) => String(v || "").toLowerCase().trim() === "changed";
     const found = {
-      product: changed(j.product) || changed(j.logos), colour: changed(j.colour), lines: j.lines === true,
-      wrinkles: crease > GARMENT_CREASE_MAX || (carried !== null && carried > GARMENT_CARRIED_MAX), flat: flat !== null && flat > GARMENT_FLAT_MAX, tilt: j.tilt === true,
+      product: changed(j.product) || changed(j.logos), colour: changed(j.colour), lines: yes(j.lines),
+      wrinkles: crease > GARMENT_CREASE_MAX || (carried !== null && carried > GARMENT_CARRIED_MAX), flat: flat !== null && flat > GARMENT_FLAT_MAX, tilt: yes(j.tilt),
     };
     const faults = GARMENT_FAULTS.filter((f) => found[f]);
     return { drift: faults.length > 0, faults, crease, carried, flat, issues };

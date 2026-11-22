@@ -363,6 +363,7 @@ function withKit(res, kit) {
 export const DRIFT_NOTE = "The generated photo changed the product twice, so this is the product cut out of its own photo — tap Regenerate to try again.";
 // The callables run for at most 540 s: a retry is only started while there is clearly time for it.
 export const DRIFT_RETRY_BUDGET_MS = 240_000;
+export const GARMENT_UNCHECKED_NOTE = "FLAGGED — the first photo failed the quality check and the second could not be checked. Check it by eye, or tap Regenerate.";
 export async function driftGuard({ first, again, retouch = null, item, product, garment = false, deps, emit = () => {}, startedMs = Date.now(), clockMs = () => Date.now() }) {
   if (!deps.driftCheck || !first?.generated?.url) return first;
   const say = (text) => { try { emit({ type: "status", text }); } catch { /* view only */ } };
@@ -400,14 +401,16 @@ export async function driftGuard({ first, again, retouch = null, item, product, 
   let d2 = null;
   if (second) {
     d2 = await check(second);
-    if (!d2.drift) {
+    // A retry the gate could NOT check has not passed: after a failed first photo it is kept, but flagged.
+    if (!d2.drift && !(garment && !d2.checked)) {
       return { ...second, drift: { first: "drifted", issues: d1.issues || "", ...faultsOf(d1), ...scoresOf(d1), retry: tag(d2), ...(garment ? { check: "garment", how: press ? "pressed" : "remade", ...scoresOf(d2, "retry") } : {}) }, wastedUsages: [...paid, ...(second.wastedUsages || [])] };
     }
     d1.retryIssues = d2.issues || "";
     if (garment) d1.retryFaults = d2.faults || [];
+    if (garment && !d2.checked) d1.retryUnchecked = true;
     paid.push(...(second.wastedUsages || []), second.usage || null);
   }
-  const driftRec = { first: "drifted", issues: d1.issues || "", ...faultsOf(d1), ...scoresOf(d1), retry: second ? "drifted" : retry, ...(d1.retryIssues ? { retryIssues: d1.retryIssues } : {}),
+  const driftRec = { first: "drifted", issues: d1.issues || "", ...faultsOf(d1), ...scoresOf(d1), retry: second ? (d1.retryUnchecked ? "unchecked" : "drifted") : retry, ...(d1.retryIssues ? { retryIssues: d1.retryIssues } : {}),
     ...(d1.retryFaults ? { retryFaults: d1.retryFaults } : {}), ...(garment ? { check: "garment", ...(second ? { how: press ? "pressed" : "remade" } : {}), ...scoresOf(d2, "retry") } : {}) };
   // The LAST paid image is this result's own cost; the rest are wasted — the total booked is exactly what was paid.
   const ownUsage = paid.length ? paid[paid.length - 1] : null;
@@ -418,7 +421,7 @@ export async function driftGuard({ first, again, retouch = null, item, product, 
     const keep = kept === "retry" ? second : first;
     const verdict = kept === "retry" ? d2 : d1;
     say("It did not pass the quality check twice — keeping the better photo, flagged…");
-    const out = { ...keep, usage: ownUsage, wastedUsages, qcFlagged: true, note: garmentFlagNote(verdict), drift: { ...driftRec, kept, flagged: true } };
+    const out = { ...keep, usage: ownUsage, wastedUsages, qcFlagged: true, note: kept === "retry" && d1.retryUnchecked ? GARMENT_UNCHECKED_NOTE : garmentFlagNote(verdict), drift: { ...driftRec, kept, flagged: true } };
     const other = kept === "retry" ? first : second;
     if (other?.generated?.url) out.qcOther = { url: other.generated.url, path: other.generated.path || null };
     return out;
@@ -437,6 +440,9 @@ export async function driftGuard({ first, again, retouch = null, item, product, 
       note: "The check says this photo may not match the real product (colour, logo or shape) and no clean cut-out could be made — check it by eye." };
   }
 }
+
+/** Was this result judged by the garment gate at all (a product that is not a garment never is)? Pure. */
+export const garmentGated = (res) => !!res?.drift && res.drift.check === "garment";
 
 /** Did this result pass the garment gate (checked, and "same" on the first try or on the retry)? Pure. */
 export function passedGarmentGate(res) {
@@ -472,7 +478,11 @@ export async function pressGarment({ res, raw, item, deps, emit = () => {} }) {
     generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${deps.now()}.jpg`, out, "image/jpeg"));
   } catch (e) { e.paid = true; e.usage = gen.usage || null; throw e; }
   const out = { ...res, generated, usage: gen.usage || null, wastedUsages: [], draftFiles: [], pressed: true, measurements: null,
-    trace: { ...(res.trace || {}), press: { promptText: GARMENT_RETOUCH, from: res.generated.path || res.generated.url, usage: gen.usage || null, requestMs: gen.requestMs ?? null, resolution: { width: gm.width, height: gm.height } } } };
+    // The record describes THIS call (the one that made the stored photo); the composing call it started from is kept under `composed`.
+    trace: { ...(res.trace || {}), promptText: GARMENT_RETOUCH, request: gen.request || null, usage: gen.usage || null, requestMs: gen.requestMs ?? null, thoughts: gen.thoughts ?? null,
+      resolution: { width: gm.width, height: gm.height }, draftFiles: [],
+      press: { from: res.generated.path || res.generated.url },
+      composed: { promptText: res.trace?.promptText || null, request: res.trace?.request || null, usage: res.trace?.usage || null, requestMs: res.trace?.requestMs ?? null, resolution: res.trace?.resolution || null } } };
   delete out.uncorrected; delete out.corrected;
   return out;
 }

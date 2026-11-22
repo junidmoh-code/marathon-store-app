@@ -3085,13 +3085,17 @@ exports.generateProductPhotos = onCall(
               } catch (err) {
                 // A retry that fails outright never costs the product: a garment keeps its photo, flagged; anything else gets the cut-out.
                 console.warn(`generateProductPhotos: ${id} drift retry failed:`, err && err.message); driftInfo.retry = "failed";
-                if (garment) { driftInfo.flagged = true; driftInfo.kept = "first"; } else driftFallback = true;
+                if (garment) { driftInfo.flagged = true; driftInfo.kept = "first"; driftInfo.note = cat.garmentFlagNote(d1); } else driftFallback = true;
               }
               if (second) {
                 const d2 = await drift.checkDrift({ original: truth, generated: second.buffer }, { apiKey: geminiApiKey.value(), sharp: sharpLib, garment });
                 driftInfo.retry = d2.checked ? (d2.drift ? "drifted" : "same") : "unchecked";
                 if (garment && Number.isFinite(d2.crease)) { driftInfo.retryCrease = d2.crease; if (Number.isFinite(d2.carried)) driftInfo.retryCarried = d2.carried; if (Number.isFinite(d2.flat)) driftInfo.retryFlat = d2.flat; }
-                if (d2.drift) {
+                if (garment && !d2.checked) {
+                  // A retry the gate could not check has not passed: it is kept (it was told the fix), flagged.
+                  driftInfo.flagged = true; driftInfo.kept = "retry"; rawBuf = second.buffer; rawMime = second.mime;
+                  driftInfo.note = "FLAGGED — the first photo failed the quality check and the second could not be checked.";
+                } else if (d2.drift) {
                   driftInfo.retryIssues = d2.issues || "";
                   if (garment) {
                     // KEEP THE BEST VERSION AND FLAG IT — never the creased garment cut out on white.

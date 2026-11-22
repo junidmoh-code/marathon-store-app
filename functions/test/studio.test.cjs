@@ -932,3 +932,42 @@ test("a sneaker is never checked as a garment", async () => {
   await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
   assert.deepEqual(g.seen, [{}]);
 });
+
+test("garment gate: a retry the gate could NOT check has not passed — it is kept, flagged, and held on a regeneration run (architect review)", async () => {
+  const w = await world();
+  w.deps.kit = { driftCheck: garmentCheck([["wrinkles"], null]).driftCheck };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.flagged, true); assert.equal(gen.drift.retry, "unchecked"); assert.equal(gen.drift.kept, "retry");
+  assert.match(gen.note, /the second could not be checked/);
+  assert.equal(out.passed, false);
+  const s = await import("../newArrivals/studio/studio.mjs");
+  assert.equal(s.passedGarmentGate({ drift: { check: "garment", first: "drifted", retry: "unchecked" } }), false);
+  assert.equal(s.passedGarmentGate({ drift: { check: "garment", first: "unchecked" } }), false);
+  assert.equal(s.passedGarmentGate({ drift: { check: "garment", first: "drifted", retry: "same" } }), true);
+  assert.equal(s.passedGarmentGate({ drift: { check: "garment", first: "same" }, qcFlagged: true }), false);
+});
+
+test("HOLD never traps a product the gate does not judge: a sneaker regenerated with hold lands as on any tap", async () => {
+  const w = await world({ product: { name: "Nike Air", categoryKey: "sneakers", category: "Footwear" }, item: { categoryKey: "sneakers" } });
+  w.deps.kit = { driftCheck: async () => ({ checked: true, drift: false, issues: "" }) };
+  const out = await studio.studioGenerate(w.db, { pid: PID, hold: true }, "regen", w.deps);
+  assert.equal(out.held, undefined);
+  assert.equal((await itemOf(w.db)).currentGen, out.genId);
+});
+
+test("the steamed photo's record describes the steam call; the composing call is kept under `composed`", async () => {
+  const s = await import("../newArrivals/studio/studio.mjs");
+  const photo = await sharp({ create: { width: 900, height: 1200, channels: 3, background: "#456" } }).jpeg().toBuffer();
+  const res = { generated: { url: "https://firebasestorage.googleapis.com/a.jpg", path: "products/p1/new_arrivals/gen_1.jpg" }, usage: { n: 1 }, draftFiles: [{ url: "d" }], trace: { promptText: "COMPOSE", usage: { n: 1 }, request: { a: 1 }, draftFiles: [{ url: "d" }] } };
+  const out = await s.pressGarment({ res, raw: photo, item: { pid: "p1" }, deps: {
+    generation: { imageModel: "m", imageSize: "4K" }, conditionClause: "CONDITION.", fetchBytes: async () => ({ buffer: photo }), now: () => 2,
+    image: async () => ({ buffer: photo, usage: { n: 2 }, request: { b: 2 }, requestMs: 9 }), upload: async (p) => ({ path: p, url: `https://firebasestorage.googleapis.com/${p}` }) } });
+  assert.match(out.trace.promptText, /^RETOUCH THIS PHOTOGRAPH/); assert.deepEqual(out.trace.usage, { n: 2 }); assert.deepEqual(out.trace.request, { b: 2 });
+  assert.deepEqual(out.trace.draftFiles, []); assert.equal(out.trace.composed.promptText, "COMPOSE"); assert.deepEqual(out.trace.composed.usage, { n: 1 });
+  assert.equal(out.trace.press.from, "products/p1/new_arrivals/gen_1.jpg");
+  assert.equal(out.pressed, true); assert.deepEqual(out.usage, { n: 2 }); assert.deepEqual(out.wastedUsages, []);
+  // A steam call that cannot be stored is still a paid image.
+  await assert.rejects(s.pressGarment({ res, raw: photo, item: { pid: "p1" }, deps: { generation: { imageModel: "m", imageSize: "4K" }, fetchBytes: async () => ({ buffer: photo }), now: () => 3,
+    image: async () => ({ buffer: Buffer.from("not an image"), usage: { n: 3 } }), upload: async () => ({}) } }), (e) => e.paid === true && e.usage.n === 3);
+});

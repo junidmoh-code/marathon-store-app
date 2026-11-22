@@ -136,6 +136,7 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
   const model = e.generation.imageModel;
   const bucket = deps.bucket;
   let res, final = null;
+  const finals = new Map(); // each stored photo's own size, by path: the KEPT one is read after generate (it may be the first of two)
   try {
     // Sneakers and clothing: the product's own category whenever New Arrivals can frame it; only an unknown
     // one is mapped to a plate. Every other kind: the shared generator's staging for that kind (`look`).
@@ -145,7 +146,7 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
     const upload = async (p, buf, mime) => {
       const bfPath = String(p).replace("/new_arrivals/", "/black_friday/");
       const r = await e.uploadImmutable(bucket, bfPath, buf, mime);
-      if (/\/gen_\d+\.(png|jpg|webp)$/.test(bfPath)) { const m = await sharp(buf).metadata().catch(() => ({})); final = { width: m.width || null, height: m.height || null, mime, bytes: buf.length }; }
+      if (/\/gen_\d+\.(png|jpg|webp)$/.test(bfPath)) { const m = await sharp(buf).metadata().catch(() => ({})); final = { width: m.width || null, height: m.height || null, mime, bytes: buf.length }; finals.set(r.path || bfPath, final); }
       return r;
     };
     res = await studio.generate({
@@ -195,6 +196,7 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
     throw new HttpsError(err.studioRefusal ? "failed-precondition" : status === 402 ? "resource-exhausted" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
   }
 
+  if (res.generated && finals.has(res.generated.path)) final = finals.get(res.generated.path);
   await keepFailedCost(res.wastedUsages || []);
   // What the tries before the kept photo cost (booked apart as failedZar above) — reported to the caller.
   let wastedZar = 0;
@@ -214,7 +216,8 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
   };
   // Did it pass the garment gate? (Only a garment is gated; an unchecked photo did not pass.)
   const passed = studio.passedGarmentGate(res);
-  const held = hold === true && !passed;
+  // Only a photo the gate judged can be held: a product that is not gated as a garment lands as on any tap.
+  const held = hold === true && studio.garmentGated(res) && !passed;
   for (const [k, v] of Object.entries(gen)) if (v === null || v === undefined) delete gen[k];
   const ref = db.ref(`${core.ROOT}/photos/${pid}`);
   const pre = (await ref.once("value")).val();

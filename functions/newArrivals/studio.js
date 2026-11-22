@@ -368,7 +368,7 @@ async function studioGenerate(db, { pid, method, provider, hold = false }, uid, 
   const reason = item.generateRequest.regenerate ? "regenerate" : "requested";
   // `hold` is never sent by the card: only the regeneration run asks for it.
   const passed = studio.passedGarmentGate(res);
-  const held = hold === true && !passed;
+  const held = hold === true && studio.garmentGated(res) && !passed;
   const gen = record.generationEntry(res, { at, cost, model, reason, code, draftCount: res.draftFiles.length });
 
   // `from` is the lane the item was claimed in: a retried landing (the first

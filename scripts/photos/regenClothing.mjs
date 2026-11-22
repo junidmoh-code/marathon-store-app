@@ -97,8 +97,8 @@ async function main() {
     const t0 = Date.now();
     await db.ref(`photo_regen/requests/${id}`).set({ pid: t.pid, card: t.card, at: t0, by: UID });
     let row = null;
-    while (!row && Date.now() - t0 < WAIT_MS) { await new Promise((r) => setTimeout(r, 6000)); row = await val(`photo_regen/results/${id}`).catch(() => null); }
-    row = row || { pid: t.pid, card: t.card, ok: false, error: "no answer from photoRegenRun within 11 minutes" };
+    while (!row && Date.now() - t0 < WAIT_MS) { await new Promise((r) => setTimeout(r, 6000)); const r = await val(`photo_regen/results/${id}`).catch(() => null); if (r && typeof r.ok === "boolean") row = r; }
+    row = row || { pid: t.pid, card: t.card, ok: false, error: "no answer from photoRegenRun within 11 minutes (it may have been cut off at its time limit — check the card)" };
     row = { ...row, name: t.name || null, approved: !!t.approved };
     fs.appendFileSync(out, JSON.stringify(row) + "\n");
     console.log(`${row.ok ? (row.passed ? "PASS " : row.flagged ? "FLAG " : "HELD ") : "FAIL "} ${t.card} ${t.pid} ${row.secs ?? "?"}s R${row.costZar ?? 0} ${row.ok ? JSON.stringify(row.drift) : row.error}`);

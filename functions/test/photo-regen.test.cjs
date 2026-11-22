@@ -55,3 +55,12 @@ test("the queue is server-only and never starts by itself: no client rule for /p
   const idx = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
   assert.match(idx, /exports\.photoRegenRun = require\("\.\/photoRegen\/regen\.js"\)\.photoRegenRun/);
 });
+
+test("ONE RUN PER REQUEST: a second delivery of the same event makes no second photo (architect review)", async () => {
+  const db = world(); let n = 0;
+  const deps = { bucket: {}, apiKey: "k", bfGenerate: async () => { n++; return { genId: "g2", url: "https://x/new.jpg", passed: true, costZar: 4.3 }; } };
+  const a = await regen.run(db, "r9", { pid: PID, card: "bf" }, deps);
+  const b = await regen.run(db, "r9", { pid: PID, card: "bf" }, deps);
+  assert.equal(n, 1); assert.equal(a.ok, true); assert.deepEqual(b, { pid: PID, card: "bf", skipped: "already run" });
+  assert.equal((await read(db, "photo_regen/results/r9")).ok, true, "the first run's result stands");
+});

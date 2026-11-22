@@ -242,6 +242,12 @@ test("THE GATE (22 Nov 2026): crease, carried-over crease and flatness scores, l
     { drift: true, faults: ["product", "colour", "lines", "wrinkles", "tilt"], crease: 9, carried: 1, flat: 2, issues: "all wrong" });
   // Scores are clamped to 0–10 and rounded; fenced JSON is read.
   assert.equal(parseGarmentAnswer("```json\n" + gateAnswer({ crease: 14.6, flat: -2 }) + "\n```").crease, 10);
+  // A missing, null, empty or boolean score is NOT a perfect score: the answer is unreadable (architect review).
+  for (const bad of [null, "", true, false, [], "n/a"]) assert.equal(parseGarmentAnswer(gateAnswer({ crease: bad })), null, `crease ${JSON.stringify(bad)}`);
+  assert.equal(parseGarmentAnswer(gateAnswer({ crease: "7" })).crease, 7, "a numeric string is a score");
+  assert.equal(parseGarmentAnswer(gateAnswer({ carried: null })).drift, false, "no carried score: the crease score alone decides");
+  // true sent as a word is still true.
+  assert.deepEqual(parseGarmentAnswer(gateAnswer({ lines: "true", tilt: "True" })).faults, ["lines", "tilt"]);
   // Unreadable → null: unchecked, never a fail.
   assert.equal(parseGarmentAnswer('{"verdict":"same"}'), null);
   assert.equal(parseGarmentAnswer("looks fine"), null);

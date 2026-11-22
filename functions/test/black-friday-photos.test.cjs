@@ -372,3 +372,18 @@ test("HOLD on the Black Friday card (the regeneration run): the photo the card s
   // A tap on the card never holds.
   assert.equal((await gen.bfGenerate(db, { pid: "a" }, "junid", { ...(await genDeps(db, [])), kit: gateOf([["wrinkles"], ["wrinkles"]]) })).held, undefined);
 });
+
+test("Black Friday: when the FIRST of two failed photos is kept, its record carries its OWN size and file — not the retry's (architect review)", async () => {
+  const db = seed(), calls = [];
+  const d = await genDeps(db, calls);
+  let n = 0;
+  d.image = async (model, parts, imageConfig) => { n++; calls.push(["image"]); return { buffer: await png(n === 1 ? 1728 : 864, n === 1 ? 2304 : 1152, "#777"), mime: "image/png", usage: { promptTokenCount: 9000, candidatesTokenCount: 2000 }, request: { imageConfig } }; };
+  // tilt → the retry is a remake (a different size here); it comes back with a changed logo → the first is kept.
+  const out = await gen.bfGenerate(db, { pid: "a" }, "junid", { ...d, kit: gateOf([["tilt"], ["product"]]) });
+  const g = (await read(db, `${R}/photos/a`)).gens[out.genId];
+  assert.equal(g.drift.kept, "first"); assert.equal(g.flagged, true);
+  const stored = uploads.find((u) => u.p === g.path);
+  const m = await sharp(stored.buf).metadata();
+  assert.deepEqual([g.width, g.height, g.bytes], [m.width, m.height, stored.buf.length]);
+  assert.notEqual(g.width, (await sharp(uploads[uploads.length - 1].buf).metadata()).width, "the retry was a different size");
+});
