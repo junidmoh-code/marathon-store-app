@@ -75,7 +75,7 @@ import {
   nextScanAt, previewVerdict, firstSentence, lastChange, defaultMinQty,
   isPerSizeRow, fillAllSizes, seedPerSizeLocation, seedArmedLocation, bySizeRank, sizeLabel,
   perSizeMode, setEverySize,
-  mainListEntries, previewFromArmModel,
+  mainListEntries, previewFromArmModel, policyGaps, armedInTruth, catalogueOutsideTheList,
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
@@ -86,6 +86,8 @@ import { isSuperAdmin as isSuperAdminEmail, superAdminName } from "../../config/
 import { nameOf } from "./sectionRouting";
 import { locationOf } from "../../utils/networkRegistry";
 import { currentNetwork } from "../../utils/networkStore";
+import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
+import { isDeactivated } from "../../utils/deactivation.js";
 
 // 300s to match the function's own timeoutSeconds. The Firebase JS SDK defaults
 // httpsCallable to 70,000ms; the census, the row list and the group model can
@@ -278,6 +280,23 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // THE MAIN LIST: categories and groups sorted in together, a group's members
   // folded into the group's entry. See mainListEntries.
   const categories = useMemo(() => mainListEntries(census), [census]);
+  // Find-by-name over the list (label or key). A match on a member keeps its
+  // group row above it, so the row still reads as "part of Footwear".
+  const [find, setFind] = useState("");
+  const shownCategories = useMemo(() => {
+    const q = find.trim().toLowerCase();
+    if (!q) return categories;
+    const hit = (c) => String(c.label || "").toLowerCase().includes(q) || String(c.key || "").toLowerCase().includes(q);
+    const keep = new Set(categories.filter(hit).map((c) => c.key));
+    for (const c of categories) if (keep.has(c.key) && c.underGroup) keep.add(c.underGroup);
+    return categories.filter((c) => keep.has(c.key));
+  }, [categories, find]);
+  // What the catalogue holds that no row above speaks for (enginePolicyCore.
+  // catalogueOutsideTheList) — from the product list the app already has.
+  const outside = useMemo(
+    () => (census ? catalogueOutsideTheList({ products, census, categoryKeyOf: effectiveCategoryKey, isDeactivated }) : null),
+    [products, census],
+  );
   // EVERY entry, members included — the detail screen can open a member from
   // inside its group even though the main list does not show it.
   const allEntries = useMemo(() => [...(census?.categories || []), ...(census?.groupEntries || [])], [census]);
@@ -837,7 +856,9 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   const groupable = (census?.categories || []).filter((c) => !c.memberOfGroup)
     .map((c) => ({ key: c.key, label: c.label, products: c.products, sizeRun: c.sizeRun || [] }));
   const allCats = census?.categories || [];
-  const governed = allCats.filter((c) => (c.armedEffective || []).length).length;
+  // Governed IN TRUTH: a category whose every size is unnamed at every armed
+  // per-size location keeps nothing anywhere, and is not counted.
+  const governed = allCats.filter((c) => armedInTruth(c).real.length).length;
   const oldRows = (census?.categories || []).reduce((n, c) => n + (c.ownRowCells || 0), 0);
 
   return (
@@ -960,9 +981,25 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
                 busy={busy} onSave={(n) => saveCentralFed(loc, n)} />
             ))}
 
-            {!loading && !error && categories.map((c) => (
-              <CategoryRow key={c.key} category={c} onOpen={() => openCategory(c)} />
+            {/* FIND A CATEGORY BY NAME. Forty rows on a phone, the empty ones
+                last: typing three letters is how a new category is found. */}
+            {!loading && !error && (
+              <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a category…"
+                aria-label="Find a category" enterKeyHint="search" autoCapitalize="none" autoCorrect="off"
+                style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 10, fontSize: 16, padding: "11px 13px" }} />
+            )}
+
+            {!loading && !error && shownCategories.map((c) => (
+              <CategoryRow key={c.key} category={c}
+                onOpen={() => openCategory(c, c.underGroup ? allEntries.find((e) => e.key === c.underGroup) || null : null)} />
             ))}
+            {!loading && !error && find.trim() && !shownCategories.length && (
+              <div style={{ ...GLASS, padding: "1rem", color: GRAY, fontSize: ".85rem" }}>
+                No category called “{find.trim()}”. A new category is added in Admin → Categories; it then appears here as “no policy”.
+              </div>
+            )}
+
+            {!loading && !error && !find.trim() && <OutsideTheList outside={outside} />}
 
             {!loading && !error && <History entries={census?.history} onRevert={revert} busy={busy} />}
           </>
@@ -1030,8 +1067,15 @@ function categoryChips(c) {
   } else {
     if (c.policySource === "group") out.push({ tone: "blue", text: `in ${c.groupLabel || c.groupKey}` });
     else if (c.memberOfGroup && !c.entry) out.push({ tone: "blue", text: "in its group" });
-    if ((c.armedEffective || []).length) out.push({ tone: "green", text: `armed at ${c.armedEffective.length}` });
+    // ARMED IN TRUTH (enginePolicyCore.armedInTruth): a per-size location that
+    // names none of this category's sizes keeps nothing of it, so it is not
+    // counted as armed — Kids Shoes under a Footwear policy that speaks for
+    // 3–13 read "armed at 3" while Hub 1 and Hub 2 kept no kids shoe at all.
+    const truth = armedInTruth(c);
+    if (truth.real.length) out.push({ tone: "green", text: `armed at ${truth.real.length}` });
     else out.push({ tone: "gray", text: "no policy" });
+    if (truth.hollow.length) out.push({ tone: "amber", text: `no numbers for its sizes at ${truth.hollow.map(locLabel).join(" · ")}` });
+    if (truth.partial.length) out.push({ tone: "amber", text: `some sizes without numbers at ${truth.partial.map(locLabel).join(" · ")}` });
   }
   // "N old rows" — the explicit /stock_targets rows the engine reads first. A
   // LINK that opens them for editing; never a count of something to clear.
@@ -1045,10 +1089,75 @@ function categoryChips(c) {
   return out;
 }
 
+// ── SIZES WITH NO NUMBER (enginePolicyCore.policyGaps) ───────────────────────
+// Said in one plain sentence per location, on the category's own screen. It
+// arms nothing and suggests no number: it names the sizes and where to set
+// them, and the owner sets them.
+function SizeGaps({ category: c, whose }) {
+  const gaps = policyGaps(c);
+  const locs = Object.keys(gaps);
+  // Only a SIZED category has a size list to add to (a one-size category's
+  // stray S/M cells are old rows, a different matter with its own chip).
+  const extra = (c.sizeRun || []).length ? (c.sizeRunExtra || []) : [];
+  if (!locs.length && !extra.length) return null;
+  return (
+    <div data-size-gaps style={{ marginBottom: ".9rem", padding: ".7rem .9rem", borderRadius: RADIUS,
+      background: "rgba(251,191,36,.07)", border: "1px solid rgba(251,191,36,.35)" }}>
+      {locs.length > 0 && <div style={{ color: AMBER, fontWeight: 700, fontSize: ".85rem", marginBottom: 4 }}>Sizes with no number</div>}
+      {locs.map((loc) => (
+        <div key={loc} style={{ color: "#fde68a", fontSize: ".8rem", lineHeight: 1.5 }}>
+          {locLabel(loc)}: {gaps[loc].all ? "none of its sizes has a number" : "no number"} for {gaps[loc].missing.map(sizeLabel).join(", ")} — this policy keeps {gaps[loc].all ? "nothing of this category" : "none of those sizes"} there until {whose ? `they are set on ${whose}` : "they are set below"}. (A product with its own target row is still kept by that row.)
+        </div>
+      ))}
+      {extra.length > 0 && (
+        <div style={{ color: "#fde68a", fontSize: ".8rem", lineHeight: 1.5, marginTop: locs.length ? 6 : 0 }}>
+          Products here also come in {extra.map(sizeLabel).join(", ")}, which {extra.length === 1 ? "is" : "are"} not in this category's size list — add {extra.length === 1 ? "it" : "them"} to the size list in Admin → Categories and {extra.length === 1 ? "it" : "they"} can be given a number too.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── WHAT THE CATALOGUE HOLDS THAT NO ROW SPEAKS FOR ──────────────────────────
+// Products with no category at all, and any category key that is not on the
+// list. Read-only: this card arms categories, and these have none to arm. It
+// says how many, what they are, and where a category is given.
+function OutsideTheList({ outside }) {
+  if (!outside || (!outside.noCategory && !outside.unlisted.length)) return null;
+  return (
+    <div data-outside-list style={{ ...GLASS, marginBottom: 8, padding: ".8rem .9rem", border: "1px solid rgba(251,191,36,.3)" }}>
+      {outside.noCategory > 0 && (
+        <>
+          <div style={{ fontWeight: 700, fontSize: "1rem" }}>No category</div>
+          <div style={{ color: GRAY, fontSize: ".78rem", marginTop: 2 }}>
+            {outside.noCategory} {outside.noCategory === 1 ? "product has" : "products have"} no category, so no policy on this card can reach {outside.noCategory === 1 ? "it" : "them"}.
+            Give {outside.noCategory === 1 ? "it" : "them"} a category in Admin → Categories → Assign; {outside.noCategory === 1 ? "it" : "they"} then follow{outside.noCategory === 1 ? "s" : ""} that category's row here.
+          </div>
+          <div className="ep-chips" style={{ marginTop: 6 }}>
+            <Chip tone="gray">no policy</Chip>
+            {outside.noCategoryBy.slice(0, 8).map((b) => <Chip key={b.label} tone="gray">{b.products} · {b.label}</Chip>)}
+            {outside.noCategoryBy.length > 8 && <Chip tone="gray">+{outside.noCategoryBy.length - 8} more</Chip>}
+          </div>
+        </>
+      )}
+      {outside.unlisted.map((u) => (
+        <div key={u.key} data-unlisted={u.key} style={{ marginTop: outside.noCategory > 0 ? 12 : 0 }}>
+          <div style={{ fontWeight: 700, fontSize: "1rem" }}>{u.key}</div>
+          <div style={{ color: GRAY, fontSize: ".78rem", marginTop: 2 }}>
+            {u.products} {u.products === 1 ? "product carries" : "products carry"} this category, and it is not in the category list. Add it in Admin → Categories and it appears above, ready to arm.
+          </div>
+          <div className="ep-chips" style={{ marginTop: 6 }}><Chip tone="gray">no policy</Chip><Chip tone="gray">not in the category list</Chip></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── THE LIST ROW ─────────────────────────────────────────────────────────────
 function CategoryRow({ category: c, onOpen }) {
   return (
-    <div style={{ ...GLASS, marginBottom: 8, padding: ".8rem .9rem" }}>
+    <div data-category-row={c.key} data-under-group={c.underGroup || undefined}
+      style={{ ...GLASS, marginBottom: 8, padding: ".8rem .9rem", ...(c.underGroup ? { marginLeft: 18, borderLeft: "2px solid rgba(60,110,255,.45)" } : null) }}>
       <button type="button" className="ep-cat" onClick={onOpen}
         aria-label={`Open ${c.label}`}>
         <CategoryImage category={c} size={44} />
@@ -1106,12 +1215,20 @@ function CategoryDetail({
       {!c.isGroup && c.footwearMember ? (
         <div style={{ color: "#dbe6ff", fontSize: ".82rem", marginBottom: ".9rem" }}>
           Footwear is set once, on {parent?.label || c.groupLabel || "Footwear"} — change the numbers there.
+          {parent && (
+            <button type="button" onClick={onBack} data-open-group
+              style={{ ...bGray, display: "block", marginTop: 8, padding: "9px 14px", fontSize: ".85rem" }}>
+              Open {parent.label} to set {c.label}'s sizes
+            </button>
+          )}
         </div>
       ) : !c.isGroup && c.memberOfGroup && (
         <div style={{ color: "#dbe6ff", fontSize: ".82rem", marginBottom: ".9rem" }}>
           Saving here gives {c.label} its own numbers — they beat {parent?.label || c.groupLabel || "the group"}'s.
         </div>
       )}
+
+      {!c.isGroup && <SizeGaps category={c} whose={c.policySource === "group" ? (parent?.label || c.groupLabel || "its group") : null} />}
 
       {(c.footwearDrift || []).length > 0 && (
         <div role="alert" style={{ marginBottom: ".9rem", padding: ".7rem .9rem", borderRadius: RADIUS,

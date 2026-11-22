@@ -36,17 +36,18 @@ describe("mainListEntries", () => {
       { key: "group:footwear-all", isGroup: true, label: "Sneakers", products: 1297, ownRowCells: 0, armed: false, armedEffective: ["hub2"] },
     ],
   };
-  it("hides every member — even one with its own armed entry — and lists the group once, sorted in", () => {
+  // 22 Nov 2026: members are no longer hidden — every category has a row,
+  // directly under its group's (enginePolicyEveryCategory.test.jsx).
+  it("lists the group once, sorted in, with its members directly under it", () => {
     const keys = mainListEntries(census).map((c) => c.key);
-    expect(keys).not.toContain("sneakers");
-    expect(keys).not.toContain("slides");
     expect(keys.filter((k) => k === "group:footwear-all")).toHaveLength(1);
+    expect(keys).toEqual(["caps", "group:footwear-all", "slides", "sneakers", "t-shirts", "jeans"]);
   });
   it("ranks a DISARMED group below the governed band even when it holds numbers", () => {
-    const keys = mainListEntries(census).map((c) => c.key);
-    expect(keys).toEqual(["caps", "group:footwear-all", "t-shirts", "jeans"]);
+    const top = (c) => mainListEntries(c).filter((x) => !x.underGroup).map((x) => x.key);
+    expect(top(census)).toEqual(["caps", "group:footwear-all", "t-shirts", "jeans"]);
     const armed = { ...census, groupEntries: [{ ...census.groupEntries[0], armed: true }] };
-    expect(mainListEntries(armed).map((c) => c.key)).toEqual(["caps", "group:footwear-all", "t-shirts", "jeans"]);
+    expect(top(armed)).toEqual(["caps", "group:footwear-all", "t-shirts", "jeans"]);
     // …alphabetical inside the governed band once armed: Caps < Sneakers
   });
   it("survives a census with no groupEntries at all (the shape before this pass)", () => {
@@ -418,17 +419,18 @@ const styleTag = (tree) => tree.root.findAllByType("style").map((n) => n.childre
 beforeEach(() => { callableMock.mockClear(); });
 
 describe("the rebuilt screen", () => {
-  it("lists categories and the Sneakers GROUP as ONE entry — members folded in, not listed", async () => {
+  it("lists categories and the Sneakers GROUP as one entry, its members under it", async () => {
     const tree = await renderCard();
     const t = textOf(tree);
     expect(t).toContain("Caps &amp; Beanies".replace("&amp;", "&"));
     expect(t).toContain("Sneakers");
     expect(t).toContain("7 categories");
-    // ONE "Sneakers" row (the group), not two: the member category is inside it.
+    // The group row, and (since 22 Nov 2026) each member's own row under it.
     const opens = tree.root.findAll((n) => n.type === "button" && /^Open /.test(n.props["aria-label"] || ""))
       .map((n) => n.props["aria-label"]);
-    expect(opens.filter((l) => l === "Open Sneakers")).toHaveLength(1);
-    expect(opens).not.toContain("Open Slides");
+    expect(opens.filter((l) => l === "Open Sneakers")).toHaveLength(2);
+    const under = tree.root.findAll((n) => typeof n.type === "string" && n.props["data-under-group"]).map((n) => n.props["data-category-row"]);
+    expect(under).toContain("sneakers");
     // and there is no separate GROUPS section
     expect(t).not.toContain("Groups");
   });
