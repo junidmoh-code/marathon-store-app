@@ -175,3 +175,17 @@ describe("cross-app contract (mirror of the POS copy)", () => {
     }
   });
 });
+
+// Kids Shoes (Junid, 22 Nov 2026): the one footwear category the Engine Policy
+// card may arm with numbers of its own. The browser and the server must agree.
+import { describe as describe2, it as it2, expect as expect2 } from "vitest";
+import { FOOTWEAR_OWN_NUMBERS_KEYS as OWN_CLIENT } from "./footwearLine.js";
+import { createRequire as createRequire2 } from "node:module";
+describe2("FOOTWEAR_OWN_NUMBERS_KEYS — one list, both sides", () => {
+  it2("equals the server's, and is Kids Shoes alone", () => {
+    const server = createRequire2(import.meta.url)("../../functions/lib/policy-resolve.cjs");
+    expect2([...OWN_CLIENT]).toEqual([...server.FOOTWEAR_OWN_NUMBERS_KEYS]);
+    expect2([...OWN_CLIENT]).toEqual(["kids-shoes"]);
+    for (const k of OWN_CLIENT) expect2(server.FOOTWEAR_CATEGORY_KEYS).toContain(k);
+  });
+});

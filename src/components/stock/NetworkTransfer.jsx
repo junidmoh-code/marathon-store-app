@@ -272,10 +272,11 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
   // reads (Kimi substitute review, PR #361).
   const undoInFlight = useRef(new Set());
   const undoSolve = async (u) => {
-    if (!canAct || undoUi[u.key]?.busy || undoInFlight.current.has(u.key)) return;
+    // (Every exit also RETURNS { ok, msg } — the one-tap toast says it.)
+    if (!canAct || undoUi[u.key]?.busy || undoInFlight.current.has(u.key)) return { ok: false, msg: "Already undoing." };
     // A row read back from the (staff-writable) history is checked first.
     const bad = undoRecordProblem(u, Object.keys(network.locations || {}));
-    if (bad) { setRow(u.key, { err: `This row cannot be undone safely — it names ${bad}. Nothing was changed.` }); return; }
+    if (bad) { setRow(u.key, { err: `This row cannot be undone safely — it names ${bad}. Nothing was changed.` }); return { ok: false, msg: "This row cannot be undone safely. Nothing was changed." }; }
     undoInFlight.current.add(u.key);
     setRow(u.key, { busy: true, err: null });
     try {
@@ -302,11 +303,11 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
         // must never reach another product's request (substitute Sonnet
         // review, PR #952).
         const foreign = Object.entries(liveFb).find(([, r]) => r && (r.productId !== u.pid || r.requestingLocation !== u.firstBatch.store));
-        if (foreign) { setRow(u.key, { busy: false, err: "This row names a request that is not this solve's — nothing was changed." }); return; }
+        if (foreign) { setRow(u.key, { busy: false, err: "This row names a request that is not this solve's — nothing was changed." }); return { ok: false, msg: "Not undone — nothing was changed." }; }
         const fbBlockers = firstBatchUndoBlockers({ liveRequests: liveFb, storeLabel: LOC_LABEL[u.store] });
         if (fbBlockers.length) {
           setRow(u.key, { busy: false, err: fbBlockers[0] });
-          return;
+          return { ok: false, msg: fbBlockers[0] };
         }
       }
       // The cells this undo may take back: its own seeds, minus any a sibling
@@ -317,7 +318,7 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
       const blockers = solveUndoBlockers({ paths: ownPaths, openByLoc, priorOpenByLoc: u.priorOpen, ownRunId: u.firstBatch ? firstBatchRunId(u.firstBatch.solveId) : null });
       if (blockers.length) {
         setRow(u.key, { busy: false, err: blockers[0] });
-        return;
+        return { ok: false, msg: blockers[0] };
       }
       // Cancel the shop's open requests FIRST, with the solve_undone reason:
       // the trigger then raises no Hub 2 leg and the engine withdraws the lock
@@ -348,15 +349,18 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
       if (kept.length || stood.length) {
         const standingMsg = stood.length ? ` Central had already started on size${stood.length === 1 ? "" : "s"} ${stood.map(sizeLabel).join(", ")} — ${stood.length === 1 ? "that request stands" : "those requests stand"}.` : "";
         setRow(u.key, { busy: false, err: `${ownPaths.length - kept.length} of ${ownPaths.length} seeded cells removed — the rest took real stock or counts since the solve and were kept. Use Adjust for those.${standingMsg}` });
+        return { ok: false, msg: `Only partly undone — Central or a count got there first.${standingMsg}` };
       } else {
         // Fully undone: the row reads Undone (the card reappearing IS the
         // feedback), and the stale "Solved ✓" banner is cleared so the
         // returning card offers Solve again, not last week's success message.
         setRow(u.key, { busy: false, err: null });
         await finishUndo(u);
+        return { ok: true, msg: null };
       }
     } catch (e) {
       setRow(u.key, { busy: false, err: `Couldn't undo — nothing changed, retry. (${e?.message || "error"})` });
+      return { ok: false, msg: `Couldn't undo — nothing changed, retry. (${e?.message || "error"})` };
     } finally {
       undoInFlight.current.delete(u.key);
     }
@@ -378,7 +382,7 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
       undoInFlight.current.delete(u.key);
     }
   };
-  const undoEntry = (u) => (u.kind === "concrete" ? undoConcrete(u) : undoSolve(u));
+  const undoEntry = (u) => (u.kind === "concrete" ? undoConcrete(u) : undoSolve(u));   // → { ok, msg } for a solve
   // Record actions in the session list now and in the saved history after
   // (best effort, AFTER the action committed — a refused log write must never
   // fail a Solve; solvedLog.js). A row that did not save says so.
@@ -1012,9 +1016,17 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
     });
   };
 
-  const solve = async (card) => {
-    const ticks = ticksFor(card);
-    if (solving[card.pid] || resolving[card.pid] || !canAct || !ticks.length) return;
+  // `only` (Junid, 22 Nov 2026 — one-tap solve): the Missing Products card
+  // names its ONE shop itself, so there is no panel and no tick state. The
+  // shop goes through the same tickable filter and every gate below; what is
+  // planned and written for it is exactly what a panel confirm with that one
+  // shop ticked writes. The outcome is also RETURNED ({ ok, msg, rows, units })
+  // so the caller can say it in a toast — the card no longer carries it.
+  const solve = async (card, only = null) => {
+    const ticks = only ? allocationOrder({ network, ticked: only, tickable: (st) => tickableStores(card).includes(st) }) : ticksFor(card);
+    if (solving[card.pid] || resolving[card.pid] || !canAct || !ticks.length) {
+      return { ok: false, msg: !canAct ? "You need a stock role to solve." : !ticks.length ? "That shop cannot take this product." : "Already being solved." };
+    }
     // ONE DIVISION PER SOLVE — the list's own. A tick from the other division
     // (or a hub across the wall) is refused here, whatever the panel offered.
     const division = divisionOf(card);
@@ -1026,24 +1038,24 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
     const wrong = destinationProblem({ network, section: division, destinations: ticks, kind: "product" });
     if (wrong) {
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: ticks[0], sizes: [], msg: `Not solved — ${wrong}` } }));
-      return;
+      return { ok: false, msg: `Not solved — ${wrong}` };
     }
     const stray = ticks.find((st) => !allowed.has(sectionOfStore(st)) || (!cfAt(card, st) && sectionOfStore(hubOf(card, st) || st) !== sectionOfStore(st)));
     if (stray) {
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: stray, sizes: [], msg: `Not solved — ${LOC_LABEL[stray] || stray} is not in ${sectionName(network, division)}. Solve from the "Missing from ${sectionName(network, sectionOfStore(stray))}" list instead.` } }));
-      return;
+      return { ok: false, msg: `Not solved — ${LOC_LABEL[stray] || stray} is not in ${sectionName(network, division)}.` };
     }
     // Never a hub seed for a sneaker or slide (see `offTab` in the render).
     if (isSneakerOrSlide(byId.get(card.pid))) {
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: ticks[0], sizes: [], msg: "Not seeded — sneakers and slides are refilled from the Sneakers tab." } }));
-      return;
+      return { ok: false, msg: "Not seeded — sneakers and slides are refilled from the Sneakers tab." };
     }
     // Unreachable while the confirm button is gated on the same stores — but a
     // bare `return` here is a dead button by another name, so it speaks.
     const empty = ticks.find((st) => !qualifyingSizes(card, st).length);
     if (empty) {
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: empty, sizes: [], msg: `Nothing to seed at ${LOC_LABEL[empty]} — no refill policy covers this product there.` } }));
-      return;
+      return { ok: false, msg: `Nothing to seed at ${LOC_LABEL[empty]} — no refill policy covers this product there.` };
     }
     // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17). For an in-scope
     // store — the card Central-stranded, the shop routed via its hub, any
@@ -1084,6 +1096,7 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
     // "solved products only" location before its first batch has even landed.
     const seedCell = (loc) => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: now, updatedBy: uid, ...(trustedCellsOnly(network, loc) ? trustStamp("solve", now) : {}) });
     const many = ticks.length > 1;
+    let outcome;   // what the caller is told (the one-tap toast)
     try {
       // Every location this confirm can touch: each ticked store and the hub
       // behind it (a central-fed store has none).
@@ -1187,6 +1200,9 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
         // THE WRITE HAS LANDED. Nothing below may report "nothing changed":
         // a retry would raise the first batch twice (Sonnet review, PR #952 S4).
         setResolving((m) => ({ ...m, [card.pid]: "done" }));
+        // The undo records exist from the moment the write lands — before
+        // the history entry is built, so nothing below can lose the Undo.
+        outcome = { ok: true, msg: msgs.join(" "), rows: entries.map((e) => ({ ...e, batch: baseSolveId, saved: false })), units: plan.lines.reduce((t, l) => t + (l.units || 0), 0) };
         try {
           // The offline mirror shows this device its own write at once.
           try { notePendingUpdate(updates); } catch { /* the echo is a courtesy */ }
@@ -1197,12 +1213,14 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
             const log = buildSolveLogEntry(e, { at, by: uid, byName: actorName, photo: card.photo, msg, division });
             return { ...normalizeSolvedEntry(e.key, log), batch: baseSolveId, log };
           });
+          outcome.rows = solvedRows;
           await recordSolved(solvedRows);
         } catch { /* recordSolved already keeps the row for this visit and flags it unsaved */ }
       } else {
         // Nothing to write (a central-fed store Central cannot serve): the
         // row comes back and says so.
         setResolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
+        outcome = { ok: false, msg: msgs.join(" ") || "Nothing to send." };
       }
       setSolved((d) => ({ ...d, [card.pid]: { ok: true, store: ticks[0], sizes: plan.lines[0]?.sizes || [], msg: msgs.join(" ") } }));
     } catch (e) {
@@ -1212,8 +1230,10 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
       setResolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
       setSolvePid((cur) => (cur === card.pid ? null : cur));
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: ticks[0], sizes: [], msg: `Couldn't solve ${card.name} — nothing changed, retry. (${e?.message || "error"})` } }));
+      outcome = { ok: false, msg: `Couldn't solve ${card.name} — nothing changed, retry. (${e?.message || "error"})` };
     }
     setSolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
+    return outcome;
   };
 
   // MOVE MANUALLY — by hand, inside the wall. From Central: the hubs and
@@ -1740,7 +1760,17 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
     </>
   );
 
-  return { cards, renderCard, sectionSwitch, viewOnly, selectBar, bulkBar, strip: undoStrip, solvedView, selectMode, section: listSection || HOME_SECTION, busy: solveBusy != null || busyPid != null };
+  // THE ONE-TAP SURFACE (Junid, 22 Nov 2026): what the Missing Products screen
+  // needs to decide, BEFORE a card is drawn, what a Solve to each shop would
+  // send (planFor — the very function the write plans with), and to do that
+  // Solve in one tap (solveTo → solve above, one shop). Nothing here decides a
+  // quantity; it hands out the functions that already do.
+  const api = {
+    canAct, ready: cfg !== null && targetsReady,
+    solveTo: (card, store) => solve(card, [store]),
+    planFor, tickableStores, undoEntry,
+  };
+  return { cards, renderCard, sectionSwitch, viewOnly, selectBar, bulkBar, strip: undoStrip, solvedView, selectMode, section: listSection || HOME_SECTION, busy: solveBusy != null || busyPid != null, api };
 }
 
 // THE STAND-ALONE LIST: one division's cards with its own switch (and, with

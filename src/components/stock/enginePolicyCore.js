@@ -257,6 +257,26 @@ function strRow(e) {
 // Seed a location that is being armed for the first time. Minimum is filled in
 // from ceil(keep / 2) rather than left blank — the column stays visible, but it
 // is never typed from scratch.
+// A CATEGORY LEAVING ITS GROUP FOR ITS OWN NUMBERS starts from the group's —
+// but only for ITS OWN SIZES. Kids Shoes opens on the Footwear policy: Hub 3's
+// one number for every size is kept exactly as it is, and each size-by-size
+// location (Hub 1, Hub 2) is laid out on the kids run (24–35), carrying the
+// group's number for any size both name and BLANK for the rest — never the
+// adult sizes a kids shoe does not come in, and never a number nobody chose.
+// Every location is CARRIED-ONLY: Kids Shoes' own numbers keep sizes only where
+// a kids shoe is already kept (the server refuses anything else).
+export function draftForOwnRun(draft, sizeRun) {
+  const run = [...new Set(sizeRun || [])].sort(bySizeRank);
+  const out = {};
+  for (const [loc, row] of Object.entries(draft || {})) {
+    if (!isPerSizeRow(row) || !run.length) { out[loc] = { ...row, carriedOnly: true }; continue; }
+    const sizes = {};
+    for (const k of run) sizes[k] = row.sizes[k] || { target: "", minQty: "", reorderPoint: "" };
+    out[loc] = { sizes, carriedOnly: true };
+  }
+  return out;
+}
+
 export function seedLocation(target) {
   const t = Number(target);
   return {

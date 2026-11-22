@@ -75,8 +75,11 @@ import {
   nextScanAt, previewVerdict, firstSentence, lastChange, defaultMinQty,
   isPerSizeRow, fillAllSizes, seedPerSizeLocation, seedArmedLocation, bySizeRank, sizeLabel,
   perSizeMode, setEverySize,
-  mainListEntries, previewFromArmModel, policyGaps, armedInTruth, catalogueOutsideTheList,
+  mainListEntries, previewFromArmModel, policyGaps, armedInTruth, catalogueOutsideTheList, draftForOwnRun,
 } from "./enginePolicyCore";
+import { FOOTWEAR_OWN_NUMBERS_KEYS } from "../../utils/footwearLine.js";
+// May this category be given numbers of its own although it is footwear?
+const ownNumbers = (c) => !!c && !c.isGroup && (c.ownNumbersAllowed === true || FOOTWEAR_OWN_NUMBERS_KEYS.includes(c.key));
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
 import ArmingTab from "./ArmingTab";
@@ -308,7 +311,14 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // DERIVED, not read back from what was saved last time — see perSizeMode.
   const perSize = perSizeMode(open);
   const keyNow = useMemo(() => previewKey(openKey, draft, { perSize }), [openKey, draft, perSize]);
-  const proposed = useMemo(() => policyFromDraft(draft, { perSize }), [draft, perSize]);
+  // Kids Shoes' own numbers are carried-only at every location, whatever edit
+  // reshaped a draft row (the server refuses anything else) — set once, here,
+  // where the draft becomes the policy that is previewed and saved.
+  const proposed = useMemo(() => {
+    const p = policyFromDraft(draft, { perSize });
+    if (!p || !ownNumbers(open)) return p;
+    return Object.fromEntries(Object.entries(p).map(([loc, e]) => [loc, loc !== "perSize" && e && typeof e === "object" ? { ...e, carriedOnly: true } : e]));
+  }, [draft, perSize, open]);
   const banner = useMemo(() => changedFields(open?.entry || null, proposed, { perSize }), [open, proposed, perSize]);
   const saveable = canSave({ preview, previewKeyNow: keyNow, errors, busy: !!busy });
   const scan = nextScanAt(serverNowMs());
@@ -333,7 +343,11 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     // are the numbers in force. Saving them writes an entry of its own, which
     // takes the category out of the group — said in one line on its screen.
     // A GROUP opens on its own policy.
-    setDraft(draftFromEntry({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations }));
+    const start = draftFromEntry({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations });
+    // KIDS SHOES (Junid, 22 Nov 2026) has its own size run and may have its
+    // own numbers: with none saved yet, its editor is the Footwear policy laid
+    // out on the KIDS sizes — blank where nobody has chosen a number.
+    setDraft(ownNumbers(c) && !c.entry ? draftForOwnRun(start, c.sizeRun) : start);
   };
   // Back from a member returns to its group; Back from anything else to the list.
   const closeCategory = () => {
@@ -576,7 +590,8 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     // a round trip, is the honest version of the same answer.
     // A null `proposed` (every location dropped) DELETES a stray own entry —
     // always allowed, it is how a copy is removed. (CodeRabbit, PR #646.)
-    if (open && !open.isGroup && open.footwearMember && proposed !== null && census?.groups?.["footwear-all"]?.armed === true) {
+    // (Kids Shoes is the one footwear category with numbers of its own.)
+    if (open && !open.isGroup && open.footwearMember && !ownNumbers(open) && proposed !== null && census?.groups?.["footwear-all"]?.armed === true) {
       flash("bad", `Footwear is set once, on ${parent?.label || open.groupLabel || "Footwear"} — change the numbers there.`);
       return;
     }
@@ -1240,7 +1255,7 @@ function CategoryDetail({
 
       {/* A MEMBER opened from inside its group: one line, because it is the
           one thing about this screen that is not obvious from the numbers. */}
-      {!c.isGroup && c.footwearMember ? (
+      {!c.isGroup && c.footwearMember && !ownNumbers(c) ? (
         <div style={{ color: "#dbe6ff", fontSize: ".82rem", marginBottom: ".9rem" }}>
           Footwear is set once, on {parent?.label || c.groupLabel || "Footwear"} — change the numbers there.
           {parent && (
@@ -1499,7 +1514,11 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
                     as a plain, un-tappable chip saying what the leg will do.
                     An ALREADY-ARMED leg keeps the toggle: widening is a second,
                     deliberate edit against a policy whose effect is visible. */}
-                {inDraft && r.armed && (
+                {inDraft && r.armed && ownNumbers(c) && (
+                  // Kids Shoes is carried-only by rule — said, not offered.
+                  <span data-scope-fixed style={{ ...bGray, ...smallBtn, cursor: "default" }}>Carried only</span>
+                )}
+                {inDraft && r.armed && !ownNumbers(c) && (
                   <button onClick={() => onScope(r.loc, !row.carriedOnly)}
                     title={row.carriedOnly
                       ? "Only products this location already stocks get these numbers. Tap for every product in the category."

@@ -24,23 +24,30 @@ describe("the screen's wiring — the partition is downstream and the lists don'
     // needs the live list to know when the card has really gone — while
     // HiddenProducts must get the FULL card list: the join that labels rows
     // STILL MISSING vs NO LONGER MISSING needs cards the main list no longer shows.
-    expect(SCREEN).toMatch(/const visible = partitionHidden\(all, hiddenMap\)\.visible;/);
-    expect(SCREEN).toMatch(/useProductSolve\(\{\s*products, category: "all", allStock, cards: list\.visible, section,/);
-    expect(SCREEN).toMatch(/divisions\.flatMap\(\(s\) => walked\[s\]\?\.all \|\| \[\]\)/);
+    // (22 Nov 2026, the rebuilt screen: the hide filter is applied to the ROWS,
+    // after they are built — one place, for the list and the count alike —
+    // and every card has a Hide, sneakers included, so the hidden tab joins
+    // against both cores' cards.)
+    expect(SCREEN).toMatch(/const listedOf = \(id\) => sliced\.rows\[id\]\.filter\(\(r\) => !\(hiddenMap && hiddenMap\[r\.pid\]\) && !gone\[r\.key\]\);/);
+    expect(SCREEN).toMatch(/divisions\.flatMap\(\(s\) => \[\.\.\.\(walked\[s\]\?\.all \|\| \[\]\), \.\.\.\(walked\[s\]\?\.sneakers \|\| \[\]\)/);
     expect(SCREEN).toMatch(/<HiddenProducts products=\{products\} cards=\{hiddenCards\} hiddenMap=\{hiddenMap\} \/>/);
   });
   it("the count on the division switch is built from the visible set", () => {
-    expect(SCREEN).toMatch(/count: visible\.filter\(\(c\) => !gone\[c\.pid\]\)\.length \+ sneakers\.todo\.length/);
-    // …and never from a half-loaded /stock (a zero would say "nothing missing").
-    expect(SCREEN).toMatch(/stockReady \? `\$\{lists\[sec\]\.count\} missing` : "…"/);
+    // The count is the number of cards on the division's two lists — the same
+    // rows, through the same filter…
+    expect(SCREEN).toMatch(/KINDS\.reduce\(\(t, \[k\]\) => t \+ listedOf\(bucketId\(sec, k\)\)\.length, 0\)/);
+    // …and never from a half-loaded /stock or a list still being worked out
+    // (a zero would say "nothing missing"): no number until both are complete.
+    expect(SCREEN).toMatch(/const countOf = \(sec\) => \(KINDS\.every\(\(\[k\]\) => sliced\.complete\[bucketId\(sec, k\)\]\)/);
+    expect(SCREEN).toMatch(/const ready = stockReady && /);
   });
-  it("the entrance is the unlabelled HoldSpot at the end of the view row, and the Hidden chip only shows once open", () => {
+  it("the entrance is the unlabelled HoldSpot beside the title, and the word Hidden only shows once open", () => {
     expect(SCREEN).toMatch(/<HoldSpot onTrigger=\{\(\) => setView\("hidden"\)\} \/>/);
-    // The visible "Hidden (n)" chip exists only inside the view === "hidden"
-    // branch, and counts ENTRIES (what the tab lists — resolved included).
-    expect(SCREEN).toContain('{view === "hidden" && <button data-view="hidden" onClick={() => setView("hidden")} style={tab(true)}>Hidden ({hiddenCount})</button>}');
+    // "Hidden (n)" is the title only inside the hidden view, and counts
+    // ENTRIES (what the tab lists — resolved included).
+    expect(SCREEN).toContain('{view === "hidden" ? `Hidden (${hiddenCount})` : "Missing Products"}');
     expect(SCREEN).toMatch(/const hiddenCount = Object\.keys\(hiddenMap \|\| \{\}\)\.length;/);
-    expect((SCREEN.match(/setView\("hidden"\)/g) || []).length).toBe(2);   // the HoldSpot, and the chip that is only there once open
+    expect((SCREEN.match(/setView\("hidden"\)/g) || []).length).toBe(1);   // the HoldSpot is the only way in
   });
   it("Inventory Health no longer carries the tab — its tile leads to the screen", () => {
     expect(HEALTH).not.toMatch(/<NetworkTransfer|<MissingFootwear|<HiddenProducts|<HoldSpot|partitionHidden\(/);
@@ -78,8 +85,9 @@ describe("HoldSpot — deliberate, invisible, accident-proof", () => {
     // prevents (Sonnet architect review, PR #356). The view is the screen's
     // own state: leaving the screen unmounts it, and switching division
     // returns to the list.
-    expect(SCREEN).toMatch(/const \[view, setView\] = useState\("todo"\);/);
-    expect(SCREEN).toMatch(/onClick=\{\(\) => \{ setPick\(sec\); setView\("todo"\); \}\}/);
+    expect(SCREEN).toMatch(/const \[view, setView\] = useState\("list"\);/);
+    expect(SCREEN).toMatch(/onClick=\{\(\) => \{ setPick\(sec\); setView\("list"\); \}\}/);
+    expect(SCREEN).toMatch(/onClick=\{\(\) => \{ setKind\(k\); setView\("list"\); \}\}/);
     expect(APP).toMatch(/<MissingProductsScreen products=\{products\} onExit=\{\(\) => setRole\(null\)\} \/>/);
   });
 });

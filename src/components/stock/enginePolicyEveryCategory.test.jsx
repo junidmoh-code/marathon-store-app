@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { mainListEntries, policyGaps, armedInTruth, catalogueOutsideTheList, seedArmedLocation, policyFromDraft } from "./enginePolicyCore";
+import { mainListEntries, policyGaps, armedInTruth, catalogueOutsideTheList, seedArmedLocation, policyFromDraft, draftForOwnRun, draftFromEntry } from "./enginePolicyCore";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
 
 const FOOTWEAR_POLICY = {
@@ -141,6 +141,23 @@ describe("arming never seats a product at a new location", () => {
   });
 });
 
+describe("draftForOwnRun — Kids Shoes leaves Footwear's numbers for its own size run", () => {
+  it("size-by-size hubs are laid out on the kids sizes, blank; Hub 3's one number and carried-only are kept; no adult size rides along", () => {
+    const start = draftFromEntry({ entry: FOOTWEAR_POLICY, carriage: {}, destinations: ["hub1", "hub2"] });
+    const d = draftForOwnRun(start, ["27", "26"]);
+    expect(Object.keys(d.hub1.sizes)).toEqual(["26", "27"]);
+    expect(d.hub1.sizes["26"]).toEqual({ target: "", minQty: "", reorderPoint: "" });
+    expect(d.hub1.carriedOnly).toBe(true);
+    expect(d.hub3).toEqual(start.hub3);
+    // nothing blank becomes a policy: saving it untouched arms Hub 3 only, exactly as it is today
+    expect(policyFromDraft(d, { perSize: true })).toEqual({ perSize: true, hub3: { target: 3, minQty: 2, carriedOnly: true } });
+  });
+  it("a size both runs name keeps Footwear's number", () => {
+    const start = draftFromEntry({ entry: FOOTWEAR_POLICY, carriage: {}, destinations: ["hub1"] });
+    expect(draftForOwnRun(start, ["7", "26"]).hub1.sizes["7"].target).toBe("3");
+  });
+});
+
 // ═══ ON THE CARD ═════════════════════════════════════════════════════════════
 globalThis.window = globalThis.window || { addEventListener() {}, removeEventListener() {}, location: { hash: "" }, scrollY: 0, scrollTo() {}, confirm: () => true, requestAnimationFrame(fn) { fn(); } };
 globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => fn());
@@ -210,19 +227,51 @@ describe("the Engine Policy list", () => {
     expect(shown).toEqual(["group:footwear-all", "kids-shoes"]);
   });
 
-  it("opening Kids Shoes names the sizes with no number and the way to the Footwear numbers", async () => {
+  it("opening Kids Shoes names the sizes with no number, and opens ITS OWN editor on the kids sizes — blank, nothing chosen for Junid (22 Nov 2026)", async () => {
     const tree = await mount();
     await act(async () => { row(tree, "kids-shoes").findAll((n) => n.type === "button")[0].props.onClick(); });
     const flat = textOf(tree.root);
     expect(flat).toMatch(/Sizes with no number/);
     expect(flat).toMatch(/Hub 1: none of its sizes has a number for 26, 27/);
     expect(flat).toMatch(/also come in 24/);
-    const go = tree.root.findAll((n) => n.type === "button" && n.props["data-open-group"])[0];
-    expect(go).toBeDefined();
-    await act(async () => { go.props.onClick(); });
-    expect(textOf(tree.root)).toMatch(/Footwear/);
-    // the group's editor offers the kids sizes, blank, beside the adult ones
-    expect(textOf(tree.root)).toMatch(/26/);
+    // Kids Shoes is armable here: no "set once on Footwear" redirect…
+    expect(flat).not.toMatch(/Footwear is set once/);
+    expect(tree.root.findAll((n) => n.type === "button" && n.props["data-open-group"]).length).toBe(0);
+    // …its size-by-size hubs are laid out on the KIDS run, every number blank,
+    // and no adult size (6, 7) is offered on its screen.
+    const sized = tree.root.findAll((n) => typeof n.type === "function" && n.props && typeof n.props.ariaPrefix === "string" && /^Hub \d+ \d+$/.test(n.props.ariaPrefix));
+    const byHub = {};
+    for (const n of sized) { const [hub, size] = [n.props.ariaPrefix.replace(/ \d+$/, ""), n.props.ariaPrefix.match(/(\d+)$/)[1]]; (byHub[hub] ||= []).push(size); }
+    expect(Object.keys(byHub).length).toBe(2);                         // Hub 1 and Hub 2, size by size
+    for (const sizes of Object.values(byHub)) expect(sizes).toEqual(["26", "27"]);
+    for (const n of sized) expect([n.props.row.target, n.props.row.minQty, n.props.row.reorderPoint]).toEqual(["", "", ""]);
+    // Hub 3 keeps Footwear's one number, carried-only, said as a fixed chip
+    expect(tree.root.findAll((n) => typeof n.type === "string" && n.props["data-scope-fixed"]).length).toBeGreaterThan(0);
+  });
+
+  it("typing a Kids Shoes size number and previewing sends it carried-only at every location (CodeRabbit, PR #964)", async () => {
+    const tree = await mount();
+    await act(async () => { row(tree, "kids-shoes").findAll((n) => n.type === "button")[0].props.onClick(); });
+    // the size-26 rows are NumInputs whose onChange is (field, value)
+    const sized = tree.root.findAll((n) => typeof n.type === "function" && n.props && typeof n.props.ariaPrefix === "string" && / 26$/.test(n.props.ariaPrefix));
+    expect(sized.length).toBeGreaterThan(0);
+    // every size-by-size hub needs a number (the card's own rule) — Hub 1 and Hub 2
+    for (const n of sized) await act(async () => { n.props.onChange("target", "2"); });
+    const run = tree.root.findAll((n) => typeof n.type === "function" && n.props && typeof n.props.onRun === "function")[0];
+    calls.length = 0;
+    await act(async () => { await run.props.onRun(); });
+    const sent = calls.find((c) => c.categoryKey === "kids-shoes" && c.dryRun === true);
+    expect(sent).toBeDefined();
+    const legs = Object.entries(sent.policy).filter(([k]) => k !== "perSize");
+    expect(legs.length).toBeGreaterThan(0);
+    for (const [, e] of legs) expect(e.carriedOnly).toBe(true);
+    expect(Object.values(sent.policy).some((e) => e && e.sizes && e.sizes["26"] && e.sizes["26"].target === 2)).toBe(true);
+  });
+
+  it("Sneakers (any other footwear category) still says Footwear is set once, and points to Footwear", async () => {
+    const tree = await mount();
+    await act(async () => { row(tree, "sneakers").findAll((n) => n.type === "button")[0].props.onClick(); });
+    expect(textOf(tree.root)).toMatch(/Footwear is set once/);
   });
 
   it("says how many products have no category, and names a key that is not on the list", async () => {

@@ -60,7 +60,7 @@ const {
 } = require("./category-policy.cjs");
 const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
 const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf,
-  FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
+  FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, FOOTWEAR_OWN_NUMBERS_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
 const { normaliseEmail } = require("./super-admins.cjs");
 const { encodeSizeKey, resolveTarget, policyCategoryKey, maskUntrustedStock } = require("./refill-engine.cjs");
 const { loadNetwork } = require("./network-load.cjs");
@@ -851,6 +851,9 @@ async function buildCensus(db, { config, taxonomy, knownLocations, network: hand
       resolvesMapProducts: m ? Math.max(pids.length - m.overriddenProducts, 0) : 0,
       // A footwear category's numbers live on the footwear policy only.
       footwearMember: FOOTWEAR_CATEGORY_KEYS.includes(key),
+      // Kids Shoes: the one footwear category that may be given its own
+      // numbers while the footwear policy is armed (policy-resolve.cjs).
+      ownNumbersAllowed: FOOTWEAR_OWN_NUMBERS_KEYS.includes(key),
       footwearDrift: FOOTWEAR_CATEGORY_KEYS.includes(key) ? footwearDrift.filter((i) => i.key === key) : [],
     });
   }
@@ -1763,11 +1766,24 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   // ── A FOOTWEAR CATEGORY HAS NO NUMBERS OF ITS OWN ─────────────────────────
   // See the ONE FOOTWEAR POLICY note above isGenuineRevert. Refused on a dry
   // run too: previewing a copy that cannot be saved is offering a refusal.
-  if (FOOTWEAR_CATEGORY_KEYS.includes(categoryKey) && d.policy !== null && footwearGroupArmed(cfg)
+  // (Kids Shoes is the one exception — FOOTWEAR_OWN_NUMBERS_KEYS, Junid 22 Nov 2026.)
+  if (FOOTWEAR_CATEGORY_KEYS.includes(categoryKey) && !FOOTWEAR_OWN_NUMBERS_KEYS.includes(categoryKey) && d.policy !== null && footwearGroupArmed(cfg)
     && !(await isGenuineRevert(db, d, { kind: "category", key: categoryKey, value: d.policy }))) {
     throw httpsError("failed-precondition",
       `Footwear is set once, on the Footwear policy — "${categoryKey}" cannot have numbers of its own while that policy is armed. Open Footwear to change it.`,
       { footwearOnePolicy: true, groupKey: FOOTWEAR_GROUP_KEY });
+  }
+  // KIDS SHOES' OWN NUMBERS ARM ONLY WHERE A KIDS SHOE IS ALREADY KEPT
+  // (Junid, 22 Nov 2026): every location in its entry must be carried-only, so
+  // the engine keeps sizes at a hub that already holds the product (or that a
+  // Solve has just sent it to) and never spreads it anywhere new.
+  if (FOOTWEAR_OWN_NUMBERS_KEYS.includes(categoryKey) && isPlainObject(d.policy)) {
+    const loose = Object.keys(d.policy).filter((loc) => loc !== "perSize" && isPlainObject(d.policy[loc]) && d.policy[loc].carriedOnly !== true);
+    if (loose.length) {
+      throw httpsError("invalid-argument",
+        `"${categoryKey}" may only be kept where it is already carried — ${loose.join(", ")} must be carried-only.`,
+        { carriedOnlyRequired: true, locations: loose });
+    }
   }
   const before = cfg.categoryPolicy?.[categoryKey] ?? null;
   const gate = gateNewLegsToSeated(before, normalizePolicy(d.policy));
