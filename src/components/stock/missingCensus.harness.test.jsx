@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync } from "fs";
 const SNAP = process.env.CENSUS_SNAPSHOT;
 const snap = SNAP ? JSON.parse(readFileSync(SNAP, "utf8")) : null;
 let hidden = null;
-try { hidden = process.env.CENSUS_HIDDEN ? JSON.parse(readFileSync(process.env.CENSUS_HIDDEN, "utf8")) : null; } catch { hidden = null; }
+try { hidden = process.env.CENSUS_HIDDEN ? JSON.parse(readFileSync(process.env.CENSUS_HIDDEN, "utf8")) : (snap?.hidden ?? null); } catch { hidden = null; }
 const paths = snap ? {
   stock: snap.stock, stock_targets: snap.targets, refill_requests: snap.recentRequests, "config/refillEngine": snap.config,
   network: snap.network ?? null, "settings/missingProductsHidden": hidden, "settings/stockHold/held": snap.held && Object.keys(snap.held).length ? snap.held : null,
