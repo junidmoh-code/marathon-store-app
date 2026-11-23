@@ -6782,3 +6782,11 @@ exports.insightsRollupSweep = onSchedule(
   exports.alternativesProfileFromAttributes = alt.alternativesProfileFromAttributes;
   exports.alternativesEnrichSweep = alt.alternativesEnrichSweep;
 }
+
+// ─── SECURITY — syncStaffClaim (a /users record becomes a `staff` token claim) ─
+// Storage rules cannot read the RTDB; this lets storage.rules require a real
+// staff record instead of "any signed-in account" (sign-up is open). Acts only
+// when a whole record appears/disappears. See functions/security/staffClaim.js
+// and docs/security/2026-11-audit.md.
+//   firebase deploy --only functions:syncStaffClaim --project marathon-club
+exports.syncStaffClaim = require("./security/staffClaim.js").syncStaffClaim;
