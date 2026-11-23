@@ -34,6 +34,7 @@ const PATCHES = {
   "user-record": async () => (await import("./rulesRequireUserRecord.mjs")).patchRequireUserRecord,
   money: async () => (await import("./rulesMoneyPaths.mjs")).patchMoneyPaths,
 };
+if (patchName === "health") PATCHES.health = async () => null;
 if (!PATCHES[patchName]) { console.error(`usage: rules-publish.mjs <${Object.keys(PATCHES).join("|")}> [--dry-run]`); process.exit(2); }
 
 function ownerToken() {
@@ -140,6 +141,14 @@ async function healthCheck(db, p, { strangerMustBeDenied }) {
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
+if (patchName === "health") {
+  // health only: live checks as cashier / manager / owner / poller / TV, and a
+  // stranger must get nothing. Used before and after every deploy.
+  const p = await personas(await findUids());
+  let good = false;
+  try { good = await healthCheck(LIVE, p, { strangerMustBeDenied: true }); } finally { await cleanup(); }
+  process.exit(good ? 0 : 1);
+}
 const patch = await PATCHES[patchName]();
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const live = await getRules(LIVE);
