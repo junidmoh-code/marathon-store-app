@@ -287,10 +287,33 @@ test("the expiry job never closes a sale Junid set again after it was read", asy
   assert.equal((await get(db, `${R}/ended/a/${NOW}`)).why, "replaced", "the sale it replaced is kept on record");
 });
 
+test("Generate without the open connection: the card asks the photo store what landed since the tap (Junid 23 Nov 20:26)", async () => {
+  const T = 1795455880000; // the tap
+  const old = { url: "https://x/a-old.jpg" }, fresh = { url: "https://x/a-new.jpg" };
+  const db = world({ bf_campaign_2026: { photos: { a: { use: "generated", genId: "g1795118789272", gens: { g1795118789272: old }, generating: { at: NOW - 1000 } } } } });
+  const m = await X.choosePhoto(db, { pid: "a", use: "mark" }, "junid", T);
+  assert.ok(m.since <= T && T - m.since < 5000);
+  // still being made: nothing chosen, and an older photo is never taken for the new one
+  assert.deepEqual(await X.choosePhoto(db, { pid: "a", use: "landed", since: m.since }, "junid", NOW), { ok: false, pid: "a", pending: true });
+  assert.equal(await get(db, `${R}/photos/a`), null);
+  // it failed: bfGenerate's own reason, and no longer pending
+  await db.ref("bf_campaign_2026/photos/a").set({ gens: { g1795118789272: old }, failed: { at: T + 40000, reason: "the photo service is busy — tap Generate again" } });
+  assert.deepEqual(await X.choosePhoto(db, { pid: "a", use: "landed", since: m.since }, "junid", NOW), { ok: false, pid: "a", failed: "the photo service is busy — tap Generate again" });
+  // a failure from BEFORE the tap is not this tap's; a stale claim (10 min) is not "still being made"
+  await db.ref("bf_campaign_2026/photos/a").set({ gens: { g1795118789272: old }, failed: { at: T - 60000, reason: "old" }, generating: { at: NOW - 11 * 60 * 1000 } });
+  assert.deepEqual(await X.choosePhoto(db, { pid: "a", use: "landed", since: m.since }, "junid", NOW), { ok: false, pid: "a", pending: false });
+  // it landed: chosen on this card's node, exactly as a tap on that photo would
+  await db.ref("bf_campaign_2026/photos/a").set({ use: "generated", genId: "g1795455882746", gens: { g1795118789272: old, g1795455882746: fresh } });
+  const l = await X.choosePhoto(db, { pid: "a", use: "landed", since: m.since }, "junid", NOW);
+  assert.deepEqual(l, { ok: true, pid: "a", photo: "https://x/a-new.jpg", use: "generated", genId: "g1795455882746" });
+  assert.deepEqual(await get(db, `${R}/photos/a`), { use: "generated", genId: "g1795455882746", url: "https://x/a-new.jpg", at: NOW, by: "junid" });
+  await assert.rejects(() => X.choosePhoto(db, { pid: "a", use: "landed" }, "junid", NOW), /Since when/);
+});
+
 test("the photo that posts: a generated or replaced photo is chosen on this card's own node; Use current photo takes it back", async () => {
   const db = world({ bf_campaign_2026: { photos: { a: { use: "current", gens: { g1795432000000: { url: "https://x/a-ai.jpg" } } } }, picks: { a: { state: "approved", sig: "current", at: 5 } } } });
   const r = await X.choosePhoto(db, { pid: "a", use: "generated", genId: "g1795432000000" }, "junid", NOW);
-  assert.deepEqual(r, { ok: true, pid: "a", photo: "https://x/a-ai.jpg", use: "generated" });
+  assert.deepEqual(r, { ok: true, pid: "a", photo: "https://x/a-ai.jpg", use: "generated", genId: "g1795432000000" });
   assert.equal((await get(db, `${R}/photos/a`)).url, "https://x/a-ai.jpg");
   assert.equal((await get(db, "bf_campaign_2026/photos/a")).use, "current", "the Black Friday card's own choice (and so its approval) is untouched");
   // the list shows it, and a sale set now posts with it
