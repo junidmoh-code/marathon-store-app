@@ -34,6 +34,10 @@ export const bfCandidatesApi = {
   generate: (pid, opts) => blackFridayApi.generate(pid, undefined, opts),
   photoUpload: (pid, imageBase64) => blackFridayApi.photoUpload(pid, imageBase64),
   photo: (pid, use, genId = null) => set({ action: "photo", pid, use, ...(genId ? { genId } : {}) }),
+  // Generate never depends on the open connection (it drops when the phone locks): the card takes a mark before it
+  // starts, then asks what landed since. → { ok, photo, genId } | { ok:false, failed } | { ok:false, pending }
+  photoMark: (pid) => set({ action: "photo", pid, use: "mark" }),
+  photoLanded: (pid, since) => set({ action: "photo", pid, use: "landed", since }),
   // The staff re-tag list: what is on sale at each location.
   storeList: () => call("bfSaleStoreList")({}),
 };

@@ -443,6 +443,9 @@ test("Generate (perfume): upright on the pedestal plate, with its box when it ha
 test("Generate: refused for a product not in the campaign, while one is being made, and while generation is paused", async () => {
   const w = await genWorld();
   await assert.rejects(gen.bfGenerate(w.db, { pid: "zz" }, "junid", w.deps), /not in the campaign/);
+  // a BF Candidates row is enough to be let in (here it then stops at the missing product record, not at the campaign)
+  await w.db.ref("bf_sales_2026/candidates/items/zz").set({ kind: "clothing", name: "Slow tee" });
+  await assert.rejects(gen.bfGenerate(w.db, { pid: "zz" }, "junid", w.deps), /product record no longer exists/);
   await w.db.ref("bf_campaign_2026/photos/a").set({ generating: { at: 1_791_200_000_500 }, rev: 1 });
   await assert.rejects(gen.bfGenerate(w.db, { pid: "a" }, "junid", w.deps), /already being made/);
   await w.db.ref("new_arrivals/pause/generation/paused").set(true);

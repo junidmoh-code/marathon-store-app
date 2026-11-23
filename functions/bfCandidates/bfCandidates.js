@@ -388,11 +388,36 @@ async function restore(db, data) {
  */
 const BF_PHOTOS = "bf_campaign_2026/photos";
 const GEN_RE = /^g\d{10,16}$/;
+// A photo's id is the moment its Generate began (bfGenerate, on its own instance's clock): the mark is taken a
+// little early so two clocks a moment apart never hide a photo. A photo made BEFORE the tap began long before this.
+const MARK_SLACK_MS = 1500;
+const { CLAIM_MS } = require("../blackFriday/schedule.cjs");
 async function choosePhoto(db, data, uid, nowMs) {
   const pid = String(data.pid || "");
   if (!core.PID_RE.test(pid)) throw new HttpsError("invalid-argument", "Which product?");
   let url = null;
-  const genId = String(data.genId || "");
+  let genId = String(data.genId || "");
+  // GENERATE, WITHOUT TRUSTING THE OPEN CONNECTION (Junid 23 Nov 20:26: "generating", and the photo never arrived).
+  // The photos were made and stored; their ids were lost on the way back to the phone, so nothing ever chose them.
+  // The card now asks the photo store itself, as the Black Friday card does:
+  //   mark   → { since }: taken just before Generate starts.
+  //   landed → the newest photo made for this product since then is chosen (the same record a tap on it writes);
+  //            else { failed: reason } (bfGenerate's own mark), else { pending } (a photo is still being made).
+  if (data.use === "mark") return { ok: true, pid, since: nowMs - MARK_SLACK_MS };
+  if (data.use === "landed") {
+    const since = Number(data.since);
+    if (!(since > 0)) throw new HttpsError("invalid-argument", "Since when?");
+    const node = (await val(db, `${BF_PHOTOS}/${pid}`)) || {}; // ONE product's photo record
+    const gens = node.gens || {};
+    const made = Object.keys(gens).filter((g) => GEN_RE.test(g) && Number(g.slice(1)) >= since && gens[g] && /^https:\/\//.test(String(gens[g].url || ""))).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+    if (!made.length) {
+      if (node.failed && Number(node.failed.at) >= since) return { ok: false, pid, failed: String(node.failed.reason || "the photo could not be made").slice(0, 200) };
+      const live = !!(node.generating && nowMs - Number(node.generating.at) < CLAIM_MS);
+      return { ok: false, pid, pending: live, ...(live ? { began: Number(node.generating.at) } : {}) };
+    }
+    genId = made[made.length - 1];
+    data = { ...data, use: "generated" };
+  }
   if (data.use === "generated") {
     if (!GEN_RE.test(genId)) throw new HttpsError("invalid-argument", "Which photo?");
     url = await val(db, `${BF_PHOTOS}/${pid}/gens/${genId}/url`);
@@ -413,7 +438,7 @@ async function choosePhoto(db, data, uid, nowMs) {
     if (!Number(cur.setAt) || !(Number(cur.salePrice) > 0)) return undefined;
     return { ...cur, photo };
   });
-  return { ok: true, pid, photo, use: url ? "generated" : "current" };
+  return { ok: true, pid, photo, use: url ? "generated" : "current", ...(url ? { genId } : {}) };
 }
 
 // ── the card ─────────────────────────────────────────────────────────────────

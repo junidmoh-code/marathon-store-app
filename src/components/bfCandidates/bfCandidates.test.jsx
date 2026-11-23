@@ -1,7 +1,7 @@
 // BF Candidates card (Junid, 23 Nov 2026): the list, ONE sale price, the ≥-stock-price warning
 // before anything is saved, Extend, Not for sale + the Removed undo.
 import React from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import TestRenderer, { act } from "react-test-renderer";
 import BfCandidatesScreen, { locsLine, readPrice, photoError, forgetKept, alertLine } from "./BfCandidatesScreen";
 import { openSaleList } from "../../push/useForegroundPush";
@@ -19,6 +19,8 @@ function fakeApi(rows, over = {}) {
     remove: vi.fn(async (pids) => ({ ok: true, done: pids })),
     restore: vi.fn(async (pids) => ({ ok: true, done: pids })),
     removed: vi.fn(async () => ({ ok: true, removed: [{ pid: "z", name: "Old Tee" }] })),
+    photoMark: vi.fn(async () => ({ ok: true, since: 1000 })),
+    photoLanded: vi.fn(async () => ({ ok: false, pending: false })),
     ...over,
   };
 }
@@ -36,6 +38,7 @@ const type = async (node, value) => { await act(async () => { node.props.onChang
 
 describe("BF Candidates card", () => {
   beforeEach(() => forgetKept());
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
   it("shows quantity, arrival date, units received and sold, both prices and the locations; tabs carry counts", async () => {
     const api = fakeApi([row(), row({ pid: "b", name: "Tee B", qty: 12, arrivedOn: "20 Jun 2026", received: 100, sold: 6 })]);
@@ -158,6 +161,129 @@ describe("BF Candidates card", () => {
     expect(api.photo).toHaveBeenLastCalledWith("a", "current");
     expect(img()).toBe("https://x/a.jpg");
     expect(buttons(r.root, "Replace photo").length).toBe(1);
+  });
+
+  // ── Generate never depends on the open connection (Junid 23 Nov 20:26: "generating", and the photo never arrived) ──
+  const img = (r) => r.root.find((n) => n.type === "img").props.src;
+  const later = (ms) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  const tap = async (node) => { await act(async () => { node.props.onClick({ stopPropagation() {} }); }); await later(0); };
+  const landed = { ok: true, pid: "a", use: "generated", genId: "g1795455882746", photo: "https://x/ai.jpg" };
+
+  it("Generate: the connection drops while the photo is being made; the photo still shows as soon as it lands, with no refresh", async () => {
+    let n = 0;
+    const api = fakeApi([row()], {
+      generate: vi.fn(async () => { throw new Error("The connection closed before the photo arrived — check the card in a minute before trying again."); }),
+      photoLanded: vi.fn(async () => (++n < 3 ? { ok: false, pending: true } : landed)),
+    });
+    const r = await mount(api);
+    vi.useFakeTimers();
+    await tap(buttons(r.root, "Generate")[0]);
+    expect(api.photoMark).toHaveBeenCalledWith("a");
+    expect(all(r)).not.toMatch(/Failed/);
+    expect(r.root.findAll((x) => x.props && x.props.role === "status").length).toBe(1); // still being made
+    await later(5000); await later(5000);
+    expect(api.photoLanded).toHaveBeenLastCalledWith("a", 1000);
+    expect(img(r)).toBe("https://x/ai.jpg");
+    expect(buttons(r.root, "Regenerate").length).toBe(1);
+    expect(api.list).toHaveBeenCalledTimes(1); // the opening read only: never a refresh
+    expect(api.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("Generate: a job that fails shows Failed: <reason> on the row with Retry, and Retry makes it", async () => {
+    let ok = false;
+    const api = fakeApi([row()], {
+      generate: vi.fn(async () => { if (!ok) throw new Error("No photo — the photo service is busy — tap Generate again."); return { ok: true, genId: "g1795455882746" }; }),
+      photoLanded: vi.fn(async () => ({ ok: false, failed: "the photo service is busy — tap Generate again" })),
+      photo: vi.fn(async () => landed),
+    });
+    const r = await mount(api);
+    vi.useFakeTimers();
+    await tap(buttons(r.root, "Generate")[0]);
+    expect(r.root.find((x) => x.props && x.props.role === "alert").children.join("")).toBe("Failed: the photo service is busy");
+    expect(r.root.findAll((x) => x.props && x.props.role === "status").length).toBe(0);
+    ok = true;
+    await tap(buttons(r.root, "Retry")[0]);
+    expect(api.generate).toHaveBeenCalledTimes(2);
+    expect(img(r)).toBe("https://x/ai.jpg");
+    expect(all(r)).not.toMatch(/Failed/);
+  });
+
+  it("Generate: gives up at 3 minutes, never 'generating' for ever; Retry picks up a photo that landed late and makes no second one", async () => {
+    let late = false;
+    const api = fakeApi([row()], {
+      generate: vi.fn(() => new Promise(() => {})), // the open call never answers
+      photoLanded: vi.fn(async () => (late ? landed : { ok: false, pending: true })),
+    });
+    const r = await mount(api);
+    vi.useFakeTimers();
+    await tap(buttons(r.root, "Generate")[0]);
+    await later(179_000);
+    expect(all(r)).not.toMatch(/Failed/);
+    await later(1_000);
+    expect(all(r)).toMatch(/Failed: it took longer than 3 minutes/);
+    const asked = api.photoLanded.mock.calls.length;
+    await later(30_000);
+    expect(api.photoLanded.mock.calls.length).toBe(asked); // it stopped asking
+    late = true;
+    await tap(buttons(r.root, "Retry")[0]);
+    expect(img(r)).toBe("https://x/ai.jpg");
+    expect(api.generate).toHaveBeenCalledTimes(1);
+    expect(api.photoMark).toHaveBeenCalledTimes(1);
+  });
+
+  it("Generate: a Retry that cannot check for the earlier photo makes no second one; a late photo never replaces a newer choice", async () => {
+    let answer, down = false;
+    const api = fakeApi([row()], {
+      generate: vi.fn(() => new Promise((res) => { answer = res; })),
+      photoLanded: vi.fn(async () => { if (down) throw new Error("offline"); return { ok: false, pending: true }; }),
+      photo: vi.fn(async (pid, use) => ({ ok: true, pid, use, photo: use === "current" ? "https://x/a.jpg" : "https://x/ai.jpg" })),
+    });
+    const r = await mount(api);
+    vi.useFakeTimers();
+    await tap(buttons(r.root, "Generate")[0]);
+    await later(180_000);
+    down = true;
+    await tap(buttons(r.root, "Retry")[0]);
+    expect(all(r)).toMatch(/Failed: could not check for the photo/);
+    expect(api.generate).toHaveBeenCalledTimes(1);
+    expect(api.photoMark).toHaveBeenCalledTimes(1);
+    // he chooses something else (here: his own upload path's stand-in, a photo job); the late answer must not undo it
+    down = false;
+    api.photoLanded.mockImplementation(async () => ({ ok: false, pending: false }));
+    api.generate.mockImplementationOnce(async () => { throw new Error("No photo — Gemini declined to make this photo."); });
+    await tap(buttons(r.root, "Retry")[0]); // a new photo job on this product: a newer turn
+    await act(async () => { answer({ ok: true, genId: "g1795455882746" }); });
+    await later(0);
+    expect(api.photo).not.toHaveBeenCalled();
+    expect(img(r)).toBe("https://x/a.jpg");
+    expect(all(r)).toMatch(/Failed: Gemini declined to make this photo/);
+  });
+
+  it("Generate: closing the card ends the wait (nothing keeps asking behind it)", async () => {
+    const api = fakeApi([row()], { generate: vi.fn(() => new Promise(() => {})), photoLanded: vi.fn(async () => ({ ok: false, pending: true })) });
+    const r = await mount(api);
+    vi.useFakeTimers();
+    await tap(buttons(r.root, "Generate")[0]);
+    await later(5000);
+    const asked = api.photoLanded.mock.calls.length;
+    expect(asked).toBeGreaterThan(0);
+    await act(async () => { r.unmount(); });
+    await later(60_000);
+    expect(api.photoLanded.mock.calls.length).toBe(asked);
+  });
+
+  it("Generate: the card closed while a photo was being made shows it when opened again, without making another", async () => {
+    const since = Date.now() - 60_000;
+    const store = new Map([["bfCandidates.photoJobs.anon", JSON.stringify({ a: { since, name: "Tee A" }, old: { since: since - 3_600_000, name: "Long over" } })]]);
+    vi.stubGlobal("window", { localStorage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) } });
+    const api = fakeApi([row()], { generate: vi.fn(), photoLanded: vi.fn(async () => landed) });
+    const r = await mount(api);
+    await flush();
+    expect(api.photoLanded).toHaveBeenCalledWith("a", since);
+    expect(api.photoLanded).toHaveBeenCalledTimes(1); // the hour-old job is dropped, not picked up
+    expect(api.generate).not.toHaveBeenCalled();
+    expect(store.get("bfCandidates.photoJobs.anon")).toBe("{}");
+    expect(api.list.mock.calls.length).toBeGreaterThan(1); // read again, so the row shows it
   });
 
   it("opens at once with the last list kept on this device, then shows the fresh one (Junid: the card took long to load)", async () => {
