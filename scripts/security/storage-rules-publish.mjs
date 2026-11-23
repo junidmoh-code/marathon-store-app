@@ -55,7 +55,7 @@ for (const path of ["products/x.jpg", "tv_ads/current.jpg"]) {
 for (const p of Object.keys(P)) cases.push([p, "create", "logs/t/2026-11-23/a.gz", STAFFISH.includes(p)], [p, "get", "logs/t/2026-11-23/a.gz", STAFFISH.includes(p)]);
 cases.push(["staff", "update", "logs/t/2026-11-23/a.gz", false]);
 for (const p of Object.keys(P)) cases.push([p, "get", "cardRecon/d/photo-0.jpg", ["owner", "cardRecon"].includes(p)], [p, "create", "aiStudio/x.jpg", p === "owner"],
-  [p, "create", "broadcast-media/x.jpg", p === "owner"], [p, "get", "eftProofs/x.jpg", false], [p, "create", "cardRecon/x.jpg", false]);
+  [p, "create", "broadcast-media/x.jpg", p === "owner"], [p, "get", "eftProofs/x.jpg", false], [p, "get", "card_recon_refused/i.pdf", p === "owner"], [p, "create", "card_recon_refused/i.pdf", false], [p, "create", "cardRecon/x.jpg", false]);
 const testCases = cases.map(([p, m, path, allow]) => ({ expectation: allow ? "ALLOW" : "DENY",
   request: { path: `/b/${BUCKET}/o/${path}`, method: m, ...(p !== "none" ? { auth: P[p] } : {}), ...(m !== "get" ? { resource: { size: 1000, contentType: "image/jpeg", name: path } } : {}) },
   ...(m !== "create" ? { resource: { name: path, size: 1000, contentType: "image/jpeg" } } : {}) }));
