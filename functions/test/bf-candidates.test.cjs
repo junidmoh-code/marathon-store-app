@@ -72,18 +72,22 @@ test("the On sale tab lists EVERYTHING on sale, candidate or not; a non-candidat
   const d = v.rows.find((r) => r.pid === "d");
   assert.deepEqual({ price: d.sale.price, until: d.sale.until, qty: d.qty }, { price: 80, until: "Mon 30 Nov", qty: 99 });
   assert.equal(d.posted.groups, 15);
-  assert.deepEqual({ qty: v.rows[1].qty, stockPrice: v.rows[1].stockPrice }, { qty: 0, stockPrice: 100 }, "no finder row: from the sale itself");
+  assert.deepEqual({ qty: v.rows[1].qty, stockPrice: v.rows[1].stockPrice }, { qty: null, stockPrice: 100 }, "no finder row: from the sale itself, and no stock figure is invented");
   assert.equal(v.counts.onSale, 3);
   assert.deepEqual({ same: v.saleEnds.same, first: v.saleEnds.firstLabel, last: v.saleEnds.lastLabel }, { same: false, first: "Mon 30 Nov", last: "Mon 7 Dec" });
   const c = core.viewList({ items: ITEMS, sales }, { tab: "clothing", nowMs: NOW });
   assert.deepEqual(c.rows.map((r) => r.pid), ["e", "a", "b"], "the new arrival on sale is not a candidate");
   assert.equal(c.rows[1].sale.price, 150, "a candidate on sale shows its sale");
-  assert.equal(core.defaultEnd(sales, NOW), core.endOfDayMs("2026-12-07"), "a sale put on now ends with the extended ones");
+  assert.equal(core.defaultEnd(sales, NOW), END, "one product extended on its own does not move the date for new sales");
+  assert.equal(core.defaultEnd({ a: sales.a }, NOW), core.endOfDayMs("2026-12-07"), "every running sale extended: a new one ends with them");
   assert.equal(core.defaultEnd({}, NOW), END);
 });
 
 test("the sale price: rands, more than zero; the warning names every product whose stock price it reaches", () => {
   assert.equal(core.parsePrice("R 249,50"), 249.5);
+  assert.equal(core.parsePrice("1,500"), 1500, "a thousands comma is never read as R1.50");
+  assert.equal(core.parsePrice("1,500.50"), 1500.5);
+  assert.equal(core.parsePrice("99,5"), 99.5);
   assert.equal(core.parsePrice("0"), null);
   assert.equal(core.parsePrice("abc"), null);
   assert.equal(core.parsePrice("0.001"), null, "a price that rounds to nothing");
@@ -93,6 +97,8 @@ test("the sale price: rands, more than zero; the warning names every product who
   assert.deepEqual(core.aboveStock(rows, 200).map((x) => x.pid), ["a"], "equal to the stock price warns too");
   assert.deepEqual(core.aboveStock(rows, 199), []);
   assert.deepEqual(core.aboveStock(rows, 300).map((x) => x.pid), ["a", "b"]);
+  assert.deepEqual(core.aboveStock([{ pid: "n", name: "N", stockPrice: null, retailPrice: 150 }], 1500), [{ pid: "n", name: "N", stockPrice: null, retailPrice: 150 }], "no stock price: checked against retail");
+  assert.deepEqual(core.aboveStock([{ pid: "n", name: "N", stockPrice: null, retailPrice: 150 }], 99), []);
 });
 
 test("a sale charges only between its start and its end; anything malformed is not a sale", () => {

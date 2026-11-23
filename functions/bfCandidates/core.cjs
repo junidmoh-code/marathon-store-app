@@ -83,7 +83,7 @@ const photoOf = (row, chosen) => (chosen && typeof chosen.url === "string" && /^
 function viewRow(pid, row, { sale = null, chosen = null, posted = null, nowMs }) {
   const on = saleActive(sale, nowMs);
   return {
-    pid, name: row.name || pid, tab: tabOf(row), cat: row.cat || null, qty: Number(row.qty) || 0,
+    pid, name: row.name || pid, tab: tabOf(row), cat: row.cat || null, qty: row.qty === null || row.qty === undefined ? null : Number(row.qty) || 0, // null: not on the finder's list any more (not counted here)
     arrived: Number(row.arrived) || null, arrivedOn: dayLabel(row.arrived), received: Number(row.received) || 0, sold: Number(row.sold) || 0,
     stockPrice: Number(row.stockPrice) > 0 ? Number(row.stockPrice) : null,
     retailPrice: Number(row.retailPrice) > 0 ? Number(row.retailPrice) : null,
@@ -123,7 +123,7 @@ function viewList({ items = {}, removed = {}, sales = {}, photos = {}, posted = 
     if (t !== "onsale") continue;
     // The finder's row when it still has one (stock, arrival); else the sale's own record.
     const it = items && items[pid];
-    mine.push([pid, it ? { ...it } : { name: s.name, kind: s.kind, cat: s.cat || null, qty: 0, stockPrice: s.baseStock, retailPrice: s.baseRetail, photo: s.photo || null, locs: {}, sizes: "" }]);
+    mine.push([pid, it ? { ...it } : { name: s.name, kind: s.kind, cat: s.cat || null, qty: null, stockPrice: s.baseStock, retailPrice: s.baseRetail, photo: s.photo || null, locs: {}, sizes: "" }]);
   }
   if (t === "onsale") mine.sort((a, b) => String(a[1].name || "").localeCompare(String(b[1].name || "")) || a[0].localeCompare(b[0]));
   else mine.sort(byOldAndUnsold);
@@ -138,17 +138,30 @@ function viewList({ items = {}, removed = {}, sales = {}, photos = {}, posted = 
 }
 
 // ── the sale ─────────────────────────────────────────────────────────────────
+/** "R 1 249,50" → "1249.50"; "1,500" → "1500" (a comma before exactly three digits is a thousands comma, never R1.50). */
+function plainNumber(text) {
+  const t = String(text || "").replace(/^\s*R\s*/i, "").replace(/\s+/g, "");
+  return /^\d{1,3}(,\d{3})+(\.\d+)?$/.test(t) ? t.replace(/,/g, "") : t.replace(",", ".");
+}
 /** A sale price Junid typed: rands, more than 0, at most 2 decimals. → number | null */
 function parsePrice(v) {
-  const n = typeof v === "string" ? Number(v.replace(/^\s*R\s*/i, "").replace(/\s+/g, "").replace(",", ".")) : Number(v);
+  const n = typeof v === "string" ? Number(plainNumber(v)) : Number(v);
   if (!Number.isFinite(n) || n <= 0 || n > 100000) return null;
   const cents = Math.round(n * 100);
   return cents >= 1 ? cents / 100 : null; // a price that rounds to nothing is not a price
 }
-/** The products a sale price would NOT be a saving for resellers: sale price ≥ their current stock price. */
+/**
+ * The products a sale price would NOT be a saving for: sale price ≥ their current stock price. A product with no
+ * stock price set is checked against its retail price instead (a typo is never charged without a warning).
+ */
 function aboveStock(rows, price) {
-  return rows.filter((r) => Number(r.stockPrice) > 0 && Number(price) >= Number(r.stockPrice))
-    .map((r) => ({ pid: r.pid, name: r.name, stockPrice: Number(r.stockPrice) }));
+  const out = [];
+  for (const r of rows) {
+    const stock = Number(r.stockPrice) > 0 ? Number(r.stockPrice) : null, retail = Number(r.retailPrice) > 0 ? Number(r.retailPrice) : null;
+    const ref = stock !== null ? stock : retail;
+    if (ref !== null && Number(price) >= ref) out.push({ pid: r.pid, name: r.name, stockPrice: stock, ...(stock === null ? { retailPrice: retail } : {}) });
+  }
+  return out;
 }
 /** The end of a sale from the card's date ("YYYY-MM-DD", default Mon 30 Nov 2026): the last ms of that SAST day. */
 function saleEnd(day, nowMs) {
@@ -156,13 +169,14 @@ function saleEnd(day, nowMs) {
   return end && end > nowMs ? end : null;
 }
 /**
- * The end a NEW sale gets when the card names no date: Mon 30 Nov, or the latest end among the sales running now
- * when Junid has extended them past it (a product put on sale after "Extend" ends with the rest, not before them).
+ * The end a NEW sale gets when the card names no date: Mon 30 Nov — or, once Junid has extended EVERY running sale
+ * past it, the earliest of their ends (a product put on sale after "Extend" ends with the rest). One product
+ * extended on its own never moves the date for the others.
  */
 function defaultEnd(sales, nowMs) {
-  let end = endOfDayMs(DEFAULT_END_DAY);
-  for (const s of Object.values(sales || {})) if (saleActive(s, nowMs) && Number(s.end) > end) end = Number(s.end);
-  return end;
+  const base = endOfDayMs(DEFAULT_END_DAY);
+  const ends = Object.values(sales || {}).filter((s) => saleActive(s, nowMs)).map((s) => Number(s.end));
+  return ends.length ? Math.max(base, Math.min(...ends)) : base;
 }
 /** sales/{pid}. base* are a record of the prices when the sale was set: nothing reads them to charge. */
 function saleRecord({ row, price, start, end, uid, photo }) {
@@ -226,6 +240,6 @@ function salePhotoCaption(sizes, at, endMs) {
 module.exports = {
   ROOT, CUTOFFS, CUTOFF_LABEL, DEFAULT_CUTOFF, SOLD_SHARE, DEFAULT_END_DAY, TABS, VIEWS, DAY_MS, PAGE, MAX_PIDS, PID_RE, AT,
   sastDay, endOfDayMs, endLabel, priceLabel, cutoffOf, cutoffMs, dayLabel, defaultEnd, tabOf, kindOfCat, FOOTWEAR_KEYS, isCandidate, saleVersion, saleActive, photoOf,
-  viewRow, viewList, parsePrice, aboveStock, saleEnd, saleRecord, tillMirror,
+  viewRow, viewList, plainNumber, parsePrice, aboveStock, saleEnd, saleRecord, tillMirror,
   alertText, alertBurst, holders, storeList, saleText, salePhotoCaption,
 };

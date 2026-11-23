@@ -40,7 +40,9 @@ export function locsLine(locs, names = {}) {
 }
 /** The sale dialog's check before anything is sent. → { price } | { error }. Pure. */
 export function readPrice(text) {
-  const n = Number(String(text || "").replace(/^\s*R\s*/i, "").replace(/\s+/g, "").replace(",", "."));
+  // "1,500" is R1500 (a comma before exactly three digits is a thousands comma); "99,50" is R99.50. As the server reads it.
+  const t = String(text || "").replace(/^\s*R\s*/i, "").replace(/\s+/g, "");
+  const n = Number(/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(t) ? t.replace(/,/g, "") : t.replace(",", "."));
   if (!Number.isFinite(n) || n <= 0) return { error: "Enter the sale price in rands." };
   return { price: Math.round(n * 100) / 100 };
 }
@@ -62,7 +64,7 @@ function Row({ r, names, thumb, selecting, ticked, onTick, onSale, onExtend, onE
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 700, color: "#fff", fontSize: "0.92rem", overflowWrap: "anywhere" }}>{r.name}</div>
         <div style={{ color: "#dfe7ff", fontSize: "0.82rem", marginTop: 3 }}>
-          <b>{r.qty}</b> on hand{r.arrivedOn ? <> · arrived {r.arrivedOn} · received {r.received} · sold {r.sold}</> : null}
+          {r.qty === null ? "Not on the candidates list any more" : <><b>{r.qty}</b> on hand</>}{r.arrivedOn ? <> · arrived {r.arrivedOn} · received {r.received} · sold {r.sold}</> : null}
         </div>
         <div style={{ color: GRAY, fontSize: "0.8rem", marginTop: 2 }}>
           Stock {r.stockPrice ? price(r.stockPrice) : "not set"} · Retail {r.retailPrice ? price(r.retailPrice) : "not set"}
@@ -176,9 +178,11 @@ export default function BfCandidatesScreen({ api, onExit }) {
     const need = r.flatMap((o) => o.needConfirm || []);
     // (Again, if a product came to need the warning since the first one: the confirmation is of the products shown.)
     if (need.length) { setDialog({ type: "confirm", pids, price: priceNum, need, after }); return; }
-    if (after) after();
     const ok = r.flatMap((o) => o.done || []), refused = r.flatMap((o) => o.refused || []);
     const until = (r.find((o) => o.until) || {}).until;
+    // Nothing saved (every product refused): the typed price stays in its box.
+    if (!ok.length) { say(`Nothing was put on sale: ${refused.length ? refused[0].refusal : "try again"}.`); done(); return; }
+    if (after) after();
     say(`${ok.length} on sale at ${price(priceNum)}${until ? ` until ${until}` : ""}. Stores alerted; queued for the groups.${refused.length ? ` ${refused.length} not saved: ${refused[0].refusal}.` : ""}`);
     done();
   };
@@ -258,9 +262,9 @@ export default function BfCandidatesScreen({ api, onExit }) {
   const cutoffLabel = (((view && view.cutoffs) || CUTOFFS).find((c) => c.key === cutoff) || { label: "July" }).label;
   // The sale's end, always in sight: the date the running sales end (or the date a sale put on now will get).
   const ends = view && view.saleEnds;
-  const endsLine = !view ? "Sale ends Mon 30 Nov 23:59"
+  const endsLine = !view ? "Sale ends…"
     : !ends ? `Sale ends ${view.defaultUntil} 23:59`
-      : ends.same ? `Sale ends ${ends.lastLabel} 23:59` : `Sales end ${ends.firstLabel} to ${ends.lastLabel} 23:59`;
+      : ends.same ? `Sale ends ${ends.lastLabel} 23:59` : `Sales end ${ends.firstLabel} to ${ends.lastLabel} 23:59 · new ones ${view.defaultUntil}`;
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, paddingBottom: selecting ? 150 : 60 }}>
@@ -334,9 +338,10 @@ export default function BfCandidatesScreen({ api, onExit }) {
           <div style={{ color: "#dfe7ff", fontSize: "0.88rem", lineHeight: 1.45 }}>
             At {price(dialog.price)}, resellers would pay the same or MORE than they do now for:
             <ul style={{ margin: "8px 0", paddingLeft: 18 }}>
-              {dialog.need.slice(0, 12).map((n) => <li key={n.pid}>{n.name} (stock price {price(n.stockPrice)})</li>)}
+              {dialog.need.slice(0, 12).map((n) => <li key={n.pid}>{n.name} ({n.stockPrice ? `stock price ${price(n.stockPrice)}` : `no stock price set; retail ${price(n.retailPrice)}`})</li>)}
               {dialog.need.length > 12 && <li>and {dialog.need.length - 12} more</li>}
             </ul>
+            {dialog.pids.length > dialog.need.length && <div>Saving puts all {dialog.pids.length} selected products on sale at this price, these included.</div>}
             Nothing has been saved yet.
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 14 }}>

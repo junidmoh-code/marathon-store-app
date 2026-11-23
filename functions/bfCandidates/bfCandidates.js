@@ -108,7 +108,7 @@ async function putOnSale(db, data, uid, nowMs) {
   const named = data.endDay ? core.saleEnd(data.endDay, nowMs) : null;
   if (data.endDay && !named) throw new HttpsError("invalid-argument", "The sale's end date must be today or later.");
   const fallbackEnd = named || core.defaultEnd(await val(db, `${R}/sales`), nowMs);
-  if (!(fallbackEnd > nowMs)) throw new HttpsError("failed-precondition", "The sale's end date has passed. Extend the sale first.");
+  if (!(fallbackEnd > nowMs)) throw new HttpsError("failed-precondition", `The Black Friday sale ended on ${core.endLabel(fallbackEnd)}. Nothing was put on sale.`);
   const [rows, chosen, removed, live] = await Promise.all([
     inBatches(pids, 25, (p) => val(db, `${R}/candidates/items/${p}`)),
     inBatches(pids, 25, (p) => val(db, `${R}/photos/${p}`)),
