@@ -15,7 +15,7 @@ import { FONT, BG, GLASS, GLASS_SOLID, GREEN, GRAY, AMBER, RED, BLUE_L, bGreen, 
 
 const price = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2)}`);
 const TAB_LABEL = { clothing: "Clothing", sneakers: "Sneakers" };
-const CHUNK = 100;
+const MAX_PICK = 500; // one tap = one call, so the warning covers the whole selection before anything is saved
 const errText = (e) => String((e && e.message) || e || "Something went wrong").replace(/^.*?:\s(?=[A-Z])/, "");
 
 /** "Marathon PE 4 · Hub 2 6" from { loc: qty } (biggest first). Pure. */
@@ -129,17 +129,12 @@ export default function BfCandidatesScreen({ api, onExit }) {
     catch (e) { say(errText(e)); return null; }
     finally { setBusyPids(new Set()); setWorking(null); }
   };
-  const chunks = (xs) => { const out = []; for (let i = 0; i < xs.length; i += CHUNK) out.push(xs.slice(i, i + CHUNK)); return out; };
   const done = () => { setTicks(new Set()); setSelecting(false); setDialog(null); load(tab, windowDays, { quiet: true }); };
 
   // ── Put on sale: ONE price; the warning (price ≥ stock price) comes before anything is saved ──
   const saveSale = async (pids, priceNum, endDay, confirmAbove) => {
-    const r = await withBusy(pids, `Putting ${pids.length} on sale…`, async () => {
-      const outs = [];
-      // The whole selection is checked first (nothing saved) so one warning covers every product.
-      for (const c of chunks(pids)) outs.push(await api.sale(c, priceNum, endDay, { confirmAbove }));
-      return outs;
-    });
+    // ONE call for the whole selection: the server decides the warning before it saves anything.
+    const r = await withBusy(pids, `Putting ${pids.length} on sale…`, async () => [await api.sale(pids, priceNum, endDay, { confirmAbove })]);
     if (!r) return;
     const need = r.flatMap((o) => o.needConfirm || []);
     if (need.length && !confirmAbove) { setDialog({ type: "confirm", pids, price: priceNum, endDay, need }); return; }
@@ -149,19 +144,20 @@ export default function BfCandidatesScreen({ api, onExit }) {
     done();
   };
   const doExtend = async (pids, endDay) => {
-    const r = await withBusy(pids || [], "Extending…", async () => (pids ? Promise.all(chunks(pids).map((c) => api.extend(c, endDay))) : [await api.extendAll(endDay)]));
+    const r = await withBusy(pids || [], "Extending…", async () => [pids ? await api.extend(pids, endDay) : await api.extendAll(endDay)]);
     if (!r) return;
-    say(`${r.reduce((t, o) => t + (o.done || []).length, 0)} extended until ${(r[0] || {}).until || endDay}.`);
+    const n = r.reduce((t, o) => t + (o.done || []).length, 0), late = r.reduce((t, o) => t + (o.notLater || 0), 0);
+    say(`${n} extended until ${(r[0] || {}).until || endDay}.${late ? ` ${late} already end${late === 1 ? "s" : ""} on or after that day: not changed.` : ""}`);
     done();
   };
   const doEnd = async (pids) => {
-    const r = await withBusy(pids, "Ending the sale…", async () => Promise.all(chunks(pids).map((c) => api.end(c))));
+    const r = await withBusy(pids, "Ending the sale…", async () => [await api.end(pids)]);
     if (!r) return;
     say(`${r.reduce((t, o) => t + (o.done || []).length, 0)} back to normal prices. Stores alerted.`);
     done();
   };
   const doRemove = async (pids) => {
-    const r = await withBusy(pids, "Removing…", async () => Promise.all(chunks(pids).map((c) => api.remove(c))));
+    const r = await withBusy(pids, "Removing…", async () => [await api.remove(pids)]);
     if (!r) return;
     setRows((cur) => cur.filter((x) => !pids.includes(x.pid)));
     say(`${pids.length} marked Not for sale. Undo under "Removed" at the bottom.`);
@@ -180,7 +176,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
     } catch (e) { say(errText(e)); }
   };
 
-  const tick = (pid) => setTicks((cur) => { const n = new Set(cur); if (n.has(pid)) n.delete(pid); else n.add(pid); return n; });
+  const tick = (pid) => setTicks((cur) => { const n = new Set(cur); if (n.has(pid)) n.delete(pid); else if (n.size < MAX_PICK) n.add(pid); return n; });
   const picked = useMemo(() => rows.filter((r) => ticks.has(r.pid)), [rows, ticks]);
   const counts = (view && view.counts) || { clothing: 0, sneakers: 0, onSale: 0, removed: 0 };
 
@@ -236,7 +232,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
         <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 30, background: "rgba(8,11,20,.97)", borderTop: "1px solid rgba(255,255,255,.12)", padding: "10px 14px calc(10px + env(safe-area-inset-bottom))" }}>
           <div style={{ color: GRAY, fontSize: "0.78rem", marginBottom: 8 }}>
             {picked.length} selected
-            <button type="button" style={{ background: "none", border: "none", color: BLUE_L, fontWeight: 700, marginLeft: 10, cursor: "pointer", fontFamily: FONT }} onClick={() => setTicks(new Set(rows.map((r) => r.pid)))}>Select all {rows.length}</button>
+            <button type="button" style={{ background: "none", border: "none", color: BLUE_L, fontWeight: 700, marginLeft: 10, cursor: "pointer", fontFamily: FONT }} onClick={() => setTicks(new Set(rows.slice(0, MAX_PICK).map((r) => r.pid)))}>Select all {Math.min(rows.length, MAX_PICK)}</button>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button type="button" style={bGreen} disabled={!picked.length} onClick={() => setDialog({ type: "sale", rows: picked })}>Put on sale</button>
@@ -282,9 +278,11 @@ export default function BfCandidatesScreen({ api, onExit }) {
 
 function SaleSheet({ rows, view, working, onClose, onSave }) {
   const [text, setText] = useState("");
-  const [endDay, setEndDay] = useState((view && view.defaultEndDay) || "2026-11-30");
-  const [err, setErr] = useState(null);
   const one = rows.length === 1 ? rows[0] : null;
+  // Change price on a product already on sale keeps ITS end date (an extended sale is not cut back to 30 Nov).
+  const ownEnd = one && one.sale && one.sale.end ? new Date(one.sale.end + 2 * 3600_000).toISOString().slice(0, 10) : null;
+  const [endDay, setEndDay] = useState(ownEnd || (view && view.defaultEndDay) || "2026-11-30");
+  const [err, setErr] = useState(null);
   const save = () => {
     const p = readPrice(text);
     if (p.error) { setErr(p.error); return; }

@@ -13,6 +13,7 @@
 "use strict";
 
 const MAX_RECIPIENTS = 60;
+const MULTICAST_MAX = 500;
 const DEAD = new Set(["messaging/registration-token-not-registered", "messaging/invalid-registration-token", "messaging/invalid-argument"]);
 const okKey = (k) => typeof k === "string" && k.length > 0 && k.length < 80 && !/[.#$/[\]]/.test(k);
 
@@ -48,18 +49,24 @@ async function sendStoreAlerts({ db, messaging, nowMs }, byLoc) {
       const rows = uids.length ? await tokensOf(db, uids) : [];
       if (!rows.length) { out[loc] = { tokens: 0, delivered: 0 }; continue; }
       const link = `/#bf-sale-list/${encodeURIComponent(loc)}`;
-      const res = await messaging.sendEachForMulticast({
-        tokens: rows.map((r) => r.token),
-        data: { kind: "bf_sale", hub: loc, title: msg.title, body: msg.body, link, tag: `bf-sale-${loc}`, sentAt: String(nowMs) },
-        webpush: { fcmOptions: { link } },
-      });
       const dead = {};
-      ((res && res.responses) || []).forEach((r, i) => {
-        const code = r && !r.success && r.error && (r.error.code || (r.error.errorInfo && r.error.errorInfo.code));
-        if (code && DEAD.has(code)) dead[`push_tokens/${rows[i].uid}/${rows[i].tokenId}`] = null;
-      });
+      let delivered = 0;
+      // FCM takes at most 500 tokens a call.
+      for (let at = 0; at < rows.length; at += MULTICAST_MAX) {
+        const part = rows.slice(at, at + MULTICAST_MAX);
+        const res = await messaging.sendEachForMulticast({
+          tokens: part.map((r) => r.token),
+          data: { kind: "bf_sale", hub: loc, title: msg.title, body: msg.body, link, tag: `bf-sale-${loc}`, sentAt: String(nowMs) },
+          webpush: { fcmOptions: { link } },
+        });
+        delivered += (res && res.successCount) || 0;
+        ((res && res.responses) || []).forEach((r, i) => {
+          const code = r && !r.success && r.error && (r.error.code || (r.error.errorInfo && r.error.errorInfo.code));
+          if (code && DEAD.has(code)) dead[`push_tokens/${part[i].uid}/${part[i].tokenId}`] = null;
+        });
+      }
       if (Object.keys(dead).length) await db.ref().update(dead).catch(() => {});
-      out[loc] = { tokens: rows.length, delivered: (res && res.successCount) || 0 };
+      out[loc] = { tokens: rows.length, delivered };
     } catch (e) {
       console.error(`BF_SALE_ALERT ${loc} failed:`, e && e.message);
       out[loc] = { error: String((e && e.message) || e).slice(0, 160) };

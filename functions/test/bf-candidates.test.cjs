@@ -209,3 +209,34 @@ test("the caption as it posts: price once, then sizes, where, and the end date",
   assert.equal(core.salePhotoCaption(["8", "9"], "marathon", END), "Sizes: 8, 9\n📍 Sale available at Marathon Club only\nEnds Mon 30 Nov");
   assert.equal(core.salePhotoCaption([], "concrete", END), "Sizes: One size\n📍 Sale available at Concrete only\nEnds Mon 30 Nov");
 });
+
+test("Extend never shortens a sale, and never brings back one that was ended meanwhile", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a"], price: 150, endDay: "2026-12-07" }, "junid", NOW);
+  const r = await X.extend(db, { pids: ["a"], endDay: "2026-11-30" }, "junid", NOW + 1);
+  assert.deepEqual([r.done, r.notLater], [[], 1]);
+  assert.equal((await get(db, `${R}/sales/a`)).end, core.endOfDayMs("2026-12-07"));
+  // ended between Extend's read and its write: the sale stays gone, no till mirror comes back
+  let cut = false;
+  const racing = makeFakeDb(db.state.root, { beforeRead: async (path, state) => { if (!cut && path === `${R}/sales/a` && state.root[R].sales && racing.armed) { cut = true; delete state.root[R].sales; delete state.root.products.a.bfSale; } } });
+  racing.armed = false;
+  const named = await X.salesFor(racing, { pids: ["a"] }, NOW + 2);
+  assert.equal(named.length, 1);
+  racing.armed = true;
+  const e = await X.extend(racing, { all: true, endDay: "2026-12-14" }, "junid", NOW + 2);
+  assert.deepEqual(e.done, []);
+  assert.equal(await get(racing, `${R}/sales/a`), null);
+  assert.equal(await get(racing, "products/a/bfSale"), null);
+});
+
+test("the expiry job never closes a sale Junid set again after it was read", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a"], price: 150 }, "junid", NOW);
+  const stale = [["a", await get(db, `${R}/sales/a`)]];
+  await X.putOnSale(db, { pids: ["a"], price: 120, endDay: "2026-12-07" }, "junid", END + 10);
+  const r = await X.closeSales(db, stale, { why: "expired", nowMs: END + 20 });
+  assert.deepEqual(r.done, []);
+  assert.equal((await get(db, `${R}/sales/a`)).salePrice, 120);
+  assert.deepEqual(await get(db, "products/a/bfSale"), { price: 120, start: END + 10, end: core.endOfDayMs("2026-12-07") });
+  assert.equal((await get(db, `${R}/ended/a/${NOW}`)).why, "replaced", "the sale it replaced is kept on record");
+});

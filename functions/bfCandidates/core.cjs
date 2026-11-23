@@ -23,7 +23,7 @@ const TABS = Object.freeze(["clothing", "sneakers"]);
 const DAY_MS = 86400_000;
 const TZ = "Africa/Johannesburg";
 const PAGE = 200;
-const MAX_PIDS = 200;
+const MAX_PIDS = 500; // one tap = one call: the warning is decided for the whole selection before anything is saved
 const PID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 
 // ── time (SAST has no daylight saving: +02:00 is exact) ──────────────────────

@@ -122,6 +122,9 @@ async function putOnSale(db, data, uid, nowMs) {
   if (!ok.length) return { ok: false, refused, done: [] };
   const upd = {};
   const entries = [];
+  // "Change price" on a product already on sale: the sale it replaces is kept on record (ended/), never lost.
+  const before = await inBatches(ok.map((x) => x.pid), 25, (p) => val(db, `${R}/sales/${p}`));
+  ok.forEach((x, i) => { const old = before[i]; if (old && Number(old.setAt) && Number(old.setAt) !== nowMs) upd[`${R}/ended/${x.pid}/${Number(old.setAt)}`] = { ...old, endedAt: nowMs, endedBy: uid, why: "replaced" }; });
   for (const x of ok) {
     const rec = core.saleRecord({ row: x.row, price, start: nowMs, end, uid, photo: x.photo });
     upd[`${R}/sales/${x.pid}`] = rec;
@@ -145,40 +148,57 @@ async function salesFor(db, data, nowMs) {
 async function extend(db, data, uid, nowMs) {
   const end = core.saleEnd(data.endDay, nowMs);
   if (!end) throw new HttpsError("invalid-argument", "Pick a new end date, today or later.");
-  const list = (await salesFor(db, data, nowMs)).filter(([, s]) => Number(s.end) !== end);
-  if (!list.length) return { ok: true, done: [], end, until: core.endLabel(end) };
-  const upd = {};
-  const entries = [];
-  for (const [pid, s] of list) {
-    const next = { ...s, end, extendedAt: nowMs, extendedBy: uid, prevEnd: s.end };
-    upd[`${R}/sales/${pid}/end`] = end;
-    upd[`${R}/sales/${pid}/extendedAt`] = nowMs;
-    upd[`${R}/sales/${pid}/extendedBy`] = uid;
-    upd[`${R}/sales/${pid}/prevEnd`] = s.end;
-    upd[`products/${pid}/bfSale`] = core.tillMirror(next);
-    entries.push({ pid, name: s.name, sale: next });
+  // Extend only ever moves the end LATER (an earlier date would be an "extended" alert for a shortened sale).
+  const named = await salesFor(db, data, nowMs);
+  const list = named.filter(([, s]) => Number(s.end) < end);
+  const done = [], entries = [];
+  for (const [pid] of list) {
+    // One transaction per sale: a sale ended (or expired) between the read and this write is NOT brought back
+    // as a half record, and the till's mirror is only ever written from the record that was really saved.
+    const t = await db.ref(`${R}/sales/${pid}`).transaction((cur) => {
+      if (cur === null) return null;
+      if (!core.saleActive(cur, nowMs) || !(Number(cur.end) < end)) return undefined;
+      return { ...cur, end, extendedAt: nowMs, extendedBy: uid, prevEnd: cur.end };
+    });
+    const next = t.committed ? t.snapshot.val() : null;
+    if (!next || Number(next.end) !== end) continue;
+    await db.ref(`products/${pid}/bfSale`).set(core.tillMirror(next));
+    done.push(pid);
+    entries.push({ pid, name: next.name, sale: next });
   }
-  upd[`${R}/log/${db.ref(`${R}/log`).push().key}`] = { at: nowMs, by: uid, action: "extend", end, pids: list.map(([p]) => p) };
-  await db.ref().update(upd);
+  if (!done.length) return { ok: true, done: [], end, until: core.endLabel(end), notLater: named.length - list.length };
+  await db.ref(`${R}/log`).push({ at: nowMs, by: uid, action: "extend", end, pids: done });
   const stores = await alertStores(db, "extend", entries, nowMs);
-  return { ok: true, done: list.map(([p]) => p), end, until: core.endLabel(end), stores };
+  return { ok: true, done, end, until: core.endLabel(end), notLater: named.length - list.length, stores };
 }
 
 /** Closes sales: the till mirror goes, the record moves to ended/{pid}/{setAt}. The base prices were never changed. */
 async function closeSales(db, list, { uid = null, why, nowMs }) {
-  if (!list.length) return { done: [] };
-  const upd = {};
-  const entries = [];
-  for (const [pid, s] of list) {
-    upd[`${R}/sales/${pid}`] = null;
-    upd[`products/${pid}/bfSale`] = null;
-    upd[`${R}/ended/${pid}/${Number(s.setAt) || nowMs}`] = { ...s, endedAt: nowMs, endedBy: uid, why };
-    entries.push({ pid, name: s.name, sale: s });
+  const done = [], entries = [];
+  for (const [pid, seen] of list) {
+    // One transaction per sale: only the sale that was read is closed. A sale Junid set again (or extended) in the
+    // meantime is left alone — the expiry job never wipes a sale that is running.
+    let closed = null;
+    const t = await db.ref(`${R}/sales/${pid}`).transaction((cur) => {
+      closed = null;
+      if (cur === null) return null;
+      if (seen && Number(cur.setAt) !== Number(seen.setAt)) return undefined;
+      if (why === "expired" && Number(cur.end) > nowMs) return undefined;
+      closed = cur;
+      return null;
+    });
+    if (!t.committed || !closed) continue;
+    await db.ref().update({
+      [`products/${pid}/bfSale`]: null,
+      [`${R}/ended/${pid}/${Number(closed.setAt) || nowMs}`]: { ...closed, endedAt: nowMs, endedBy: uid, why },
+    });
+    done.push(pid);
+    entries.push({ pid, name: closed.name, sale: closed });
   }
-  upd[`${R}/log/${db.ref(`${R}/log`).push().key}`] = { at: nowMs, by: uid, action: why, pids: list.map(([p]) => p) };
-  await db.ref().update(upd);
+  if (!done.length) return { done: [] };
+  await db.ref(`${R}/log`).push({ at: nowMs, by: uid, action: why, pids: done });
   const stores = await alertStores(db, "end", entries, nowMs);
-  return { done: list.map(([p]) => p), stores };
+  return { done, stores };
 }
 
 /** "Not for sale": off the candidates list for good (the nightly finder skips it). A sale on it is closed first. */
