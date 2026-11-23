@@ -277,3 +277,13 @@ test("the photo that posts: a generated or replaced photo is chosen on this card
   await assert.rejects(() => X.choosePhoto(db, { pid: "a", use: "generated", genId: "g1795439999999" }, "junid", NOW), /not there any more/);
   await assert.rejects(() => X.choosePhoto(db, { pid: "a", use: "generated", genId: "../x" }, "junid", NOW), /Which photo/);
 });
+
+test("a photo chosen after its sale ended never brings the sale back; no photo of its own is refused", async () => {
+  const db = world({ bf_campaign_2026: { photos: { a: { gens: { g1795432000000: { url: "https://x/a-ai.jpg" } } } } } });
+  await X.choosePhoto(db, { pid: "a", use: "generated", genId: "g1795432000000" }, "junid", NOW);
+  assert.equal(await get(db, `${R}/sales/a`), null, "no sale: nothing is made up");
+  await db.ref("products/zz").set({ name: "No photo", stockPrice: 10 });
+  await assert.rejects(() => X.choosePhoto(db, { pid: "zz", use: "current" }, "junid", NOW), /no photo of its own/);
+  await X.choosePhoto(db, { pid: "a", use: "generated", genId: ["g1795432000000"] }, "junid", NOW);
+  assert.equal((await get(db, `${R}/photos/a`)).genId, "g1795432000000", "the id is stored as text, whatever was sent");
+});

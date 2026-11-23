@@ -241,7 +241,9 @@ async function restore(db, data) {
  * The photo a product posts with (Junid, 23 Nov: the same options as the Black Friday card). The photos themselves
  * are made and kept by the Black Friday card's own callables (bfGenerate = the shared New Arrivals generator at full
  * resolution; bfPhotoSource = Replace photo), in bf_campaign_2026/photos/{pid}/gens. This records WHICH one this card
- * posts — on this card's own node, so a product's approval on the Black Friday card is never changed from here.
+ * posts, on this card's own node. ONE PHOTO STORE, SO THE TWO CARDS SHARE IT: a product APPROVED on the Black Friday
+ * card keeps posting its approved photo there (those callables' keepChoice); one that is NOT approved there shows the
+ * new photo on that card too, and a replaced photo becomes what Generate starts from on both cards.
  * use: "current" (the product's own photo) | "generated" + genId (an AI photo or his own upload).
  */
 const BF_PHOTOS = "bf_campaign_2026/photos";
@@ -250,18 +252,27 @@ async function choosePhoto(db, data, uid, nowMs) {
   const pid = String(data.pid || "");
   if (!core.PID_RE.test(pid)) throw new HttpsError("invalid-argument", "Which product?");
   let url = null;
+  const genId = String(data.genId || "");
   if (data.use === "generated") {
-    if (!GEN_RE.test(String(data.genId || ""))) throw new HttpsError("invalid-argument", "Which photo?");
-    url = await val(db, `${BF_PHOTOS}/${pid}/gens/${data.genId}/url`);
+    if (!GEN_RE.test(genId)) throw new HttpsError("invalid-argument", "Which photo?");
+    url = await val(db, `${BF_PHOTOS}/${pid}/gens/${genId}/url`);
     if (typeof url !== "string" || !/^https:\/\//.test(url)) throw new HttpsError("not-found", "That photo is not there any more. Generate again.");
   } else if (data.use !== "current") throw new HttpsError("invalid-argument", "Use the current photo or a generated one.");
-  const own = url ? null : await val(db, `products/${pid}/photoUrl`);
-  const upd = { [`${R}/photos/${pid}`]: url ? { use: "generated", genId: data.genId, url, at: nowMs, by: uid } : null };
-  // On sale already: the sale posts with the photo chosen now (a post that has gone out is not changed).
-  const sale = await val(db, `${R}/sales/${pid}/setAt`);
-  const photo = url || (typeof own === "string" && /^https:\/\//.test(own) ? own : null);
-  if (sale && photo) upd[`${R}/sales/${pid}/photo`] = photo;
-  await db.ref().update(upd);
+  let photo = url;
+  if (!photo) {
+    // The product's own photo: the one its row shows (as Put on sale uses), else the product's now.
+    const [rowPhoto, own] = await Promise.all([val(db, `${R}/candidates/items/${pid}/photo`), val(db, `products/${pid}/photoUrl`)]);
+    photo = [rowPhoto, own].find((u) => typeof u === "string" && /^https:\/\//.test(u)) || null;
+    if (!photo) throw new HttpsError("failed-precondition", "This product has no photo of its own. Generate or replace one.");
+  }
+  await db.ref(`${R}/photos/${pid}`).set(url ? { use: "generated", genId, url, at: nowMs, by: uid } : null);
+  // On sale: the sale posts with the photo chosen now. In a transaction, so a sale that ended while the photo
+  // was being made is never brought back as a record holding only a photo.
+  await db.ref(`${R}/sales/${pid}`).transaction((cur) => {
+    if (cur === null) return null;
+    if (!Number(cur.setAt) || !(Number(cur.salePrice) > 0)) return undefined;
+    return { ...cur, photo };
+  });
   return { ok: true, pid, photo, use: url ? "generated" : "current" };
 }
 

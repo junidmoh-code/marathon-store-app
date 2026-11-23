@@ -3,7 +3,7 @@
 import React from "react";
 import { describe, it, expect, vi } from "vitest";
 import TestRenderer, { act } from "react-test-renderer";
-import BfCandidatesScreen, { locsLine, readPrice } from "./BfCandidatesScreen";
+import BfCandidatesScreen, { locsLine, readPrice, photoError } from "./BfCandidatesScreen";
 import { openSaleList } from "../../push/useForegroundPush";
 
 const row = (over = {}) => ({ ownPhoto: "https://x/a.jpg", pid: "a", name: "Tee A", tab: "clothing", qty: 40, since: "never sold", stockPrice: 200, retailPrice: 350, locs: { "marathon-pe": 30, central: 10 }, photo: "https://x/a.jpg", sale: null, posted: null, ...over });
@@ -123,6 +123,8 @@ describe("BF Candidates card", () => {
   });
 
   it("small pure parts", () => {
+    expect(photoError(new Error("That product is not in the campaign."))).toMatch(/not on the Black Friday list yet/);
+    expect(photoError(new Error("Paused — generation is switched off on the New Arrivals card."))).toMatch(/Paused/);
     expect(locsLine({ a: 2, b: 9, c: 0 }, { b: "Hub 2" })).toBe("Hub 2 9 · a 2");
     expect(readPrice("R 250")).toEqual({ price: 250 });
     expect(readPrice("").error).toBeTruthy();

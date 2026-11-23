@@ -20,6 +20,12 @@ import { FONT, BG, GLASS, GLASS_SOLID, GREEN, GRAY, AMBER, RED, BLUE_L, bGreen, 
 const price = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2)}`);
 const TAB_LABEL = { clothing: "Clothing", sneakers: "Sneakers" };
 const MAX_PICK = 500; // one tap = one call, so the warning covers the whole selection before anything is saved
+/** A refusal from the shared photo callables, in this card's words. Pure. */
+export function photoError(e) {
+  const t = String((e && e.message) || e || "");
+  if (/not in the campaign|not on the Black Friday card/i.test(t)) return "it is not on the Black Friday list yet, so a photo can't be made for it here. It joins that list at the 05:00 build if it has a stock price and a photo";
+  return t.replace(/^.*?:\s(?=[A-Z])/, "") || "something went wrong";
+}
 const errText = (e) => String((e && e.message) || e || "Something went wrong").replace(/^.*?:\s(?=[A-Z])/, "");
 
 /** "Marathon PE 4 · Hub 2 6" from { loc: qty } (biggest first). Pure. */
@@ -81,7 +87,7 @@ function Row({ r, names, thumb, selecting, ticked, onTick, onSale, onExtend, onE
                 {chosen && r.ownPhoto && <button type="button" style={{ ...bGray, padding: "6px 10px", fontSize: "0.76rem" }} onClick={() => onUseCurrent(r)}>Use current photo</button>}
                 <button type="button" style={{ ...bBlue, padding: "6px 10px", fontSize: "0.76rem" }} onClick={() => onGenerate(r)}>{chosen ? "Regenerate" : "Generate"}</button>
                 <button type="button" style={{ ...bGray, padding: "6px 10px", fontSize: "0.76rem" }} onClick={() => onReplace(r)}>Replace photo</button>
-                {chosen && <span style={{ color: GRAY, fontSize: "0.72rem" }}>Posting with the photo shown</span>}
+                {chosen && <span style={{ color: GRAY, fontSize: "0.72rem" }}>{r.posted ? "Already posted; this photo goes with the next post" : "Posting with the photo shown"}</span>}
               </>
             )}
           </div>
@@ -209,15 +215,22 @@ export default function BfCandidatesScreen({ api, onExit }) {
   const photoJob = async (r, label, fn) => {
     setMaking((m) => ({ ...m, [r.pid]: label }));
     try { await fn(); }
-    catch (e) { say(`${r.name}: ${errText(e)}`); }
+    catch (e) { say(`${r.name}: ${photoError(e)}`); }
     setMaking((m) => { const n = { ...m }; delete n[r.pid]; return n; });
+  };
+  // A photo that was made (and paid for) is never lost to a dropped connection: choosing it is tried twice, and if
+  // that still fails the photo is kept on the Black Friday card and the message says so.
+  const choose = async (r, genId) => {
+    let c;
+    try { c = await api.photo(r.pid, "generated", genId); }
+    catch { try { c = await api.photo(r.pid, "generated", genId); } catch (e) { throw new Error(`the photo was made and is kept on the Black Friday card, but could not be chosen here (${errText(e)}). Open that card to use it; no need to generate again`); } }
+    patchPhoto(r.pid, c.photo, "generated");
   };
   const generate = (r) => photoJob(r, "Starting…", async () => {
     const res = await api.generate(r.pid, { onEvent: (ev) => { if (ev && ev.text) setMaking((m) => (m[r.pid] ? { ...m, [r.pid]: String(ev.text).slice(0, 80) } : m)); } });
     const genId = res && (res.genId || (res.result && res.result.genId));
     if (!genId) throw new Error("no photo came back. Tap Generate to try again");
-    const c = await api.photo(r.pid, "generated", genId);
-    patchPhoto(r.pid, c.photo, "generated");
+    await choose(r, genId);
   });
   const replace = (r) => { replaceFor.current = r; if (fileRef.current) { fileRef.current.value = ""; fileRef.current.click(); } };
   const uploadPicked = (file) => {
@@ -226,8 +239,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
     if (!r || !file) return null;
     return photoJob(r, "Uploading your photo…", async () => {
       const res = await api.photoUpload(r.pid, await photoToBase64(file));
-      const c = await api.photo(r.pid, "generated", res.id);
-      patchPhoto(r.pid, c.photo, "generated");
+      await choose(r, res.id);
     });
   };
   const useCurrent = (r) => photoJob(r, "Saving…", async () => { const c = await api.photo(r.pid, "current"); patchPhoto(r.pid, c.photo, "current"); });
