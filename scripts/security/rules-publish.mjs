@@ -82,6 +82,7 @@ async function findUids() {
     body: JSON.stringify({ email: OWNER_EMAILS }) }).then((r) => r.json());
   out.owner = look.users?.[0]?.localId;
   out.poller = "card-recon-email-poller";
+  CASHIER_SHOP = await ownerGet(`${LIVE.url}/users/${out.cashier}/destShop.json`);
   return out;
 }
 
@@ -103,8 +104,13 @@ async function cleanup() {
     console.log(`  probe account deleted: ${look.users ? "NO — STILL PRESENT" : "yes (owner lookup finds none)"}`);
   }
 }
-const read = async (db, path, tok) => {
-  const r = await fetch(`${db.url}/${path}.json?orderBy=${encodeURIComponent('"$key"')}&limitToFirst=1&auth=${tok}`);
+let CASHIER_SHOP = null;
+const read = async (db, path, tok, who) => {
+  // a shop-pinned till reads orders the way the app does: filtered to its shop
+  const q = path === "orders" && who === "cashier" && CASHIER_SHOP
+    ? `orderBy=${encodeURIComponent('"destShop"')}&equalTo=${encodeURIComponent(JSON.stringify(CASHIER_SHOP))}&limitToFirst=1`
+    : `orderBy=${encodeURIComponent('"$key"')}&limitToFirst=1`;
+  const r = await fetch(`${db.url}/${path}.json?${q}&auth=${tok}`);
   await r.arrayBuffer(); return r.status === 200;
 };
 
@@ -122,7 +128,7 @@ async function healthCheck(db, p, { strangerMustBeDenied }) {
   let bad = 0;
   for (const [who, path, want] of HEALTH) {
     if (!p[who]) { console.log(`  ✗ ${who}: could not sign in`); bad++; continue; }
-    const got = await read(db, path, p[who]);
+    const got = await read(db, path, p[who], who);
     if (got !== want) { bad++; console.log(`  ✗ ${who} read ${path}: ${got ? "allowed" : "DENIED"} (want ${want ? "allowed" : "denied"})`); }
   }
   if (strangerMustBeDenied) {
@@ -155,10 +161,10 @@ try {
   console.log(`proving on ${TEST.name}`);
   await putRules(TEST, next);
   // seed the test db with record shapes the rules read (no real data)
-  const seed = { [`users/${uids.cashier}`]: { stockRole: "pos", posAccess: { isActive: true, role: "cashier" } },
+  const seed = { [`users/${uids.cashier}`]: { stockRole: "pos", ...(CASHIER_SHOP ? { destShop: CASHIER_SHOP } : {}), posAccess: { isActive: true, role: "cashier" } },
     [`users/${uids.manager}`]: { stockRole: "pos", posAccess: { isActive: true, role: "manager" } },
     [`users/${uids.owner}`]: { stockRole: "admin" }, [`users/${uids.poller}`]: { isService: true, permFlags: { card_recon: true } },
-    "settings/probe": 1, "orders/probe": { status: "probe" }, "products/probe": { name: "probe" }, "stock/probe": 1,
+    "settings/probe": 1, "orders/probe": { status: "probe", destShop: CASHIER_SHOP || "pe" }, "products/probe": { name: "probe" }, "stock/probe": 1,
     "locations/probe": 1, "config/probe": 1, "laybys/probe": 1, "pos_meta/probe": 1, "eft_pool/probe": 1, "card_batches/probe": 1,
     "online_orders/probe": 1, "card_batch_intake/probe": 1, "restock_requests/probe": 1 };
   console.log(`  → SEEDING ${TEST.name} (probe rows only)`);
