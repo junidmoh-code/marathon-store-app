@@ -138,8 +138,10 @@ describe("the screen Junid asked for", () => {
     const tree = await mount();
     expect(host(tree, "data-division").map((n) => n.props["data-division"])).toEqual([MARATHON, CONCRETE]);
     expect(host(tree, "data-kind").map((n) => [n.props["data-kind"], n.props["aria-pressed"]])).toEqual([["sneakers", true], ["clothing", false]]);
-    // REMOVED: tabs, search, filters, the count line, Move by hand, Mark & hide, the panel
-    expect(tree.root.findAll((n) => n.type === "input" || n.type === "select").length).toBe(0);
+    // REMOVED: tabs, filters, the count line, Move by hand, Mark & hide, the panel.
+    // The ONE input is the thin search field (Junid, 23 Nov 2026); no select.
+    expect(tree.root.findAll((n) => n.type === "select").length).toBe(0);
+    expect(tree.root.findAll((n) => n.type === "input").map((n) => n.props["aria-label"])).toEqual(["Search"]);
     expect(host(tree, "data-view").length).toBe(0);
     const all = textOf(tree);
     for (const gone of [/To do/, /Queued & solved/, /newest uploads first/, /missing from/i, /Move by hand/, /Mark & hide/, /Carry at/, /Starts keeping/, /Never sent/, /One moment/, /Concrete-only/]) expect(all).not.toMatch(gone);
