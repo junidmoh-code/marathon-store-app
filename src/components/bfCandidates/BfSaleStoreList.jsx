@@ -24,7 +24,7 @@ export default function BfSaleStoreList({ api, store = null, onExit }) {
   const stores = (data && data.stores) || [];
   const shown = stores.find((s) => s.loc === at) || stores[0] || null;
   return (
-    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: "calc(12px + env(safe-area-inset-top)) 14px 40px" }}>
+    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: "12px 14px 40px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, maxWidth: 760, margin: "0 auto" }}>
         <button type="button" style={{ ...bGray, padding: "8px 12px" }} onClick={onExit}>Back</button>
         <div>

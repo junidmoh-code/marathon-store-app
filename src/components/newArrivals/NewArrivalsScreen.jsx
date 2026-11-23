@@ -942,7 +942,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         )}
       </div>
       {floating && (
-        <div style={{ position: "fixed", left: 14, right: 14, bottom: 14, zIndex: 50, display: "flex", flexDirection: "column", gap: 8, alignItems: "center", pointerEvents: "none" }}>
+        <div style={{ position: "fixed", left: 14, right: 14, bottom: "calc(14px + env(safe-area-inset-bottom, 0px))", zIndex: 50, display: "flex", flexDirection: "column", gap: 8, alignItems: "center", pointerEvents: "none" }}>
           {toasts.map((t) => (
             <div key={t.id} data-testid="toast" role="status" style={{ ...GLASS, background: "#0a0e18", maxWidth: 532, width: "100%", boxSizing: "border-box", padding: "11px 12px", fontSize: 14, color: "#fff" }}>{t.text}</div>
           ))}

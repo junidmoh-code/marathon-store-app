@@ -80,7 +80,7 @@ export function AwayBanner({ active, home, onBack }) {
   const homeName = storeName(home);
   return (
     <div role="status" data-testid="store-away-banner"
-         style={{ position: "sticky", top: 0, zIndex: 99990, display: "flex", alignItems: "center", justifyContent: "center",
+         style={{ position: "sticky", top: "env(safe-area-inset-top, 0px)", zIndex: 99990, display: "flex", alignItems: "center", justifyContent: "center",
                   gap: 12, flexWrap: "wrap", padding: "9px 14px", fontFamily: FONT,
                   background: `linear-gradient(90deg, ${WARN_DEEP}, ${WARN})`, color: "#000",
                   boxShadow: "0 2px 14px rgba(255,107,0,.45)" }}>

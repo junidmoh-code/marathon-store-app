@@ -90,7 +90,7 @@ export default function AllProductsList({ products, ProductPhoto, canVerify, liv
           only Junid / a stockRole admin may (Sonnet review, PR #952 B2). */}
       {!canVerify && <div style={{ fontSize: 12, color: "rgba(255,255,255,.5)" }}>Only Junid or an admin can change which products are Concrete-only.</div>}
       {selected.size > 0 && canVerify && (
-        <div style={{ position: "sticky", top: 0, zIndex: 3, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", background: "#111", border: "1px solid rgba(255,255,255,.15)", borderRadius: 12, padding: 10 }}>
+        <div style={{ position: "sticky", top: "env(safe-area-inset-top, 0px)", zIndex: 3, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", background: "#111", border: "1px solid rgba(255,255,255,.15)", borderRadius: 12, padding: 10 }}>
           <b style={{ fontSize: 13 }}>{selected.size} selected</b>
           <button disabled={busy} onClick={() => setConfirm({ on: true, ids: [...selected] })} style={{ ...chip(true), background: "#E5E5E5", color: "#000", borderColor: "#E5E5E5" }}>Add to Concrete</button>
           <button disabled={busy} onClick={() => setConfirm({ on: false, ids: [...selected] })} style={chip(false)}>Remove from Concrete</button>

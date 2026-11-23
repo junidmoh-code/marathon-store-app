@@ -244,7 +244,7 @@ export default function DisplayChecks({ onExit, products }) {
       {/* SIDEBAR — desktop chrome. display:none when narrow keeps the content
           column's tree position stable, so a rotation never remounts the tabs. */}
       <aside style={{ display: wide ? "flex" : "none", zIndex: 1, width: 246, flexShrink: 0, boxSizing: "border-box",
-                      position: "sticky", top: 0, alignSelf: "flex-start", height: "100vh", flexDirection: "column", padding: "22px 14px 16px",
+                      position: "sticky", top: "env(safe-area-inset-top, 0px)", alignSelf: "flex-start", height: "100vh", flexDirection: "column", padding: "22px 14px 16px",
                       background: "rgba(255,255,255,.02)", borderRight: GLASS_BORDER, overflowY: "auto" }}>
         <button type="button" onClick={onExit} style={{ ...META, background: "none", border: "none", cursor: "pointer", color: "rgba(233,238,255,.45)", padding: "2px 10px", textAlign: "left", alignSelf: "flex-start" }}>‹ BACK</button>
         <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.01em", padding: "12px 10px 14px" }}>Display Checks</div>

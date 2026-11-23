@@ -11,6 +11,8 @@ const NOW = Date.parse("2026-11-22T10:00:00.000Z");
 const paths = {};
 const gets = {};
 const listeners = {};
+// Every database read the screen makes (search must add none).
+const reads = { onValue: 0, get: 0 };
 const emit = (path, value) => { paths[path] = value; for (const cb of listeners[path] || []) cb({ val: () => value }); };
 const updateMock = vi.fn(() => Promise.resolve());
 const txnCalls = [];
@@ -19,9 +21,9 @@ let pushN = 0;
 vi.mock("firebase/database", () => ({
   query: (r, ...parts) => ({ path: `${r.path}?${parts.map((p) => p.q).join("&")}` }), orderByChild: (f) => ({ q: `orderBy=${f}` }), equalTo: (v) => ({ q: `equalTo=${v}` }),
   ref: (_db, path) => ({ path: path ?? "" }),
-  onValue: (r, cb) => { (listeners[r.path] ||= []).push(cb); cb({ val: () => paths[r.path] ?? null }); return () => { listeners[r.path] = (listeners[r.path] || []).filter((x) => x !== cb); }; },
+  onValue: (r, cb) => { reads.onValue++; (listeners[r.path] ||= []).push(cb); cb({ val: () => paths[r.path] ?? null }); return () => { listeners[r.path] = (listeners[r.path] || []).filter((x) => x !== cb); }; },
   update: (...a) => updateMock(...a),
-  get: (r) => Promise.resolve({ val: () => gets[r.path] ?? null }),
+  get: (r) => { reads.get++; return Promise.resolve({ val: () => gets[r.path] ?? null }); },
   push: () => ({ key: `req${++pushN}` }),
   // A real transaction: the function sees the stored value; undefined aborts.
   runTransaction: (r, fn) => { const cur = txnData[r.path] ?? null; const next = fn(cur); txnCalls.push({ path: r.path, cur, next }); if (next !== undefined) txnData[r.path] = next; return Promise.resolve({ committed: next !== undefined, snapshot: { val: () => (next === undefined ? cur : next) } }); },
@@ -67,7 +69,7 @@ const PRODUCTS = [
   { id: KID, name: "Nike SB dunk low grey small", category: "Footwear", subcategory: "Sneakers", categoryKey: "kids-shoes", productType: "sneaker", sizes: KID_SIZES, photoUrl: "https://x/k.jpg" },
   { id: KID2, name: "Nike SB dunk small black white", category: "Footwear", subcategory: "Sneakers", categoryKey: "kids-shoes", productType: "sneaker", sizes: KID_SIZES, photoUrl: "https://x/k2.jpg" },
   { id: TEE, name: "Essentials Tee Olive", brand: "Fear of God", productType: "clothing", categoryKey: "t-shirts", subcategory: "T-Shirts", sizes: ["S", "M", "L"], photoUrl: "https://x/t.jpg" },
-  { id: JACKET, name: "Varsity Jacket", brand: "Nike", productType: "clothing", categoryKey: "jackets", subcategory: "Jackets & Coats", sizes: ["S", "M", "L"] },
+  { id: JACKET, name: "Varsity Jacket", brand: "Nike", styleCode: "DD1391-100", productType: "clothing", categoryKey: "jackets", subcategory: "Jackets & Coats", sizes: ["S", "M", "L"] },
   { id: HOODIE, name: "Box Hoodie", brand: "Stussy", productType: "clothing", categoryKey: "hoodies", subcategory: "Hoodies", sizes: ["S", "M", "L"] },
   { id: GONE_TEE, name: "T shirt white 70740", productType: "clothing", categoryKey: "t-shirts", subcategory: "T-Shirts", sizes: ["S", "M", "L"] },
 ];
@@ -138,8 +140,10 @@ describe("the screen Junid asked for", () => {
     const tree = await mount();
     expect(host(tree, "data-division").map((n) => n.props["data-division"])).toEqual([MARATHON, CONCRETE]);
     expect(host(tree, "data-kind").map((n) => [n.props["data-kind"], n.props["aria-pressed"]])).toEqual([["sneakers", true], ["clothing", false]]);
-    // REMOVED: tabs, search, filters, the count line, Move by hand, Mark & hide, the panel
-    expect(tree.root.findAll((n) => n.type === "input" || n.type === "select").length).toBe(0);
+    // REMOVED: tabs, filters, the count line, Move by hand, Mark & hide, the panel.
+    // The ONE input is the thin search field (Junid, 23 Nov 2026); no select.
+    expect(tree.root.findAll((n) => n.type === "select").length).toBe(0);
+    expect(tree.root.findAll((n) => n.type === "input").map((n) => n.props["aria-label"])).toEqual(["Search"]);
     expect(host(tree, "data-view").length).toBe(0);
     const all = textOf(tree);
     for (const gone of [/To do/, /Queued & solved/, /newest uploads first/, /missing from/i, /Move by hand/, /Mark & hide/, /Carry at/, /Starts keeping/, /Never sent/, /One moment/, /Concrete-only/]) expect(all).not.toMatch(gone);
@@ -972,15 +976,15 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     }
   });
 
-  it("the card height is unchanged: the button sits in the stock line and is smaller than it", async () => {
+  it("the card height is unchanged: the button sits beside the name + stock block, never over the locations", async () => {
     const tree = await mount();
     const { CARD_H } = await import("./MissingRow.jsx");
     for (const n of host(tree, "data-card")) expect(n.props.style.height).toBe(CARD_H);
-    expect(CARD_H).toBe(168);
+    expect(CARD_H).toBe(94);                              // compact (Junid, 23 Nov 2026)
     const b = markBtn(tree, SHOE_B);
-    expect(b.props.style.height).toBe(44);
-    expect(b.props.style.margin).toBe("-4px 0");          // 44 − 8 = the 36 px stock line
-    expect(b.findAll((n) => n.type === "span")[0].props.style.height).toBe(26);
+    expect(b.props.style.height).toBe(44);                // a full tap target …
+    expect(b.props.style.margin).toBeUndefined();         // … that reaches into nothing else
+    expect(b.findAll((n) => n.type === "span")[0].props.style.height).toBe(22);
   });
 
   it("the button is only for Junid, Jafer or a stock admin", async () => {
@@ -1006,5 +1010,79 @@ describe("division Undo that fails (CodeRabbit, PR #967)", () => {
     await act(async () => { await toast(tree).undo.props.onClick(); });
     await act(async () => {}); await act(async () => {});
     expect(cardsOf(tree)).toContain("Essentials Tee Olive");
+  });
+});
+
+describe("search (Junid, 23 Nov 2026)", () => {
+  const field = (tree) => tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Search")[0];
+  const typeIn = async (tree, text) => { await act(async () => { field(tree).props.onChange({ target: { value: text } }); }); await act(async () => {}); };
+  const clearBtn = (tree) => tree.root.findAll((n) => n.type === "button" && n.props["data-action"] === "clear-search")[0];
+  const box = (tree) => host(tree, "data-search")[0].props.style;
+
+  it("one thin field under Sneakers / Clothing: fixed height, a clear control only with text", async () => {
+    const tree = await mount();
+    expect(box(tree).height).toBe(32);
+    expect(field(tree).props.style.height).toBe(32);
+    expect(field(tree).props.style.fontSize).toBe(16);          // iOS does not zoom the page on focus
+    expect(field(tree).props.placeholder).toBe("Search");
+    expect(clearBtn(tree)).toBeUndefined();
+    await typeIn(tree, "gaz");
+    expect(clearBtn(tree)).toBeDefined();
+    expect(clearBtn(tree).props.style.position).toBe("absolute");   // laid over the field: nothing moves
+    expect(box(tree).height).toBe(32);
+    expect(field(tree).props.style.height).toBe(32);
+  });
+
+  it("filters the current list by name, brand and number, case-insensitively, and makes no database reads", async () => {
+    const tree = await mount();
+    const all = cardsOf(tree);
+    expect(all.length).toBeGreaterThan(1);
+    const r0 = { ...reads };
+    await typeIn(tree, "GAZ");
+    expect(cardsOf(tree)).toEqual(["Gazelle Bold"]);
+    await typeIn(tree, "adidas");                                  // brand, from the product record already loaded
+    expect(cardsOf(tree)).toEqual(all.filter((n) => ["Gazelle Bold", "Samba OG"].includes(n)));
+    await kind(tree, "clothing");
+    await typeIn(tree, "1391");                                    // a number inside the style code
+    expect(cardsOf(tree)).toEqual(["Varsity Jacket"]);
+    expect(reads).toEqual(r0);
+  });
+
+  it("clearing returns the same frozen order; no match says Nothing found", async () => {
+    const tree = await mount();
+    const before = cardsOf(tree);
+    await typeIn(tree, "zzzz");
+    expect(cardsOf(tree)).toEqual([]);
+    expect(host(tree, "data-nothing-found").length).toBe(1);
+    expect(flat(host(tree, "data-nothing-found")[0].children)).toBe("Nothing found");
+    await act(async () => { clearBtn(tree).props.onClick(); });
+    expect(field(tree).props.value).toBe("");
+    expect(cardsOf(tree)).toEqual(before);
+  });
+
+  it("switching division or Sneakers / Clothing keeps the text and applies it to the new list", async () => {
+    const tree = await mount();
+    await typeIn(tree, "tee");
+    await kind(tree, "clothing");
+    expect(field(tree).props.value).toBe("tee");
+    const marathon = cardsOf(tree);
+    expect(marathon.length).toBeGreaterThan(0);
+    expect(marathon.every((n) => /tee/i.test(n))).toBe(true);
+    await division(tree, CONCRETE);
+    expect(field(tree).props.value).toBe("tee");
+    const concrete = cardsOf(tree);
+    expect(concrete.length).toBeGreaterThan(0);
+    expect(concrete.every((n) => /tee/i.test(n))).toBe(true);
+    await typeIn(tree, "");
+    expect(cardsOf(tree).some((n) => !/tee/i.test(n))).toBe(true);
+  });
+
+  it("a card keeps one height for a short and a very long name", async () => {
+    const tree = await mount();
+    const { CARD_H } = await import("./MissingRow.jsx");
+    const names = host(tree, "data-name");
+    expect(names.length).toBeGreaterThan(1);
+    for (const n of names) { expect(n.props.style.height).toBe(30); expect(n.props.style.WebkitLineClamp).toBe(2); }
+    for (const n of host(tree, "data-card")) expect(n.props.style.height).toBe(CARD_H);
   });
 });

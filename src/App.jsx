@@ -6234,7 +6234,7 @@ function AiStudioView({ products, onExit }) {
   );
 
   const sidebar = (
-    <aside style={{ width:224, flexShrink:0, position:"sticky", top:0, height:"100vh", boxSizing:"border-box",
+    <aside style={{ width:224, flexShrink:0, position:"sticky", top:"env(safe-area-inset-top, 0px)", height:"100vh", boxSizing:"border-box",
                     display:"flex", flexDirection:"column", gap:4, padding:"24px 14px 18px",
                     background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.07)" }}>
       <div style={{ padding:"0 10px 20px" }}>
@@ -8977,8 +8977,8 @@ function RefillTrackingCard({ orders = [], shop, registry, products = [], onView
 // cards. Sits under the GalleryLightbox (z 2000) so photo taps still enlarge.
 function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onClose }) {
   return (
-    <div style={{ position:"fixed", inset:0, zIndex:1500, background:BG, overflowY:"auto", fontFamily:FONT }}>
-      <div style={{ position:"sticky", top:0, zIndex:1, background:"rgba(0,0,0,.85)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", borderBottom:"1px solid rgba(60,110,255,.2)", display:"flex", alignItems:"center", gap:10, padding:"14px 14px" }}>
+    <div style={{ position:"fixed", inset:0, zIndex:1500, background:BG, overflowY:"auto", fontFamily:FONT, paddingTop:"env(safe-area-inset-top, 0px)", paddingBottom:"env(safe-area-inset-bottom, 0px)" }}>
+      <div style={{ position:"sticky", top:"env(safe-area-inset-top, 0px)", zIndex:1, background:"rgba(0,0,0,.85)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", borderBottom:"1px solid rgba(60,110,255,.2)", display:"flex", alignItems:"center", gap:10, padding:"14px 14px" }}>
         <button onClick={onClose} aria-label="Back"
                 style={{ width:34, height:34, borderRadius:10, border:"1px solid rgba(60,110,255,.35)", background:"rgba(60,110,255,.1)", color:"#9CB8FF", fontSize:16, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
           ←
@@ -12404,7 +12404,7 @@ export function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Size picker bottom sheet ── */}
       {selected && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000 }}>
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000, paddingBottom:"env(safe-area-inset-bottom, 0px)" }}>
           <div style={sheetStyle}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"1.5rem" }}>
               <div style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
@@ -12635,7 +12635,7 @@ export function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Checkout bottom sheet ── */}
       {checkoutOpen && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000 }}>
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000, paddingBottom:"env(safe-area-inset-bottom, 0px)" }}>
           <div style={sheetStyle}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
               <span style={{ fontWeight:"800", fontSize:"1.2rem" }}>Checkout</span>
@@ -12757,7 +12757,7 @@ export function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Phase 12B: Floating cart trigger ── (desktop has its own drawer) */}
       {cart.length > 0 && !checkoutOpen && !selected && !isDesktop && (
-        <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"12px 14px 14px", background:"linear-gradient(transparent, rgba(0,0,0,.92) 30%)", zIndex:50, pointerEvents:"none" }}>
+        <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"12px 14px calc(14px + env(safe-area-inset-bottom, 0px))", background:"linear-gradient(transparent, rgba(0,0,0,.92) 30%)", zIndex:50, pointerEvents:"none" }}>
           <div style={{ maxWidth:880, margin:"0 auto", pointerEvents:"auto" }}>
             <button
               onClick={hasCustomerInCart ? openCheckout : () => placeRefillRequests()}
@@ -14779,7 +14779,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     return (
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         {printToast && (
-          <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
+          <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:"calc(24px + env(safe-area-inset-bottom, 0px))", zIndex:9999, maxWidth:400, width:"90%",
                         background: printToast.kind === "ok" ? "rgba(6,20,12,.97)" : "rgba(24,8,8,.97)",
                         border:"1px solid " + (printToast.kind === "ok" ? "rgba(74,222,128,.4)" : "rgba(248,113,113,.4)"),
                         color:"#fff", borderRadius:12, padding:"12px 16px", fontSize:13, fontWeight:600, boxShadow:"0 20px 50px -20px rgba(0,0,0,.8)" }}>
@@ -14858,7 +14858,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       )}
       {/* Dispatch-label print toast — auto-print result on "Mark as Sent" (non-blocking). */}
       {printToast && (
-        <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
+        <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:"calc(24px + env(safe-area-inset-bottom, 0px))", zIndex:9999, maxWidth:400, width:"90%",
                       padding:"11px 14px", borderRadius:10, fontSize:12, fontWeight:600, textAlign:"center",
                       background: printToast.kind === "ok" ? "rgba(0,150,70,.92)" : "rgba(150,30,30,.94)",
                       color:"#fff", border:"1px solid rgba(255,255,255,.18)", boxShadow:"0 6px 24px rgba(0,0,0,.4)" }}>
@@ -17170,7 +17170,7 @@ function ClothingSoldView({ products }) {
 
       {/* 60-second accidental-transfer undo — reverses only untouched store cells. */}
       {undo && (
-        <div style={{ position:"fixed", left:12, right:12, bottom:16, zIndex:70, maxWidth:430, margin:"0 auto",
+        <div style={{ position:"fixed", left:12, right:12, bottom:"calc(16px + env(safe-area-inset-bottom, 0px))", zIndex:70, maxWidth:430, margin:"0 auto",
                       background:"rgba(4,5,10,.97)", border:"1px solid rgba(74,222,128,.5)", borderRadius:14, padding:"12px 14px",
                       display:"flex", alignItems:"center", gap:12, boxShadow:"0 10px 30px rgba(0,0,0,.5)" }}>
           <div style={{ flex:1, minWidth:0 }}>
@@ -17184,7 +17184,7 @@ function ClothingSoldView({ products }) {
         </div>
       )}
       {undoMsg && !undo && (
-        <div style={{ position:"fixed", left:12, right:12, bottom:16, zIndex:70, maxWidth:430, margin:"0 auto",
+        <div style={{ position:"fixed", left:12, right:12, bottom:"calc(16px + env(safe-area-inset-bottom, 0px))", zIndex:70, maxWidth:430, margin:"0 auto",
                       background:"rgba(4,5,10,.97)", border:"1px solid rgba(60,110,255,.4)", borderRadius:14, padding:"11px 14px",
                       color:"rgba(255,255,255,.85)", fontSize:12, boxShadow:"0 10px 30px rgba(0,0,0,.5)" }}>
           {undoMsg}
@@ -20334,7 +20334,7 @@ function AuditModal({ audit, onClose }) {
   };
 
   return (
-    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.85)", zIndex:9999, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"20px 8px", overflowY:"auto" }}
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.85)", zIndex:9999, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"calc(20px + env(safe-area-inset-top, 0px)) 8px calc(20px + env(safe-area-inset-bottom, 0px))", overflowY:"auto" }}
          onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
            style={{ width:"100%", maxWidth:560, background:"#000", border:"1px solid rgba(60,110,255,.4)", borderRadius:14, padding:16, color:"#fff", fontFamily:FONT, boxShadow:"0 0 32px rgba(60,110,255,.2)" }}>
@@ -20505,7 +20505,7 @@ function ReactivationNotice() {
   if (!notice) return null;
   return (
     <div onClick={() => setNotice(null)} role="status"
-         style={{ position:"fixed", bottom:18, left:"50%", transform:"translateX(-50%)", zIndex:10000,
+         style={{ position:"fixed", bottom:"calc(18px + env(safe-area-inset-bottom, 0px))", left:"50%", transform:"translateX(-50%)", zIndex:10000,
                   maxWidth:"min(92vw, 480px)", background:"#173B2A", border:"1px solid rgba(74,222,128,.55)",
                   color:"#C9F3D8", borderRadius:14, padding:"12px 16px", fontSize:13.5, fontWeight:600,
                   boxShadow:"0 4px 18px rgba(0,0,0,.45)", cursor:"pointer" }}>
@@ -20529,7 +20529,7 @@ function PWAUpdateBanner() {
   };
   return (
     <div onClick={reload} role="button"
-         style={{ position:"fixed", top:0, left:0, right:0, zIndex:10000, background:"#4A7FFF", color:"#fff",
+         style={{ position:"fixed", top:"env(safe-area-inset-top, 0px)", left:0, right:0, zIndex:10000, background:"#4A7FFF", color:"#fff",
                   fontFamily:"-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif", fontSize:13, fontWeight:600,
                   padding:"10px 14px", display:"flex", alignItems:"center", justifyContent:"center", gap:8,
                   cursor:"pointer", boxShadow:"0 2px 12px rgba(0,0,0,.4)" }}>
@@ -20593,7 +20593,7 @@ function IOSInstallTooltip() {
   if (!show) return null;
   const dismiss = () => { localStorage.setItem(DISMISS_KEY, "1"); setShow(false); };
   return (
-    <div style={{ position:"fixed", left:10, right:10, bottom:14, zIndex:9999,
+    <div style={{ position:"fixed", left:10, right:10, bottom:"calc(14px + env(safe-area-inset-bottom, 0px))", zIndex:9999,
                   background:"rgba(4,5,10,.95)", border:"1px solid rgba(60,110,255,.5)", borderRadius:14,
                   padding:"12px 14px", display:"flex", alignItems:"center", gap:10,
                   boxShadow:"0 4px 24px rgba(0,0,0,.6)", backdropFilter:"blur(8px)",
@@ -20869,7 +20869,7 @@ function BroadcastGroupsView({ authUser, onExit }) {
 
 function BroadcastTopBar({ onExit, onRefresh, refreshing }) {
   return (
-    <div style={{ position:"sticky", top:0, zIndex:10, background:"rgba(0,0,0,.85)", backdropFilter:"blur(10px)", borderBottom:BORDER, padding:"0.75rem 1rem", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+    <div style={{ position:"sticky", top:"env(safe-area-inset-top, 0px)", zIndex:10, background:"rgba(0,0,0,.85)", backdropFilter:"blur(10px)", borderBottom:BORDER, padding:"0.75rem 1rem", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
       <button onClick={onExit} style={{ background:"transparent", border:"none", color:BLUE, cursor:"pointer", fontSize:"0.9rem", fontWeight:600, padding:"4px 8px", display:"flex", alignItems:"center", gap:6 }}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
         Exit
@@ -22251,7 +22251,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
           onPointerDown={enableVoice}
           aria-label="Enable pickup announcements"
           style={{
-            position: "fixed", right: 14, bottom: 14, zIndex: 400,
+            position: "fixed", right: 14, bottom:"calc(14px + env(safe-area-inset-bottom, 0px))", zIndex: 400,
             display: "flex", alignItems: "center", gap: 6,
             background: "rgba(40,36,32,.62)", color: "rgba(247,243,238,.85)", border: "1px solid rgba(255,244,230,.2)", borderRadius: 999,
             padding: "6px 12px", fontSize: 11.5, fontWeight: 600, letterSpacing: 0.2, cursor: "pointer",

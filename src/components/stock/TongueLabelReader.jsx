@@ -132,7 +132,7 @@ export function LabelCamera({
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,.96)", display: "flex", flexDirection: "column" }}>
+    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,.96)", display: "flex", flexDirection: "column", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 18px", color: "#fff" }}>
         <div style={{ fontWeight: 800, fontSize: 15 }}>{title}</div>
         <button onClick={onClose} style={{ ...bGhost, padding: "10px 16px", fontSize: 13 }}>Close</button>

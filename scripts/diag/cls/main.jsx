@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { seed } from "./fakeDb.js";
+import "../../../src/appShell.css";
 import MissingProductsScreen from "../../../src/components/stock/MissingProductsScreen.jsx";
 
 const decodeless = (x) => x;

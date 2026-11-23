@@ -58,6 +58,7 @@ import { usePermissions } from "../PermissionsContext";
 import HiddenProducts, { HoldSpot } from "./HiddenProducts";
 import { PhotoLightbox } from "./healthWidgets";
 import MissingRow, { Slot, SkeletonRow, CARD_H, CARD_GAP, LEAVE_MS } from "./MissingRow";
+import { searchTerms, matchesSearch } from "./missingSearch";
 import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { setUpdateBusy } from "../../update/updateChecker";
@@ -212,6 +213,11 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const [kind, setKind] = useState("sneakers");
   const [view, setView] = useState("list");   // "list" | "hidden"
   const [lightbox, setLightbox] = useState(null);
+  // SEARCH (Junid, 23 Nov 2026): kept across a division or kind switch and
+  // applied to the new list. It only hides cards that do not match — the
+  // frozen order underneath is untouched, so clearing gives the same list.
+  const [query, setQuery] = useState("");
+  const searchRef = useRef(null);
   const active = bucketId(section, kind);
   const canAct = divisions.length ? !!flags[divisions[0]]?.canAct : false;
   // Marking a division is Junid's / Jafer's / a stockRole admin's — the same
@@ -334,6 +340,10 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     entering: !!fz.shown && before.has(k) && listedBy.has(k) && !fz.shown.has(k),
   }));
   const display = [...inOrder.filter((d) => d.row.needsPolicy), ...inOrder.filter((d) => !d.row.needsPolicy)];
+  // What is drawn: the frozen list, narrowed by the search (no reads — the
+  // rows and product records are the ones already on screen).
+  const terms = searchTerms(query);
+  const shown = terms.length ? display.filter((d) => matchesSearch(terms, d.row, byId.get(d.row.pid))) : display;
   useEffect(() => {
     // A list that is not drawn has nothing "shown": when it comes back, its
     // cards are simply there — none of them enters or leaves.
@@ -361,7 +371,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) setShownN((m) => ({ ...m, [active]: (m[active] || PAGE) + PAGE })); }, { rootMargin: "600px" });
     io.observe(more.current);
     return () => io.disconnect();
-  }, [active, display.length > limit]);
+  }, [active, shown.length > limit]);
 
   // ── THE TOAST ──────────────────────────────────────────────────────────────
   const [toast, setToast] = useState(null);   // { id, ok, text, undo }
@@ -529,44 +539,71 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const hiddenCount = Object.keys(hiddenMap || {}).length;
 
   const box = (on, h) => ({
-    height: h, borderRadius: 14, cursor: "pointer", fontFamily: FONT, textAlign: "center", padding: 0, WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
+    height: h, borderRadius: 11, cursor: "pointer", fontFamily: FONT, textAlign: "center", padding: 0, WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
     border: on ? "1px solid rgba(60,110,255,.75)" : "1px solid rgba(255,255,255,.12)",
     background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)", color: on ? "#fff" : "rgba(255,255,255,.55)",
   });
-  const firstNormal = display.findIndex((d) => !d.row.needsPolicy);
-  const anyNeeds = display.some((d) => d.row.needsPolicy && !d.leaving);
+  const firstNormal = shown.findIndex((d) => !d.row.needsPolicy);
+  const anyNeeds = shown.some((d) => d.row.needsPolicy && !d.leaving);
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
-      <div style={{ maxWidth: 720, margin: "0 auto", padding: "12px 12px 120px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, height: 44, marginBottom: 10 }}>
+      {/* COMPACT (Junid, 23 Nov 2026): every row 40 px, 4 px apart — six whole
+          cards on an iPhone where three and a half fitted. */}
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "4px 8px 120px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, height: 40, marginBottom: 4 }}>
           <button data-action="exit" onClick={() => (view === "hidden" ? setView("list") : onExit?.())}
-            style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 11, padding: "0 14px", height: 44, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>← Back</button>
-          <div data-title style={{ fontSize: 19, fontWeight: 800, whiteSpace: "nowrap" }}>{view === "hidden" ? `Hidden (${hiddenCount})` : "Missing Products"}</div>
+            style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 10, padding: "0 12px", height: 40, fontWeight: 700, fontSize: 13.5, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>← Back</button>
+          <div data-title style={{ fontSize: 17, fontWeight: 800, whiteSpace: "nowrap" }}>{view === "hidden" ? `Hidden (${hiddenCount})` : "Missing Products"}</div>
           {/* The hidden tab's entrance: the unlabelled press-and-hold spot
               (HiddenProducts.jsx HoldSpot — discretion, not access control). */}
           <HoldSpot onTrigger={() => setView("hidden")} />
         </div>
 
-        <div style={{ position: "sticky", top: 0, zIndex: 5, background: BG, paddingBottom: 10 }}>
-          <div aria-label="Division" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(divisions.length, 1)}, 1fr)`, gap: 8, marginBottom: 8 }}>
+        {/* Sticks just below the iPhone status bar in the installed app (the
+            inset is 0 in a browser tab). */}
+        <div style={{ position: "sticky", top: "env(safe-area-inset-top, 0px)", zIndex: 5, background: BG, paddingBottom: 4 }}>
+          <div aria-label="Division" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(divisions.length, 1)}, 1fr)`, gap: 6, marginBottom: 4 }}>
             {divisions.map((sec) => {
               const on = sec === section && view === "list";
               const n = countOf(sec);
               return (
-                <button key={sec} aria-pressed={on} data-division={sec} onClick={() => { setPick(sec); setView("list"); }} style={box(on, 62)}>
-                  <div style={{ fontSize: 16, fontWeight: 800, lineHeight: "20px" }}>{sectionName(network, sec)}</div>
-                  <div data-division-count={sec} style={{ fontSize: 14, fontWeight: 700, lineHeight: "18px", height: 18, marginTop: 2, color: on ? BLUE_L : "rgba(255,255,255,.45)" }}>{n == null ? " " : n}</div>
+                <button key={sec} aria-pressed={on} data-division={sec} onClick={() => { setPick(sec); setView("list"); }}
+                  style={{ ...box(on, 40), display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                  <span style={{ fontSize: 15, fontWeight: 800, lineHeight: "18px" }}>{sectionName(network, sec)}</span>
+                  {/* A fixed-width count box: the name never moves when the number arrives. */}
+                  <span data-division-count={sec} style={{ fontSize: 13.5, fontWeight: 700, lineHeight: "18px", minWidth: 34, textAlign: "left", fontVariantNumeric: "tabular-nums", color: on ? BLUE_L : "rgba(255,255,255,.45)" }}>{n == null ? " " : n}</span>
                 </button>
               );
             })}
           </div>
-          <div aria-label="Kind" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div aria-label="Kind" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
             {KINDS.map(([k, name]) => (
               <button key={k} aria-pressed={kind === k && view === "list"} data-kind={k} onClick={() => { setKind(k); setView("list"); }}
-                style={{ ...box(kind === k && view === "list", 44), fontSize: 15, fontWeight: 800 }}>{name}</button>
+                style={{ ...box(kind === k && view === "list", 40), fontSize: 14.5, fontWeight: 800 }}>{name}</button>
             ))}
           </div>
+          {/* ONE THIN SEARCH FIELD. Fixed 32 px whatever is typed; 16 px text so
+              iOS does not zoom the page on focus; the clear control is laid
+              over the field's right end, so it appears without moving anything. */}
+          {view === "list" && <div data-search style={{ position: "relative", height: 32, marginTop: 4 }}>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.45)" strokeWidth="2.5" strokeLinecap="round"
+              style={{ position: "absolute", left: 10, top: 9, pointerEvents: "none" }}><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+            <input ref={searchRef} data-search-input type="text" inputMode="search" enterKeyHint="search" autoComplete="off" autoCorrect="off" autoCapitalize="none" spellCheck={false}
+              aria-label="Search" placeholder="Search" value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Escape") setQuery(""); else if (e.key === "Enter") e.currentTarget.blur(); }}
+              style={{ display: "block", width: "100%", height: 32, boxSizing: "border-box", margin: 0, padding: "0 40px 0 30px", borderRadius: 9, outline: "none",
+                border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.03)", color: "#fff", fontFamily: FONT, fontSize: 16, lineHeight: "30px",
+                WebkitAppearance: "none", appearance: "none" }} />
+            {query && (
+              <button type="button" data-action="clear-search" aria-label="Clear search" onClick={() => { setQuery(""); searchRef.current?.focus(); }}
+                style={{ position: "absolute", right: 0, top: -4, width: 40, height: 40, padding: 0, border: "none", background: "none", cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center", WebkitTapHighlightColor: "transparent", touchAction: "manipulation" }}>
+                <span aria-hidden="true" style={{ width: 18, height: 18, borderRadius: 9, background: "rgba(255,255,255,.22)", color: "#000", fontSize: 13, fontWeight: 800, lineHeight: "18px", textAlign: "center" }}>×</span>
+              </button>
+            )}
+          </div>}
         </div>
 
         {!divisions.length && <div style={{ padding: 18, color: GRAY, fontSize: 14 }}>No division is open to this account.</div>}
@@ -587,10 +624,12 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
               ? Array.from({ length: 6 }, (_, i) => <SkeletonRow key={i} />)
               : !display.length
                 ? <div data-empty style={{ height: CARD_H + CARD_GAP, display: "flex", alignItems: "center", justifyContent: "center", color: GRAY, fontSize: 15 }}>Nothing to send</div>
-                : display.slice(0, limit).map((d, i) => (
+                : !shown.length
+                ? <div data-nothing-found style={{ height: CARD_H + CARD_GAP, display: "flex", alignItems: "center", justifyContent: "center", color: GRAY, fontSize: 15 }}>Nothing found</div>
+                : shown.slice(0, limit).map((d, i) => (
                   <React.Fragment key={d.key}>
-                    {i === 0 && anyNeeds && <div data-needs-label style={{ height: 26, fontSize: 12.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: AMBER }}>Needs policy</div>}
-                    {i === firstNormal && i > 0 && anyNeeds && <div aria-hidden="true" style={{ height: 14 }} />}
+                    {i === 0 && anyNeeds && <div data-needs-label style={{ height: 20, fontSize: 11.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: AMBER }}>Needs policy</div>}
+                    {i === firstNormal && i > 0 && anyNeeds && <div aria-hidden="true" style={{ height: 8 }} />}
                     <Slot leaving={d.leaving} entering={d.entering} data-slot={d.key}>
                       <MissingRow row={d.row} product={byId.get(d.row.pid)} twinProduct={d.row.twin ? byId.get(d.row.twin) : null}
                         selected={d.leaving ? NO_PICK : chosen(d.row)} busy={!!busy[d.key]} canAct={canAct} onPick={onPick} onSolve={onSolve} onPhoto={onPhoto}
@@ -598,7 +637,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
                     </Slot>
                   </React.Fragment>
                 ))}
-            {sliced.complete[active] && display.length > limit && (
+            {sliced.complete[active] && shown.length > limit && (
               <button ref={more} data-action="show-more" onClick={() => setShownN((m) => ({ ...m, [active]: limit + PAGE }))}
                 style={{ ...box(false, 48), display: "block", width: "100%", fontSize: 14, fontWeight: 700 }}>More</button>
             )}

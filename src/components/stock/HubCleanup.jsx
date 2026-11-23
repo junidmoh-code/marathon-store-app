@@ -224,7 +224,7 @@ function LeftoverExits({ product, twin, busy, onMerge, onDeactivate }) {
 function Panel({ title, onClose, children }) {
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 60, background: "#05070C", overflowY: "auto",
-                  fontFamily: FONT, color: "#fff" }}>
+                  fontFamily: FONT, color: "#fff", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "14px 16px 60px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0 14px" }}>
           <div style={{ fontSize: 15, fontWeight: 800, color: BLUE_L, letterSpacing: ".02em" }}>{title}</div>
