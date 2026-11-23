@@ -21714,7 +21714,8 @@ function AppInner() {
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} onOpenMissingProducts={() => setRole(ROLES.MISSING_PRODUCTS)} /> : null;
   // Missing Products — its own route (22 Nov 2026). Same gate as Inventory Health.
-  else if (role === ROLES.MISSING_PRODUCTS) view = canAccessStock ? <MissingProductsScreen products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.MISSING_PRODUCTS) view = canAccessStock ? <MissingProductsScreen products={products} onExit={() => setRole(null)}
+    onOpenEnginePolicy={enginePolicyVisibleForViewer({ email: authUser?.email, permFlags: permRecord?.permFlags }) ? () => setRole(ROLES.ENGINE_POLICY) : null} /> : null;
   else if (role === ROLES.TOTAL_STOCK) view = canAccessStock ? <NetworkTotals products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.ATTENTION) view = canAccessStock ? <AttentionView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.MARKETING) view = canAccessStock ? <MarketingView products={products} onExit={() => setRole(null)} /> : null;

@@ -147,7 +147,8 @@ describe("the screen Junid asked for", () => {
     expect(host(tree, "data-view").length).toBe(0);
     const all = textOf(tree);
     for (const gone of [/To do/, /Queued & solved/, /newest uploads first/, /missing from/i, /Move by hand/, /Mark & hide/, /Carry at/, /Starts keeping/, /Never sent/, /One moment/, /Concrete-only/]) expect(all).not.toMatch(gone);
-    for (const b of buttons(tree)) expect(["← Back", "Marathon", "Concrete", "Sneakers", "Clothing", "✓Hub 1", "✓Hub 2", "Solve", ""].some((ok) => b.trim() === ok || /^(Marathon|Concrete)\d+$/.test(b))).toBe(true);
+    // …and, at the very bottom, the one small "Not listed: N" line (Junid, 23 Nov 2026).
+    for (const b of buttons(tree)) expect(["← Back", "Marathon", "Concrete", "Sneakers", "Clothing", "✓Hub 1", "✓Hub 2", "Solve", ""].some((ok) => b.trim() === ok || /^(Marathon|Concrete)\d+$/.test(b) || /^Not listed: \d+$/.test(b))).toBe(true);
   });
 
   it("the header count is the number of cards on that division's two lists", async () => {
