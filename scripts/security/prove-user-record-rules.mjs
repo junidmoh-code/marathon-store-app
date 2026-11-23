@@ -154,6 +154,7 @@ async function moneyCases(rulesText) {
   const out = {};
   const seedCredit = async () => { await seed(); await admin("PUT", "pos/storeCredits/c1", { remainingAmount: 500, status: "active" }); await admin("PUT", "pos/storeCredits/c2", { remainingAmount: 0, status: "voided" }); };
   await seedCredit(); out.tillDepletes = await as(P.staff, "PUT", "pos/storeCredits/c1/status", "depleted");
+  await seedCredit(); out.tillVoidsCreditNote = await as(P.staff, "PUT", "pos/storeCredits/c1/status", "voided");
   await seedCredit(); out.tillRevivesVoided = await as(P.staff, "PUT", "pos/storeCredits/c2/status", "active");
   await seedCredit(); out.tillSpends = await as(P.staff, "PUT", "pos/storeCredits/c1/remainingAmount", 200);
   await seedCredit(); out.tillForgesDebit = await as(P.staff, "PUT", "pos/shopifyCreditDebits/k1", { state: "done", accountId: "a", amountCents: 99999 });
@@ -181,7 +182,7 @@ if (isMain && PATCH === "money") {
     const lostOnly = [0, 1].every((i) => !(after[p][who][i] !== "-" && before[p][who][i] === "-"));
     if (!allowed || !lostOnly) { fail++; console.log(`FAIL ${who} at ${p}: ${before[p][who]} → ${after[p][who]}`); }
   }
-  const want = { tillDepletes: [true, true], tillRevivesVoided: [true, false], tillSpends: [true, true], tillForgesDebit: [true, false],
+  const want = { tillDepletes: [true, true], tillVoidsCreditNote: [true, true], tillRevivesVoided: [true, false], tillSpends: [true, true], tillForgesDebit: [true, false],
     tillReadsDebits: [true, false], tillWritesOtherPos: [true, true], staffReadsPinHashes: [false, false], ownerReadsPinHashes: [false, false] };
   for (const [k, [b, a]] of Object.entries(want)) {
     const ok = cb[k] === b && ca[k] === a;
