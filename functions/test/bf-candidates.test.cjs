@@ -294,7 +294,7 @@ test("Generate without the open connection: the card asks the photo store what l
   const m = await X.choosePhoto(db, { pid: "a", use: "mark" }, "junid", T);
   assert.ok(m.since <= T && T - m.since < 5000);
   // still being made: nothing chosen, and an older photo is never taken for the new one
-  assert.deepEqual(await X.choosePhoto(db, { pid: "a", use: "landed", since: m.since }, "junid", NOW), { ok: false, pid: "a", pending: true });
+  assert.deepEqual(await X.choosePhoto(db, { pid: "a", use: "landed", since: m.since }, "junid", NOW), { ok: false, pid: "a", pending: true, began: NOW - 1000 });
   assert.equal(await get(db, `${R}/photos/a`), null);
   // it failed: bfGenerate's own reason, and no longer pending
   await db.ref("bf_campaign_2026/photos/a").set({ gens: { g1795118789272: old }, failed: { at: T + 40000, reason: "the photo service is busy — tap Generate again" } });

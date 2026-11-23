@@ -231,13 +231,43 @@ describe("BF Candidates card", () => {
     expect(api.photoMark).toHaveBeenCalledTimes(1);
   });
 
+  it("Generate: a Retry that cannot check for the earlier photo makes no second one; a late photo never replaces a newer choice", async () => {
+    let answer, down = false;
+    const api = fakeApi([row()], {
+      generate: vi.fn(() => new Promise((res) => { answer = res; })),
+      photoLanded: vi.fn(async () => { if (down) throw new Error("offline"); return { ok: false, pending: true }; }),
+      photo: vi.fn(async (pid, use) => ({ ok: true, pid, use, photo: use === "current" ? "https://x/a.jpg" : "https://x/ai.jpg" })),
+    });
+    const r = await mount(api);
+    vi.useFakeTimers();
+    await tap(buttons(r.root, "Generate")[0]);
+    await later(180_000);
+    down = true;
+    await tap(buttons(r.root, "Retry")[0]);
+    expect(all(r)).toMatch(/Failed: could not check for the photo/);
+    expect(api.generate).toHaveBeenCalledTimes(1);
+    expect(api.photoMark).toHaveBeenCalledTimes(1);
+    // he chooses something else (here: his own upload path's stand-in, a photo job); the late answer must not undo it
+    down = false;
+    api.photoLanded.mockImplementation(async () => ({ ok: false, pending: false }));
+    api.generate.mockImplementationOnce(async () => { throw new Error("No photo — Gemini declined to make this photo."); });
+    await tap(buttons(r.root, "Retry")[0]); // a new photo job on this product: a newer turn
+    await act(async () => { answer({ ok: true, genId: "g1795455882746" }); });
+    await later(0);
+    expect(api.photo).not.toHaveBeenCalled();
+    expect(img(r)).toBe("https://x/a.jpg");
+    expect(all(r)).toMatch(/Failed: Gemini declined to make this photo/);
+  });
+
   it("Generate: the card closed while a photo was being made shows it when opened again, without making another", async () => {
-    const store = new Map([["bfCandidates.photoJobs.anon", JSON.stringify({ a: { since: 1000, name: "Tee A" } })]]);
+    const since = Date.now() - 60_000;
+    const store = new Map([["bfCandidates.photoJobs.anon", JSON.stringify({ a: { since, name: "Tee A" }, old: { since: since - 3_600_000, name: "Long over" } })]]);
     vi.stubGlobal("window", { localStorage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) } });
     const api = fakeApi([row()], { generate: vi.fn(), photoLanded: vi.fn(async () => landed) });
     const r = await mount(api);
     await flush();
-    expect(api.photoLanded).toHaveBeenCalledWith("a", 1000);
+    expect(api.photoLanded).toHaveBeenCalledWith("a", since);
+    expect(api.photoLanded).toHaveBeenCalledTimes(1); // the hour-old job is dropped, not picked up
     expect(api.generate).not.toHaveBeenCalled();
     expect(store.get("bfCandidates.photoJobs.anon")).toBe("{}");
     expect(api.list.mock.calls.length).toBeGreaterThan(1); // read again, so the row shows it

@@ -412,7 +412,8 @@ async function choosePhoto(db, data, uid, nowMs) {
     const made = Object.keys(gens).filter((g) => GEN_RE.test(g) && Number(g.slice(1)) >= since && gens[g] && /^https:\/\//.test(String(gens[g].url || ""))).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
     if (!made.length) {
       if (node.failed && Number(node.failed.at) >= since) return { ok: false, pid, failed: String(node.failed.reason || "the photo could not be made").slice(0, 200) };
-      return { ok: false, pid, pending: !!(node.generating && nowMs - Number(node.generating.at) < CLAIM_MS) };
+      const live = !!(node.generating && nowMs - Number(node.generating.at) < CLAIM_MS);
+      return { ok: false, pid, pending: live, ...(live ? { began: Number(node.generating.at) } : {}) };
     }
     genId = made[made.length - 1];
     data = { ...data, use: "generated" };

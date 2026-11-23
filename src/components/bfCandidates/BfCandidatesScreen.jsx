@@ -41,6 +41,7 @@ export const GEN_LIMIT_MS = 180_000;
 export const GEN_POLL_MS = 5_000;
 // Photos being made, kept on the device: a card closed or reloaded mid-way picks them up again.
 const JOBS = "bfCandidates.photoJobs.";
+const JOB_KEPT_MS = 15 * 60 * 1000; // past the generator's own 9-minute limit
 const jobsOf = (who) => { try { return JSON.parse(window.localStorage.getItem(JOBS + who) || "{}") || {}; } catch { return {}; } };
 const jobSet = (who, pid, job) => { try { const j = jobsOf(who); if (job) j[pid] = job; else delete j[pid]; window.localStorage.setItem(JOBS + who, JSON.stringify(j)); } catch { /* no storage */ } };
 // The last answer per tab + cut-off, kept on this device FOR THE SIGNED-IN ACCOUNT (the key carries its uid: another
@@ -321,8 +322,11 @@ export default function BfCandidatesScreen({ api, onExit }) {
   // A photo job and a sale tap never overlap on a product: a sale saved while its photo is changing would post the
   // old photo under the new one's picture. So no photo job starts while a tap is in flight, and (withBusy) no tap
   // lands on a product whose photo is being made.
-  const photoJob = async (r, label, fn) => {
+  const turn = useRef({}); // { pid: n }, moved by every photo choice
+  const photoJob = async (r, label, fn, { keepJob = false } = {}) => {
     if (inFlight.current) { say("Wait for the sale to finish saving, then choose the photo."); return; }
+    turn.current[r.pid] = (turn.current[r.pid] || 0) + 1; // a newer choice: a late photo of an older Generate never replaces it
+    if (!keepJob) jobSet(who, r.pid, null);
     setMaking((m) => ({ ...m, [r.pid]: label }));
     try { await fn(); }
     catch (e) { say(`${r.name}: ${photoError(e)}`); }
@@ -341,6 +345,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
   // open call) is left out when a photo is already being made (a Retry, or a card opened again mid-way).
   const landing = (r, since, start) => new Promise((resolve, reject) => {
     const began = Date.now();
+    const mine = turn.current[r.pid];
     let over = false, asking = false, callDone = !start, callError = null, tick = null, limit = null;
     const onSee = () => { if (!document.hidden) ask(); };
     const finish = (fn, v) => {
@@ -355,6 +360,8 @@ export default function BfCandidatesScreen({ api, onExit }) {
       asking = true;
       try {
         const l = await api.photoLanded(r.pid, since);
+        // Refused because one was already being made (begun before this tap): that photo is the one waited for.
+        if (l && l.pending && l.began > 0 && l.began < since && callError && /already being made/i.test(String(callError.message))) { since = l.began; callError = null; }
         if (l && l.ok) finish(resolve, l);
         else if (l && l.failed) finish(reject, new Error(l.failed));
         // The call is over and nothing is being made any more: its own refusal is the reason.
@@ -370,7 +377,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
       start().then(async (res) => {
         const genId = res && (res.genId || (res.result && res.result.genId));
         // After the card gave up: the photo is still shown the moment it arrives.
-        if (over) { if (genId) { try { await choose(r, genId); setFailed((f) => { const n = { ...f }; delete n[r.pid]; return n; }); jobSet(who, r.pid, null); } catch { /* Retry picks it up */ } } return; }
+        if (over) { if (genId && turn.current[r.pid] === mine && !inFlight.current) { try { await choose(r, genId); setFailed((f) => { const n = { ...f }; delete n[r.pid]; return n; }); jobSet(who, r.pid, null); } catch { /* Retry picks it up */ } } return; }
         callDone = true;
         if (!genId) { ask(); return; }
         try { const c = await choose(r, genId); finish(resolve, c); } catch (e) { finish(reject, e); }
@@ -394,7 +401,10 @@ export default function BfCandidatesScreen({ api, onExit }) {
       try {
         let fresh = true;
         if (prior) {
-          const l = await api.photoLanded(r.pid, prior).catch(() => null);
+          let l;
+          // Not known whether the photo of the try before landed: never a second (paid) one on a guess.
+          try { l = await api.photoLanded(r.pid, prior); }
+          catch (e) { if (!resume) fail(r, prior, new Error(`could not check for the photo (${errText(e)}). Tap Retry`)); return; } // (a card opened again: the job is kept for next time)
           if (l && l.ok) { patchPhoto(r.pid, l.photo, "generated"); jobSet(who, r.pid, null); return; }
           if (l && l.pending) fresh = false; // still being made: wait for that one, never a second
           else if (resume) { jobSet(who, r.pid, null); if (l && l.failed) fail(r, null, new Error(l.failed)); return; } // a card opened again never starts a photo by itself
@@ -406,11 +416,14 @@ export default function BfCandidatesScreen({ api, onExit }) {
         patchPhoto(r.pid, l.photo, "generated");
         jobSet(who, r.pid, null);
       } catch (e) { fail(r, since, e); }
-    });
+    }, { keepJob: true });
   };
   // A card opened again while a photo was being made: it is picked up (shown if it landed, waited for if not).
   useEffect(() => {
-    for (const [pid, j] of Object.entries(jobsOf(who))) if (j && j.since > 0) generate({ pid, name: j.name || pid }, j.since);
+    for (const [pid, j] of Object.entries(jobsOf(who))) {
+      if (j && j.since > 0 && Date.now() - j.since < JOB_KEPT_MS) generate({ pid, name: j.name || pid }, j.since);
+      else jobSet(who, pid, null); // long over: nothing of it is picked up any more
+    }
   }, [who]); // eslint-disable-line react-hooks/exhaustive-deps
   const replace = (r) => { replaceFor.current = r; if (fileRef.current) { fileRef.current.value = ""; fileRef.current.click(); } };
   const uploadPicked = (file) => {
