@@ -3,7 +3,7 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import TestRenderer, { act } from "react-test-renderer";
-import BfCandidatesScreen, { locsLine, readPrice, photoError, forgetKept } from "./BfCandidatesScreen";
+import BfCandidatesScreen, { locsLine, readPrice, photoError, forgetKept, alertLine } from "./BfCandidatesScreen";
 import { openSaleList } from "../../push/useForegroundPush";
 
 const row = (over = {}) => ({ ownPhoto: "https://x/a.jpg", pid: "a", name: "Tee A", tab: "clothing", qty: 40, arrivedOn: "10 Jul 2026", received: 40, sold: 0, stockPrice: 200, retailPrice: 350, locs: { "marathon-pe": 30, central: 10 }, photo: "https://x/a.jpg", sale: null, posted: null, ...over });
@@ -184,6 +184,36 @@ describe("BF Candidates card", () => {
     await type(field(r, "End date for new sales"), "2026-12-07");
     await press(buttons(r.root, "Put on sale")[0]);
     expect(api.sale).toHaveBeenCalledWith(["a"], 150, { confirmAbove: null, endDay: "2026-12-07" });
+  });
+
+  it("says what happened to the store alert apart from the sale; a failed call reads the card again (CodeRabbit #968)", async () => {
+    expect(alertLine({ "marathon-pe": { n: 1, tokens: 2, delivered: 2 }, hub2: { n: 1, tokens: 0, delivered: 0 } })).toBe(" Alert sent to 2 phones; 1 store got none (re-tag list only).");
+    expect(alertLine({ hub2: { n: 1, tokens: 0, delivered: 0 } })).toContain("No phone got the store alert (nobody is assigned to those stores)");
+    expect(alertLine({ error: "boom" })).toContain("could NOT be sent");
+    expect(alertLine({})).toContain("No store holds it");
+    const api = fakeApi([row()], { sale: vi.fn(async (pids) => ({ ok: true, done: pids, refused: [], until: "Mon 30 Nov", stores: { error: "fcm down" } })) });
+    const r = await mount(api);
+    await type(field(r, "Sale price for Tee A"), "150");
+    await press(buttons(r.root, "Put on sale")[0]);
+    expect(all(r)).toContain("1 on sale at R150 until Mon 30 Nov; queued for the groups. The store alert could NOT be sent");
+    const failing = fakeApi([row()], { end: vi.fn(async () => { throw new Error("deadline-exceeded"); }) });
+    failing.list.mockImplementation(async () => answer([row({ sale: { price: 150, until: "Mon 30 Nov" } })]));
+    const f = await mount(failing);
+    const before = failing.list.mock.calls.length;
+    await press(buttons(f.root, "Remove from sale")[0]);
+    expect(all(f)).toContain("The list was read again");
+    expect(failing.list.mock.calls.length).toBe(before + 1);
+  });
+
+  it("a refresh after a tap reloads the tab on screen NOW, not the one the tap started on (CodeRabbit #968)", async () => {
+    let finish;
+    const api = fakeApi([row({ sale: { price: 150, until: "Mon 30 Nov" } })], { end: vi.fn(() => new Promise((res) => { finish = () => res({ ok: true, done: ["a"] }); })) });
+    const r = await mount(api);
+    await act(async () => { buttons(r.root, "Remove from sale")[0].props.onClick(); });
+    await press(buttons(r.root, "Sneakers (3)")[0]);
+    await act(async () => { finish(); });
+    await flush();
+    expect(api.list.mock.calls[api.list.mock.calls.length - 1][0]).toBe("sneakers");
   });
 
   it("small pure parts", () => {

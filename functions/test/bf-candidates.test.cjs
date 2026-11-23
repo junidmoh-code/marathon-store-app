@@ -340,3 +340,62 @@ test("Edit price on products with different ends says so; after the default end 
   const ok = await X.putOnSale(later, { pids: ["a"], price: 150, endDay: "2026-12-07" }, "junid", DEC2);
   assert.equal(ok.until, "Mon 7 Dec");
 });
+
+test("a close that died half-way is finished by the job: the till's discount never outlives its sale (CodeRabbit #968)", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a", "b"], price: 150 }, "junid", NOW);
+  const sale = await get(db, `${R}/sales/a`);
+  // The instance died right after the sale was taken off its node: the record is gone, the mirror still charges.
+  await db.ref(`${R}/closing/a`).set({ at: NOW + 1000, why: "ended_by_junid", by: "junid", sale, taken: true });
+  await db.ref(`${R}/sales/a`).remove();
+  assert.deepEqual(await get(db, "products/a/bfSale"), { price: 150, start: NOW, end: END }, "the state the fix is for");
+  assert.deepEqual(await X.finishClosing(db, NOW + 60_000), [], "a marker younger than two minutes belongs to a tap still running");
+  assert.deepEqual(await X.finishClosing(db, NOW + 10 * 60_000), ["a"]);
+  assert.equal(await get(db, "products/a/bfSale"), null);
+  assert.equal((await get(db, `${R}/ended/a/${NOW}`)).why, "ended_by_junid");
+  assert.equal(await get(db, `${R}/closing`), null);
+  assert.deepEqual(await get(db, "products/b/bfSale"), { price: 150, start: NOW, end: END }, "the other sale is untouched");
+  // Died BEFORE the sale was taken off: the sale stands, only the marker goes.
+  await db.ref(`${R}/closing/b`).set({ at: NOW + 1000, why: "ended_by_junid", by: "junid", sale: await get(db, `${R}/sales/b`) });
+  assert.deepEqual(await X.finishClosing(db, NOW + 10 * 60_000), []);
+  assert.equal((await get(db, `${R}/sales/b`)).salePrice, 150);
+  assert.deepEqual(await get(db, "products/b/bfSale"), { price: 150, start: NOW, end: END });
+  assert.equal(await get(db, `${R}/closing`), null);
+});
+
+test("a normal close leaves no marker; the re-tag list names what goes BACK to the normal price for two days", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a", "b"], price: 150 }, "junid", NOW);
+  await X.closeSales(db, await X.salesFor(db, { pids: ["a"] }, NOW + 5), { uid: "junid", why: "ended_by_junid", nowMs: NOW + 5 });
+  assert.equal(await get(db, `${R}/closing`), null);
+  const back = await get(db, `${R}/back`);
+  assert.deepEqual({ at: back.a.at, name: back.a.name, was: back.a.was }, { at: NOW + 5, name: "Tee A", was: 150 });
+  const stock = { a: { "marathon-pe": 5, hub2: 4 }, b: { concrete: 6 } };
+  const list = core.storeList(await get(db, `${R}/sales`), stock, { "marathon-pe": "Marathon PE" }, NOW + 10, { back });
+  const pe = list.find((x) => x.loc === "marathon-pe");
+  assert.deepEqual([pe.items.length, pe.back.map((x) => [x.pid, x.was, x.qty])], [0, [["a", 150, 5]]]);
+  assert.deepEqual(list.find((x) => x.loc === "concrete").back, []);
+  // On sale again: it is on the sale list, never on both.
+  await X.putOnSale(db, { pids: ["a"], price: 140 }, "junid", NOW + 20);
+  const again = core.storeList(await get(db, `${R}/sales`), stock, {}, NOW + 30, { back });
+  assert.deepEqual([again.find((x) => x.loc === "hub2").items.map((x) => x.price), again.find((x) => x.loc === "hub2").back], [[140], []]);
+  // Forgotten after two days.
+  await X.finishClosing(db, NOW + 5 + core.BACK_MS + 1);
+  assert.equal(await get(db, `${R}/back`), null);
+});
+
+test("the till's mirror is made again when the sale changed while it was being written (CodeRabbit #968)", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a"], price: 150 }, "junid", NOW);
+  // A price change lands between this sync's read of the sale and its write of the mirror.
+  const real = db.ref.bind(db);
+  let raced = false;
+  const racing = { ...db, ref: (p) => {
+    const r = real(p);
+    if (p !== "products/a/bfSale" || raced) return r;
+    return { ...r, set: async (v) => { raced = true; await real(`${R}/sales/a/salePrice`).set(120); return r.set(v); } };
+  } };
+  await X.syncMirror(racing, "a");
+  assert.equal(raced, true);
+  assert.equal((await get(db, "products/a/bfSale")).price, 120, "the stale R150 was replaced by the sale as it is");
+});

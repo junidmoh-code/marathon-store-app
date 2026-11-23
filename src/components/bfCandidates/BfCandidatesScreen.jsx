@@ -47,6 +47,20 @@ function keep(key, v) {
 }
 /** For tests: forget every kept answer. */
 export function forgetKept() { kept.clear(); try { Object.keys(window.localStorage).filter((k) => k.startsWith(KEEP)).forEach((k) => window.localStorage.removeItem(k)); } catch { /* none */ } }
+/**
+ * What happened to the store alert, said apart from the sale itself (the sale is saved either way). stores: the
+ * server's { loc: { n, tokens, delivered } | { error } } or { error }. Pure.
+ */
+export function alertLine(stores) {
+  if (!stores || typeof stores !== "object") return "";
+  if (typeof stores.error === "string") return " The store alert could NOT be sent: tell the stores yourself (they still see it on the re-tag list).";
+  const all = Object.values(stores);
+  if (!all.length) return " No store holds it, so no alert was needed.";
+  const got = all.reduce((t, x) => t + (Number(x && x.delivered) || 0), 0), failed = all.filter((x) => x && x.error).length;
+  const silent = all.filter((x) => x && !x.error && !(Number(x.delivered) > 0)).length;
+  if (!got) return ` No phone got the store alert (${failed ? "it failed" : "nobody is assigned to those stores"}): staff see it on the re-tag list.`;
+  return ` Alert sent to ${got} phone${got === 1 ? "" : "s"}${silent + failed ? `; ${silent + failed} store${silent + failed === 1 ? "" : "s"} got none (re-tag list only)` : ""}.`;
+}
 const errText = (e) => String((e && e.message) || e || "Something went wrong").replace(/^.*?:\s(?=[A-Z])/, "");
 
 /** "Marathon PE 4 · Hub 2 6" from { loc: qty } (biggest first). Pure. */
@@ -191,16 +205,27 @@ export default function BfCandidatesScreen({ api, onExit }) {
   const names = (view && view.locNames) || {};
   const say = (t) => { setToast(t); setTimeout(() => setToast((cur) => (cur === t ? null : cur)), 6000); };
   const inFlight = useRef(false);
+  // The tab and cut-off on screen NOW (a refresh after a tap never reloads the tab the tap started on).
+  const shown = useRef({ tab, cutoff });
+  shown.current = { tab, cutoff };
+  const refresh = () => load(shown.current.tab, shown.current.cutoff, { quiet: true });
   const withBusy = async (pids, label, fn) => {
     if (inFlight.current) return null; // one tap at a time: a second tap never lands on a half-finished first
+    if (pids.some((p) => making[p])) { say("A photo is still being made for that product. Wait for it, then try again."); return null; }
     inFlight.current = true;
     setBusyPids(new Set(pids)); setWorking(label);
     try { return await fn(); }
-    catch (e) { say(errText(e)); return null; }
+    catch (e) {
+      // A call that failed may still have saved (a timeout tells nothing): the card is read again so it shows what IS,
+      // and a second tap never repeats work that was done.
+      say(`${errText(e)} The list was read again: check what is on sale before trying again.`);
+      refresh();
+      return null;
+    }
     finally { inFlight.current = false; setBusyPids(new Set()); setWorking(null); }
   };
   // A tap changed what is on sale: the answers kept for the other tabs are no longer true.
-  const done = () => { kept.clear(); setTicks(new Set()); setSelecting(false); setDialog(null); load(tab, cutoff, { quiet: true }); };
+  const done = () => { kept.clear(); setTicks(new Set()); setSelecting(false); setDialog(null); refresh(); };
 
   // ── Put on sale: ONE price; the warning (price ≥ stock price) comes before anything is saved ──
   const saveSale = async (pids, priceNum, confirmAbove, after) => {
@@ -217,20 +242,21 @@ export default function BfCandidatesScreen({ api, onExit }) {
     // Nothing saved (every product refused): the typed price stays in its box.
     if (!ok.length) { say(`Nothing was put on sale: ${refused.length ? refused[0].refusal : "try again"}.`); done(); return; }
     if (after) after();
-    say(`${ok.length} on sale at ${price(priceNum)}${until ? ` until ${until}` : ""}. Stores alerted; queued for the groups.${refused.length ? ` ${refused.length} not saved: ${refused[0].refusal}.` : ""}`);
+    say(`${ok.length} on sale at ${price(priceNum)}${until ? ` until ${until}` : ""}; queued for the groups.${alertLine((r[0] || {}).stores)}${refused.length ? ` ${refused.length} not saved: ${refused[0].refusal}.` : ""}`);
     done();
   };
   const doExtend = async (pids, endDay) => {
     const r = await withBusy(pids || [], "Extending…", async () => [pids ? await api.extend(pids, endDay) : await api.extendAll(endDay)]);
     if (!r) return;
     const n = r.reduce((t, o) => t + (o.done || []).length, 0), late = r.reduce((t, o) => t + (o.notLater || 0), 0);
-    say(`${n} extended until ${(r[0] || {}).until || endDay}.${late ? ` ${late} already end${late === 1 ? "s" : ""} on or after that day: not changed.` : ""}`);
+    say(`${n} extended until ${(r[0] || {}).until || endDay}.${n ? alertLine((r[0] || {}).stores) : ""}${late ? ` ${late} already end${late === 1 ? "s" : ""} on or after that day: not changed.` : ""}`);
     done();
   };
   const doEnd = async (pids) => {
     const r = await withBusy(pids, "Ending the sale…", async () => [await api.end(pids)]);
     if (!r) return;
-    say(`${r.reduce((t, o) => t + (o.done || []).length, 0)} removed from the sale: back to normal prices. Stores alerted.`);
+    const n = r.reduce((t, o) => t + (o.done || []).length, 0);
+    say(`${n} removed from the sale: back to normal prices.${n ? alertLine((r[0] || {}).stores) : ""}`);
     done();
   };
   const doRemove = async (pids) => {
@@ -251,17 +277,21 @@ export default function BfCandidatesScreen({ api, onExit }) {
     try {
       await api.restore([pid]);
       setDialog((d) => (d && d.type === "removed" ? { ...d, list: (d.list || []).filter((x) => x.pid !== pid) } : d));
-      load(tab, cutoff, { quiet: true });
+      refresh();
     } catch (e) { say(errText(e)); }
   };
 
   // ── Photos: the photo shown on the row is the one that posts ──
   const patchPhoto = (pid, photo, use) => setRows((cur) => cur.map((x) => (x.pid === pid ? { ...x, photo: photo || x.ownPhoto, photoChoice: use === "generated" ? { use } : null } : x)));
+  // A photo job and a sale tap never overlap on a product: a sale saved while its photo is changing would post the
+  // old photo under the new one's picture. So no photo job starts while a tap is in flight, and (withBusy) no tap
+  // lands on a product whose photo is being made.
   const photoJob = async (r, label, fn) => {
+    if (inFlight.current) { say("Wait for the sale to finish saving, then choose the photo."); return; }
     setMaking((m) => ({ ...m, [r.pid]: label }));
     try { await fn(); }
     catch (e) { say(`${r.name}: ${photoError(e)}`); }
-    setMaking((m) => { const n = { ...m }; delete n[r.pid]; return n; });
+    finally { setMaking((m) => { const n = { ...m }; delete n[r.pid]; return n; }); }
   };
   // A photo that was made (and paid for) is never lost to a dropped connection: choosing it is tried twice, and if
   // that still fails the photo is kept on the Black Friday card and the message says so.

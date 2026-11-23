@@ -33,6 +33,7 @@ const DAY_MS = 86400_000;
 const TZ = "Africa/Johannesburg";
 const PAGE = 200;
 const MAX_PIDS = 500; // one tap = one call: the warning is decided for the whole selection before anything is saved
+const BACK_MS = 2 * 86400_000; // an ended sale stays on the staff's "back to normal price" list for two days
 const PID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 
 // ── time (SAST has no daylight saving: +02:00 is exact) ──────────────────────
@@ -212,20 +213,27 @@ function alertBurst(type, names, sale) {
 /** Locations holding a product now (qty > 0), from { loc: qty }. Stock in transit is on no shelf. */
 const holders = (locs) => Object.entries(locs || {}).filter(([loc, q]) => Number(q) > 0 && loc !== "in_transit").map(([loc]) => loc);
 /**
- * The re-tag list, per store: every product on sale that the store holds.
- * sales: sales node; stock: { pid: { loc: qty } }; names: { loc: display name }.
- * → [{ loc, name, items: [{ pid, name, price, until, qty, photo }] }] (stores by name, items by name)
+ * The re-tag list, per store: every product on sale that the store holds, and (back) every product whose sale ended
+ * in the last two days that it holds — the tags to put BACK to the normal price (what the END alert opens).
+ * sales: sales node; stock: { pid: { loc: qty } }; names: { loc: display name }; back: { pid: { at, name, was, photo } }.
+ * → [{ loc, name, items: [{ pid, name, price, until, qty, photo }], back: [{ pid, name, was, qty, photo, endedAt }] }]
  */
-function storeList(sales, stock, names = {}, nowMs) {
+function storeList(sales, stock, names = {}, nowMs, { back = {} } = {}) {
   const by = {};
+  const at = (loc) => (by[loc] ||= { items: [], back: [] });
   for (const [pid, s] of Object.entries(sales || {})) {
     if (!saleActive(s, nowMs)) continue;
     for (const loc of holders(stock && stock[pid])) {
-      (by[loc] ||= []).push({ pid, name: s.name || pid, price: Number(s.salePrice), until: endLabel(s.end), qty: Number(stock[pid][loc]) || 0, photo: s.photo || null });
+      at(loc).items.push({ pid, name: s.name || pid, price: Number(s.salePrice), until: endLabel(s.end), qty: Number(stock[pid][loc]) || 0, photo: s.photo || null });
     }
   }
-  return Object.entries(by).map(([loc, items]) => ({ loc, name: names[loc] || loc, items: items.sort((a, b) => a.name.localeCompare(b.name)) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const [pid, b] of Object.entries(back || {})) {
+    if (!b || saleActive(sales && sales[pid], nowMs)) continue;
+    for (const loc of holders(stock && stock[pid])) at(loc).back.push({ pid, name: b.name || pid, was: Number(b.was) || null, qty: Number(stock[pid][loc]) || 0, photo: b.photo || null, endedAt: Number(b.at) || null });
+  }
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  return Object.entries(by).map(([loc, v]) => ({ loc, name: names[loc] || loc, items: v.items.sort(byName), back: v.back.sort(byName) }))
+    .sort(byName);
 }
 
 // ── the WhatsApp caption, as it will post (the poster builds the same words) ─
@@ -237,7 +245,7 @@ function salePhotoCaption(sizes, at, endMs) {
 }
 
 module.exports = {
-  ROOT, CUTOFFS, CUTOFF_LABEL, DEFAULT_CUTOFF, SOLD_SHARE, DEFAULT_END_DAY, TABS, VIEWS, DAY_MS, PAGE, MAX_PIDS, PID_RE, AT,
+  ROOT, CUTOFFS, CUTOFF_LABEL, DEFAULT_CUTOFF, SOLD_SHARE, DEFAULT_END_DAY, TABS, VIEWS, DAY_MS, PAGE, MAX_PIDS, PID_RE, BACK_MS, AT,
   sastDay, endOfDayMs, endLabel, priceLabel, cutoffOf, cutoffMs, dayLabel, defaultEnd, tabOf, kindOfCat, FOOTWEAR_KEYS, isCandidate, saleVersion, saleActive, photoOf,
   viewRow, viewList, plainNumber, parsePrice, aboveStock, saleEnd, saleRecord, tillMirror,
   alertText, alertBurst, holders, storeList, saleText, salePhotoCaption,

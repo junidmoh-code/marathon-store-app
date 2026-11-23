@@ -156,10 +156,21 @@ async function putOnSale(db, data, uid, nowMs) {
   return { ok: true, done: ok.map((x) => x.pid), refused, price, end, until: core.endLabel(end), ...(firstEnd !== end ? { firstEnd, untilFrom: core.endLabel(firstEnd) } : {}), stores };
 }
 
-/** The till's mirror is always made from the sale as it IS (never from a value read earlier): gone when there is no sale. */
+/**
+ * The till's mirror is always made from the sale as it IS: gone when there is no sale. The sale is read again AFTER
+ * the mirror is written — if Junid changed the price (or ended the sale) in between, the mirror written here was
+ * stale, and it is made again from the newer sale. A mirror never outlives the sale it was read from.
+ */
+const mirrorOf = (s) => (s && Number(s.salePrice) > 0 && Number(s.end) > 0 ? core.tillMirror(s) : null);
 async function syncMirror(db, pid) {
-  const s = await val(db, `${R}/sales/${pid}`);
-  await db.ref(`products/${pid}/bfSale`).set(s && Number(s.salePrice) > 0 && Number(s.end) > 0 ? core.tillMirror(s) : null);
+  let s = await val(db, `${R}/sales/${pid}`);
+  for (let i = 0; i < 5; i += 1) {
+    await db.ref(`products/${pid}/bfSale`).set(mirrorOf(s));
+    const now = await val(db, `${R}/sales/${pid}`);
+    if (JSON.stringify(mirrorOf(now)) === JSON.stringify(mirrorOf(s))) return;
+    s = now;
+  }
+  throw new Error(`the till's sale price for ${pid} kept changing; open the card and check it`);
 }
 
 /** The sales a tap names: its pids, or every active sale (all: true). → [[pid, sale]] */
@@ -197,12 +208,18 @@ async function extend(db, data, uid, nowMs) {
   return { ok: true, done, end, until: core.endLabel(end), notLater: named.length - list.length, stores };
 }
 
-/** Closes sales: the till mirror goes, the record moves to ended/{pid}/{setAt}. The base prices were never changed. */
+/**
+ * Closes sales: the till mirror goes, the record moves to ended/{pid}/{setAt}. The base prices were never changed.
+ * RECOVERABLE: closing/{pid} is written BEFORE the sale is taken off its node and removed only when the record is
+ * kept and the mirror is gone. A close that died half-way (the sale deleted, the till still charging it) is finished
+ * by the 10-minute job from that marker (finishClosing) — the till never keeps a discount whose sale is gone.
+ */
 async function closeSales(db, list, { uid = null, why, nowMs }) {
   const done = [], entries = [];
   for (const [pid, seen] of list) {
     // One transaction per sale: only the sale that was read is closed. A sale Junid set again (or extended) in the
     // meantime is left alone — the expiry job never wipes a sale that is running.
+    await db.ref(`${R}/closing/${pid}`).set({ at: nowMs, why, by: uid, sale: seen || null });
     let closed = null;
     const t = await db.ref(`${R}/sales/${pid}`).transaction((cur) => {
       closed = null;
@@ -212,9 +229,10 @@ async function closeSales(db, list, { uid = null, why, nowMs }) {
       closed = cur;
       return null;
     });
-    if (!t.committed || !closed) continue;
-    await db.ref(`${R}/ended/${pid}/${Number(closed.setAt) || nowMs}`).set({ ...closed, endedAt: nowMs, endedBy: uid, why });
-    await syncMirror(db, pid); // a sale Junid set again in this instant keeps its mirror
+    if (!t.committed || !closed) { await db.ref(`${R}/closing/${pid}`).remove(); continue; } // nothing was closed: nothing to finish
+    // The record first travels in the marker, so the job can keep it even if this instance dies on the next line.
+    await db.ref(`${R}/closing/${pid}`).set({ at: nowMs, why, by: uid, sale: closed, taken: true });
+    await finishClose(db, pid, closed, { uid, why, nowMs });
     done.push(pid);
     entries.push({ pid, name: closed.name, sale: closed });
   }
@@ -222,6 +240,45 @@ async function closeSales(db, list, { uid = null, why, nowMs }) {
   await db.ref(`${R}/log`).push({ at: nowMs, by: uid, action: why, pids: done });
   const stores = await alertStores(db, "end", entries, nowMs);
   return { done, stores };
+}
+/** The second half of a close: the record kept under ended/, the staff's "back to normal" list, the mirror made again, the marker gone. */
+async function finishClose(db, pid, closed, { uid = null, why, nowMs }) {
+  await db.ref().update({
+    [`${R}/ended/${pid}/${Number(closed.setAt) || nowMs}`]: { ...closed, endedAt: nowMs, endedBy: uid, why },
+    // What the END alert opens: the staff list names what to tag back for two days (core.BACK_MS).
+    [`${R}/back/${pid}`]: { at: nowMs, name: String(closed.name || pid).slice(0, 200), was: Number(closed.salePrice) || null, photo: closed.photo || null },
+  });
+  await syncMirror(db, pid); // a sale Junid set again in this instant keeps its mirror
+  await db.ref(`${R}/closing/${pid}`).remove();
+}
+/**
+ * The 10-minute job's repair: a close that started and never finished. Markers younger than two minutes belong to a
+ * tap still running. → pids repaired
+ */
+async function finishClosing(db, nowMs) {
+  const marks = (await val(db, `${R}/closing`)) || {};
+  const fixed = [], entries = [];
+  for (const [pid, m] of Object.entries(marks)) {
+    if (!core.PID_RE.test(pid) || !m || !(nowMs - Number(m.at) > 120_000)) continue;
+    const cur = await val(db, `${R}/sales/${pid}`);
+    const standing = cur && m.sale && Number(cur.setAt) === Number(m.sale.setAt);
+    if (!m.sale || (standing && m.taken !== true)) {
+      // Died before the sale was taken off its node (it still stands), or nothing is known of the sale that was
+      // being closed: the mirror is made again from what IS (no sale = no mirror) and only the marker goes.
+      await syncMirror(db, pid);
+      await db.ref(`${R}/closing/${pid}`).remove();
+      continue;
+    }
+    await finishClose(db, pid, m.sale, { uid: m.by || null, why: m.why || "ended", nowMs: Number(m.at) || nowMs });
+    fixed.push(pid);
+    entries.push({ pid, name: m.sale.name, sale: m.sale });
+  }
+  if (fixed.length) { await db.ref(`${R}/log`).push({ at: nowMs, action: "close_finished", pids: fixed }); await alertStores(db, "end", entries, nowMs); }
+  // The staff's "back to normal" list forgets a product after two days.
+  const back = (await val(db, `${R}/back`)) || {};
+  const old = Object.fromEntries(Object.entries(back).filter(([, b]) => !b || !(nowMs - Number(b.at) < core.BACK_MS)).map(([pid]) => [`${R}/back/${pid}`, null]));
+  if (Object.keys(old).length) await db.ref().update(old);
+  return fixed;
 }
 
 /** "Not for sale": off the candidates list for good (the nightly finder skips it). A sale on it is closed first. */
@@ -335,10 +392,12 @@ const bfSaleStoreList = onCall(callableOpts, async (request) => {
   const nowMs = Date.now();
   const sales = Object.fromEntries(Object.entries((await val(db, `${R}/sales`)) || {}).filter(([, s]) => core.saleActive(s, nowMs)));
   const locs = await locations(db);
-  const pids = Object.keys(sales);
+  // Ended in the last two days and not on sale again: the tags that must go BACK to the normal price.
+  const back = Object.fromEntries(Object.entries((await val(db, `${R}/back`)) || {}).filter(([pid, b]) => b && core.PID_RE.test(pid) && !sales[pid] && nowMs - Number(b.at) < core.BACK_MS));
+  const pids = [...new Set([...Object.keys(sales), ...Object.keys(back)])];
   const held = await inBatches(pids, 20, (p) => stockOf(db, p, locs));
   const stock = Object.fromEntries(pids.map((p, i) => [p, held[i]]));
-  return { now: nowMs, stores: core.storeList(sales, stock, Object.fromEntries(locs.map((l) => [l.id, l.name])), nowMs), onSale: pids.length };
+  return { now: nowMs, stores: core.storeList(sales, stock, Object.fromEntries(locs.map((l) => [l.id, l.name])), nowMs, { back }), onSale: Object.keys(sales).length };
 });
 
 // The till stops charging a sale at its end time by itself (it checks the dates); this job tidies the record
@@ -350,10 +409,14 @@ const bfSaleExpire = onSchedule(
     const nowMs = Date.now();
     const sales = (await val(db, `${R}/sales`)) || {};
     const over = Object.entries(sales).filter(([, s]) => !s || !(Number(s.end) > nowMs));
-    if (!over.length) return;
-    const r = await closeSales(db, over, { why: "expired", nowMs });
-    console.log(`bfSaleExpire: closed ${r.done.length} sale(s) past their end`);
+    if (over.length) {
+      const r = await closeSales(db, over, { why: "expired", nowMs });
+      console.log(`bfSaleExpire: closed ${r.done.length} sale(s) past their end`);
+    }
+    // A close that died half-way is finished here (the till never keeps a discount whose sale is gone).
+    const fixed = await finishClosing(db, nowMs);
+    if (fixed.length) console.log(`bfSaleExpire: finished ${fixed.length} half-closed sale(s): ${fixed.join(", ")}`);
   },
 );
 
-module.exports = { bfSaleList, bfSaleSet, bfSaleStoreList, bfSaleExpire, _internals: { choosePhoto, putOnSale, extend, closeSales, remove, restore, salesFor, stockOf, locations } };
+module.exports = { bfSaleList, bfSaleSet, bfSaleStoreList, bfSaleExpire, _internals: { choosePhoto, putOnSale, extend, closeSales, finishClosing, syncMirror, remove, restore, salesFor, stockOf, locations } };
