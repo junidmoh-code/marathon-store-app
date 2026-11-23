@@ -331,6 +331,10 @@ exports.sendWhatsApp = onCall(
     if (!request.auth || provider === "anonymous") {
       throw new HttpsError("unauthenticated", "Sign-in required to send WhatsApp messages.");
     }
+    // Nov 2026 audit: sign-up is open, so a signed-in stranger passed the check
+    // above and could send any approved template, with free text, to any number
+    // from the business account. Staff only: a live /users record.
+    await require("./lib/require-staff-record.cjs").requireStaffRecord(admin.database(), request.auth, HttpsError);
     return enqueueWhatsApp(request.data);
   }
 );

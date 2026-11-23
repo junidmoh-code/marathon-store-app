@@ -27,7 +27,7 @@ const API_KEY = "AIzaSyAA3r3arlTQvouidDWY0OE-Y2t5ZUF8kCo"; // public web key
 const LIVE = { name: "marathon-club-default-rtdb", url: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" };
 const TEST = { name: "marathon-club-rulestest", url: "https://marathon-club-rulestest.europe-west1.firebasedatabase.app" };
 const IDT = "https://identitytoolkit.googleapis.com/v1";
-const OWNER_EMAILS = ["gunidmoh@gmail.com"];
+const OWNER_EMAILS = ["gunidmoh@gmail.com", "jafermohammed340@gmail.com"];
 const [, , patchName, ...rest] = process.argv;
 const DRY = rest.includes("--dry-run");
 const PATCHES = {
@@ -81,7 +81,9 @@ async function findUids() {
   }
   const look = await fetch(`${IDT}/projects/marathon-club/accounts:lookup`, { method: "POST", headers: { ...H, "Content-Type": "application/json" },
     body: JSON.stringify({ email: OWNER_EMAILS }) }).then((r) => r.json());
-  out.owner = look.users?.[0]?.localId;
+  const byEmail = Object.fromEntries((look.users || []).map((u) => [u.email, u.localId]));
+  out.owner = byEmail[OWNER_EMAILS[0]];
+  out.owner2 = byEmail[OWNER_EMAILS[1]];
   out.poller = "card-recon-email-poller";
   CASHIER_SHOP = await ownerGet(`${LIVE.url}/users/${out.cashier}/destShop.json`);
   return out;
@@ -120,6 +122,7 @@ const HEALTH = [
   ["cashier", "products", true], ["cashier", "stock", true], ["cashier", "orders", true], ["cashier", "settings", true],
   ["cashier", "locations", true], ["cashier", "config", true], ["cashier", "laybys", true], ["cashier", "pos_meta", true],
   ["manager", "products", true], ["manager", "users", true],
+  ["owner2", "eft_pool", true], ["owner2", "users", true],
   ["owner", "eft_pool", true], ["owner", "card_batches", true], ["owner", "online_orders", true], ["owner", "users", true],
   ["poller", "card_batch_intake", true],
   ["anon", "settings", true], ["anon", "orders", true],
@@ -163,6 +166,14 @@ if (next === live) { console.log("patch makes no change — live rules already c
 JSON.parse(next.replace(/^\s*\/\/.*$/gm, "")); // must still be one JSON document (comment lines aside)
 
 const uids = await findUids();
+// PREFLIGHT (architect review): every identity the new rules must keep working
+// for has to have a LIVE /users record — the test-db proof seeds them, so it
+// cannot tell. Fail before any write if one is missing.
+for (const [who, uid] of Object.entries(uids)) {
+  const rec = uid ? await ownerGet(`${LIVE.url}/users/${encodeURIComponent(uid)}.json?shallow=true`) : null;
+  if (!rec) { console.error(`✗ PREFLIGHT: ${who} has no live /users record — not publishing`); process.exit(1); }
+}
+console.log(`preflight: live /users records present for ${Object.keys(uids).join(", ")}`);
 const p = await personas(uids);
 let ok = false;
 try {
@@ -192,9 +203,12 @@ try {
   if (DRY) { console.log("--dry-run: stopping before publishing to LIVE"); ok = true; }
   else {
     // 5. publish + re-check, auto-restore
-    await putRules(LIVE, next);
-    console.log(`health check LIVE ${LIVE.name} AFTER`);
-    const after = await healthCheck(LIVE, p, { strangerMustBeDenied: true });
+    let after = false;
+    try {
+      await putRules(LIVE, next);
+      console.log(`health check LIVE ${LIVE.name} AFTER`);
+      after = await healthCheck(LIVE, p, { strangerMustBeDenied: true });
+    } catch (e) { console.log(`✗ publish/read-back failed: ${e.message}`); after = false; }
     if (!after) {
       console.log("✗ AFTER check failed — RESTORING BACKUP");
       await putRules(LIVE, live);

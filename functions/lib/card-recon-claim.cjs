@@ -76,6 +76,7 @@ const isGone = (err) => err && err.code === "auth/user-not-found";
 // reuses this exact converge-and-preserve logic under its own name, so the two
 // never overwrite each other's claim or any other claim on the account.
 async function reconcileClaim({ auth, uid, granted, dryRun = false, claim = CLAIM }) {
+  if (typeof claim !== "string" || !claim) throw new Error("reconcileClaim: claim name required");
   const CLAIM_NAME = claim;
   if (typeof uid !== "string" || !uid) throw new Error("reconcileClaim: uid required");
   let user;

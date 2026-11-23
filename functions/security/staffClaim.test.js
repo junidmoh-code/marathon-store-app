@@ -37,3 +37,23 @@ test("default claim is still card_recon (existing callers unchanged)", async () 
   await reconcileClaim({ auth, uid: "u1", granted: true });
   assert.deepEqual(auth.state.claims, { staff: true, card_recon: true });
 });
+
+const { syncStaffClaimFor } = require("./staffClaim.js");
+const fakeDb = (exists) => ({ ref: () => ({ once: async () => ({ exists: () => exists }) }) });
+
+test("syncStaffClaimFor: a claim lost to a concurrent writer is written again", async () => {
+  const auth = fakeAuth({ card_recon: true });
+  let sets = 0;
+  const realSet = auth.setCustomUserClaims;
+  // the first write is clobbered by a "concurrent" card-recon write
+  auth.setCustomUserClaims = async (uid, c) => { sets++; await realSet(uid, c); if (sets === 1) auth.state.claims = { card_recon: true }; };
+  await syncStaffClaimFor({ auth, db: fakeDb(true), uid: "u1" });
+  assert.deepEqual(auth.state.claims, { card_recon: true, staff: true });
+  assert.equal(sets, 2);
+});
+
+test("syncStaffClaimFor: record gone → claim removed, other claims kept", async () => {
+  const auth = fakeAuth({ card_recon: true, staff: true });
+  await syncStaffClaimFor({ auth, db: fakeDb(false), uid: "u1" });
+  assert.deepEqual(auth.state.claims, { card_recon: true });
+});

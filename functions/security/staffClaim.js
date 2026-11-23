@@ -27,9 +27,24 @@ if (!admin.apps.length) {
 
 const STAFF_CLAIM = "staff";
 
+// Reconcile, then VERIFY and correct (the card-recon trigger's pattern): the
+// card-recon claim trigger can run at the same moment on the same account, and
+// two get→set sequences can interleave so one overwrites the other's claim.
+// Each trigger re-checks its OWN claim against the database until it holds, so
+// both converge.
+const MAX_PASSES = 5;
 async function syncStaffClaimFor({ auth, db, uid }) {
-  const exists = (await db.ref(`users/${uid}`).once("value")).exists();
-  return reconcileClaim({ auth, uid, granted: exists, claim: STAFF_CLAIM });
+  let res;
+  for (let i = 0; i < MAX_PASSES; i++) {
+    const exists = (await db.ref(`users/${uid}`).once("value")).exists();
+    res = await reconcileClaim({ auth, uid, granted: exists, claim: STAFF_CLAIM });
+    if (res.missing) return res;
+    const user = await auth.getUser(uid);
+    const has = (user.customClaims || {})[STAFF_CLAIM] === true;
+    const stillExists = (await db.ref(`users/${uid}`).once("value")).exists();
+    if (has === stillExists) return res;
+  }
+  throw new Error(`syncStaffClaim: ${uid}'s staff claim did not settle in ${MAX_PASSES} passes`);
 }
 
 exports.STAFF_CLAIM = STAFF_CLAIM;
