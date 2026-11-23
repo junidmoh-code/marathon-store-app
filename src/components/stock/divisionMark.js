@@ -151,10 +151,18 @@ export async function clearDivision(product) {
   const pid = product?.id;
   if (!pid) return { ok: false, msg: "No product — nothing changed." };
   const prior = marksOf(product);
-  if (!prior.concrete && !prior.marathon) return { ok: true, prior };
+  if (!prior.concrete && !prior.marathon) return { ok: true, prior, already: true, msg: "Already unmarked" };
   const r = await applyMarks(pid, { concrete: false, marathon: false }, prior);
   if (!r.ok) return { ok: false, msg: `Not unmarked — ${r.message}` };
   return { ok: true, prior, ...(r.warning ? { msg: `Unmarked — but ${r.warning}` } : {}) };
+}
+
+/** Undo clearDivision: put back exactly `prior`, in one write. */
+export async function restoreMarks(pid, prior) {
+  if (!pid || !prior) return { ok: false, msg: "Nothing to undo." };
+  const r = await applyMarks(pid, { concrete: !!prior.concrete, marathon: !!prior.marathon }, { concrete: false, marathon: false });
+  if (!r.ok) return { ok: false, msg: `Not undone — ${r.message}` };
+  return { ok: true, ...(r.warning ? { msg: `Mark back — but ${r.warning}` } : {}) };
 }
 
 /** Undo markDivision: put back exactly the marks that were there before, in one write. */

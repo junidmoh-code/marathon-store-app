@@ -55,7 +55,7 @@ import { useSneakerRequest } from "./MissingFootwear";
 import { shopDestinations, shopsAreExclusive, destinationProblem } from "./divisionDestinations";
 import { otherMarathonHub, marathonHubSeated, marathonSolveRefusal, SEATS_PATH, DIVISION_SHOPS } from "./concreteDivision";
 import { undoSneakerRequest, shopOwnersNow } from "./missingActions";
-import { withDivisionMarks, listedForDivision, markDivision, undoDivision, clearDivision, liveMarksOf, CONCRETE_INDEX_PATH, MARATHON_INDEX_PATH } from "./divisionMark";
+import { withDivisionMarks, listedForDivision, markDivision, undoDivision, clearDivision, restoreMarks, liveMarksOf, CONCRETE_INDEX_PATH, MARATHON_INDEX_PATH } from "./divisionMark";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
 import { unhideUpdate } from "./hiddenProductsCore";
@@ -319,7 +319,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     const locations = [...storeIds(network, { section: sec }), ...hubIds(network, { section: sec })];
     return [sec, { locations, hubs: hubIds(network, { section: sec }), stranded: stockReady ? strandedAtCentral({ allStock, locations, central }) : [] }];
   })), [divisions, network, allStock, stockReady, central]);
-  const openPidsBy = useMemo(() => Object.fromEntries(divisions.map((sec) => [sec, openRequestPids(requests, strandedBy[sec].locations)])), [divisions, requests, strandedBy]);
+  // (keyed on the location ids, not on strandedBy: a stock tick must not rescan every request)
+  const locKey = divisions.map((sec) => `${sec}=${[...storeIds(network, { section: sec }), ...hubIds(network, { section: sec })].join(",")}`).join(";");
+  const openPidsBy = useMemo(() => Object.fromEntries(locKey.split(";").filter(Boolean).map((part) => { const [sec, locs] = part.split("="); return [Number(sec), openRequestPids(requests, locs.split(","))]; })), [locKey, requests]);
   const notListedOf = (sec) => {
     if (sec == null || !strandedBy[sec] || !KINDS.every(([k]) => sliced.complete[bucketId(sec, k)])) return null;
     const listedPids = new Set();
@@ -395,6 +397,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const notListed = notListedAll && terms.length ? notListedAll.filter((r) => matchesSearch(terms, r, byId.get(r.pid))) : notListedAll;
   const [nlLimit, setNlLimit] = useState(200);
   const [nlBusy, setNlBusy] = useState({});
+  const nlInFlight = useRef(new Set());
   useEffect(() => {
     // A list that is not drawn has nothing "shown": when it comes back, its
     // cards are simply there — none of them enters or leaves.
@@ -580,21 +583,29 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // Unhide (the hidden tab's update) and Unmark (the division button's marks).
   // A policy or a seat is Junid's, on the Engine Policy card.
   act.current.notListed = async (action, row) => {
-    if (nlBusy[row.pid]) return;
+    if (nlInFlight.current.has(row.pid)) return;
     if (action === "policy") { onOpenEnginePolicy?.(); return; }
     const product = byId.get(row.pid);
+    nlInFlight.current.add(row.pid);
     setNlBusy((b) => ({ ...b, [row.pid]: true }));
     let res;
     try {
       if (action === "unhide") { await update(ref(database), unhideUpdate([row.pid])); res = { ok: true, msg: "Unhidden" }; }
-      else if (action === "unmark") { res = await clearDivision(product); if (res.ok && !res.msg) res.msg = "Unmarked"; }
+      else if (action === "unmark") {
+        res = await clearDivision(product);
+        if (res.ok && !res.already) {
+          const prior = res.prior;
+          res = { ...res, msg: res.msg || "Unmarked", undo: async function undoClear() { const r = await restoreMarks(row.pid, prior); say(r.ok ? { ok: !r.msg, text: r.msg || "Mark back" } : { ok: false, text: r.msg, undo: undoClear }); } };
+        }
+      }
       else res = { ok: false, msg: "Nothing to do here." };
     } catch (e) { res = { ok: false, msg: `Nothing changed — retry. (${e?.message || "error"})` }; }
+    nlInFlight.current.delete(row.pid);
     setNlBusy((b) => { const n = { ...b }; delete n[row.pid]; return n; });
-    say({ ok: !!res.ok, text: res.msg || (res.ok ? "Done" : "Nothing changed") });
+    say({ ok: !!res.ok, text: res.msg || (res.ok ? "Done" : "Nothing changed"), ...(res.undo ? { undo: res.undo } : {}) });
   };
   const onNotListed = useCallback((action, row) => act.current.notListed(action, row), []);
-  const nlCan = { unhide: canMark || permRecord?.stockRole === "store" || permRecord?.stockRole === "warehouse", unmark: canMark, policy: !!onOpenEnginePolicy };
+  const nlCan = useMemo(() => ({ unhide: canMark || permRecord?.stockRole === "store" || permRecord?.stockRole === "warehouse", unmark: canMark, policy: !!onOpenEnginePolicy }), [canMark, permRecord?.stockRole, onOpenEnginePolicy]);
   const onPick = useCallback((row, dest) => act.current.pick(row, dest), []);
   const onSolve = useCallback((row) => act.current.solve(row), []);
   const onDivision = useCallback((row) => act.current.division(row), []);
@@ -624,7 +635,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
         <div style={{ display: "flex", alignItems: "center", gap: 10, height: 40, marginBottom: 4 }}>
           <button data-action="exit" onClick={() => (view !== "list" ? setView("list") : onExit?.())}
             style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 10, padding: "0 12px", height: 40, fontWeight: 700, fontSize: 13.5, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>← Back</button>
-          <div data-title style={{ fontSize: 17, fontWeight: 800, whiteSpace: "nowrap" }}>{view === "hidden" ? `Hidden (${hiddenCount})` : view === "notlisted" ? `Not listed${notListed ? ` (${notListed.length})` : ""}` : "Missing Products"}</div>
+          <div data-title style={{ fontSize: 17, fontWeight: 800, whiteSpace: "nowrap" }}>{view === "hidden" ? `Hidden (${hiddenCount})` : view === "notlisted" ? `Not listed · ${section != null ? sectionName(network, section) : ""}${notListed ? ` (${notListed.length})` : ""}` : "Missing Products"}</div>
           {/* The hidden tab's entrance: the unlabelled press-and-hold spot
               (HiddenProducts.jsx HoldSpot — discretion, not access control). */}
           <HoldSpot onTrigger={() => setView("hidden")} />
@@ -681,8 +692,10 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
         {view === "hidden" && <HiddenProducts products={products} cards={hiddenCards} hiddenMap={hiddenMap} />}
 
         {view === "notlisted" && section != null && (
-          notListed
-            ? <NotListed rows={notListed} byId={byId} can={nlCan} busy={nlBusy} onAct={onNotListed} limit={nlLimit} onMore={() => setNlLimit((n) => n + 200)} />
+          requestsError
+            ? <div data-read-failed style={{ height: CARD_H + CARD_GAP, display: "flex", alignItems: "center", justifyContent: "center", color: GRAY, fontSize: 15 }}>Couldn't read the refill queue</div>
+            : notListed
+            ? <NotListed rows={notListed} searching={terms.length > 0} byId={byId} can={nlCan} busy={nlBusy} onAct={onNotListed} limit={nlLimit} onMore={() => setNlLimit((n) => n + 200)} />
             : Array.from({ length: 6 }, (_, i) => <SkeletonRow key={i} />)
         )}
 
@@ -728,7 +741,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
                 style={{ ...box(false, 48), display: "block", width: "100%", fontSize: 14, fontWeight: 700 }}>More</button>
             )}
             {/* NOT LISTED — the very bottom of the list, small and secondary. */}
-            {notListed && (shown.length <= limit) && <NotListedLine n={notListed.length} onOpen={() => setView("notlisted")} />}
+            {notListed && (shown.length <= limit) && !(terms.length && !notListed.length) && <NotListedLine n={notListed.length} onOpen={() => setView("notlisted")} />}
           </div>
         )}
       </div>

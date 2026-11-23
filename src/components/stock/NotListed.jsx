@@ -62,7 +62,7 @@ const Row = memo(function Row({ row, product, can, busy, onAct }) {
         </div>
       </div>
       {allowed && (
-        <button type="button" data-action={`not-listed-${act}`} disabled={!!busy} onClick={() => onAct(act, row)}
+        <button type="button" data-action={`not-listed-${act}`} aria-label={ACTION_LABEL[act]} disabled={!!busy} onClick={() => onAct(act, row)}
           style={{ height: 40, padding: "0 12px", borderRadius: 10, flexShrink: 0, fontFamily: FONT, fontSize: 12.5, fontWeight: 800, cursor: busy ? "default" : "pointer",
             background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.3)", color: BLUE_L, opacity: busy ? 0.6 : 1,
             WebkitTapHighlightColor: "transparent", touchAction: "manipulation" }}>{busy ? "…" : ACTION_LABEL[act]}</button>
@@ -73,13 +73,14 @@ const Row = memo(function Row({ row, product, can, busy, onAct }) {
 
 /**
  * rows    notListedRows(…) for this division (already narrowed by the search)
+ * searching  a search is narrowing them (an empty list then means "nothing found")
  * byId    Map pid → product
  * can     { unhide, unmark, policy } — what this viewer may do
  * busy    { pid: true } while that row's action is written
  * onAct   (action, row) → void
  */
-export default function NotListed({ rows = [], byId, can = {}, busy = {}, onAct, limit = 200, onMore }) {
-  if (!rows.length) return <div data-not-listed-empty style={{ padding: 18, color: GRAY, fontSize: 14, fontFamily: FONT }}>Every product Central holds for this division is on the list.</div>;
+export default function NotListed({ rows = [], searching = false, byId, can = {}, busy = {}, onAct, limit = 200, onMore }) {
+  if (!rows.length) return <div data-not-listed-empty style={{ padding: 18, color: GRAY, fontSize: 14, fontFamily: FONT }}>{searching ? "Nothing found" : "Every product Central holds for this division is on the list."}</div>;
   return (
     <div data-not-listed>
       {rows.slice(0, limit).map((r) => <Row key={r.pid} row={r} product={byId.get(r.pid)} can={can} busy={!!busy[r.pid]} onAct={onAct} />)}

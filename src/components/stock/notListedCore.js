@@ -22,7 +22,6 @@
 //
 // NOTHING HERE DECIDES A QUANTITY, A TARGET, A SEAT OR A REQUEST. It explains.
 import { isDeactivated } from "../../utils/deactivation.js";
-import { isConcreteProduct } from "../../utils/concreteListing.js";
 import { admitsMissingProduct, isClothing } from "./missingProductsCore";
 import { isFootwearProduct } from "./missingFootwearCore";
 import { isSneakerOrSlide } from "./firstBatchCore";
@@ -48,7 +47,7 @@ export const REASONS = Object.freeze({
   undeclaredSize: { text: "Central's size is not on the product", group: "data" },
   paused:       { text: "Shop paused, empty rows", group: "rule" },
   noShop:       { text: "No shop can take it", group: "rule" },
-  otherHub:     { text: "The other hub has it", group: "rule" },
+  otherHub:     { text: "Its hubs refuse it", group: "rule" },
   heldAtHub:    { text: "On its way to a hub", group: "rule" },
   notLive:      { text: "List not live", group: "rule" },
   noView:       { text: "Category in neither list", group: "data" },
@@ -133,8 +132,6 @@ export function coreReason({ product, pid, listKind, allStock, locations = [], o
   // "carried": the scan's job, not a Solve's.
   const withRows = locations.filter((l) => hasRows(allStock?.[l]?.[pid]));
   if (withRows.length) return openPids.has(pid) ? "requested" : withRows.every(paused) ? "paused" : "emptyRows";
-  // A Concrete-only product on another division's list is cut by the core.
-  if (listKind !== "concrete" && isConcreteProduct(product)) return "markedConcrete";
   if (openPids.has(pid)) return "requested";
   return "unknown";
 }

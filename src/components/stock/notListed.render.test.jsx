@@ -176,7 +176,7 @@ describe("the line at the bottom", () => {
       const n = line(tree).props["data-not-listed-line"];
       await openNotListed(tree);
       expect(nlRows(tree).length).toBe(n);
-      expect(textOf(tree)).toContain(`Not listed (${n})`);
+      expect(textOf(tree)).toMatch(new RegExp(`Not listed · (Marathon|Concrete|Section \\d) \\(${n}\\)`));
       await back(tree);
     }
   });

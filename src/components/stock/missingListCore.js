@@ -118,7 +118,7 @@ export function decideProductRow({ card, section, product, dests = [], tickable 
     if (anyHeld) return none("allPromised");
     // The units the source holds are all in sizes the product's own size list
     // does not name — nothing plans them (a catalogue question, not policy).
-    const declared = new Set((product.sizes || []).map((z) => decodedCellKey(String(z))));
+    const declared = new Set((Array.isArray(product.sizes) ? product.sizes : []).map((z) => decodedCellKey(String(z))));
     const held = Object.keys(sourceCells || {}).filter((k) => k !== "_meta" && qtyIn(sourceCells, k) > 0);
     if (held.length && !held.some((k) => declared.has(decodedCellKey(k)))) return none("undeclaredSize");
     return none(!anySizes ? "noPolicy" : "noSize");
