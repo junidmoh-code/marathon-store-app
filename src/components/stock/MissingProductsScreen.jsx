@@ -217,6 +217,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // applied to the new list. It only hides cards that do not match — the
   // frozen order underneath is untouched, so clearing gives the same list.
   const [query, setQuery] = useState("");
+  const searchRef = useRef(null);
   const active = bucketId(section, kind);
   const canAct = divisions.length ? !!flags[divisions[0]]?.canAct : false;
   // Marking a division is Junid's / Jafer's / a stockRole admin's — the same
@@ -585,10 +586,10 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
           {/* ONE THIN SEARCH FIELD. Fixed 32 px whatever is typed; 16 px text so
               iOS does not zoom the page on focus; the clear control is laid
               over the field's right end, so it appears without moving anything. */}
-          <div data-search style={{ position: "relative", height: 32, marginTop: 4 }}>
+          {view === "list" && <div data-search style={{ position: "relative", height: 32, marginTop: 4 }}>
             <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.45)" strokeWidth="2.5" strokeLinecap="round"
               style={{ position: "absolute", left: 10, top: 9, pointerEvents: "none" }}><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
-            <input data-search-input type="text" inputMode="search" enterKeyHint="search" autoComplete="off" autoCorrect="off" autoCapitalize="none" spellCheck={false}
+            <input ref={searchRef} data-search-input type="text" inputMode="search" enterKeyHint="search" autoComplete="off" autoCorrect="off" autoCapitalize="none" spellCheck={false}
               aria-label="Search" placeholder="Search" value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Escape") setQuery(""); else if (e.key === "Enter") e.currentTarget.blur(); }}
@@ -596,13 +597,13 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
                 border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.03)", color: "#fff", fontFamily: FONT, fontSize: 16, lineHeight: "30px",
                 WebkitAppearance: "none", appearance: "none" }} />
             {query && (
-              <button type="button" data-action="clear-search" aria-label="Clear search" onClick={() => setQuery("")}
+              <button type="button" data-action="clear-search" aria-label="Clear search" onClick={() => { setQuery(""); searchRef.current?.focus(); }}
                 style={{ position: "absolute", right: 0, top: -4, width: 40, height: 40, padding: 0, border: "none", background: "none", cursor: "pointer",
                   display: "flex", alignItems: "center", justifyContent: "center", WebkitTapHighlightColor: "transparent", touchAction: "manipulation" }}>
                 <span aria-hidden="true" style={{ width: 18, height: 18, borderRadius: 9, background: "rgba(255,255,255,.22)", color: "#000", fontSize: 13, fontWeight: 800, lineHeight: "18px", textAlign: "center" }}>×</span>
               </button>
             )}
-          </div>
+          </div>}
         </div>
 
         {!divisions.length && <div style={{ padding: 18, color: GRAY, fontSize: 14 }}>No division is open to this account.</div>}

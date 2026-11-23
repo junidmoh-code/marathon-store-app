@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { searchTerms, matchesSearch } from "./missingSearch";
+import { searchTerms, matchesSearch, haystackOf } from "./missingSearch";
 
 const row = (name) => ({ name });
 const m = (q, name, product) => matchesSearch(searchTerms(q), row(name), product);
@@ -32,7 +32,14 @@ describe("Missing Products search", () => {
     expect(m("tee", "Essentials Tee", undefined)).toBe(true);
   });
 
-  it("a non-breaking space in a name is an ordinary space", () => {
-    expect(m("cream white", "Pant cream white")).toBe(true);
+  it("a non-breaking space in a name is an ordinary space; accents don't matter", () => {
+    expect(haystackOf(row("Pant\u00a0cream\u00a0white")).text).toContain("pant cream white");
+    expect(m("adidas", "Adid\u00e1s Samba")).toBe(true);
+  });
+
+  it("letters are never matched across a word break; numbers are, across punctuation", () => {
+    expect(m("ea", "Nike Air")).toBe(false);
+    expect(m("eai", "Nike Air")).toBe(false);
+    expect(m("1391100", "Gazelle", { styleCode: "DD1391-100" })).toBe(true);
   });
 });

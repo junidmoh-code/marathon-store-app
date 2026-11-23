@@ -6234,7 +6234,7 @@ function AiStudioView({ products, onExit }) {
   );
 
   const sidebar = (
-    <aside style={{ width:224, flexShrink:0, position:"sticky", top:0, height:"100vh", boxSizing:"border-box",
+    <aside style={{ width:224, flexShrink:0, position:"sticky", top:"env(safe-area-inset-top, 0px)", height:"100vh", boxSizing:"border-box",
                     display:"flex", flexDirection:"column", gap:4, padding:"24px 14px 18px",
                     background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.07)" }}>
       <div style={{ padding:"0 10px 20px" }}>
@@ -12404,7 +12404,7 @@ export function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Size picker bottom sheet ── */}
       {selected && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000 }}>
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000, paddingBottom:"env(safe-area-inset-bottom, 0px)" }}>
           <div style={sheetStyle}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"1.5rem" }}>
               <div style={{ display:"flex", alignItems:"center", gap:"1rem" }}>
@@ -12635,7 +12635,7 @@ export function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Checkout bottom sheet ── */}
       {checkoutOpen && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000 }}>
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000, paddingBottom:"env(safe-area-inset-bottom, 0px)" }}>
           <div style={sheetStyle}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
               <span style={{ fontWeight:"800", fontSize:"1.2rem" }}>Checkout</span>
@@ -20334,7 +20334,7 @@ function AuditModal({ audit, onClose }) {
   };
 
   return (
-    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.85)", zIndex:9999, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"20px 8px", overflowY:"auto" }}
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.85)", zIndex:9999, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"calc(20px + env(safe-area-inset-top, 0px)) 8px calc(20px + env(safe-area-inset-bottom, 0px))", overflowY:"auto" }}
          onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
            style={{ width:"100%", maxWidth:560, background:"#000", border:"1px solid rgba(60,110,255,.4)", borderRadius:14, padding:16, color:"#fff", fontFamily:FONT, boxShadow:"0 0 32px rgba(60,110,255,.2)" }}>

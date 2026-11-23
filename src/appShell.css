@@ -40,11 +40,13 @@ body::before {
   pointer-events: none;
 }
 
-/* React writes minHeight:"100vh" / height:"100vh" as these exact strings. */
-[style*="min-height: 100vh"] {
+/* React writes minHeight:"100vh" / height:"100vh" as these exact strings.
+   Only boxes in the page flow: a fixed overlay is outside the body's padding
+   and keeps its own size. */
+[style*="min-height: 100vh"]:not([style*="position: fixed"]) {
   min-height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
 }
-[style^="height: 100vh"],
-[style*="; height: 100vh"] {
+[style^="height: 100vh"]:not([style*="position: fixed"]),
+[style*="; height: 100vh"]:not([style*="position: fixed"]) {
   height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
 }

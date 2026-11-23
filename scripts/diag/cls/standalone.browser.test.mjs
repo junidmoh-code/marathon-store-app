@@ -5,13 +5,14 @@
 // fixture — nothing here talks to Firebase.
 //
 // Skips (does not fail) when Chrome can't be started on this machine.
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { fileURLToPath } from "url";
 import path from "path";
 import os from "os";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { buildFixture, FIXTURE_NAMES } from "./fixture.mjs";
 
+vi.setConfig({ testTimeout: 60000 });
 const here = path.dirname(fileURLToPath(import.meta.url));
 const INSET = { top: 47, bottom: 34 };
 const VIEW = { width: 390, height: 844 };
@@ -62,7 +63,7 @@ afterAll(async () => {
 const names = () => page.$$eval("[data-card]", (ns) => ns.map((n) => n.getAttribute("data-card-name")));
 const boxes = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll("[data-division],[data-kind],[data-search],[data-search-input],[data-title]")]
   .map((n) => { const r = n.getBoundingClientRect(); return [n.getAttribute("data-division") ? `d${n.getAttribute("data-division")}` : n.getAttribute("data-kind") || [...n.attributes].map((a) => a.name).find((a) => a.startsWith("data-")), `${r.left},${r.top},${r.width},${r.height}`]; })));
-const type = async (text) => { await page.click("[data-search-input]"); await page.keyboard.type(text, { delay: 15 }); await new Promise((r) => setTimeout(r, 250)); };
+const type = async (text) => { await page.click("[data-search-input]"); await page.keyboard.press("End"); await page.keyboard.type(text, { delay: 15 }); await new Promise((r) => setTimeout(r, 250)); };
 const clear = async () => { await page.click("[data-action=clear-search]"); await new Promise((r) => setTimeout(r, 250)); };
 
 describe("Missing Products, installed on an iPhone (390×844, insets 47 / 34)", () => {
@@ -106,10 +107,13 @@ describe("Missing Products, installed on an iPhone (390×844, insets 47 / 34)", 
     if (skip) return ctx.skip(skip);
     const before = await names();
     const header = await boxes();
+    const listTop = () => page.$eval("[data-list]", (n) => n.getBoundingClientRect().top);
+    const top0 = await listTop();
     const shifts0 = await page.evaluate(() => window.__shifts.length);
     await type("5919");
     expect(await names()).toEqual(["Sweatshirt 25919 yomo stylish cream white"]);
     expect(await boxes()).toEqual(header);                       // focusing and typing moved nothing above the list
+    expect(await listTop()).toBe(top0);                          // results replace the list in place
     await clear();
     await type("JACKET");
     expect(await names()).toEqual(["Varsity Jacket", "Puffer Jacket Stone", "Denim Jacket Washed Blue"]);
@@ -124,6 +128,7 @@ describe("Missing Products, installed on an iPhone (390×844, insets 47 / 34)", 
     expect(await page.$("[data-action=clear-search]")).toBeNull();
     expect(await names()).toEqual(before);
     expect(await boxes()).toEqual(header);
+    expect(await listTop()).toBe(top0);
     // No layout shift that the user didn't cause by typing (CLS counts these).
     const late = await page.evaluate((n) => window.__shifts.slice(n).filter((s) => !s.recent), shifts0);
     expect(late).toEqual([]);

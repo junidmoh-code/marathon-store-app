@@ -8,10 +8,13 @@
 // Pure: the screen keeps its frozen order and only hides what does not match,
 // so clearing the field gives back exactly the list that was there.
 
-const fold = (v) => String(v ?? "").toLowerCase().replace(/ /g, " ");
+// Lower case, accents off ("Adidás" = "adidas"), a non-breaking space is a space.
+const fold = (v) => String(v ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/ /g, " ");
 // "DD1391-100" is found by "dd1391100" too: a second copy with only letters
-// and digits.
+// and digits. Used only for a term with a digit in it, so "ea" never matches
+// across the word break in "nike air".
 const squash = (v) => fold(v).replace(/[^a-z0-9]+/g, "");
+const hasDigit = (t) => /\d/.test(t);
 
 export function searchTerms(query) {
   return fold(query).split(/\s+/).filter(Boolean);
@@ -19,12 +22,11 @@ export function searchTerms(query) {
 
 export function haystackOf(row, product) {
   const parts = [row?.name, product?.brand, product?.styleCode, product?.styleCodeNormalised];
-  const text = parts.map(fold).join(" ");
-  return `${text} ${parts.map(squash).join(" ")}`;
+  return { text: parts.map(fold).join(" \n "), squashed: parts.map(squash).join(" ") };
 }
 
 export function matchesSearch(terms, row, product) {
   if (!terms.length) return true;
   const hay = haystackOf(row, product);
-  return terms.every((t) => hay.includes(t) || (squash(t) && hay.includes(squash(t))));
+  return terms.every((t) => hay.text.includes(t) || (hasDigit(t) && !!squash(t) && hay.squashed.includes(squash(t))));
 }

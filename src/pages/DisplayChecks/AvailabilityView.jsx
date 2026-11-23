@@ -106,7 +106,7 @@ function ScanCamera({ onDetected, onClose }) {
   }, [onDetected]);
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,.93)", display: "flex", flexDirection: "column", fontFamily: FONT }}>
+    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,.93)", display: "flex", flexDirection: "column", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)", fontFamily: FONT }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 18px", color: "#fff" }}>
         <div style={{ fontWeight: 800, fontSize: 16, letterSpacing: ".04em" }}>Scan barcode</div>
         <button onClick={onClose} style={{ background: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.18)", color: "#fff", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>Close</button>
