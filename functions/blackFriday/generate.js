@@ -102,6 +102,9 @@ async function bfGenerate(db, { pid, section, input = "photo", place = false, se
   for (const s of order) { item = await val(db, `${core.ROOT}/items/${s}/${pid}`); if (item) break; }
   // A New Arrival not in the build: its row made from the product now.
   if (!item && deps.naRow) item = await deps.naRow(pid).catch(() => null);
+  // A BF Candidates row (slow stock on the in-store sale card) that is not in the campaign build: Generate works
+  // on it too (Junid 23 Nov: 3 of 775 candidates were refused). Only its kind is needed; the rest is the product's.
+  if (!item) { const cand = await val(db, `bf_sales_2026/candidates/items/${pid}`); if (cand) item = { kind: cand.kind || "clothing" }; }
   if (!item) throw new HttpsError("invalid-argument", "That product is not in the campaign.");
   const product0 = await val(db, `products/${pid}`);
   if (!product0) throw new HttpsError("failed-precondition", "Can't generate — the product record no longer exists.");
