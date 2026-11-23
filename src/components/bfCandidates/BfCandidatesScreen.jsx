@@ -2,8 +2,10 @@
 // Old stock that isn't selling (Junid, 15:44: "new stock is not dead stock"): the
 // product first arrived in the network on or before the cut-off ("In store since":
 // May, June, July (default) or August), still has stock on hand, and has sold
-// under 10% of the units received. Tabs: Clothing, Sneakers (zero sold first, then
-// the oldest arrival) and On sale (everything on sale now).
+// under 10% of the units received. Tabs: Clothing, Sneakers (by arrival date, the
+// oldest first; every row shows its arrival date) and On sale (everything on sale).
+// FAST: the last answer for each tab is kept (memory + this device) and shown at
+// once while the fresh one is fetched; the other tabs are fetched ahead.
 //   Put on sale   every row has a PRICE BOX: type the sale price, tap Put on sale
 //                 (disabled until a price is typed). ONE price for every customer
 //                 at every till until the sale's end, shown at the top with Extend.
@@ -31,6 +33,20 @@ export function photoError(e) {
   if (/not in the campaign|not on the Black Friday card/i.test(t)) return "it is not on the Black Friday list yet, so a photo can't be made for it here. It joins that list at the 05:00 build if it has a stock price and a photo";
   return t.replace(/^.*?:\s(?=[A-Z])/, "") || "something went wrong";
 }
+// The last answer per tab + cut-off, kept on this device: the card opens with it at once and then refreshes.
+const KEEP = "bfCandidates.v2.";
+const kept = new Map();
+function recall(key) {
+  if (kept.has(key)) return kept.get(key);
+  try { const v = JSON.parse(window.localStorage.getItem(KEEP + key) || "null"); if (v && Array.isArray(v.rows)) { kept.set(key, v); return v; } } catch { /* no storage: memory only */ }
+  return null;
+}
+function keep(key, v) {
+  kept.set(key, v);
+  try { window.localStorage.setItem(KEEP + key, JSON.stringify(v)); } catch { /* full or blocked: memory only */ }
+}
+/** For tests: forget every kept answer. */
+export function forgetKept() { kept.clear(); try { Object.keys(window.localStorage).filter((k) => k.startsWith(KEEP)).forEach((k) => window.localStorage.removeItem(k)); } catch { /* none */ } }
 const errText = (e) => String((e && e.message) || e || "Something went wrong").replace(/^.*?:\s(?=[A-Z])/, "");
 
 /** "Marathon PE 4 · Hub 2 6" from { loc: qty } (biggest first). Pure. */
@@ -118,6 +134,7 @@ function Sheet({ title, children, onClose }) {
 export default function BfCandidatesScreen({ api, onExit }) {
   const [tab, setTab] = useState("clothing");
   const [cutoff, setCutoff] = useState("july");   // "In store since": arrived by the end of that month
+  const [newEnd, setNewEnd] = useState("");       // only once the default end has passed: the end Junid picks for new sales
   const [bulkText, setBulkText] = useState("");   // the Select bar's one price for every ticked item
   const [view, setView] = useState(null);      // the server's answer for this tab + window
   const [rows, setRows] = useState([]);
@@ -134,18 +151,32 @@ export default function BfCandidatesScreen({ api, onExit }) {
   const fileRef = useRef(null);
   const replaceFor = useRef(null);
 
+  const [stale, setStale] = useState(false);     // showing a kept answer while the fresh one is on its way
   const load = useCallback(async (t = tab, w = cutoff, { quiet = false } = {}) => {
     const mine = ++seq.current;
+    const key = `${t}.${w}`;
+    // The kept answer first, at once; the fresh one replaces it when it lands.
+    const old = quiet ? null : recall(key);
+    if (old) { setView(old); setRows(old.rows || []); setStale(true); }
     if (!quiet) setLoading(true);
     setError(null);
     try {
       const v = await api.list(t, w, 0);
+      keep(key, v);
       if (mine !== seq.current) return;
-      setView(v); setRows(v.rows || []);
+      setView(v); setRows(v.rows || []); setStale(false);
     } catch (e) { if (mine === seq.current) setError(errText(e)); }
     finally { if (mine === seq.current) setLoading(false); }
   }, [api, tab, cutoff]);
   useEffect(() => { setRows([]); setTicks(new Set()); load(tab, cutoff); }, [tab, cutoff]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The other tabs are fetched ahead, once the first answer is in: a tab switch shows its list at once.
+  useEffect(() => {
+    let live = true;
+    const ahead = setTimeout(() => {
+      for (const t of Object.keys(TAB_LABEL)) if (t !== tab && !kept.has(`${t}.${cutoff}`)) api.list(t, cutoff, 0).then((v) => { if (live) keep(`${t}.${cutoff}`, v); }).catch(() => {});
+    }, 1200);
+    return () => { live = false; clearTimeout(ahead); };
+  }, [api, cutoff]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const more = async () => {
     const mine = seq.current; // a page asked for under another tab or window is thrown away
@@ -168,18 +199,21 @@ export default function BfCandidatesScreen({ api, onExit }) {
     catch (e) { say(errText(e)); return null; }
     finally { inFlight.current = false; setBusyPids(new Set()); setWorking(null); }
   };
-  const done = () => { setTicks(new Set()); setSelecting(false); setDialog(null); load(tab, cutoff, { quiet: true }); };
+  // A tap changed what is on sale: the answers kept for the other tabs are no longer true.
+  const done = () => { kept.clear(); setTicks(new Set()); setSelecting(false); setDialog(null); load(tab, cutoff, { quiet: true }); };
 
   // ── Put on sale: ONE price; the warning (price ≥ stock price) comes before anything is saved ──
   const saveSale = async (pids, priceNum, confirmAbove, after) => {
     // ONE call for the whole selection: the server decides the warning before it saves anything.
-    const r = await withBusy(pids, `Putting ${pids.length} on sale…`, async () => [await api.sale(pids, priceNum, { confirmAbove })]);
+    if (view && view.endPassed && !newEnd) { say(`The sale ended on ${view.defaultUntil}. Pick a new end date at the top of the card first.`); return; }
+    const r = await withBusy(pids, `Putting ${pids.length} on sale…`, async () => [await api.sale(pids, priceNum, { confirmAbove, ...(view && view.endPassed && newEnd ? { endDay: newEnd } : {}) })]);
     if (!r) return;
     const need = r.flatMap((o) => o.needConfirm || []);
     // (Again, if a product came to need the warning since the first one: the confirmation is of the products shown.)
     if (need.length) { setDialog({ type: "confirm", pids, price: priceNum, need, after }); return; }
     const ok = r.flatMap((o) => o.done || []), refused = r.flatMap((o) => o.refused || []);
-    const until = (r.find((o) => o.until) || {}).until;
+    const o0 = r.find((o) => o.until) || {};
+    const until = o0.untilFrom ? `${o0.untilFrom} to ${o0.until} (each keeps its own end)` : o0.until;
     // Nothing saved (every product refused): the typed price stays in its box.
     if (!ok.length) { say(`Nothing was put on sale: ${refused.length ? refused[0].refusal : "try again"}.`); done(); return; }
     if (after) after();
@@ -283,6 +317,12 @@ export default function BfCandidatesScreen({ api, onExit }) {
           <span style={{ color: GRAY, fontSize: "0.76rem" }}>{counts.onSale > 0 ? `${counts.onSale} on sale` : "nothing on sale yet"}</span>
           <a href="#bf-sale-list" style={{ color: BLUE_L, fontSize: "0.78rem", fontWeight: 700, marginLeft: "auto" }}>Store re-tag lists</a>
         </div>
+        {view && view.endPassed && (
+          <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, color: "#dfe7ff", fontSize: "0.8rem", flexWrap: "wrap" }}>
+            That date has passed. New sales end at 23:59 on
+            <input aria-label="End date for new sales" type="date" value={newEnd} min={view.today || undefined} onChange={(e) => setNewEnd(e.target.value)} style={{ ...input, padding: "6px 8px", fontSize: "0.8rem" }} />
+          </label>
+        )}
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
           {Object.keys(TAB_LABEL).map((t) => (
             <button key={t} type="button" style={tab === t ? tabOn : tabOff} onClick={() => { setTab(t); setTicks(new Set()); }}>{TAB_LABEL[t]} ({(t === "onsale" ? counts.onSale : counts[t]) ?? 0})</button>
@@ -301,6 +341,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
       <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10, maxWidth: 760, margin: "0 auto" }}>
         {error && <div role="alert" style={{ color: RED, fontSize: "0.86rem" }}>{error} <button type="button" style={{ ...bGray, padding: "4px 10px" }} onClick={() => load()}>Try again</button></div>}
         {loading && !rows.length && <div style={{ color: GRAY }}>Loading…</div>}
+        {stale && loading && rows.length > 0 && <div role="status" style={{ color: GRAY, fontSize: "0.74rem" }}>Showing the last list; checking for changes…</div>}
         {!loading && !error && !rows.length && (
           <div style={{ color: GRAY, fontSize: "0.9rem" }}>
             {tab === "onsale" ? "Nothing is on sale. Type a price on a row and tap Put on sale."

@@ -1,9 +1,9 @@
 // BF Candidates card (Junid, 23 Nov 2026): the list, ONE sale price, the ≥-stock-price warning
 // before anything is saved, Extend, Not for sale + the Removed undo.
 import React from "react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import TestRenderer, { act } from "react-test-renderer";
-import BfCandidatesScreen, { locsLine, readPrice, photoError } from "./BfCandidatesScreen";
+import BfCandidatesScreen, { locsLine, readPrice, photoError, forgetKept } from "./BfCandidatesScreen";
 import { openSaleList } from "../../push/useForegroundPush";
 
 const row = (over = {}) => ({ ownPhoto: "https://x/a.jpg", pid: "a", name: "Tee A", tab: "clothing", qty: 40, arrivedOn: "10 Jul 2026", received: 40, sold: 0, stockPrice: 200, retailPrice: 350, locs: { "marathon-pe": 30, central: 10 }, photo: "https://x/a.jpg", sale: null, posted: null, ...over });
@@ -35,6 +35,8 @@ const press = async (node) => { await act(async () => { node.props.onClick({ sto
 const type = async (node, value) => { await act(async () => { node.props.onChange({ target: { value } }); }); };
 
 describe("BF Candidates card", () => {
+  beforeEach(() => forgetKept());
+
   it("shows quantity, arrival date, units received and sold, both prices and the locations; tabs carry counts", async () => {
     const api = fakeApi([row(), row({ pid: "b", name: "Tee B", qty: 12, arrivedOn: "20 Jun 2026", received: 100, sold: 6 })]);
     const r = await mount(api);
@@ -156,6 +158,32 @@ describe("BF Candidates card", () => {
     expect(api.photo).toHaveBeenLastCalledWith("a", "current");
     expect(img()).toBe("https://x/a.jpg");
     expect(buttons(r.root, "Replace photo").length).toBe(1);
+  });
+
+  it("opens at once with the last list kept on this device, then shows the fresh one (Junid: the card took long to load)", async () => {
+    const first = fakeApi([row()]);
+    await mount(first);
+    let land;
+    const slow = fakeApi([], { list: vi.fn(() => new Promise((res) => { land = () => res(answer([row({ name: "Tee A, fresh" })])); })) });
+    let r; await act(async () => { r = TestRenderer.create(<BfCandidatesScreen api={slow} onExit={() => {}} />); });
+    expect(all(r)).toContain("Tee A");
+    expect(all(r)).toContain("Showing the last list; checking for changes");
+    await act(async () => { land(); }); await flush();
+    expect(all(r)).toContain("Tee A, fresh");
+    expect(all(r)).not.toContain("Showing the last list");
+  });
+
+  it("once the default end has passed, a new sale needs the end date picked at the top", async () => {
+    const api = fakeApi([row()]);
+    api.list.mockImplementation(async () => answer([row()], { endPassed: true }));
+    const r = await mount(api);
+    await type(field(r, "Sale price for Tee A"), "150");
+    await press(buttons(r.root, "Put on sale")[0]);
+    expect(api.sale).not.toHaveBeenCalled();
+    expect(all(r)).toContain("Pick a new end date at the top");
+    await type(field(r, "End date for new sales"), "2026-12-07");
+    await press(buttons(r.root, "Put on sale")[0]);
+    expect(api.sale).toHaveBeenCalledWith(["a"], 150, { confirmAbove: null, endDay: "2026-12-07" });
   });
 
   it("small pure parts", () => {

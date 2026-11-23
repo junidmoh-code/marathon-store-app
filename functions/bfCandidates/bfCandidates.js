@@ -108,7 +108,7 @@ async function putOnSale(db, data, uid, nowMs) {
   const named = data.endDay ? core.saleEnd(data.endDay, nowMs) : null;
   if (data.endDay && !named) throw new HttpsError("invalid-argument", "The sale's end date must be today or later.");
   const fallbackEnd = named || core.defaultEnd(await val(db, `${R}/sales`), nowMs);
-  if (!(fallbackEnd > nowMs)) throw new HttpsError("failed-precondition", `The Black Friday sale ended on ${core.endLabel(fallbackEnd)}. Nothing was put on sale.`);
+  if (!(fallbackEnd > nowMs)) throw new HttpsError("failed-precondition", `The Black Friday sale ended on ${core.endLabel(fallbackEnd)}. Pick a new end date at the top of the card, then put it on sale.`);
   const [rows, chosen, removed, live] = await Promise.all([
     inBatches(pids, 25, (p) => val(db, `${R}/candidates/items/${p}`)),
     inBatches(pids, 25, (p) => val(db, `${R}/photos/${p}`)),
@@ -144,7 +144,8 @@ async function putOnSale(db, data, uid, nowMs) {
     upd[`products/${x.pid}/bfSale`] = core.tillMirror(rec);
     entries.push({ pid: x.pid, name: rec.name, sale: rec });
   });
-  const end = Math.max(...Object.values(ends));
+  // Edit price on several products keeps each one's own end: the answer says so when they differ (never one date for all).
+  const end = Math.max(...Object.values(ends)), firstEnd = Math.min(...Object.values(ends));
   upd[`${R}/log/${db.ref(`${R}/log`).push().key}`] = { at: nowMs, by: uid, action: "sale", price, end, pids: ok.map((x) => x.pid), ...(above.length ? { aboveStock: above.map((a) => a.pid) } : {}) };
   await db.ref().update(upd);
   // Marked Not for sale in this same instant: the sale does not stand.
@@ -152,7 +153,7 @@ async function putOnSale(db, data, uid, nowMs) {
   const late = ok.filter((_, i) => gone[i]).map((x) => [x.pid, null]);
   if (late.length) await closeSales(db, late, { uid, why: "not_for_sale", nowMs });
   const stores = await alertStores(db, "start", entries.filter((e) => !late.some(([p]) => p === e.pid)), nowMs);
-  return { ok: true, done: ok.map((x) => x.pid), refused, price, end, until: core.endLabel(end), stores };
+  return { ok: true, done: ok.map((x) => x.pid), refused, price, end, until: core.endLabel(end), ...(firstEnd !== end ? { firstEnd, untilFrom: core.endLabel(firstEnd) } : {}), stores };
 }
 
 /** The till's mirror is always made from the sale as it IS (never from a value read earlier): gone when there is no sale. */
@@ -285,19 +286,25 @@ async function choosePhoto(db, data, uid, nowMs) {
 }
 
 // ── the card ─────────────────────────────────────────────────────────────────
-const bfSaleList = onCall(callableOpts, async (request) => {
+// The card's opening read keeps one instance warm (Junid, 17:50: "the card takes very long to load"): a cold start of
+// this shared codebase was most of the wait.
+const bfSaleList = onCall({ ...callableOpts, minInstances: 1 }, async (request) => {
   assertJunid(request);
   const db = admin.database();
   const nowMs = Date.now();
   const d = request.data || {};
   // The card's own small nodes (the finder's list is the largest: one slim row per product that is not moving).
-  const [items, removed, sales, photos, posted, meta] = await Promise.all(["candidates/items", "removed", "sales", "photos", "posted", "candidates/meta"].map((p) => val(db, `${R}/${p}`)));
+  // Everything at once (the location names with them): the card waits for the slowest read, not for their sum.
+  const [[items, removed, sales, photos, posted, meta], locs] = await Promise.all([
+    Promise.all(["candidates/items", "removed", "sales", "photos", "posted", "candidates/meta"].map((p) => val(db, `${R}/${p}`))),
+    locations(db),
+  ]);
   const cutoff = core.cutoffOf(d.cutoff);
-  const locNames = Object.fromEntries((await locations(db)).map((l) => [l.id, l.name]));
+  const locNames = Object.fromEntries(locs.map((l) => [l.id, l.name]));
   const view = core.viewList({ items: items || {}, removed: removed || {}, sales: sales || {}, photos: photos || {}, posted: posted || {} }, { tab: d.tab, cutoff, from: d.from, n: d.n, nowMs });
   // The end a sale put on now gets (Mon 30 Nov, or later once the running sales were extended past it).
   const dEnd = core.defaultEnd(sales || {}, nowMs);
-  return { ...view, locNames, tab: core.VIEWS.includes(d.tab) ? d.tab : "clothing", cutoff, cutoffs: Object.keys(core.CUTOFFS).map((k) => ({ key: k, label: core.CUTOFF_LABEL[k], day: core.CUTOFFS[k] })), defaultEndDay: core.sastDay(dEnd), defaultUntil: core.endLabel(dEnd), today: core.sastDay(nowMs), now: nowMs, meta: meta || null };
+  return { ...view, locNames, tab: core.VIEWS.includes(d.tab) ? d.tab : "clothing", cutoff, cutoffs: Object.keys(core.CUTOFFS).map((k) => ({ key: k, label: core.CUTOFF_LABEL[k], day: core.CUTOFFS[k] })), defaultEndDay: core.sastDay(dEnd), defaultUntil: core.endLabel(dEnd), endPassed: !(dEnd > nowMs), today: core.sastDay(nowMs), now: nowMs, meta: meta || null };
 });
 
 const bfSaleSet = onCall(callableOpts, async (request) => {

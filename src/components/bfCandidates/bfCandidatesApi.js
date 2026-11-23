@@ -17,7 +17,8 @@ export const bfCandidatesApi = {
   // ONE sale price for the chosen products. → { ok, done, refused, until } or { ok:false, needConfirm:[…] } when the
   // price is at or above a stock price (nothing saved until confirmAbove names exactly the products warned about).
   // No end date is sent: a new sale ends with the rest (Mon 30 Nov, or later once extended); Edit price keeps the sale's own end.
-  sale: (pids, price, { confirmAbove = null } = {}) => set({ action: "sale", pids, price, ...(confirmAbove ? { confirmAbove } : {}) }),
+  // (endDay is only sent once the default end has passed and Junid picked a new one at the top of the card.)
+  sale: (pids, price, { confirmAbove = null, endDay = null } = {}) => set({ action: "sale", pids, price, ...(endDay ? { endDay } : {}), ...(confirmAbove ? { confirmAbove } : {}) }),
   extend: (pids, endDay) => set({ action: "extend", pids, endDay }),
   extendAll: (endDay) => set({ action: "extend", all: true, endDay }),
   end: (pids) => set({ action: "end", pids }),

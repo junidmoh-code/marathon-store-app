@@ -48,13 +48,13 @@ const ITEMS = {
   e: { name: "Cap E", kind: "headwear", qty: 7, arrived: JUN, received: 7, sold: 0, stockPrice: 80, retailPrice: 120 },
 };
 
-test("the list: Clothing | Sneakers (others under Clothing); zero sold first, then the oldest arrival; removed never shown", () => {
+test("the list: Clothing | Sneakers (others under Clothing); by arrival date, the oldest first; removed never shown", () => {
   const v = core.viewList({ items: ITEMS, removed: { e: { at: 1 } } }, { tab: "clothing", cutoff: "july", nowMs: NOW });
-  assert.deepEqual(v.rows.map((r) => r.pid), ["a", "b"], "Tee B arrived first but has sold: after the unsold");
+  assert.deepEqual(v.rows.map((r) => r.pid), ["b", "a"], "June before July");
   assert.deepEqual(v.counts, { clothing: 2, sneakers: 1, onSale: 0, removed: 1 });
-  assert.deepEqual({ arrivedOn: v.rows[0].arrivedOn, received: v.rows[0].received, sold: v.rows[0].sold }, { arrivedOn: "10 Jul 2026", received: 40, sold: 0 });
+  assert.deepEqual({ arrivedOn: v.rows[1].arrivedOn, received: v.rows[1].received, sold: v.rows[1].sold }, { arrivedOn: "10 Jul 2026", received: 40, sold: 0 });
   const all = core.viewList({ items: ITEMS }, { tab: "clothing", nowMs: NOW });
-  assert.deepEqual(all.rows.map((r) => r.pid), ["e", "a", "b"], "a cap is listed under Clothing; June before July among the unsold");
+  assert.deepEqual(all.rows.map((r) => r.pid), ["e", "b", "a"], "a cap is listed under Clothing; the same June day: the unsold cap before the tee that sold 6");
   assert.deepEqual(core.viewList({ items: ITEMS }, { tab: "sneakers", nowMs: NOW }).rows.map((r) => r.pid), ["c"]);
   assert.deepEqual(core.viewList({ items: ITEMS }, { tab: "clothing", cutoff: "june", nowMs: NOW }).rows.map((r) => r.pid), ["e", "b"]);
   assert.equal(v.saleEnds, null);
@@ -76,8 +76,8 @@ test("the On sale tab lists EVERYTHING on sale, candidate or not; a non-candidat
   assert.equal(v.counts.onSale, 3);
   assert.deepEqual({ same: v.saleEnds.same, first: v.saleEnds.firstLabel, last: v.saleEnds.lastLabel }, { same: false, first: "Mon 30 Nov", last: "Mon 7 Dec" });
   const c = core.viewList({ items: ITEMS, sales }, { tab: "clothing", nowMs: NOW });
-  assert.deepEqual(c.rows.map((r) => r.pid), ["e", "a", "b"], "the new arrival on sale is not a candidate");
-  assert.equal(c.rows[1].sale.price, 150, "a candidate on sale shows its sale");
+  assert.deepEqual(c.rows.map((r) => r.pid), ["e", "b", "a"], "the new arrival on sale is not a candidate");
+  assert.equal(c.rows[2].sale.price, 150, "a candidate on sale shows its sale");
   assert.equal(core.defaultEnd(sales, NOW), END, "one product extended on its own does not move the date for new sales");
   assert.equal(core.defaultEnd({ a: sales.a }, NOW), core.endOfDayMs("2026-12-07"), "every running sale extended: a new one ends with them");
   assert.equal(core.defaultEnd({}, NOW), END);
@@ -324,4 +324,19 @@ test("Edit price keeps the sale's own end; a new sale ends with the extended one
   const DEC7 = core.endOfDayMs("2026-12-07");
   assert.deepEqual([(await get(db, `${R}/sales/a`)).end, (await get(db, `${R}/sales/b`)).end], [DEC7, DEC7]);
   assert.deepEqual(await get(db, "products/a/bfSale"), { price: 120, start: NOW + 2, end: DEC7 });
+});
+
+test("Edit price on products with different ends says so; after the default end a new sale needs the date Junid picks (CodeRabbit #969)", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a", "b"], price: 150 }, "junid", NOW);
+  await X.extend(db, { pids: ["a"], endDay: "2026-12-07" }, "junid", NOW + 1);
+  const r = await X.putOnSale(db, { pids: ["a", "b"], price: 120 }, "junid", NOW + 2);
+  assert.deepEqual({ until: r.until, untilFrom: r.untilFrom }, { until: "Mon 7 Dec", untilFrom: "Mon 30 Nov" });
+  const one = await X.putOnSale(db, { pids: ["b"], price: 110 }, "junid", NOW + 3);
+  assert.deepEqual({ until: one.until, untilFrom: one.untilFrom }, { until: "Mon 30 Nov", untilFrom: undefined });
+  const later = world();
+  const DEC2 = Date.parse("2026-12-02T10:00:00+02:00");
+  await assert.rejects(() => X.putOnSale(later, { pids: ["a"], price: 150 }, "junid", DEC2), /Pick a new end date/);
+  const ok = await X.putOnSale(later, { pids: ["a"], price: 150, endDay: "2026-12-07" }, "junid", DEC2);
+  assert.equal(ok.until, "Mon 7 Dec");
 });

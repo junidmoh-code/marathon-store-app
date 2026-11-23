@@ -93,10 +93,9 @@ function viewRow(pid, row, { sale = null, chosen = null, posted = null, nowMs })
     posted: on && posted && Number(posted.version) === saleVersion(sale) ? { at: posted.at, groups: posted.groups || 0 } : null,
   };
 }
-/** Zero sold first, then the oldest arrival (a row with no arrival on record last), then by name. */
-function byOldAndUnsold(a, b) {
-  const sa = Number(a[1].sold) > 0 ? 1 : 0, sb = Number(b[1].sold) > 0 ? 1 : 0;
-  return sa - sb || (Number(a[1].arrived) || Infinity) - (Number(b[1].arrived) || Infinity)
+/** By arrival date, the OLDEST first (Junid, 17:50: "have them by date"); same day: fewer sold first, then by name. A row with no arrival on record goes last. */
+function byArrival(a, b) {
+  return (Number(a[1].arrived) || Infinity) - (Number(b[1].arrived) || Infinity) || (Number(a[1].sold) || 0) - (Number(b[1].sold) || 0)
     || String(a[1].name || "").localeCompare(String(b[1].name || "")) || a[0].localeCompare(b[0]);
 }
 /**
@@ -126,7 +125,7 @@ function viewList({ items = {}, removed = {}, sales = {}, photos = {}, posted = 
     mine.push([pid, it ? { ...it } : { name: s.name, kind: s.kind, cat: s.cat || null, qty: null, stockPrice: s.baseStock, retailPrice: s.baseRetail, photo: s.photo || null, locs: {}, sizes: "" }]);
   }
   if (t === "onsale") mine.sort((a, b) => String(a[1].name || "").localeCompare(String(b[1].name || "")) || a[0].localeCompare(b[0]));
-  else mine.sort(byOldAndUnsold);
+  else mine.sort(byArrival);
   const start = Math.max(0, Number(from) || 0);
   const page = mine.slice(start, start + Math.max(1, Math.min(PAGE, Number(n) || PAGE)));
   return {
