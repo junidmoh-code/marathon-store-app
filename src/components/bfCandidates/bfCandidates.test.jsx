@@ -216,6 +216,27 @@ describe("BF Candidates card", () => {
     expect(api.list.mock.calls[api.list.mock.calls.length - 1][0]).toBe("sneakers");
   });
 
+  it("an item put on sale leaves its list at once and the tab counts move; the card says Waiting: X of 30 (Junid 18:17)", async () => {
+    let finish;
+    const api = fakeApi([row(), row({ pid: "b", name: "Tee B" })], { sale: vi.fn(() => new Promise((res) => { finish = () => res({ ok: true, done: ["a"], refused: [], until: "Mon 30 Nov" }); })) });
+    let listed = 0;
+    api.list.mockImplementation(() => (listed++ === 0 ? Promise.resolve(answer([row(), row({ pid: "b", name: "Tee B" })], { posting: { waiting: "Waiting: 1 of 30", banner: "Sale posts start at 30 items: 1 of 30" } })) : new Promise(() => {})));
+    const r = await mount(api);
+    expect(all(r)).toContain("Sale posts start at 30 items: 1 of 30");
+    await type(field(r, "Sale price for Tee A"), "150");
+    await act(async () => { buttons(r.root, "Put on sale")[0].props.onClick(); });
+    await act(async () => { finish(); }); await flush();
+    const t = all(r);
+    expect(t).not.toContain("Tee A");            // gone before the fresh list has come back
+    expect(t).toContain("Clothing (1)");
+    expect(t).toContain("On sale (1)");
+    const onSale = fakeApi([row({ sale: { price: 150, until: "Mon 30 Nov" } })]);
+    onSale.list.mockImplementation(async () => answer([row({ sale: { price: 150, until: "Mon 30 Nov" } })], { posting: { waiting: "Waiting: 1 of 30", banner: "Sale posts start at 30 items: 1 of 30" } }));
+    const o = await mount(onSale);
+    expect(all(o)).toContain("Waiting: 1 of 30");
+    expect(all(o)).not.toContain("Queued to post");
+  });
+
   it("small pure parts", () => {
     expect(photoError(new Error("That product is not in the campaign."))).toMatch(/not on the Black Friday list yet/);
     expect(photoError(new Error("Paused — generation is switched off on the New Arrivals card."))).toMatch(/Paused/);

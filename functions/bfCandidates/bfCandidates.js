@@ -426,8 +426,8 @@ const bfSaleList = onCall({ ...callableOpts, minInstances: 1 }, async (request) 
   const d = request.data || {};
   // The card's own small nodes (the finder's list is the largest: one slim row per product that is not moving).
   // Everything at once (the location names with them): the card waits for the slowest read, not for their sum.
-  const [[items, removed, sales, photos, posted, meta], locs] = await Promise.all([
-    Promise.all(["candidates/items", "removed", "sales", "photos", "posted", "candidates/meta"].map((p) => val(db, `${R}/${p}`))),
+  const [[items, removed, sales, photos, posted, meta, posting], locs] = await Promise.all([
+    Promise.all(["candidates/items", "removed", "sales", "photos", "posted", "candidates/meta", "posting"].map((p) => val(db, `${R}/${p}`))),
     locations(db),
   ]);
   const cutoff = core.cutoffOf(d.cutoff);
@@ -435,7 +435,7 @@ const bfSaleList = onCall({ ...callableOpts, minInstances: 1 }, async (request) 
   const view = core.viewList({ items: items || {}, removed: removed || {}, sales: sales || {}, photos: photos || {}, posted: posted || {} }, { tab: d.tab, cutoff, from: d.from, n: d.n, nowMs });
   // The end a sale put on now gets (Mon 30 Nov, or later once the running sales were extended past it).
   const dEnd = core.defaultEnd(sales || {}, nowMs);
-  return { ...view, locNames, tab: core.VIEWS.includes(d.tab) ? d.tab : "clothing", cutoff, cutoffs: Object.keys(core.CUTOFFS).map((k) => ({ key: k, label: core.CUTOFF_LABEL[k], day: core.CUTOFFS[k] })), defaultEndDay: core.sastDay(dEnd), defaultUntil: core.endLabel(dEnd), endPassed: !(dEnd > nowMs), today: core.sastDay(nowMs), now: nowMs, meta: meta || null };
+  return { ...view, locNames, tab: core.VIEWS.includes(d.tab) ? d.tab : "clothing", cutoff, cutoffs: Object.keys(core.CUTOFFS).map((k) => ({ key: k, label: core.CUTOFF_LABEL[k], day: core.CUTOFFS[k] })), defaultEndDay: core.sastDay(dEnd), defaultUntil: core.endLabel(dEnd), endPassed: !(dEnd > nowMs), posting: core.postingState(sales || {}, posting, nowMs), today: core.sastDay(nowMs), now: nowMs, meta: meta || null };
 });
 
 const bfSaleSet = onCall(callableOpts, async (request) => {

@@ -76,8 +76,10 @@ test("the On sale tab lists EVERYTHING on sale, candidate or not; a non-candidat
   assert.equal(v.counts.onSale, 3);
   assert.deepEqual({ same: v.saleEnds.same, first: v.saleEnds.firstLabel, last: v.saleEnds.lastLabel }, { same: false, first: "Mon 30 Nov", last: "Mon 7 Dec" });
   const c = core.viewList({ items: ITEMS, sales }, { tab: "clothing", nowMs: NOW });
-  assert.deepEqual(c.rows.map((r) => r.pid), ["b", "a", "e"], "the new arrival on sale is not a candidate");
-  assert.equal(c.rows[1].sale.price, 150, "a candidate on sale shows its sale");
+  assert.deepEqual(c.rows.map((r) => r.pid), ["b", "e"], "Tee A is on sale: it has LEFT the Clothing list (Junid 18:17)");
+  assert.deepEqual(c.counts, { clothing: 2, sneakers: 1, onSale: 3, removed: 0 }, "the tab counts move with it");
+  const back = core.viewList({ items: ITEMS, sales: { ...sales, a: { ...sales.a, end: NOW - 1 } } }, { tab: "clothing", nowMs: NOW });
+  assert.deepEqual(back.rows.map((r) => r.pid), ["b", "a", "e"], "removed from the sale (or ended): back in its list");
   assert.equal(core.defaultEnd(sales, NOW), END, "one product extended on its own does not move the date for new sales");
   assert.equal(core.defaultEnd({ a: sales.a }, NOW), core.endOfDayMs("2026-12-07"), "every running sale extended: a new one ends with them");
   assert.equal(core.defaultEnd({}, NOW), END);
@@ -475,4 +477,14 @@ test("one left goes all the way down; the same quantity: the oldest arrival firs
   const items = { one: { name: "One left", kind: "clothing", qty: 1, arrived: JUN, received: 20, sold: 0 }, big: { name: "Big", kind: "clothing", qty: 60, arrived: JUL, received: 60, sold: 0 },
     mid1: { name: "Mid July", kind: "clothing", qty: 10, arrived: JUL, received: 10, sold: 0 }, mid2: { name: "Mid June", kind: "clothing", qty: 10, arrived: JUN, received: 10, sold: 0 } };
   assert.deepEqual(core.viewList({ items }, { tab: "clothing", nowMs: NOW }).rows.map((r) => r.pid), ["big", "mid2", "mid1", "one"]);
+});
+
+test("the card's posting words: Waiting X of 30 until the 30 is met and Tue 24 Nov 08:00 has come (Junid 18:17)", () => {
+  const n = (k) => Object.fromEntries(Array.from({ length: k }, (_, i) => [`p${i}`, { salePrice: 100, start: NOW - 1, end: END, setAt: NOW - 1 }]));
+  const tue = Date.parse("2026-11-24T08:00:00+02:00");
+  assert.deepEqual(core.postingState(n(1), null, NOW), { started: false, onSale: 1, need: 30, waiting: "Waiting: 1 of 30", banner: "Sale posts start at 30 items: 1 of 30" });
+  assert.equal(core.postingState(n(30), null, NOW).waiting, "Waiting: posts start Tue 24 Nov 08:00");
+  assert.equal(core.postingState(n(29), null, tue + 1).banner, "Sale posts start at 30 items: 29 of 30");
+  assert.deepEqual(core.postingState(n(31), { startedAt: tue }, tue + 1), { started: true, onSale: 31, need: 30, waiting: null, banner: null });
+  assert.equal(core.postingState(n(31), { startedAt: 5 }, NOW).started, false, "never today");
 });
