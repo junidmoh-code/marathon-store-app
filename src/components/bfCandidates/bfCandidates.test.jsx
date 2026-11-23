@@ -259,6 +259,19 @@ describe("BF Candidates card", () => {
     expect(all(r)).toMatch(/Failed: Gemini declined to make this photo/);
   });
 
+  it("Generate: closing the card ends the wait (nothing keeps asking behind it)", async () => {
+    const api = fakeApi([row()], { generate: vi.fn(() => new Promise(() => {})), photoLanded: vi.fn(async () => ({ ok: false, pending: true })) });
+    const r = await mount(api);
+    vi.useFakeTimers();
+    await tap(buttons(r.root, "Generate")[0]);
+    await later(5000);
+    const asked = api.photoLanded.mock.calls.length;
+    expect(asked).toBeGreaterThan(0);
+    await act(async () => { r.unmount(); });
+    await later(60_000);
+    expect(api.photoLanded.mock.calls.length).toBe(asked);
+  });
+
   it("Generate: the card closed while a photo was being made shows it when opened again, without making another", async () => {
     const since = Date.now() - 60_000;
     const store = new Map([["bfCandidates.photoJobs.anon", JSON.stringify({ a: { since, name: "Tee A" }, old: { since: since - 3_600_000, name: "Long over" } })]]);

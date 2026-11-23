@@ -323,6 +323,9 @@ export default function BfCandidatesScreen({ api, onExit }) {
   // old photo under the new one's picture. So no photo job starts while a tap is in flight, and (withBusy) no tap
   // lands on a product whose photo is being made.
   const turn = useRef({}); // { pid: n }, moved by every photo choice
+  const waits = useRef(new Set()); // the stop of every wait for a photo, ended when the card closes
+  const closed = useRef(false);
+  useEffect(() => { closed.current = false; const w = waits.current; return () => { closed.current = true; [...w].forEach((stop) => stop()); }; }, []);
   const photoJob = async (r, label, fn, { keepJob = false } = {}) => {
     if (inFlight.current) { say("Wait for the sale to finish saving, then choose the photo."); return; }
     turn.current[r.pid] = (turn.current[r.pid] || 0) + 1; // a newer choice: a late photo of an older Generate never replaces it
@@ -350,10 +353,12 @@ export default function BfCandidatesScreen({ api, onExit }) {
     const onSee = () => { if (!document.hidden) ask(); };
     const finish = (fn, v) => {
       if (over) return;
-      over = true; clearInterval(tick); clearTimeout(limit);
-      try { document.removeEventListener("visibilitychange", onSee); } catch { /* no document */ }
+      stop();
       fn(v);
     };
+    // The card closed: the wait ends quietly (no timers, no calls left behind); the kept job picks it up when reopened.
+    const stop = () => { over = true; clearInterval(tick); clearTimeout(limit); try { document.removeEventListener("visibilitychange", onSee); } catch { /* no document */ } waits.current.delete(stop); };
+    waits.current.add(stop);
     const late = () => finish(reject, new Error("it took longer than 3 minutes. If the photo still arrives, Retry picks it up without making another"));
     async function ask() {
       if (over || asking) return;
@@ -377,7 +382,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
       start().then(async (res) => {
         const genId = res && (res.genId || (res.result && res.result.genId));
         // After the card gave up: the photo is still shown the moment it arrives.
-        if (over) { if (genId && turn.current[r.pid] === mine && !inFlight.current) { try { await choose(r, genId); setFailed((f) => { const n = { ...f }; delete n[r.pid]; return n; }); jobSet(who, r.pid, null); } catch { /* Retry picks it up */ } } return; }
+        if (over) { if (genId && !closed.current && turn.current[r.pid] === mine && !inFlight.current) { try { await choose(r, genId); setFailed((f) => { const n = { ...f }; delete n[r.pid]; return n; }); jobSet(who, r.pid, null); } catch { /* Retry picks it up */ } } return; }
         callDone = true;
         if (!genId) { ask(); return; }
         try { const c = await choose(r, genId); finish(resolve, c); } catch (e) { finish(reject, e); }
