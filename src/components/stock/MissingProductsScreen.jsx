@@ -529,7 +529,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const hiddenCount = Object.keys(hiddenMap || {}).length;
 
   const box = (on, h) => ({
-    height: h, borderRadius: 14, cursor: "pointer", fontFamily: FONT, textAlign: "center", padding: 0, WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
+    height: h, borderRadius: 11, cursor: "pointer", fontFamily: FONT, textAlign: "center", padding: 0, WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
     border: on ? "1px solid rgba(60,110,255,.75)" : "1px solid rgba(255,255,255,.12)",
     background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)", color: on ? "#fff" : "rgba(255,255,255,.55)",
   });
@@ -538,33 +538,39 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
-      <div style={{ maxWidth: 720, margin: "0 auto", padding: "12px 12px 120px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, height: 44, marginBottom: 10 }}>
+      {/* COMPACT (Junid, 23 Nov 2026): every row 40 px, 4 px apart — six whole
+          cards on an iPhone where three and a half fitted. */}
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "4px 8px 120px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, height: 40, marginBottom: 4 }}>
           <button data-action="exit" onClick={() => (view === "hidden" ? setView("list") : onExit?.())}
-            style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 11, padding: "0 14px", height: 44, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>← Back</button>
-          <div data-title style={{ fontSize: 19, fontWeight: 800, whiteSpace: "nowrap" }}>{view === "hidden" ? `Hidden (${hiddenCount})` : "Missing Products"}</div>
+            style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 10, padding: "0 12px", height: 40, fontWeight: 700, fontSize: 13.5, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>← Back</button>
+          <div data-title style={{ fontSize: 17, fontWeight: 800, whiteSpace: "nowrap" }}>{view === "hidden" ? `Hidden (${hiddenCount})` : "Missing Products"}</div>
           {/* The hidden tab's entrance: the unlabelled press-and-hold spot
               (HiddenProducts.jsx HoldSpot — discretion, not access control). */}
           <HoldSpot onTrigger={() => setView("hidden")} />
         </div>
 
-        <div style={{ position: "sticky", top: 0, zIndex: 5, background: BG, paddingBottom: 10 }}>
-          <div aria-label="Division" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(divisions.length, 1)}, 1fr)`, gap: 8, marginBottom: 8 }}>
+        {/* Sticks just below the iPhone status bar in the installed app (the
+            inset is 0 in a browser tab). */}
+        <div style={{ position: "sticky", top: "env(safe-area-inset-top, 0px)", zIndex: 5, background: BG, paddingBottom: 4 }}>
+          <div aria-label="Division" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(divisions.length, 1)}, 1fr)`, gap: 6, marginBottom: 4 }}>
             {divisions.map((sec) => {
               const on = sec === section && view === "list";
               const n = countOf(sec);
               return (
-                <button key={sec} aria-pressed={on} data-division={sec} onClick={() => { setPick(sec); setView("list"); }} style={box(on, 62)}>
-                  <div style={{ fontSize: 16, fontWeight: 800, lineHeight: "20px" }}>{sectionName(network, sec)}</div>
-                  <div data-division-count={sec} style={{ fontSize: 14, fontWeight: 700, lineHeight: "18px", height: 18, marginTop: 2, color: on ? BLUE_L : "rgba(255,255,255,.45)" }}>{n == null ? " " : n}</div>
+                <button key={sec} aria-pressed={on} data-division={sec} onClick={() => { setPick(sec); setView("list"); }}
+                  style={{ ...box(on, 40), display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                  <span style={{ fontSize: 15, fontWeight: 800, lineHeight: "18px" }}>{sectionName(network, sec)}</span>
+                  {/* A fixed-width count box: the name never moves when the number arrives. */}
+                  <span data-division-count={sec} style={{ fontSize: 13.5, fontWeight: 700, lineHeight: "18px", minWidth: 34, textAlign: "left", fontVariantNumeric: "tabular-nums", color: on ? BLUE_L : "rgba(255,255,255,.45)" }}>{n == null ? " " : n}</span>
                 </button>
               );
             })}
           </div>
-          <div aria-label="Kind" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div aria-label="Kind" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
             {KINDS.map(([k, name]) => (
               <button key={k} aria-pressed={kind === k && view === "list"} data-kind={k} onClick={() => { setKind(k); setView("list"); }}
-                style={{ ...box(kind === k && view === "list", 44), fontSize: 15, fontWeight: 800 }}>{name}</button>
+                style={{ ...box(kind === k && view === "list", 40), fontSize: 14.5, fontWeight: 800 }}>{name}</button>
             ))}
           </div>
         </div>
@@ -589,8 +595,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
                 ? <div data-empty style={{ height: CARD_H + CARD_GAP, display: "flex", alignItems: "center", justifyContent: "center", color: GRAY, fontSize: 15 }}>Nothing to send</div>
                 : display.slice(0, limit).map((d, i) => (
                   <React.Fragment key={d.key}>
-                    {i === 0 && anyNeeds && <div data-needs-label style={{ height: 26, fontSize: 12.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: AMBER }}>Needs policy</div>}
-                    {i === firstNormal && i > 0 && anyNeeds && <div aria-hidden="true" style={{ height: 14 }} />}
+                    {i === 0 && anyNeeds && <div data-needs-label style={{ height: 20, fontSize: 11.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: AMBER }}>Needs policy</div>}
+                    {i === firstNormal && i > 0 && anyNeeds && <div aria-hidden="true" style={{ height: 8 }} />}
                     <Slot leaving={d.leaving} entering={d.entering} data-slot={d.key}>
                       <MissingRow row={d.row} product={byId.get(d.row.pid)} twinProduct={d.row.twin ? byId.get(d.row.twin) : null}
                         selected={d.leaving ? NO_PICK : chosen(d.row)} busy={!!busy[d.key]} canAct={canAct} onPick={onPick} onSolve={onSolve} onPhoto={onPhoto}

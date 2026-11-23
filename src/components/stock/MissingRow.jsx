@@ -8,26 +8,38 @@
 // being worked out is a skeleton of the same box. The only movement on the
 // screen is a card LEAVING: its slot closes in one transition (Slot), and the
 // cards below move up once.
+//
+// COMPACT (Junid, 23 Nov 2026 — "far too big, a phone shows three and a half
+// cards"): the same card at 94 px. The photo runs the card's full height on
+// the left; beside it the name (two lines at most), the stock line, and under
+// them the locations and Solve. Every tap target is still at least 40 px tall
+// — the saving is padding, gaps and font size, never a smaller button.
 import React, { memo, useEffect, useState } from "react";
 import { FONT, GREEN, BLUE, BLUE_L, AMBER } from "./ui";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
-export const CARD_H = 168;
-export const CARD_GAP = 10;
+export const CARD_H = 94;
+export const CARD_GAP = 4;
 export const LEAVE_MS = 240;
-const PHOTO = 88;
+// Inside the 1 px border and 4 px padding: 94 − 2 − 8 = 84.
+const INNER = 84;
+const PHOTO = INNER;
+// The name + stock block above the buttons, and the button row.
+const TOP_H = 44;
+const BTN_H = 40;
 
 const shell = {
-  height: CARD_H, boxSizing: "border-box", padding: 12, borderRadius: 16, fontFamily: FONT,
+  height: CARD_H, boxSizing: "border-box", padding: "4px 6px 4px 4px", borderRadius: 14, fontFamily: FONT,
   background: "rgba(255,255,255,.035)", border: "1px solid rgba(255,255,255,.09)",
-  display: "flex", flexDirection: "column", justifyContent: "space-between", overflow: "hidden",
+  display: "flex", gap: 8, overflow: "hidden",
 };
 const NO_PICK = Object.freeze([]);
 // A location: a neutral outline until chosen, then filled blue with a tick.
 // Never green: green means one thing on this screen — Solve, ready to go.
 const chip = (on) => ({
-  position: "relative", flex: 1, minWidth: 0, height: 48, borderRadius: 13, fontFamily: FONT, fontSize: 15, fontWeight: 800,
-  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", padding: "0 20px", cursor: "pointer",
+  position: "relative", flex: 1, minWidth: 0, height: BTN_H, borderRadius: 11, fontFamily: FONT, fontSize: 13, fontWeight: 800, letterSpacing: "-.01em",
+  // left room for the tick; "Marathon PE" fits whole at iPhone width
+  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", padding: "0 4px 0 13px", cursor: "pointer",
   WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
   background: on ? BLUE : "transparent",
   border: `1px solid ${on ? BLUE : "rgba(255,255,255,.2)"}`,
@@ -35,7 +47,7 @@ const chip = (on) => ({
 });
 // Solve: the main action. Green and solid only once a location is chosen.
 const solveBtn = (ready, busy) => ({
-  width: 88, flexShrink: 0, height: 48, borderRadius: 13, fontFamily: FONT, fontSize: 16, fontWeight: 800,
+  width: 58, flexShrink: 0, height: BTN_H, borderRadius: 11, fontFamily: FONT, fontSize: 14.5, fontWeight: 800, padding: 0,
   cursor: ready ? "pointer" : "default", WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
   background: ready || busy ? GREEN : "transparent",
   border: `1px solid ${ready || busy ? GREEN : "rgba(255,255,255,.1)"}`,
@@ -44,17 +56,18 @@ const solveBtn = (ready, busy) => ({
 });
 // THE DIVISION BUTTON (Junid, 23 Nov 2026): where Hide was, beside the stock
 // line. Small and secondary, and shaped unlike anything else on the card — a
-// short dashed violet tag, not a filled or outlined 48 px chip — so it can't
-// be read as a destination or as Solve. The tap target is 44 px tall; the tag
-// drawn inside it is 26 px, so the stock line (and the card) never grows.
+// short dashed violet tag, not a filled or outlined chip — so it can't be read
+// as a destination or as Solve. Its tap target is the full 44 px of the name +
+// stock block, to the right of it (never over the buttons below); the tag drawn
+// inside is 22 px, so the card never grows.
 const divisionHit = {
-  flexShrink: 0, height: 44, margin: "-4px 0", padding: "0 0 0 10px", background: "none", border: "none", fontFamily: FONT,
+  flexShrink: 0, height: TOP_H, padding: "0 0 0 8px", background: "none", border: "none", fontFamily: FONT,
   display: "flex", alignItems: "center", cursor: "pointer", WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
 };
 const divisionTag = (busy) => ({
-  height: 26, lineHeight: "24px", boxSizing: "border-box", padding: "0 9px", borderRadius: 7,
+  height: 22, lineHeight: "20px", boxSizing: "border-box", padding: "0 7px", borderRadius: 6,
   border: "1px dashed rgba(196,160,255,.55)", color: "rgba(214,190,255,.9)", background: "transparent",
-  fontSize: 12, fontWeight: 700, letterSpacing: ".02em", whiteSpace: "nowrap", opacity: busy ? 0.5 : 1,
+  fontSize: 11.5, fontWeight: 700, letterSpacing: ".02em", whiteSpace: "nowrap", opacity: busy ? 0.5 : 1,
 });
 
 // The slot a card sits in. `leaving` closes it once; `entering` (a card put
@@ -83,11 +96,11 @@ export function SkeletonRow() {
   return (
     <div data-skeleton aria-hidden="true" style={{ height: CARD_H + CARD_GAP }}>
       <div style={shell}>
-        <div style={{ display: "flex", gap: 12, height: PHOTO }}>
-          <div style={{ width: PHOTO, height: PHOTO, borderRadius: 13, background: "rgba(255,255,255,.06)", flexShrink: 0 }} />
-          <div style={{ flex: 1, paddingTop: 4 }}><div style={bar("78%", 16)} /><div style={{ ...bar("40%", 14), marginTop: 12 }} /></div>
+        <div style={{ width: PHOTO, height: PHOTO, borderRadius: 11, background: "rgba(255,255,255,.06)", flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+          <div style={{ paddingTop: 3 }}><div style={bar("78%", 12)} /><div style={{ ...bar("40%", 11), marginTop: 8 }} /></div>
+          <div style={{ height: BTN_H, borderRadius: 11, background: "rgba(255,255,255,.04)" }} />
         </div>
-        <div style={{ height: 48, borderRadius: 13, background: "rgba(255,255,255,.04)" }} />
       </div>
     </div>
   );
@@ -112,52 +125,53 @@ function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = fals
   const ready = canAct && !busy && selected.length > 0;
   return (
     <div data-card={row.pid} data-card-name={row.name} data-card-kind={row.kind} style={shell}>
-      <div style={{ display: "flex", gap: 12, height: PHOTO }}>
-        <button type="button" aria-label="Look at the photo" onClick={() => onPhoto?.(live)}
-          style={{ position: "relative", width: PHOTO, height: PHOTO, borderRadius: 13, flexShrink: 0, overflow: "hidden", border: "none", padding: 0, background: "rgba(60,110,255,.1)", cursor: "zoom-in" }}>
-          <PrimaryPhoto product={live} productId={row.pid} snapshot={row.photo || null} alt="" width={PHOTO} height={PHOTO} style={{ width: PHOTO, height: PHOTO, objectFit: "cover", display: "block" }} />
-        </button>
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-          <div data-name style={{ fontWeight: 800, fontSize: 16, lineHeight: "20px", height: 40, color: "#fff", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflowWrap: "anywhere" }}>{String(row.name).replace(/\u00a0/g, " ")}</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, height: 36 }}>
-            <div data-stock style={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 700, color: BLUE_L, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <button type="button" aria-label="Look at the photo" onClick={() => onPhoto?.(live)}
+        style={{ position: "relative", width: PHOTO, height: PHOTO, borderRadius: 11, flexShrink: 0, overflow: "hidden", border: "none", padding: 0, background: "rgba(60,110,255,.1)", cursor: "zoom-in" }}>
+        <PrimaryPhoto product={live} productId={row.pid} snapshot={row.photo || null} alt="" width={PHOTO} height={PHOTO} style={{ width: PHOTO, height: PHOTO, objectFit: "cover", display: "block" }} />
+      </button>
+      <div style={{ flex: 1, minWidth: 0, height: INNER, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", height: TOP_H }}>
+          <div style={{ flex: 1, minWidth: 0, height: TOP_H, display: "flex", flexDirection: "column", justifyContent: "flex-start" }}>
+            {/* Two lines at most, always the same box: a short name and a long one give the same card. */}
+            <div data-name style={{ fontWeight: 800, fontSize: 13, lineHeight: "15px", height: 30, color: "#fff", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflowWrap: "anywhere" }}>{String(row.name).replace(/\u00a0/g, " ")}</div>
+            <div data-stock style={{ fontSize: 12.5, lineHeight: "14px", height: 14, fontWeight: 700, color: BLUE_L, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {row.sourceName} {row.stock}{row.needsPolicy && <span data-needs-policy style={{ color: AMBER, marginLeft: 8 }}>No policy yet</span>}
             </div>
-            {/* SAME NAME ELSEWHERE: the other record's photo, no sentence. */}
-            {row.twin && (
-              <button type="button" data-same-name={row.twin} aria-label="Another record has this name — look at its photo" onClick={() => onPhoto?.(twinProduct || { id: row.twin })}
-                style={{ width: 36, height: 36, borderRadius: 9, overflow: "hidden", padding: 0, flexShrink: 0, background: "rgba(251,191,36,.12)", border: `2px solid ${AMBER}`, cursor: "zoom-in" }}>
-                <PrimaryPhoto product={twinProduct || { id: row.twin }} productId={row.twin} alt="" width={32} height={32} style={{ width: 32, height: 32, objectFit: "cover", display: "block" }} />
-              </button>
-            )}
-            {divisionLabel && (
-              <button type="button" data-action="division" data-division-mark={divisionLabel.toLowerCase()}
-                aria-label={`Belongs to ${divisionLabel} only`} title={`This product belongs to ${divisionLabel} only`}
-                onClick={() => { if (!busy) onDivision?.(row); }} style={divisionHit}>
-                <span style={divisionTag(busy === "division")}>{divisionLabel}</span>
-              </button>
-            )}
           </div>
-        </div>
-      </div>
-      <div style={{ display: "flex", gap: 8, height: 48 }}>
-        {canAct && row.dests.map((d) => {
-          const on = selected.includes(d.id);
-          return (
-            <button key={d.id} type="button" data-dest={d.id} aria-pressed={on} aria-label={d.name}
-              onClick={() => { if (!busy) onPick?.(row, d.id); }} style={chip(on)}>
-              {/* The tick sits at the chip's edge, so the name never moves when chosen. */}
-              <span aria-hidden="true" style={{ position: "absolute", left: 7, top: 0, bottom: 0, display: "flex", alignItems: "center", opacity: on ? 1 : 0 }}>✓</span>{d.name}
+          {/* SAME NAME ELSEWHERE: the other record's photo, no sentence. */}
+          {row.twin && (
+            <button type="button" data-same-name={row.twin} aria-label="Another record has this name — look at its photo" onClick={() => onPhoto?.(twinProduct || { id: row.twin })}
+              style={{ width: 40, height: 40, borderRadius: 9, overflow: "hidden", padding: 0, marginLeft: 6, flexShrink: 0, background: "rgba(251,191,36,.12)", border: `2px solid ${AMBER}`, cursor: "zoom-in" }}>
+              <PrimaryPhoto product={twinProduct || { id: row.twin }} productId={row.twin} alt="" width={36} height={36} style={{ width: 36, height: 36, objectFit: "cover", display: "block" }} />
             </button>
-          );
-        })}
-        {canAct && (
-          <button type="button" data-action="solve" aria-disabled={!ready} aria-busy={busy || undefined}
-            onClick={() => { if (ready) onSolve?.(row); }} style={solveBtn(ready, busy)}>
-            {/* One word, always: a label that changed would move (busy = dimmed). */}
-            Solve
-          </button>
-        )}
+          )}
+          {divisionLabel && (
+            <button type="button" data-action="division" data-division-mark={divisionLabel.toLowerCase()}
+              aria-label={`Belongs to ${divisionLabel} only`} title={`This product belongs to ${divisionLabel} only`}
+              onClick={() => { if (!busy) onDivision?.(row); }} style={divisionHit}>
+              <span style={divisionTag(busy === "division")}>{divisionLabel}</span>
+            </button>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 6, height: BTN_H }}>
+          {canAct && row.dests.map((d) => {
+            const on = selected.includes(d.id);
+            return (
+              <button key={d.id} type="button" data-dest={d.id} aria-pressed={on} aria-label={d.name}
+                onClick={() => { if (!busy) onPick?.(row, d.id); }} style={chip(on)}>
+                {/* The tick sits at the chip's edge, so the name never moves when chosen. */}
+                <span aria-hidden="true" style={{ position: "absolute", left: 4, top: 0, bottom: 0, display: "flex", alignItems: "center", fontSize: 11, opacity: on ? 1 : 0 }}>✓</span>{d.name}
+              </button>
+            );
+          })}
+          {canAct && (
+            <button type="button" data-action="solve" aria-disabled={!ready} aria-busy={busy || undefined}
+              onClick={() => { if (ready) onSolve?.(row); }} style={solveBtn(ready, busy)}>
+              {/* One word, always: a label that changed would move (busy = dimmed). */}
+              Solve
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

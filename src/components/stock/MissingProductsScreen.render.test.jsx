@@ -972,15 +972,15 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     }
   });
 
-  it("the card height is unchanged: the button sits in the stock line and is smaller than it", async () => {
+  it("the card height is unchanged: the button sits beside the name + stock block, never over the locations", async () => {
     const tree = await mount();
     const { CARD_H } = await import("./MissingRow.jsx");
     for (const n of host(tree, "data-card")) expect(n.props.style.height).toBe(CARD_H);
-    expect(CARD_H).toBe(168);
+    expect(CARD_H).toBe(94);                              // compact (Junid, 23 Nov 2026)
     const b = markBtn(tree, SHOE_B);
-    expect(b.props.style.height).toBe(44);
-    expect(b.props.style.margin).toBe("-4px 0");          // 44 − 8 = the 36 px stock line
-    expect(b.findAll((n) => n.type === "span")[0].props.style.height).toBe(26);
+    expect(b.props.style.height).toBe(44);                // a full tap target …
+    expect(b.props.style.margin).toBeUndefined();         // … that reaches into nothing else
+    expect(b.findAll((n) => n.type === "span")[0].props.style.height).toBe(22);
   });
 
   it("the button is only for Junid, Jafer or a stock admin", async () => {
