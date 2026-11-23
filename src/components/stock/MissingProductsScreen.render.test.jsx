@@ -989,3 +989,22 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     expect(tree.root.findAll((n) => n.type === "button" && n.props["data-action"] === "division")).toEqual([]);
   });
 });
+
+describe("division Undo that fails (CodeRabbit, PR #967)", () => {
+  it("a failed Undo changes nothing and keeps its Undo to retry", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    await act(async () => { await card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0].props.onClick(); });
+    await act(async () => {}); await act(async () => {});
+    updateMock.mockImplementationOnce(() => Promise.reject(new Error("offline")));
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {}); await act(async () => {});
+    expect(toast(tree).kind).toBe("fail");
+    expect(toast(tree).text).toMatch(/Not undone — offline/);
+    expect(toast(tree).undo).toBeDefined();
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {}); await act(async () => {});
+    expect(cardsOf(tree)).toContain("Essentials Tee Olive");
+  });
+});

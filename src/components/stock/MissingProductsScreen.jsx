@@ -508,9 +508,10 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     setPicks((m) => { const n = { ...m }; delete n[row.key]; return n; });
     say({
       ok: true, text: res.msg || `${name} only`,
-      undo: async () => {
+      // A failed Undo changed nothing (one write), so it keeps its Undo to retry.
+      undo: async function undoMark() {
         const r = await undoDivision(row.pid, to, res.prior);
-        if (r.ok) { back(row.key); say({ ok: true, text: "Back on the list" }); } else say({ ok: false, text: r.msg });
+        if (r.ok) { back(row.key); say({ ok: !r.msg, text: r.msg || "Back on the list" }); } else say({ ok: false, text: r.msg, undo: undoMark });
       },
     });
   };

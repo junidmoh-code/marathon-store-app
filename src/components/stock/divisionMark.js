@@ -148,7 +148,8 @@ export async function undoDivision(pid, division, prior) {
   if (!prior || (division !== "concrete" && division !== "marathon")) return { ok: false, msg: "Nothing to undo." };
   const now = { concrete: division === "concrete", marathon: division === "marathon" };
   const r = await applyMarks(pid, { concrete: !!prior.concrete, marathon: !!prior.marathon }, now);
-  return r.ok ? { ok: true } : { ok: false, msg: `Not undone — ${r.message}` };
+  if (!r.ok) return { ok: false, msg: `Not undone — ${r.message}` };   // one write: nothing changed, so a retry is safe
+  return { ok: true, ...(r.warning ? { msg: `Back on the list — but ${r.warning}` } : {}) };
 }
 
 /**
