@@ -123,6 +123,8 @@ const HEALTH = [
   ["owner", "eft_pool", true], ["owner", "card_batches", true], ["owner", "online_orders", true], ["owner", "users", true],
   ["poller", "card_batch_intake", true],
   ["anon", "settings", true], ["anon", "orders", true],
+  ["cashier", "pos/storeCredits", true], ["cashier", "pos/sales", true], ["cashier", "customers", true],
+  ["cashier", "pos_manager_pins", false], ["owner", "pos_manager_pins", false],
 ];
 const STRANGER_DENY = ["users", "products", "stock", "laybys", "config", "pos_meta", "restock_requests"];
 async function healthCheck(db, p, { strangerMustBeDenied }) {
@@ -175,7 +177,8 @@ try {
     [`users/${uids.owner}`]: { stockRole: "admin" }, [`users/${uids.poller}`]: { isService: true, permFlags: { card_recon: true } },
     "settings/probe": 1, "orders/probe": { status: "probe", destShop: CASHIER_SHOP || "pe" }, "products/probe": { name: "probe" }, "stock/probe": 1,
     "locations/probe": 1, "config/probe": 1, "laybys/probe": 1, "pos_meta/probe": 1, "eft_pool/probe": 1, "card_batches/probe": 1,
-    "online_orders/probe": 1, "card_batch_intake/probe": 1, "restock_requests/probe": 1 };
+    "online_orders/probe": 1, "card_batch_intake/probe": 1, "restock_requests/probe": 1,
+    "pos/storeCredits/probe": { remainingAmount: 1, status: "active" }, "pos/sales/probe": { total: 1, type: "sale" }, "customers/probe": { name: "probe" } };
   console.log(`  → SEEDING ${TEST.name} (probe rows only)`);
   await fetch(`${TEST.url}/.json`, { method: "PATCH", headers: H, body: JSON.stringify(seed) });
   const testOk = await healthCheck(TEST, p, { strangerMustBeDenied: true });

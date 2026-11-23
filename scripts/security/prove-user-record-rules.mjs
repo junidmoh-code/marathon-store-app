@@ -21,6 +21,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { patchRequireUserRecord, countPatch } from "./rulesRequireUserRecord.mjs";
+import { patchMoneyPaths } from "./rulesMoneyPaths.mjs";
 
 const DB = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
 const NS = "marathon-club-default-rtdb";
@@ -144,8 +145,53 @@ async function matrix(rulesText, paths) {
   return res;
 }
 
+// --patch money: the money-path rules. Only these paths may change, and only
+// by losing a grant; the targeted cases below say exactly how.
+const PATCH = args.includes("--patch") ? args[args.indexOf("--patch") + 1] : "user-record";
+const MONEY_CHANGED = ["pos/shopifyCreditDebits", "pos/shopifyCreditDebitsOpen", "pos/storeCredits/pcreditId/status"];
+async function moneyCases(rulesText) {
+  await fetch(`${HOST}/.settings/rules.json?ns=${NS}`, { method: "PUT", headers: { Authorization: "Bearer owner" }, body: rulesText });
+  const out = {};
+  const seedCredit = async () => { await seed(); await admin("PUT", "pos/storeCredits/c1", { remainingAmount: 500, status: "active" }); await admin("PUT", "pos/storeCredits/c2", { remainingAmount: 0, status: "voided" }); };
+  await seedCredit(); out.tillDepletes = await as(P.staff, "PUT", "pos/storeCredits/c1/status", "depleted");
+  await seedCredit(); out.tillRevivesVoided = await as(P.staff, "PUT", "pos/storeCredits/c2/status", "active");
+  await seedCredit(); out.tillSpends = await as(P.staff, "PUT", "pos/storeCredits/c1/remainingAmount", 200);
+  await seedCredit(); out.tillForgesDebit = await as(P.staff, "PUT", "pos/shopifyCreditDebits/k1", { state: "done", accountId: "a", amountCents: 99999 });
+  await seedCredit(); out.tillReadsDebits = await as(P.staff, "GET", "pos/shopifyCreditDebits");
+  await seedCredit(); out.tillWritesOtherPos = await as(P.staff, "PUT", "pos/someOtherNode/x", { a: 1 });
+  await seedCredit(); out.staffReadsPinHashes = await as(P.staff, "GET", "pos_manager_pins");
+  await seedCredit(); out.ownerReadsPinHashes = await as(P.owner, "GET", "pos_manager_pins");
+  return out;
+}
+
 const isMain = import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
+if (isMain && PATCH === "money") {
+  const live = await liveRulesText();
+  const patched = patchMoneyPaths(live);
+  const paths = [...rulePaths(live), "pos/shopifyCreditDebits", "pos/shopifyCreditDebitsOpen", "pos_manager_pins"];
+  console.log(`paths walked: ${paths.length}`);
+  const emu = await boot();
+  const before = await matrix(live, paths), after = await matrix(patched, paths);
+  const cb = await moneyCases(live), ca = await moneyCases(patched);
+  emu.kill("SIGKILL");
+  let fail = 0;
+  for (const p of paths) for (const who of Object.keys(P)) {
+    if (before[p][who] === after[p][who]) continue;
+    const allowed = MONEY_CHANGED.some((m) => p === m || p.startsWith(`${m}/`));
+    const lostOnly = [0, 1].every((i) => !(after[p][who][i] !== "-" && before[p][who][i] === "-"));
+    if (!allowed || !lostOnly) { fail++; console.log(`FAIL ${who} at ${p}: ${before[p][who]} → ${after[p][who]}`); }
+  }
+  const want = { tillDepletes: [true, true], tillRevivesVoided: [true, false], tillSpends: [true, true], tillForgesDebit: [true, false],
+    tillReadsDebits: [true, false], tillWritesOtherPos: [true, true], staffReadsPinHashes: [false, false], ownerReadsPinHashes: [false, false] };
+  for (const [k, [b, a]] of Object.entries(want)) {
+    const ok = cb[k] === b && ca[k] === a;
+    if (!ok) fail++;
+    console.log(`  ${ok ? "ok  " : "FAIL"} ${k}: before ${cb[k] ? "ALLOW" : "deny"} → after ${ca[k] ? "ALLOW" : "deny"}`);
+  }
+  console.log(fail === 0 ? "PASS" : `FAIL (${fail})`);
+  process.exit(fail === 0 ? 0 : 1);
+}
+if (isMain && PATCH === "user-record") {
   const live = await liveRulesText();
   const patched = patchRequireUserRecord(live);
   const counts = countPatch(live, patched);
