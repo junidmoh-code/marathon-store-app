@@ -153,3 +153,49 @@ describe("pickNext — choosing on one card", () => {
     expect(pickNext(["marathon-pe"], "trophy")).toEqual(["marathon-pe", "trophy"]);
   });
 });
+
+// "NOTHING DISAPPEARS SILENTLY" (Junid, 23 Nov 2026): a dropped row says why.
+import { decideProductRow, decideSneakerRow } from "./missingListCore";
+describe("decideProductRow / decideSneakerRow — the same row, and why when there is none", () => {
+  const card = { pid: "p1", name: "Tee", source: "central", sizes: [] };
+  const base = { card, section: 1, product: tee, dests: ["marathon-pine", "concrete"], tickable: ["marathon-pine", "concrete"], central: "central", nameOf };
+  const why = (a) => decideProductRow({ ...base, ...a }).why;
+  it("a row → no reason, and the row is productRow's", () => {
+    const allStock = { central: { p1: { L: cell(3) } } };
+    const a = { allStock, planFor: directPlan({ concrete: ["L"] }, { L: 3 }) };
+    expect(decideProductRow({ ...base, ...a })).toEqual({ row: productRow({ ...base, ...a }), why: null });
+  });
+  it("no shop it may go to → noShop; no size any policy names → noPolicy", () => {
+    const allStock = { central: { p1: { L: cell(3) } } };
+    expect(why({ allStock, tickable: [], planFor: directPlan({}, {}) })).toBe("noShop");
+    expect(why({ allStock, planFor: directPlan({ concrete: [], "marathon-pine": [] }, {}) })).toBe("noPolicy");
+  });
+  it("the policy's sizes are at Central but every unit is promised → allPromised; Central has none of them → noSize", () => {
+    const allStock = { central: { p1: { L: cell(3), M: cell(2) } } };
+    expect(why({ allStock, planFor: directPlan({ concrete: ["L"] }, { L: 0 }) })).toBe("allPromised");
+    expect(why({ allStock: { central: { p1: { M: cell(2) } } }, planFor: directPlan({ concrete: ["L"] }, {}) })).toBe("noSize");
+  });
+  it("Central's units are all in sizes the product's own list does not name → undeclaredSize", () => {
+    expect(why({ allStock: { central: { p1: { XL: cell(3) } } }, planFor: directPlan({ concrete: ["S", "M", "L"] }, {}) })).toBe("undeclaredSize");
+  });
+  it("owned by both Pine and Concrete → bothShops; a sneaker or slide on this list → noView; no record → noRecord", () => {
+    const allStock = { central: { p1: { L: cell(3) } } };
+    const planFor = directPlan({ concrete: ["L"], "marathon-pine": ["L"] }, { L: 3 });
+    expect(why({ allStock, planFor, owners: ["marathon-pine", "concrete"] })).toBe("bothShops");
+    expect(why({ allStock, planFor, product: { ...tee, categoryKey: "slides" } })).toBe("noView");
+    expect(why({ allStock, planFor, product: null })).toBe("noRecord");
+  });
+  it("sneakers: list not live, the other hub has it, requested, nothing free", () => {
+    const sc = { pid: "s1", name: "Dunk", centralUnits: 30 };
+    const sb = { card: sc, section: 2, dests: ["hub1", "hub2"], nameOf };
+    const w = (a) => decideSneakerRow({ ...sb, ...a }).why;
+    expect(w({ blocked: true, planFor: () => [] })).toBe("notLive");
+    expect(w({ planFor: () => [{ size: "8", qty: 2, avail: 5 }], refusal: () => "the other hub has it" })).toBe("otherHub");
+    expect(w({ planFor: () => [], hasPolicy: () => true, requested: true })).toBe("requested");
+    expect(w({ planFor: () => [], hasPolicy: () => true, requested: false })).toBe("noSize");
+    // requested wins: it is in Central's queue, whatever its numbers
+    expect(w({ planFor: () => [], hasPolicy: () => false, requested: true })).toBe("requested");
+    // the needs-policy card is a ROW (it is on the list), so it has no reason
+    expect(decideSneakerRow({ ...sb, planFor: () => [], hasPolicy: () => false, requested: false })).toMatchObject({ why: null, row: { needsPolicy: true } });
+  });
+});

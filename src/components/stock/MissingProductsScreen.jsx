@@ -46,14 +46,19 @@ import { hubIds, storeIds, centralId, nameOf } from "./sectionRouting";
 import { computeMissingProducts, concreteSection } from "./missingProductsCore";
 import { computeMissingFootwear } from "./missingFootwearCore";
 import { partitionQueued } from "./missingScreenCore";
-import { openingOrder, openRequestsByProduct, openLocationsByProduct, isSeat, productRow, sneakerRow, createFrozenOrder, freezeOrder, tapProblem, shopOwners, pickNext } from "./missingListCore";
+import { openingOrder, openRequestsByProduct, openLocationsByProduct, isSeat, decideProductRow, decideSneakerRow, createFrozenOrder, freezeOrder, tapProblem, shopOwners, pickNext } from "./missingListCore";
+import { strandedAtCentral, openRequestPids, notListedRows } from "./notListedCore";
+import NotListed, { NotListedLine } from "./NotListed";
 import { useSlicedRows } from "./useSlicedRows";
 import { useProductSolve } from "./NetworkTransfer";
 import { useSneakerRequest } from "./MissingFootwear";
 import { shopDestinations, shopsAreExclusive, destinationProblem } from "./divisionDestinations";
 import { otherMarathonHub, marathonHubSeated, marathonSolveRefusal, SEATS_PATH, DIVISION_SHOPS } from "./concreteDivision";
 import { undoSneakerRequest, shopOwnersNow } from "./missingActions";
-import { withDivisionMarks, listedForDivision, markDivision, undoDivision, liveMarksOf, CONCRETE_INDEX_PATH, MARATHON_INDEX_PATH } from "./divisionMark";
+import { withDivisionMarks, listedForDivision, markDivision, undoDivision, clearDivision, liveMarksOf, CONCRETE_INDEX_PATH, MARATHON_INDEX_PATH } from "./divisionMark";
+import { ref, update } from "firebase/database";
+import { database } from "../../firebase";
+import { unhideUpdate } from "./hiddenProductsCore";
 import { usePermissions } from "../PermissionsContext";
 import HiddenProducts, { HoldSpot } from "./HiddenProducts";
 import { PhotoLightbox } from "./healthWidgets";
@@ -82,7 +87,7 @@ const bucketId = (section, kind) => `${section}:${kind}`;
 // section, "marathon" for every other (divisionMark.js).
 const listKindOf = (network, sec) => (sec === concreteSection(network) ? "concrete" : "marathon");
 
-export default function MissingProductsScreen({ products: rawProducts = [], onExit }) {
+export default function MissingProductsScreen({ products: rawProducts = [], onExit, onOpenEnginePolicy = null }) {
   const { registry: network, sections: mySections } = useMySections();
   // WHICH DIVISION A PRODUCT BELONGS TO (Junid, 23 Nov 2026): the two small
   // index nodes, live on every device, laid over the product records so a
@@ -181,7 +186,7 @@ export default function MissingProductsScreen({ products: rawProducts = [], onEx
       {divisions.map((sec) => <Engine key={sec} section={sec} shared={shared} box={apisBox} report={report} />)}
       <Body apis={apisBox.current} flags={flags} divisions={divisions} network={network} products={products} allStock={allStock} targets={targetsState}
         hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled && seatsSettled && marksSettled} requestsError={!!reqState.error || seatsError || marksError} seats={seats} cfg={cfg} cfgSettled={cfgState.settled}
-        heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} />
+        heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} onOpenEnginePolicy={onOpenEnginePolicy} />
     </>
   );
 }
@@ -206,12 +211,12 @@ function Engine({ section, shared, box, report }) {
   return null;
 }
 
-function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, requestsError, seats, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit }) {
+function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, requestsError, seats, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit, onOpenEnginePolicy }) {
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const [pick, setPick] = useState(null);
   const section = divisions.includes(pick) ? pick : divisions[0];
   const [kind, setKind] = useState("sneakers");
-  const [view, setView] = useState("list");   // "list" | "hidden"
+  const [view, setView] = useState("list");   // "list" | "hidden" | "notlisted"
   const [lightbox, setLightbox] = useState(null);
   // SEARCH (Junid, 23 Nov 2026): kept across a division or kind switch and
   // applied to the new list. It only hides cards that do not match — the
@@ -230,6 +235,10 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
 
   // ── THE ROWS: every card asked, before it is drawn, what a tap would send ──
   const apisRef = useRef(apis); apisRef.current = apis;
+  // WHY A CARD WAS DROPPED (bucket id → Map pid → reason), recorded by the
+  // same build that decides the row — read by "Not listed" below.
+  const whyRef = useRef({});
+  const noteWhy = (id, pid, why) => { const m = (whyRef.current[id] ||= new Map()); if (why) m.set(pid, why); else m.delete(pid); };
   const ctx = useRef(null);
   // Where each product has ANY open request (fully sent or not): ownership.
   const openAt = useMemo(() => openLocationsByProduct(requests), [requests]);
@@ -240,7 +249,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       build: (card) => {
         const c = ctx.current, api = apisRef.current[sec].sneaker;
         const open = c.reqByPid.get(card.pid);
-        return sneakerRow({
+        const d = decideSneakerRow({
           card, section: sec, dests: api.destinations, planFor: api.planFor, blocked: !!api.notLive, central: c.central, nameOf: c.label,
           hasPolicy: api.hasPolicy, requested: !!open && Object.keys(open).length > 0,
           // Hub 1 and Hub 2 never share a sneaker: the same test the write
@@ -253,6 +262,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
             return marathonHubSeated({ cells, rows: c.targets?.[other]?.[cd.pid], openRequest: !!open?.[other] }) ? marathonSolveRefusal(hub) : api.pickRefusal(cd, [hub]);
           },
         });
+        noteWhy(bucketId(sec, "sneakers"), card.pid, d.why);
+        return d.row;
       },
     },
     {
@@ -267,11 +278,13 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
         const owners = shopsAreExclusive(c.network, sec)
           ? shopOwners({ shops: dests, cells: Object.fromEntries(dests.map((d) => [d, c.allStock?.[d]?.[card.pid]])), seated: (d) => isSeat(c.seats?.[d]?.[card.pid]), queued: (d) => !!openAt.get(card.pid)?.has(d) })
           : null;
-        return productRow({
+        const d = decideProductRow({
           card, section: sec, product: c.byId.get(card.pid), dests, tickable: api.tickableStores(card),
           planFor: api.planFor, openByLoc: open, allStock: c.allStock, central: c.central,
           routes: c.cfg?.routes, nameOf: c.label, owners,
         });
+        noteWhy(bucketId(sec, "clothing"), card.pid, d.why);
+        return d.row;
       },
     },
   ]), [divisions, cards]);
@@ -296,6 +309,34 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const listedOf = (id) => sliced.rows[id].filter((r) => !(hiddenMap && hiddenMap[r.pid]) && !gone[r.key]);
   const countOf = (sec) => (KINDS.every(([k]) => sliced.complete[bucketId(sec, k)])
     ? KINDS.reduce((t, [k]) => t + listedOf(bucketId(sec, k)).length, 0) : null);
+
+  // ── NOT LISTED (Junid, 23 Nov 2026): nothing disappears silently ──────────
+  // A product with units at Central and none at any shop or hub of the
+  // division is a card on one of its two lists, or a row here with its
+  // reason. Built from what this screen already holds (the whole /stock node,
+  // the catalogue, the open requests, the hidden map) — nothing new is read.
+  const strandedBy = useMemo(() => Object.fromEntries(divisions.map((sec) => {
+    const locations = [...storeIds(network, { section: sec }), ...hubIds(network, { section: sec })];
+    return [sec, { locations, hubs: hubIds(network, { section: sec }), stranded: stockReady ? strandedAtCentral({ allStock, locations, central }) : [] }];
+  })), [divisions, network, allStock, stockReady, central]);
+  const openPidsBy = useMemo(() => Object.fromEntries(divisions.map((sec) => [sec, openRequestPids(requests, strandedBy[sec].locations)])), [divisions, requests, strandedBy]);
+  const notListedOf = (sec) => {
+    if (sec == null || !strandedBy[sec] || !KINDS.every(([k]) => sliced.complete[bucketId(sec, k)])) return null;
+    const listedPids = new Set();
+    const whyByPid = new Map();
+    for (const [k] of KINDS) {
+      const id = bucketId(sec, k);
+      for (const r of sliced.rows[id] || []) if (!(hiddenMap && hiddenMap[r.pid])) listedPids.add(r.pid);
+      const w = whyRef.current[id];
+      if (w) for (const c of cards[sec]?.[k] || []) if (w.has(c.pid) && !whyByPid.has(c.pid)) whyByPid.set(c.pid, w.get(c.pid));
+    }
+    // Solved on this screen a moment ago: on its way, not "not listed".
+    for (const key of Object.keys(gone)) { const [s2, , pid] = key.split(":"); if (Number(s2) === sec) listedPids.add(pid); }
+    const { hubs } = strandedBy[sec];
+    const heldAt = (pid) => hubs.some((h) => Object.values((heldLines && heldLines[h]) || {}).some((l) => l && l.productId === pid && Number(l.qty) > 0));
+    const paused = (loc) => cfg?.pausedLocations?.[loc] === true;
+    return notListedRows({ stranded: strandedBy[sec].stranded, listedPids, whyByPid, hiddenMap, byId, listKind: listKindOf(network, sec), allStock, locations: strandedBy[sec].locations, openPids: openPidsBy[sec], heldAt, paused });
+  };
 
   // A card solved or hidden here stays off until the DATA no longer lists it;
   // then the mark is forgotten, so a product that goes missing again later in
@@ -344,6 +385,16 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // rows and product records are the ones already on screen).
   const terms = searchTerms(query);
   const shown = terms.length ? display.filter((d) => matchesSearch(terms, d.row, byId.get(d.row.pid))) : display;
+  // A search that finds nothing here: how many it finds on the other tab.
+  const [otherKind, otherKindName] = KINDS.find(([k]) => k !== kind);
+  const otherId = bucketId(section, otherKind);
+  const otherFound = terms.length && section != null && sliced.complete[otherId]
+    ? listedOf(otherId).filter((r) => matchesSearch(terms, r, byId.get(r.pid))).length : 0;
+  // "Not listed" for the division on screen, narrowed by the same search.
+  const notListedAll = view !== "hidden" && !requestsError ? notListedOf(section) : null;
+  const notListed = notListedAll && terms.length ? notListedAll.filter((r) => matchesSearch(terms, r, byId.get(r.pid))) : notListedAll;
+  const [nlLimit, setNlLimit] = useState(200);
+  const [nlBusy, setNlBusy] = useState({});
   useEffect(() => {
     // A list that is not drawn has nothing "shown": when it comes back, its
     // cards are simply there — none of them enters or leaves.
@@ -525,6 +576,25 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       },
     });
   };
+  // "NOT LISTED" ACTIONS — only what this screen already writes elsewhere:
+  // Unhide (the hidden tab's update) and Unmark (the division button's marks).
+  // A policy or a seat is Junid's, on the Engine Policy card.
+  act.current.notListed = async (action, row) => {
+    if (nlBusy[row.pid]) return;
+    if (action === "policy") { onOpenEnginePolicy?.(); return; }
+    const product = byId.get(row.pid);
+    setNlBusy((b) => ({ ...b, [row.pid]: true }));
+    let res;
+    try {
+      if (action === "unhide") { await update(ref(database), unhideUpdate([row.pid])); res = { ok: true, msg: "Unhidden" }; }
+      else if (action === "unmark") { res = await clearDivision(product); if (res.ok && !res.msg) res.msg = "Unmarked"; }
+      else res = { ok: false, msg: "Nothing to do here." };
+    } catch (e) { res = { ok: false, msg: `Nothing changed — retry. (${e?.message || "error"})` }; }
+    setNlBusy((b) => { const n = { ...b }; delete n[row.pid]; return n; });
+    say({ ok: !!res.ok, text: res.msg || (res.ok ? "Done" : "Nothing changed") });
+  };
+  const onNotListed = useCallback((action, row) => act.current.notListed(action, row), []);
+  const nlCan = { unhide: canMark || permRecord?.stockRole === "store" || permRecord?.stockRole === "warehouse", unmark: canMark, policy: !!onOpenEnginePolicy };
   const onPick = useCallback((row, dest) => act.current.pick(row, dest), []);
   const onSolve = useCallback((row) => act.current.solve(row), []);
   const onDivision = useCallback((row) => act.current.division(row), []);
@@ -552,9 +622,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
           cards on an iPhone where three and a half fitted. */}
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "4px 8px 120px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, height: 40, marginBottom: 4 }}>
-          <button data-action="exit" onClick={() => (view === "hidden" ? setView("list") : onExit?.())}
+          <button data-action="exit" onClick={() => (view !== "list" ? setView("list") : onExit?.())}
             style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 10, padding: "0 12px", height: 40, fontWeight: 700, fontSize: 13.5, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>← Back</button>
-          <div data-title style={{ fontSize: 17, fontWeight: 800, whiteSpace: "nowrap" }}>{view === "hidden" ? `Hidden (${hiddenCount})` : "Missing Products"}</div>
+          <div data-title style={{ fontSize: 17, fontWeight: 800, whiteSpace: "nowrap" }}>{view === "hidden" ? `Hidden (${hiddenCount})` : view === "notlisted" ? `Not listed${notListed ? ` (${notListed.length})` : ""}` : "Missing Products"}</div>
           {/* The hidden tab's entrance: the unlabelled press-and-hold spot
               (HiddenProducts.jsx HoldSpot — discretion, not access control). */}
           <HoldSpot onTrigger={() => setView("hidden")} />
@@ -586,7 +656,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
           {/* ONE THIN SEARCH FIELD. Fixed 32 px whatever is typed; 16 px text so
               iOS does not zoom the page on focus; the clear control is laid
               over the field's right end, so it appears without moving anything. */}
-          {view === "list" && <div data-search style={{ position: "relative", height: 32, marginTop: 4 }}>
+          {view !== "hidden" && <div data-search style={{ position: "relative", height: 32, marginTop: 4 }}>
             <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.45)" strokeWidth="2.5" strokeLinecap="round"
               style={{ position: "absolute", left: 10, top: 9, pointerEvents: "none" }}><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
             <input ref={searchRef} data-search-input type="text" inputMode="search" enterKeyHint="search" autoComplete="off" autoCorrect="off" autoCapitalize="none" spellCheck={false}
@@ -610,6 +680,12 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
 
         {view === "hidden" && <HiddenProducts products={products} cards={hiddenCards} hiddenMap={hiddenMap} />}
 
+        {view === "notlisted" && section != null && (
+          notListed
+            ? <NotListed rows={notListed} byId={byId} can={nlCan} busy={nlBusy} onAct={onNotListed} limit={nlLimit} onMore={() => setNlLimit((n) => n + 200)} />
+            : Array.from({ length: 6 }, (_, i) => <SkeletonRow key={i} />)
+        )}
+
         {view === "list" && section != null && (
           <div data-list={active}>
             {requestsError
@@ -625,7 +701,17 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
               : !display.length
                 ? <div data-empty style={{ height: CARD_H + CARD_GAP, display: "flex", alignItems: "center", justifyContent: "center", color: GRAY, fontSize: 15 }}>Nothing to send</div>
                 : !shown.length
-                ? <div data-nothing-found style={{ height: CARD_H + CARD_GAP, display: "flex", alignItems: "center", justifyContent: "center", color: GRAY, fontSize: 15 }}>Nothing found</div>
+                ? (
+                  <div data-nothing-found style={{ height: CARD_H + CARD_GAP, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, color: GRAY, fontSize: 15 }}>
+                    Nothing found
+                    {/* The screen opens on Sneakers and the search stays on
+                        when the tab changes: say where the matches are. */}
+                    {otherFound > 0 && (
+                      <button type="button" data-action="other-kind" onClick={() => setKind(otherKind)}
+                        style={{ ...box(false, 40), padding: "0 14px", fontSize: 14, fontWeight: 800, color: BLUE_L }}>{otherFound} under {otherKindName}</button>
+                    )}
+                  </div>
+                )
                 : shown.slice(0, limit).map((d, i) => (
                   <React.Fragment key={d.key}>
                     {i === 0 && anyNeeds && <div data-needs-label style={{ height: 20, fontSize: 11.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: AMBER }}>Needs policy</div>}
@@ -641,6 +727,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
               <button ref={more} data-action="show-more" onClick={() => setShownN((m) => ({ ...m, [active]: limit + PAGE }))}
                 style={{ ...box(false, 48), display: "block", width: "100%", fontSize: 14, fontWeight: 700 }}>More</button>
             )}
+            {/* NOT LISTED — the very bottom of the list, small and secondary. */}
+            {notListed && (shown.length <= limit) && <NotListedLine n={notListed.length} onOpen={() => setView("notlisted")} />}
           </div>
         )}
       </div>

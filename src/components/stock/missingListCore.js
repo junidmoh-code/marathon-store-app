@@ -67,12 +67,20 @@ const qtyIn = (cells, size) => Math.max(Number(cells?.[decodedCellKey(size)]?.qt
  * the same card can never send to both. (A shop that already keeps every size
  * it needs is a dead button by the plan itself.)
  */
-export function productRow({ card, section, product, dests = [], tickable = [], planFor, openByLoc = {}, allStock, central = "central", routes, nameOf = (x) => x, owners = null }) {
-  if (!card || !product || isSneakerOrSlide(product)) return null;
+export function productRow(args) { return decideProductRow(args).row; }
+
+// The same decision, with WHY when there is no row (notListedCore.REASONS —
+// "Nothing disappears silently", Junid 23 Nov 2026). The row is exactly
+// productRow's; the reason only says which gate stopped it.
+export function decideProductRow({ card, section, product, dests = [], tickable = [], planFor, openByLoc = {}, allStock, central = "central", routes, nameOf = (x) => x, owners = null }) {
+  const none = (why) => ({ row: null, why });
+  if (!card) return none("unknown");
+  if (!product) return none("noRecord");
+  if (isSneakerOrSlide(product)) return none("noView");
   // ONE OWNER (Pine / Concrete — Junid, 22 Nov 2026): a product that already
   // belongs to one shop is offered to that shop only; one that belongs to
   // both (a data question for Junid) is offered to neither, so never to both.
-  if (Array.isArray(owners) && owners.length > 1) return null;
+  if (Array.isArray(owners) && owners.length > 1) return none("bothShops");
   if (Array.isArray(owners) && owners.length === 1) dests = dests.filter((d) => d === owners[0]);
   const can = new Set(tickable);
   const reserved = centralReservedBySize({ openByLoc, routes });
@@ -81,31 +89,48 @@ export function productRow({ card, section, product, dests = [], tickable = [], 
     ? centralFreeFor({ qtyAt: (x) => qtyIn(sourceCells, x), reserved, size })
     : qtyIn(sourceCells, size));
   const counted = new Map();   // size → free units, over every size any live button sends
+  // Why each dead destination is dead, to say why a dropped row was dropped.
+  let anyShop = false, anySizes = false, anyHeld = false;
   const out = dests.map((id) => {
     const dead = { id, name: nameOf(id), ok: false, sizes: [], units: 0 };
     if (!can.has(id)) return dead;
+    anyShop = true;
     let line;
     try { line = planFor(card, [id], openByLoc)?.lines?.[0]; } catch { line = null; }
     if (!line || !(line.sizes || []).length) return dead;
+    anySizes = true;
     // A shop fed straight from Central is sent the sizes Central has, and
     // nothing is written for the rest. A shop behind a hub is seeded for every
     // size its policy covers; what MOVES is what the source holds.
     const direct = !line.hub;
     const sizes = direct ? (line.got || []).map((g) => String(g.size)) : line.sizes.map(String).filter((s) => free(s) > 0);
-    if (!sizes.length) return dead;
+    if (!sizes.length) {
+      // The source has units of a size the shop needs — all of them promised.
+      if (line.sizes.some((s) => qtyIn(sourceCells, s) > 0)) anyHeld = true;
+      return dead;
+    }
     // (never below what the plan sends of that size — the two read one shelf)
     for (const s of sizes) counted.set(s, Math.max(free(s), direct ? Number((line.got || []).find((g) => String(g.size) === s)?.qty) || 0 : 0));
     return { id, name: nameOf(id), ok: true, sizes, units: line.units || 0 };
   });
-  if (!out.some((d) => d.ok)) return null;
-  return {
+  if (!out.some((d) => d.ok)) {
+    if (!anyShop) return none("noShop");
+    if (anyHeld) return none("allPromised");
+    // The units the source holds are all in sizes the product's own size list
+    // does not name — nothing plans them (a catalogue question, not policy).
+    const declared = new Set((product.sizes || []).map((z) => decodedCellKey(String(z))));
+    const held = Object.keys(sourceCells || {}).filter((k) => k !== "_meta" && qtyIn(sourceCells, k) > 0);
+    if (held.length && !held.some((k) => declared.has(decodedCellKey(k)))) return none("undeclaredSize");
+    return none(!anySizes ? "noPolicy" : "noSize");
+  }
+  return { why: null, row: {
     key: rowKey(section, "clothing", card.pid), kind: "clothing", section, pid: card.pid,
     name: card.name || card.pid, photo: card.photo || null, card,
     source: card.source, sourceName: nameOf(card.source),
     stock: [...counted.values()].reduce((t, n) => t + n, 0),
     // A location is OFFERED or ABSENT — never a dead button on the card.
     dests: out.filter((d) => d.ok), twin: null,
-  };
+  } };
 }
 
 /**
@@ -124,14 +149,20 @@ export function productRow({ card, section, product, dests = [], tickable = [], 
 // stock": it is waiting for Junid to give it numbers, and he has to SEE it to
 // do that. `hasPolicy(card, hub)` says whether any of its sizes has a number
 // there; `requested` whether any open request for it exists.
-export function sneakerRow({ card, section, dests = [], planFor, refusal = () => null, blocked = false, central = "central", nameOf = (x) => x, hasPolicy = null, requested = false }) {
-  if (!card || blocked) return null;
+export function sneakerRow(args) { return decideSneakerRow(args).row; }
+
+// The same decision, with WHY when there is no row (see decideProductRow).
+export function decideSneakerRow({ card, section, dests = [], planFor, refusal = () => null, blocked = false, central = "central", nameOf = (x) => x, hasPolicy = null, requested = false }) {
+  if (!card) return { row: null, why: "unknown" };
+  if (blocked) return { row: null, why: "notLive" };
   const counted = new Map();
+  let refused = 0;
   const out = dests.map((id) => {
     const dead = { id, name: nameOf(id), ok: false, sizes: [], units: 0 };
     let lines;
     try { lines = planFor(card, id) || []; } catch { lines = []; }
-    if (!lines.length || refusal(card, [id])) return dead;
+    if (!lines.length) return dead;
+    if (refusal(card, [id])) { refused += 1; return dead; }
     for (const l of lines) counted.set(String(l.size), Math.max(Number(l.avail) || 0, 0));
     return { id, name: nameOf(id), ok: true, sizes: lines.map((l) => String(l.size)), units: lines.reduce((t, l) => t + l.qty, 0) };
   });
@@ -141,10 +172,13 @@ export function sneakerRow({ card, section, dests = [], planFor, refusal = () =>
     source: central, sourceName: nameOf(central), twin: card.duplicateOf || null,
   };
   if (!out.some((d) => d.ok)) {
-    const unarmed = typeof hasPolicy === "function" && dests.length > 0 && !requested && !dests.some((d) => hasPolicy(card, d));
-    return unarmed ? { ...base, needsPolicy: true, stock: Math.max(Number(card.centralUnits) || 0, 0), dests: [] } : null;
+    const policied = typeof hasPolicy === "function" ? dests.some((d) => hasPolicy(card, d)) : true;
+    const unarmed = typeof hasPolicy === "function" && dests.length > 0 && !requested && !policied;
+    if (unarmed) return { why: null, row: { ...base, needsPolicy: true, stock: Math.max(Number(card.centralUnits) || 0, 0), dests: [] } };
+    const why = !dests.length ? "noShop" : refused === dests.length ? "otherHub" : requested ? "requested" : !policied ? "noPolicy" : "noSize";
+    return { row: null, why };
   }
-  return { ...base, stock: [...counted.values()].reduce((t, n) => t + n, 0), dests: out.filter((d) => d.ok) };
+  return { why: null, row: { ...base, stock: [...counted.values()].reduce((t, n) => t + n, 0), dests: out.filter((d) => d.ok) } };
 }
 
 // ── THE ORDER IS FROZEN WHILE THE SCREEN IS OPEN ─────────────────────────────

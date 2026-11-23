@@ -143,6 +143,20 @@ export async function markDivision(product, division) {
   return { ok: true, prior, ...(r.warning ? { msg: `${division === "concrete" ? "Concrete" : "Marathon"} only — but ${r.warning}` } : {}) };
 }
 
+/**
+ * Take a product's division mark OFF (both marks false, one write) — the
+ * "Not listed" sheet's Unmark (Junid, 23 Nov 2026). Returns { ok, msg?, prior }.
+ */
+export async function clearDivision(product) {
+  const pid = product?.id;
+  if (!pid) return { ok: false, msg: "No product — nothing changed." };
+  const prior = marksOf(product);
+  if (!prior.concrete && !prior.marathon) return { ok: true, prior };
+  const r = await applyMarks(pid, { concrete: false, marathon: false }, prior);
+  if (!r.ok) return { ok: false, msg: `Not unmarked — ${r.message}` };
+  return { ok: true, prior, ...(r.warning ? { msg: `Unmarked — but ${r.warning}` } : {}) };
+}
+
 /** Undo markDivision: put back exactly the marks that were there before, in one write. */
 export async function undoDivision(pid, division, prior) {
   if (!prior || (division !== "concrete" && division !== "marathon")) return { ok: false, msg: "Nothing to undo." };
