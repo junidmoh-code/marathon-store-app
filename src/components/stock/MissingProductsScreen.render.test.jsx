@@ -117,7 +117,7 @@ beforeEach(() => {
   updateMock.mockClear(); pushN = 0; seatCalls.length = 0; txnCalls.length = 0; txnData = {};
   for (const k of Object.keys(gets)) delete gets[k];
   __resetNetworkForTests();
-  for (const p of ["settings/missingProductsHidden", "settings/stockHold/held", "stock_targets", "refill_engine/seats/concrete", "refill_engine/seats/marathon-pine"]) emit(p, null);
+  for (const p of ["settings/missingProductsHidden", "settings/concreteOnlyIndex", "settings/marathonOnlyIndex", "settings/stockHold/held", "stock_targets", "refill_engine/seats/concrete", "refill_engine/seats/marathon-pine"]) emit(p, null);
   emit("network", S1_LIVE);
   emit("config/refillEngine", CONFIG);
   emit("refill_requests", null);
@@ -143,7 +143,7 @@ describe("the screen Junid asked for", () => {
     expect(host(tree, "data-view").length).toBe(0);
     const all = textOf(tree);
     for (const gone of [/To do/, /Queued & solved/, /newest uploads first/, /missing from/i, /Move by hand/, /Mark & hide/, /Carry at/, /Starts keeping/, /Never sent/, /One moment/, /Concrete-only/]) expect(all).not.toMatch(gone);
-    for (const b of buttons(tree)) expect(["← Back", "Marathon", "Concrete", "Sneakers", "Clothing", "✓Hub 1", "✓Hub 2", "Hide", "Solve", ""].some((ok) => b.trim() === ok || /^(Marathon|Concrete)\d+$/.test(b))).toBe(true);
+    for (const b of buttons(tree)) expect(["← Back", "Marathon", "Concrete", "Sneakers", "Clothing", "✓Hub 1", "✓Hub 2", "Solve", ""].some((ok) => b.trim() === ok || /^(Marathon|Concrete)\d+$/.test(b))).toBe(true);
   });
 
   it("the header count is the number of cards on that division's two lists", async () => {
@@ -158,12 +158,13 @@ describe("the screen Junid asked for", () => {
     expect(n).toEqual({ [MARATHON]: 8, [CONCRETE]: 8 });
   });
 
-  it("every card is the same fixed box: photo, name, one stock line, its destinations and Hide", async () => {
+  it("every card is the same fixed box: photo, name, one stock line, its destinations and the division button", async () => {
     const tree = await mount();
     const heights = host(tree, "data-card").map((n) => n.props.style.height);
     expect(new Set(heights).size).toBe(1);
     expect(stockLine(tree, SHOE_B)).toBe("Central 18");
-    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "hide").length).toBe(1);
+    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "hide").length).toBe(0);
+    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "division").map((b) => b.props["data-division-mark"])).toEqual(["concrete"]);
     for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(solveBtn(tree, pid)).toBeDefined();
   });
 });
@@ -528,23 +529,7 @@ describe("Undo", () => {
   });
 });
 
-describe("Hide, and the hidden tab behind the invisible spot", () => {
-  it("Hide is one tap: one entry in the hidden node and nothing else; the card leaves; Undo takes the entry away again", async () => {
-    const tree = await mount();
-    await kind(tree, "clothing");
-    await act(async () => { await card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "hide")[0].props.onClick(); });
-    await act(async () => {});
-    expect(updateMock).toHaveBeenCalledTimes(1);
-    expect(lastUpdate()).toEqual({ [`settings/missingProductsHidden/${TEE}`]: { at: NOW, by: "u1" } });
-    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
-    expect(count(tree, MARATHON)).toBe("7");
-    expect(toast(tree).text).toMatch(/Hidden/);
-    await act(async () => { await toast(tree).undo.props.onClick(); });
-    await act(async () => {});
-    expect(lastUpdate()).toEqual({ [`settings/missingProductsHidden/${TEE}`]: null });
-    expect(cardsOf(tree)).toContain("Essentials Tee Olive");
-  });
-
+describe("the hidden tab behind the invisible spot (Hide left the cards, 23 Nov 2026)", () => {
   it("the hidden node is honoured on every device, and the tab behind the press-and-hold spot lists it with Unhide", async () => {
     emit("settings/missingProductsHidden", { [TEE]: { at: NOW, by: "u1" } });
     const tree = await mount();
@@ -578,10 +563,10 @@ describe("who may do what", () => {
   it("without a stock role nothing can be tapped", async () => {
     perm.isSuperAdmin = false; perm.permRecord = { displayName: "Viewer" };
     const tree = await mount();
-    // no stock role: nothing to choose, no Solve, no Hide — and nothing rendered disabled
+    // no stock role: nothing to choose, no Solve, no division button — and nothing rendered disabled
     expect(live(tree, SHOE_B)).toEqual([]);
     expect(solveBtn(tree, SHOE_B)).toBeUndefined();
-    expect(card(tree, SHOE_B).findAll((n) => n.type === "button" && n.props["data-action"] === "hide").length).toBe(0);
+    expect(card(tree, SHOE_B).findAll((n) => n.type === "button" && (n.props["data-action"] === "hide" || n.props["data-action"] === "division")).length).toBe(0);
   });
 });
 
