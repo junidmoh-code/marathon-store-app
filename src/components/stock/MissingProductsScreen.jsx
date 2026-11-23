@@ -53,7 +53,7 @@ import { useSneakerRequest } from "./MissingFootwear";
 import { shopDestinations, shopsAreExclusive, destinationProblem } from "./divisionDestinations";
 import { otherMarathonHub, marathonHubSeated, marathonSolveRefusal, SEATS_PATH, DIVISION_SHOPS } from "./concreteDivision";
 import { undoSneakerRequest, shopOwnersNow } from "./missingActions";
-import { withDivisionMarks, listedForDivision, markDivision, undoDivision, CONCRETE_INDEX_PATH, MARATHON_INDEX_PATH } from "./divisionMark";
+import { withDivisionMarks, listedForDivision, markDivision, undoDivision, liveMarksOf, CONCRETE_INDEX_PATH, MARATHON_INDEX_PATH } from "./divisionMark";
 import { usePermissions } from "../PermissionsContext";
 import HiddenProducts, { HoldSpot } from "./HiddenProducts";
 import { PhotoLightbox } from "./healthWidgets";
@@ -88,7 +88,9 @@ export default function MissingProductsScreen({ products: rawProducts = [], onEx
   // mark made anywhere applies here at once (divisionMark.js).
   const concreteIdx = usePathState(CONCRETE_INDEX_PATH);
   const marathonIdx = usePathState(MARATHON_INDEX_PATH);
-  const products = useMemo(() => withDivisionMarks(rawProducts, concreteIdx.value, marathonIdx.value), [rawProducts, concreteIdx.value, marathonIdx.value]);
+  const marksSettled = concreteIdx.settled && marathonIdx.settled;
+  const marksError = !!(concreteIdx.error || marathonIdx.error);
+  const products = useMemo(() => withDivisionMarks(rawProducts, concreteIdx.value, marathonIdx.value, marksSettled && !marksError), [rawProducts, concreteIdx.value, marathonIdx.value, marksSettled, marksError]);
   const allStock = useStockCells();
   const targetsState = useStockTargetsState();
   const hiddenMap = useHiddenMissingProducts();
@@ -177,7 +179,7 @@ export default function MissingProductsScreen({ products: rawProducts = [], onEx
           another division's Solve state, and never remounts the list. */}
       {divisions.map((sec) => <Engine key={sec} section={sec} shared={shared} box={apisBox} report={report} />)}
       <Body apis={apisBox.current} flags={flags} divisions={divisions} network={network} products={products} allStock={allStock} targets={targetsState}
-        hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled && seatsSettled} requestsError={!!reqState.error || seatsError} seats={seats} cfg={cfg} cfgSettled={cfgState.settled}
+        hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled && seatsSettled && marksSettled} requestsError={!!reqState.error || seatsError || marksError} seats={seats} cfg={cfg} cfgSettled={cfgState.settled}
         heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} />
     </>
   );
@@ -418,6 +420,17 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     // device solved it to the other shop a minute ago — must not write a
     // second shop. Read now, per product: stock and seat at the other shop,
     // and its queued requests.
+    // WHICH DIVISION IT BELONGS TO, asked of the server now: a mark made on
+    // another device a moment ago is never sent into the other division.
+    if (!problem) {
+      try {
+        const live = await liveMarksOf(row.pid);
+        const mark = live.concrete ? "concrete" : live.marathon ? "marathon" : null;
+        if (mark && mark !== listKindOf(c.network, row.section)) problem = "This product belongs to the other division — nothing sent.";
+      } catch (e) {
+        problem = `Couldn't check which division this belongs to — nothing sent, retry. (${e?.message || "error"})`;
+      }
+    }
     if (!problem && row.kind === "clothing" && shopsAreExclusive(c.network, row.section)) {
       const shops = shopDestinations(c.network, row.section);
       try {

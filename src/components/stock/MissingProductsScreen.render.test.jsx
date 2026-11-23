@@ -906,17 +906,22 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     expect(cardsOf(tree)).toEqual(before);
   });
 
-  it("marking Marathon on a Concrete-only product clears its Concrete mark in the same tap (never both)", async () => {
+  it("marking Marathon on a Concrete-only product clears its Concrete mark in the same write (never both)", async () => {
+    emit("settings/concreteOnlyIndex", { [TEE]: true });
     const tree = await withProducts({ [TEE]: { concreteProduct: true } });
     await division(tree, CONCRETE); await kind(tree, "clothing");
     await tapMark(tree, TEE);
     const ups = updateMock.mock.calls.map((c) => c[1]);
-    expect(ups.some((u) => u[`products/${TEE}/marathonProduct`] === true)).toBe(true);
-    expect(ups.some((u) => u[`products/${TEE}/concreteProduct`] === false && u[`settings/concreteOnlyIndex/${TEE}`] === null)).toBe(true);
+    expect(ups.length).toBe(1);                                // one multi-path update: all or nothing
+    expect(ups[0][`products/${TEE}/marathonProduct`]).toBe(true);
+    expect(ups[0][`settings/marathonOnlyIndex/${TEE}`]).toBe(true);
+    expect(ups[0][`products/${TEE}/concreteProduct`]).toBe(false);
+    expect(ups[0][`settings/concreteOnlyIndex/${TEE}`]).toBe(null);
     expect(ups.flatMap(Object.keys).filter((k) => FORBIDDEN.test(k))).toEqual([]);
   });
 
-  it("pre-rebuild Concrete markings are honoured: the record field, the index alone, and a sneaker too", async () => {
+  it("pre-rebuild Concrete markings are honoured (record + index, as all 98 live ones are), a sneaker too", async () => {
+    emit("settings/concreteOnlyIndex", { [TEE]: true, [SHOE_B]: true });
     const tree = await withProducts({ [TEE]: { concreteProduct: true }, [SHOE_B]: { concreteProduct: true } });
     expect(await listOf(tree, MARATHON, "sneakers")).not.toContain("Gazelle Bold");
     expect(await listOf(tree, MARATHON, "clothing")).not.toContain("Essentials Tee Olive");
@@ -924,9 +929,30 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     expect(await listOf(tree, CONCRETE, "clothing")).toContain("Essentials Tee Olive");
     expect(await listOf(tree, CONCRETE, "sneakers")).toContain("Gazelle Bold");
     // a mark made on another device (the index) applies here at once
-    await act(async () => { emit("settings/concreteOnlyIndex", { [JACKET]: true }); });
+    await act(async () => { emit("settings/concreteOnlyIndex", { [TEE]: true, [SHOE_B]: true, [JACKET]: true }); });
     await act(async () => {});
     expect(await listOf(tree, MARATHON, "clothing")).not.toContain("Varsity Jacket");
+  });
+
+  it("an unmark on another device applies here at once, whatever the mirrored record still says", async () => {
+    emit("settings/concreteOnlyIndex", { [TEE]: true });
+    const tree = await withProducts({ [TEE]: { concreteProduct: true } });
+    expect(await listOf(tree, MARATHON, "clothing")).not.toContain("Essentials Tee Olive");
+    await act(async () => { emit("settings/concreteOnlyIndex", null); });
+    // (a list re-works its rows after a quiet moment — useSlicedRows QUIET_MS)
+    await act(async () => { await new Promise((r) => setTimeout(r, 1700)); });
+    await act(async () => {});
+    expect(await listOf(tree, MARATHON, "clothing")).toContain("Essentials Tee Olive");
+  });
+
+  it("Solve asks the server which division the product belongs to: marked Marathon a moment ago elsewhere → nothing sent into Concrete", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE);
+    gets[`settings/marathonOnlyIndex/${SHOE_B}`] = true;      // another device, a second ago
+    await tapDest(tree, SHOE_B, "hub3");
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(toast(tree).text).toMatch(/belongs to the other division/);
+    expect(cardsOf(tree)).toContain("Gazelle Bold");
   });
 
   it("a product marked for one division is never offered the other's destinations, and Solve refuses it", async () => {
