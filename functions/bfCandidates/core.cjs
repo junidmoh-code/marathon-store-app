@@ -1,9 +1,13 @@
 // ─── BF CANDIDATES — stock that isn't moving, and the in-store Black Friday sale (pure) ──
 // Junid, 23 Nov 2026.
 //
-//   • CANDIDATE  = on hand > 0 (every location added together) AND zero units sold in the
-//                  last N days (N = 30, adjustable on the card). The nightly finder on the
-//                  Mac mini writes candidates/items/{pid}; nothing here reads the catalogue.
+//   • CANDIDATE  = (Junid, 15:44: "new stock is not dead stock") the product FIRST ARRIVED
+//                  anywhere in the network on or before the cut-off (31 Jul 2026; May, June,
+//                  July or August on the card), it still has stock on hand, AND the units sold
+//                  since it arrived are UNDER 10% of the units received (zero sold counts).
+//                  The finder on the Mac mini reads the stock ledger and writes
+//                  candidates/items/{pid} = { arrived, received, sold, qty, … }; nothing here
+//                  reads the catalogue or the ledger.
 //   • SALE       = ONE price per product, from Junid's tap until Monday 30 Nov 2026 23:59
 //                  Africa/Johannesburg (extendable). Stored on its OWN node, sales/{pid}; the
 //                  product's stock and retail prices are NEVER changed. The till reads the
@@ -16,10 +20,15 @@
 "use strict";
 
 const ROOT = "bf_sales_2026";
-const WINDOWS = Object.freeze([14, 30, 60, 90]);
-const DEFAULT_WINDOW = 30;
+// "In store since": arrived on or before the END of that month (SAST), 2026. The finder's own table
+// (marathon-group-poster src/bf/candidates.mjs CUTOFFS).
+const CUTOFFS = Object.freeze({ may: "2026-05-31", june: "2026-06-30", july: "2026-07-31", august: "2026-08-31" });
+const CUTOFF_LABEL = Object.freeze({ may: "May", june: "June", july: "July", august: "August" });
+const DEFAULT_CUTOFF = "july";
+const SOLD_SHARE = 0.10; // sold must be UNDER this share of what was received
 const DEFAULT_END_DAY = "2026-11-30";
-const TABS = Object.freeze(["clothing", "sneakers"]);
+const TABS = Object.freeze(["clothing", "sneakers"]);       // the candidate tabs
+const VIEWS = Object.freeze(["clothing", "sneakers", "onsale"]); // + everything on sale now
 const DAY_MS = 86400_000;
 const TZ = "Africa/Johannesburg";
 const PAGE = 200;
@@ -43,23 +52,23 @@ function endLabel(endMs) {
 const priceLabel = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2)}`);
 
 // ── candidates ───────────────────────────────────────────────────────────────
-const windowOf = (w) => (WINDOWS.includes(Number(w)) ? Number(w) : DEFAULT_WINDOW);
+const cutoffOf = (k) => (Object.prototype.hasOwnProperty.call(CUTOFFS, String(k)) ? String(k) : DEFAULT_CUTOFF);
+const cutoffMs = (k) => endOfDayMs(CUTOFFS[cutoffOf(k)]);
 const tabOf = (row) => (row && row.kind === "sneakers" ? "sneakers" : "clothing");
 // The finder's own rule (marathon-group-poster src/bf/core.mjs FOOTWEAR_KEYS), for a product whose finder row is gone.
 const FOOTWEAR_KEYS = Object.freeze(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes", "sandals"]);
 const kindOfCat = (categoryKey) => (FOOTWEAR_KEYS.includes(String(categoryKey || "")) ? "sneakers" : "clothing");
-/** On hand and nothing sold inside the window (never sold counts). */
-function isCandidate(row, windowDays, nowMs) {
+/** Old stock that isn't selling: on hand, arrived by the cut-off, sold under 10% of what was received. */
+function isCandidate(row, cutoff) {
   if (!row || !(Number(row.qty) > 0)) return false;
-  const last = Number(row.lastSold) || 0;
-  return !last || last < nowMs - windowOf(windowDays) * DAY_MS;
+  const arrived = Number(row.arrived) || 0, received = Number(row.received) || 0;
+  if (!arrived || !(received > 0)) return false; // no arrival on record: never guessed
+  return arrived <= cutoffMs(cutoff) && (Number(row.sold) || 0) < SOLD_SHARE * received;
 }
-/** "never sold" | "42 days" (whole days since the last unit sold). */
-function sinceLabel(lastSold, nowMs) {
-  const last = Number(lastSold) || 0;
-  if (!last) return "never sold";
-  const d = Math.max(0, Math.floor((nowMs - last) / DAY_MS));
-  return d === 1 ? "1 day" : `${d} days`;
+/** "12 Jul 2026" (SAST). */
+function dayLabel(ms) {
+  if (!(Number(ms) > 0)) return null;
+  return new Intl.DateTimeFormat("en-GB", { timeZone: TZ, day: "numeric", month: "short", year: "numeric" }).format(new Date(Number(ms)));
 }
 const saleVersion = (s) => Number(s && (s.extendedAt || s.setAt)) || 0;
 /** Is this sale charging now? Strict: anything malformed is NOT a sale (normal prices). */
@@ -75,7 +84,7 @@ function viewRow(pid, row, { sale = null, chosen = null, posted = null, nowMs })
   const on = saleActive(sale, nowMs);
   return {
     pid, name: row.name || pid, tab: tabOf(row), cat: row.cat || null, qty: Number(row.qty) || 0,
-    since: sinceLabel(row.lastSold, nowMs), lastSold: Number(row.lastSold) || null,
+    arrived: Number(row.arrived) || null, arrivedOn: dayLabel(row.arrived), received: Number(row.received) || 0, sold: Number(row.sold) || 0,
     stockPrice: Number(row.stockPrice) > 0 ? Number(row.stockPrice) : null,
     retailPrice: Number(row.retailPrice) > 0 ? Number(row.retailPrice) : null,
     locs: row.locs || {}, sizes: row.sizes || "", photo: photoOf(row, chosen), ownPhoto: row.photo || null,
@@ -84,38 +93,47 @@ function viewRow(pid, row, { sale = null, chosen = null, posted = null, nowMs })
     posted: on && posted && Number(posted.version) === saleVersion(sale) ? { at: posted.at, groups: posted.groups || 0 } : null,
   };
 }
+/** Zero sold first, then the oldest arrival (a row with no arrival on record last), then by name. */
+function byOldAndUnsold(a, b) {
+  const sa = Number(a[1].sold) > 0 ? 1 : 0, sb = Number(b[1].sold) > 0 ? 1 : 0;
+  return sa - sb || (Number(a[1].arrived) || Infinity) - (Number(b[1].arrived) || Infinity)
+    || String(a[1].name || "").localeCompare(String(b[1].name || "")) || a[0].localeCompare(b[0]);
+}
 /**
  * The card's list. items: candidates/items; removed: removed; sales: sales; photos: photos; posted: posted.
- * → { rows (this tab's page), counts: { clothing, sneakers, onSale, removed }, total, from, more }
- * Sorted by quantity, highest first. A product on sale stays listed (with its sale) even after it sells.
+ * tab: "clothing" | "sneakers" (the candidates; one still on sale shows its sale) | "onsale" (EVERYTHING on sale now,
+ * candidate or not, built from the sale itself when the finder no longer lists the product).
+ * → { rows (this tab's page), counts: { clothing, sneakers, onSale, removed }, total, from, more, saleEnds }
  */
-function viewList({ items = {}, removed = {}, sales = {}, photos = {}, posted = {} }, { tab = "clothing", windowDays = DEFAULT_WINDOW, from = 0, n = PAGE, nowMs }) {
-  const t = TABS.includes(tab) ? tab : "clothing";
+function viewList({ items = {}, removed = {}, sales = {}, photos = {}, posted = {} }, { tab = "clothing", cutoff = DEFAULT_CUTOFF, from = 0, n = PAGE, nowMs }) {
+  const t = VIEWS.includes(tab) ? tab : "clothing";
   const counts = { clothing: 0, sneakers: 0, onSale: 0, removed: Object.keys(removed || {}).length };
   const mine = [];
-  const seen = new Set();
   for (const [pid, row] of Object.entries(items || {})) {
-    if (!row || (removed && removed[pid])) continue;
-    const on = saleActive(sales && sales[pid], nowMs);
-    if (!on && !isCandidate(row, windowDays, nowMs)) continue;
-    seen.add(pid);
+    if (!row || (removed && removed[pid]) || !isCandidate(row, cutoff)) continue;
     counts[tabOf(row)] += 1;
-    if (on) counts.onSale += 1;
     if (tabOf(row) === t) mine.push([pid, row]);
   }
-  // On sale but no longer in the finder's list (sold through, or the list was rebuilt): still shown, from the sale itself.
+  let first = null, last = null;
   for (const [pid, s] of Object.entries(sales || {})) {
-    if (seen.has(pid) || !saleActive(s, nowMs) || (removed && removed[pid])) continue;
-    const row = { name: s.name, kind: s.kind, cat: s.cat || null, qty: 0, lastSold: null, stockPrice: s.baseStock, retailPrice: s.baseRetail, photo: s.photo || null, locs: {}, sizes: "" };
-    counts[tabOf(row)] += 1; counts.onSale += 1;
-    if (tabOf(row) === t) mine.push([pid, row]);
+    if (!saleActive(s, nowMs)) continue;
+    counts.onSale += 1;
+    if (first === null || Number(s.end) < first) first = Number(s.end);
+    if (last === null || Number(s.end) > last) last = Number(s.end);
+    if (t !== "onsale") continue;
+    // The finder's row when it still has one (stock, arrival); else the sale's own record.
+    const it = items && items[pid];
+    mine.push([pid, it ? { ...it } : { name: s.name, kind: s.kind, cat: s.cat || null, qty: 0, stockPrice: s.baseStock, retailPrice: s.baseRetail, photo: s.photo || null, locs: {}, sizes: "" }]);
   }
-  mine.sort((a, b) => (Number(b[1].qty) || 0) - (Number(a[1].qty) || 0) || String(a[1].name || "").localeCompare(String(b[1].name || "")) || a[0].localeCompare(b[0]));
+  if (t === "onsale") mine.sort((a, b) => String(a[1].name || "").localeCompare(String(b[1].name || "")) || a[0].localeCompare(b[0]));
+  else mine.sort(byOldAndUnsold);
   const start = Math.max(0, Number(from) || 0);
   const page = mine.slice(start, start + Math.max(1, Math.min(PAGE, Number(n) || PAGE)));
   return {
     rows: page.map(([pid, row]) => viewRow(pid, row, { sale: sales && sales[pid], chosen: photos && photos[pid], posted: posted && posted[pid], nowMs })),
     counts, total: mine.length, from: start, more: start + page.length < mine.length,
+    // When the sales running now end: one date when they all end together.
+    saleEnds: first === null ? null : { first, last, firstLabel: endLabel(first), lastLabel: endLabel(last), same: first === last },
   };
 }
 
@@ -136,6 +154,15 @@ function aboveStock(rows, price) {
 function saleEnd(day, nowMs) {
   const end = endOfDayMs(day || DEFAULT_END_DAY);
   return end && end > nowMs ? end : null;
+}
+/**
+ * The end a NEW sale gets when the card names no date: Mon 30 Nov, or the latest end among the sales running now
+ * when Junid has extended them past it (a product put on sale after "Extend" ends with the rest, not before them).
+ */
+function defaultEnd(sales, nowMs) {
+  let end = endOfDayMs(DEFAULT_END_DAY);
+  for (const s of Object.values(sales || {})) if (saleActive(s, nowMs) && Number(s.end) > end) end = Number(s.end);
+  return end;
 }
 /** sales/{pid}. base* are a record of the prices when the sale was set: nothing reads them to charge. */
 function saleRecord({ row, price, start, end, uid, photo }) {
@@ -197,8 +224,8 @@ function salePhotoCaption(sizes, at, endMs) {
 }
 
 module.exports = {
-  ROOT, WINDOWS, DEFAULT_WINDOW, DEFAULT_END_DAY, TABS, DAY_MS, PAGE, MAX_PIDS, PID_RE, AT,
-  sastDay, endOfDayMs, endLabel, priceLabel, windowOf, tabOf, kindOfCat, FOOTWEAR_KEYS, isCandidate, sinceLabel, saleVersion, saleActive, photoOf,
+  ROOT, CUTOFFS, CUTOFF_LABEL, DEFAULT_CUTOFF, SOLD_SHARE, DEFAULT_END_DAY, TABS, VIEWS, DAY_MS, PAGE, MAX_PIDS, PID_RE, AT,
+  sastDay, endOfDayMs, endLabel, priceLabel, cutoffOf, cutoffMs, dayLabel, defaultEnd, tabOf, kindOfCat, FOOTWEAR_KEYS, isCandidate, saleVersion, saleActive, photoOf,
   viewRow, viewList, parsePrice, aboveStock, saleEnd, saleRecord, tillMirror,
   alertText, alertBurst, holders, storeList, saleText, salePhotoCaption,
 };

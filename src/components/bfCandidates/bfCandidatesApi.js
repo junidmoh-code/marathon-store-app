@@ -11,11 +11,13 @@ const set = call("bfSaleSet", { timeout: 300_000 });
 export const bfCandidatesApi = {
   // The list's small photo: the Black Friday card's own 360 px thumbnails.
   thumb: blackFridayApi.thumb,
-  // One tab, one page: { rows, counts, total, more, windowDays, defaultEndDay, defaultUntil, today, locNames, meta }
-  list: (tab, windowDays, from = 0) => call("bfSaleList")({ tab, windowDays, from }),
+  // One tab ("clothing" | "sneakers" | "onsale"), one page:
+  // { rows, counts, total, more, cutoff, cutoffs, saleEnds, defaultEndDay, defaultUntil, today, locNames, meta }
+  list: (tab, cutoff, from = 0) => call("bfSaleList")({ tab, cutoff, from }),
   // ONE sale price for the chosen products. → { ok, done, refused, until } or { ok:false, needConfirm:[…] } when the
   // price is at or above a stock price (nothing saved until confirmAbove names exactly the products warned about).
-  sale: (pids, price, endDay, { confirmAbove = null } = {}) => set({ action: "sale", pids, price, endDay, ...(confirmAbove ? { confirmAbove } : {}) }),
+  // No end date is sent: a new sale ends with the rest (Mon 30 Nov, or later once extended); Edit price keeps the sale's own end.
+  sale: (pids, price, { confirmAbove = null } = {}) => set({ action: "sale", pids, price, ...(confirmAbove ? { confirmAbove } : {}) }),
   extend: (pids, endDay) => set({ action: "extend", pids, endDay }),
   extendAll: (endDay) => set({ action: "extend", all: true, endDay }),
   end: (pids) => set({ action: "end", pids }),

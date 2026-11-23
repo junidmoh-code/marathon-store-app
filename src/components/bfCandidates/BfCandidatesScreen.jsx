@@ -1,13 +1,17 @@
 // ─── BF CANDIDATES — Junid's card (23 Nov 2026) ──────────────────────────────
-// Stock that isn't moving: on hand (every location added together) and nothing
-// sold in the last 30 days (the window is adjustable). Two tabs, Clothing and
-// Sneakers, sorted by quantity, highest first. Per product or multi-select:
-//   Put on sale   ONE sale price, until Mon 30 Nov 23:59 (extendable). While on
-//                 sale every till charges that single price to every customer;
-//                 the stock and retail prices are never changed and come back
-//                 by themselves at the end. A price at or above the stock price
-//                 warns before saving. The tap also alerts the stores and
-//                 queues the product for the WhatsApp groups (Black Friday sale).
+// Old stock that isn't selling (Junid, 15:44: "new stock is not dead stock"): the
+// product first arrived in the network on or before the cut-off ("In store since":
+// May, June, July (default) or August), still has stock on hand, and has sold
+// under 10% of the units received. Tabs: Clothing, Sneakers (zero sold first, then
+// the oldest arrival) and On sale (everything on sale now).
+//   Put on sale   every row has a PRICE BOX: type the sale price, tap Put on sale
+//                 (disabled until a price is typed). ONE price for every customer
+//                 at every till until the sale's end, shown at the top with Extend.
+//                 The stock and retail prices are never changed and come back by
+//                 themselves at the end. A price at or above the stock price warns
+//                 before saving. Select: one price for every ticked item.
+//                 The tap also alerts the stores and queues the product for the
+//                 WhatsApp groups (Black Friday sale).
 //   Photos        Use current photo, Generate / Regenerate (the shared New Arrivals
 //                 generator, full resolution), Replace photo: the Black Friday
 //                 card's own options. The photo shown is the one that posts.
@@ -18,7 +22,8 @@ import { photoToBase64 } from "../blackFriday/BlackFridayScreen";
 import { FONT, BG, GLASS, GLASS_SOLID, GREEN, GRAY, AMBER, RED, BLUE_L, bGreen, bGray, bBlue, bRed, tabOn, tabOff, input } from "../stock/ui";
 
 const price = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2)}`);
-const TAB_LABEL = { clothing: "Clothing", sneakers: "Sneakers" };
+const TAB_LABEL = { clothing: "Clothing", sneakers: "Sneakers", onsale: "On sale" };
+const CUTOFFS = [{ key: "may", label: "May" }, { key: "june", label: "June" }, { key: "july", label: "July" }, { key: "august", label: "August" }];
 const MAX_PICK = 500; // one tap = one call, so the warning covers the whole selection before anything is saved
 /** A refusal from the shared photo callables, in this card's words. Pure. */
 export function photoError(e) {
@@ -43,6 +48,9 @@ export function readPrice(text) {
 function Row({ r, names, thumb, selecting, ticked, onTick, onSale, onExtend, onEnd, onRemove, busy, making, onGenerate, onReplace, onUseCurrent }) {
   const chosen = r.photoChoice && r.photoChoice.use === "generated";
   const locs = locsLine(r.locs, names);
+  const [text, setText] = useState("");
+  const typed = readPrice(text);
+  const put = () => { if (typed.price) onSale([r], typed.price, () => setText("")); };
   return (
     <div data-pid={r.pid} style={{ ...GLASS, borderRadius: 16, padding: 12, display: "flex", gap: 12, alignItems: "flex-start", opacity: busy ? 0.55 : 1 }}>
       {selecting && (
@@ -54,7 +62,7 @@ function Row({ r, names, thumb, selecting, ticked, onTick, onSale, onExtend, onE
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 700, color: "#fff", fontSize: "0.92rem", overflowWrap: "anywhere" }}>{r.name}</div>
         <div style={{ color: "#dfe7ff", fontSize: "0.82rem", marginTop: 3 }}>
-          <b>{r.qty}</b> on hand · {r.since === "never sold" ? "never sold" : `last sale ${r.since} ago`}
+          <b>{r.qty}</b> on hand{r.arrivedOn ? <> · arrived {r.arrivedOn} · received {r.received} · sold {r.sold}</> : null}
         </div>
         <div style={{ color: GRAY, fontSize: "0.8rem", marginTop: 2 }}>
           Stock {r.stockPrice ? price(r.stockPrice) : "not set"} · Retail {r.retailPrice ? price(r.retailPrice) : "not set"}
@@ -67,16 +75,13 @@ function Row({ r, names, thumb, selecting, ticked, onTick, onSale, onExtend, onE
           </div>
         )}
         {!selecting && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 9 }}>
-            {r.sale ? (
-              <>
-                <button type="button" style={bBlue} disabled={busy} onClick={() => onSale([r])}>Change price</button>
-                <button type="button" style={bGray} disabled={busy} onClick={() => onExtend([r.pid])}>Extend</button>
-                <button type="button" style={bRed} disabled={busy} onClick={() => onEnd([r.pid])}>End sale</button>
-              </>
-            ) : (
-              <button type="button" style={bGreen} disabled={busy} onClick={() => onSale([r])}>Put on sale</button>
-            )}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 9, alignItems: "center" }}>
+            <input aria-label={`Sale price for ${r.name}`} inputMode="decimal" value={text} disabled={busy} placeholder={r.sale ? "New price" : "Sale price"}
+              onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") put(); }}
+              style={{ ...input, width: 104, padding: "8px 10px", fontSize: "0.95rem" }} />
+            <button type="button" style={{ ...(r.sale ? bBlue : bGreen), opacity: typed.price ? 1 : 0.45 }} disabled={busy || !typed.price} onClick={put}>{r.sale ? "Edit price" : "Put on sale"}</button>
+            {r.sale && <button type="button" style={bGray} disabled={busy} onClick={() => onExtend([r.pid])}>Extend</button>}
+            {r.sale && <button type="button" style={bRed} disabled={busy} onClick={() => onEnd([r.pid])}>Remove from sale</button>}
             <button type="button" style={bGray} disabled={busy} onClick={() => onRemove([r.pid])}>Not for sale</button>
           </div>
         )}
@@ -110,7 +115,8 @@ function Sheet({ title, children, onClose }) {
 
 export default function BfCandidatesScreen({ api, onExit }) {
   const [tab, setTab] = useState("clothing");
-  const [windowDays, setWindowDays] = useState(30);
+  const [cutoff, setCutoff] = useState("july");   // "In store since": arrived by the end of that month
+  const [bulkText, setBulkText] = useState("");   // the Select bar's one price for every ticked item
   const [view, setView] = useState(null);      // the server's answer for this tab + window
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -126,7 +132,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
   const fileRef = useRef(null);
   const replaceFor = useRef(null);
 
-  const load = useCallback(async (t = tab, w = windowDays, { quiet = false } = {}) => {
+  const load = useCallback(async (t = tab, w = cutoff, { quiet = false } = {}) => {
     const mine = ++seq.current;
     if (!quiet) setLoading(true);
     setError(null);
@@ -136,13 +142,13 @@ export default function BfCandidatesScreen({ api, onExit }) {
       setView(v); setRows(v.rows || []);
     } catch (e) { if (mine === seq.current) setError(errText(e)); }
     finally { if (mine === seq.current) setLoading(false); }
-  }, [api, tab, windowDays]);
-  useEffect(() => { setRows([]); setTicks(new Set()); load(tab, windowDays); }, [tab, windowDays]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [api, tab, cutoff]);
+  useEffect(() => { setRows([]); setTicks(new Set()); load(tab, cutoff); }, [tab, cutoff]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const more = async () => {
     const mine = seq.current; // a page asked for under another tab or window is thrown away
     try {
-      const v = await api.list(tab, windowDays, rows.length);
+      const v = await api.list(tab, cutoff, rows.length);
       if (mine !== seq.current) return;
       setRows((cur) => [...cur, ...(v.rows || []).filter((r) => !cur.some((c) => c.pid === r.pid))]);
       setView((cur) => ({ ...(cur || {}), more: v.more, total: v.total, counts: v.counts }));
@@ -160,16 +166,17 @@ export default function BfCandidatesScreen({ api, onExit }) {
     catch (e) { say(errText(e)); return null; }
     finally { inFlight.current = false; setBusyPids(new Set()); setWorking(null); }
   };
-  const done = () => { setTicks(new Set()); setSelecting(false); setDialog(null); load(tab, windowDays, { quiet: true }); };
+  const done = () => { setTicks(new Set()); setSelecting(false); setDialog(null); load(tab, cutoff, { quiet: true }); };
 
   // ── Put on sale: ONE price; the warning (price ≥ stock price) comes before anything is saved ──
-  const saveSale = async (pids, priceNum, endDay, confirmAbove) => {
+  const saveSale = async (pids, priceNum, confirmAbove, after) => {
     // ONE call for the whole selection: the server decides the warning before it saves anything.
-    const r = await withBusy(pids, `Putting ${pids.length} on sale…`, async () => [await api.sale(pids, priceNum, endDay, { confirmAbove })]);
+    const r = await withBusy(pids, `Putting ${pids.length} on sale…`, async () => [await api.sale(pids, priceNum, { confirmAbove })]);
     if (!r) return;
     const need = r.flatMap((o) => o.needConfirm || []);
     // (Again, if a product came to need the warning since the first one: the confirmation is of the products shown.)
-    if (need.length) { setDialog({ type: "confirm", pids, price: priceNum, endDay, need }); return; }
+    if (need.length) { setDialog({ type: "confirm", pids, price: priceNum, need, after }); return; }
+    if (after) after();
     const ok = r.flatMap((o) => o.done || []), refused = r.flatMap((o) => o.refused || []);
     const until = (r.find((o) => o.until) || {}).until;
     say(`${ok.length} on sale at ${price(priceNum)}${until ? ` until ${until}` : ""}. Stores alerted; queued for the groups.${refused.length ? ` ${refused.length} not saved: ${refused[0].refusal}.` : ""}`);
@@ -185,7 +192,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
   const doEnd = async (pids) => {
     const r = await withBusy(pids, "Ending the sale…", async () => [await api.end(pids)]);
     if (!r) return;
-    say(`${r.reduce((t, o) => t + (o.done || []).length, 0)} back to normal prices. Stores alerted.`);
+    say(`${r.reduce((t, o) => t + (o.done || []).length, 0)} removed from the sale: back to normal prices. Stores alerted.`);
     done();
   };
   const doRemove = async (pids) => {
@@ -206,7 +213,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
     try {
       await api.restore([pid]);
       setDialog((d) => (d && d.type === "removed" ? { ...d, list: (d.list || []).filter((x) => x.pid !== pid) } : d));
-      load(tab, windowDays, { quiet: true });
+      load(tab, cutoff, { quiet: true });
     } catch (e) { say(errText(e)); }
   };
 
@@ -247,6 +254,13 @@ export default function BfCandidatesScreen({ api, onExit }) {
   const tick = (pid) => setTicks((cur) => { const n = new Set(cur); if (n.has(pid)) n.delete(pid); else if (n.size < MAX_PICK) n.add(pid); return n; });
   const picked = useMemo(() => rows.filter((r) => ticks.has(r.pid)), [rows, ticks]);
   const counts = (view && view.counts) || { clothing: 0, sneakers: 0, onSale: 0, removed: 0 };
+  const bulk = readPrice(bulkText);
+  const cutoffLabel = (((view && view.cutoffs) || CUTOFFS).find((c) => c.key === cutoff) || { label: "July" }).label;
+  // The sale's end, always in sight: the date the running sales end (or the date a sale put on now will get).
+  const ends = view && view.saleEnds;
+  const endsLine = !view ? "Sale ends Mon 30 Nov 23:59"
+    : !ends ? `Sale ends ${view.defaultUntil} 23:59`
+      : ends.same ? `Sale ends ${ends.lastLabel} 23:59` : `Sales end ${ends.firstLabel} to ${ends.lastLabel} 23:59`;
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, paddingBottom: selecting ? 150 : 60 }}>
@@ -255,28 +269,29 @@ export default function BfCandidatesScreen({ api, onExit }) {
           <button type="button" style={{ ...bGray, padding: "8px 12px" }} onClick={onExit}>Back</button>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 800, fontSize: "1.05rem" }}>BF Candidates</div>
-            <div style={{ color: GRAY, fontSize: "0.74rem" }}>In stock, nothing sold in {windowDays} days · in-store sale only</div>
+            <div style={{ color: GRAY, fontSize: "0.74rem" }}>Old stock that isn't selling · in-store sale only</div>
           </div>
           <button type="button" style={selecting ? bBlue : bGray} onClick={() => { setSelecting((s) => !s); setTicks(new Set()); }}>{selecting ? "Cancel" : "Select"}</button>
         </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+          <span style={{ color: AMBER, fontWeight: 800, fontSize: "0.86rem" }}>🔥 {endsLine}</span>
+          <button type="button" style={{ ...bBlue, padding: "6px 12px", fontSize: "0.8rem", opacity: counts.onSale > 0 ? 1 : 0.45 }} disabled={!(counts.onSale > 0)} onClick={() => setDialog({ type: "extend", pids: null, n: counts.onSale })}>Extend</button>
+          <span style={{ color: GRAY, fontSize: "0.76rem" }}>{counts.onSale > 0 ? `${counts.onSale} on sale` : "nothing on sale yet"}</span>
+          <a href="#bf-sale-list" style={{ color: BLUE_L, fontSize: "0.78rem", fontWeight: 700, marginLeft: "auto" }}>Store re-tag lists</a>
+        </div>
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
           {Object.keys(TAB_LABEL).map((t) => (
-            <button key={t} type="button" style={tab === t ? tabOn : tabOff} onClick={() => { setTab(t); setTicks(new Set()); }}>{TAB_LABEL[t]} ({counts[t] ?? 0})</button>
+            <button key={t} type="button" style={tab === t ? tabOn : tabOff} onClick={() => { setTab(t); setTicks(new Set()); }}>{TAB_LABEL[t]} ({(t === "onsale" ? counts.onSale : counts[t]) ?? 0})</button>
           ))}
-          <label style={{ marginLeft: "auto", color: GRAY, fontSize: "0.78rem", display: "flex", alignItems: "center", gap: 6 }}>
-            No sale in
-            <select aria-label="Days without a sale" value={windowDays} onChange={(e) => setWindowDays(Number(e.target.value))} style={{ ...input, padding: "6px 8px", fontSize: "0.8rem" }}>
-              {((view && view.windows) || [14, 30, 60, 90]).map((w) => <option key={w} value={w}>{w} days</option>)}
-            </select>
-          </label>
+          {tab !== "onsale" && (
+            <label style={{ marginLeft: "auto", color: GRAY, fontSize: "0.78rem", display: "flex", alignItems: "center", gap: 6 }}>
+              In store since
+              <select aria-label="In store since" value={cutoff} onChange={(e) => setCutoff(e.target.value)} style={{ ...input, padding: "6px 8px", fontSize: "0.8rem" }}>
+                {((view && view.cutoffs) || CUTOFFS).map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+              </select>
+            </label>
+          )}
         </div>
-        {counts.onSale > 0 && (
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
-            <span style={{ color: AMBER, fontWeight: 700, fontSize: "0.82rem" }}>🔥 {counts.onSale} on sale</span>
-            <button type="button" style={{ ...bGray, padding: "6px 10px", fontSize: "0.78rem" }} onClick={() => setDialog({ type: "extend", pids: null, n: counts.onSale })}>Extend all</button>
-            <a href="#bf-sale-list" style={{ color: BLUE_L, fontSize: "0.78rem", fontWeight: 700 }}>Store re-tag lists</a>
-          </div>
-        )}
       </div>
 
       <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10, maxWidth: 760, margin: "0 auto" }}>
@@ -284,12 +299,14 @@ export default function BfCandidatesScreen({ api, onExit }) {
         {loading && !rows.length && <div style={{ color: GRAY }}>Loading…</div>}
         {!loading && !error && !rows.length && (
           <div style={{ color: GRAY, fontSize: "0.9rem" }}>
-            {view && view.meta ? `Nothing in ${TAB_LABEL[tab]} has gone ${windowDays} days without a sale.` : "The list has not been built yet. It is built every night; the first one is on its way."}
+            {tab === "onsale" ? "Nothing is on sale. Type a price on a row and tap Put on sale."
+              : view && view.meta ? `Nothing in ${TAB_LABEL[tab]} arrived by the end of ${cutoffLabel}, is still in stock and has sold under 10% of what was received.${view.meta.ledgerFirst ? ` The stock records start on ${new Date(view.meta.ledgerFirst).toLocaleDateString("en-ZA", { timeZone: "Africa/Johannesburg", day: "numeric", month: "short", year: "numeric" })}.` : ""}`
+                : "The list has not been built yet. It is built every night; the first one is on its way."}
           </div>
         )}
         {rows.map((r) => (
           <Row key={r.pid} r={r} names={names} thumb={api.thumb} selecting={selecting} ticked={ticks.has(r.pid)} onTick={tick} busy={busyPids.has(r.pid) || !!working} making={making[r.pid]} onGenerate={generate} onReplace={replace} onUseCurrent={useCurrent}
-            onSale={(rs) => setDialog({ type: "sale", rows: rs })} onExtend={(pids) => setDialog({ type: "extend", pids, n: pids.length })} onEnd={doEnd} onRemove={doRemove} />
+            onSale={(rs, p, after) => saveSale(rs.map((x) => x.pid), p, null, after)} onExtend={(pids) => setDialog({ type: "extend", pids, n: pids.length })} onEnd={doEnd} onRemove={doRemove} />
         ))}
         {view && view.more && <button type="button" style={bGray} onClick={more}>Show more ({(view.total || 0) - rows.length} more)</button>}
         {view && view.meta && view.meta.builtAt && <div style={{ color: GRAY, fontSize: "0.72rem", textAlign: "center", marginTop: 6 }}>List built {new Date(view.meta.builtAt).toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</div>}
@@ -304,14 +321,14 @@ export default function BfCandidatesScreen({ api, onExit }) {
             <button type="button" style={{ background: "none", border: "none", color: BLUE_L, fontWeight: 700, marginLeft: 10, cursor: "pointer", fontFamily: FONT }} onClick={() => setTicks(new Set(rows.slice(0, MAX_PICK).map((r) => r.pid)))}>Select all {Math.min(rows.length, MAX_PICK)}</button>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button type="button" style={bGreen} disabled={!picked.length} onClick={() => setDialog({ type: "sale", rows: picked })}>Put on sale</button>
+            <input aria-label="Sale price for every ticked item" inputMode="decimal" value={bulkText} placeholder="One price for all" onChange={(e) => setBulkText(e.target.value)} style={{ ...input, width: 140, padding: "8px 10px", fontSize: "0.95rem" }} />
+            <button type="button" style={{ ...bGreen, opacity: picked.length && bulk.price ? 1 : 0.45 }} disabled={!picked.length || !bulk.price || !!working} onClick={() => saveSale(picked.map((r) => r.pid), bulk.price, null, () => setBulkText(""))}>Put {picked.length || ""} on sale</button>
             <button type="button" style={bGray} disabled={!picked.some((r) => r.sale)} onClick={() => setDialog({ type: "extend", pids: picked.filter((r) => r.sale).map((r) => r.pid), n: picked.filter((r) => r.sale).length })}>Extend</button>
             <button type="button" style={bGray} disabled={!picked.length} onClick={() => doRemove(picked.map((r) => r.pid))}>Not for sale</button>
           </div>
         </div>
       )}
 
-      {dialog && dialog.type === "sale" && <SaleSheet rows={dialog.rows} view={view} working={working} onClose={() => setDialog(null)} onSave={(p, d) => saveSale(dialog.rows.map((r) => r.pid), p, d, null)} />}
       {dialog && dialog.type === "confirm" && (
         <Sheet title="This price is not lower than the stock price" onClose={() => setDialog(null)}>
           <div style={{ color: "#dfe7ff", fontSize: "0.88rem", lineHeight: 1.45 }}>
@@ -324,7 +341,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
             <button type="button" style={bGray} onClick={() => setDialog(null)}>Go back</button>
-            <button type="button" style={bRed} disabled={!!working} onClick={() => saveSale(dialog.pids, dialog.price, dialog.endDay, dialog.need.map((n) => n.pid))}>{working || `Save at ${price(dialog.price)} anyway`}</button>
+            <button type="button" style={bRed} disabled={!!working} onClick={() => saveSale(dialog.pids, dialog.price, dialog.need.map((n) => n.pid), dialog.after)}>{working || `Save at ${price(dialog.price)} anyway`}</button>
           </div>
         </Sheet>
       )}
@@ -345,44 +362,10 @@ export default function BfCandidatesScreen({ api, onExit }) {
   );
 }
 
-function SaleSheet({ rows, view, working, onClose, onSave }) {
-  const [text, setText] = useState("");
-  const one = rows.length === 1 ? rows[0] : null;
-  // Change price on a product already on sale keeps ITS end date (an extended sale is not cut back to 30 Nov).
-  const ownEnd = one && one.sale && one.sale.end ? new Date(one.sale.end + 2 * 3600_000).toISOString().slice(0, 10) : null;
-  const [endDay, setEndDay] = useState(ownEnd || (view && view.defaultEndDay) || "2026-11-30");
-  const [err, setErr] = useState(null);
-  const save = () => {
-    const p = readPrice(text);
-    if (p.error) { setErr(p.error); return; }
-    if (!endDay) { setErr("Pick the day the sale ends."); return; }
-    onSave(p.price, endDay);
-  };
-  return (
-    <Sheet title={one ? `Put on sale: ${one.name}` : `Put ${rows.length} products on sale`} onClose={onClose}>
-      <div style={{ color: GRAY, fontSize: "0.82rem", lineHeight: 1.45, marginBottom: 12 }}>
-        ONE price for every customer at every till, starting now. The stock and retail prices are not changed and come back by themselves when the sale ends. The website keeps its normal price.
-        {one && <div style={{ marginTop: 6, color: "#dfe7ff" }}>Now: stock {one.stockPrice ? price(one.stockPrice) : "not set"} · retail {one.retailPrice ? price(one.retailPrice) : "not set"}</div>}
-      </div>
-      <label style={{ display: "block", color: "#dfe7ff", fontSize: "0.8rem", fontWeight: 700 }}>Sale price (R)
-        <input aria-label="Sale price" inputMode="decimal" autoFocus value={text} onChange={(e) => { setText(e.target.value); setErr(null); }} placeholder="e.g. 250" style={{ ...input, display: "block", width: "100%", boxSizing: "border-box", marginTop: 6, fontSize: "1.1rem" }} />
-      </label>
-      <label style={{ display: "block", color: "#dfe7ff", fontSize: "0.8rem", fontWeight: 700, marginTop: 12 }}>Ends at 23:59 on
-        <input aria-label="Sale end date" type="date" value={endDay} min={(view && view.today) || undefined} onChange={(e) => { setEndDay(e.target.value); setErr(null); }} style={{ ...input, display: "block", width: "100%", boxSizing: "border-box", marginTop: 6 }} />
-      </label>
-      {err && <div role="alert" style={{ color: RED, fontSize: "0.82rem", marginTop: 8 }}>{err}</div>}
-      <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-        <button type="button" style={bGray} onClick={onClose}>Cancel</button>
-        <button type="button" style={bGreen} disabled={!!working} onClick={save}>{working || "Put on sale"}</button>
-      </div>
-    </Sheet>
-  );
-}
-
 function ExtendSheet({ n, view, working, onClose, onSave }) {
   const [endDay, setEndDay] = useState("");
   return (
-    <Sheet title={`Extend ${n === 1 ? "this sale" : `${n} sales`}`} onClose={onClose}>
+    <Sheet title={`Extend ${n === 1 ? "this sale" : `all ${n} sales`}`} onClose={onClose}>
       <label style={{ display: "block", color: "#dfe7ff", fontSize: "0.8rem", fontWeight: 700 }}>New end date (23:59 that day)
         <input aria-label="New end date" type="date" value={endDay} min={(view && view.today) || undefined} onChange={(e) => setEndDay(e.target.value)} style={{ ...input, display: "block", width: "100%", boxSizing: "border-box", marginTop: 6 }} />
       </label>

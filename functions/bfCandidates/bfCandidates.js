@@ -103,8 +103,12 @@ async function putOnSale(db, data, uid, nowMs) {
   const pids = pidsOf(data);
   const price = core.parsePrice(data.price);
   if (price === null) throw new HttpsError("invalid-argument", "Enter the sale price in rands.");
-  const end = core.saleEnd(data.endDay || null, nowMs);
-  if (!end) throw new HttpsError("invalid-argument", "The sale's end date must be today or later.");
+  // The end: the date the card names; with none, each product already on sale KEEPS its own end (Edit price never
+  // cuts an extended sale back) and a new sale ends with the rest (Mon 30 Nov, or later once Junid has extended).
+  const named = data.endDay ? core.saleEnd(data.endDay, nowMs) : null;
+  if (data.endDay && !named) throw new HttpsError("invalid-argument", "The sale's end date must be today or later.");
+  const fallbackEnd = named || core.defaultEnd(await val(db, `${R}/sales`), nowMs);
+  if (!(fallbackEnd > nowMs)) throw new HttpsError("failed-precondition", "The sale's end date has passed. Extend the sale first.");
   const [rows, chosen, removed, live] = await Promise.all([
     inBatches(pids, 25, (p) => val(db, `${R}/candidates/items/${p}`)),
     inBatches(pids, 25, (p) => val(db, `${R}/photos/${p}`)),
@@ -131,12 +135,16 @@ async function putOnSale(db, data, uid, nowMs) {
   // "Change price" on a product already on sale: the sale it replaces is kept on record (ended/), never lost.
   const before = await inBatches(ok.map((x) => x.pid), 25, (p) => val(db, `${R}/sales/${p}`));
   ok.forEach((x, i) => { const old = before[i]; if (old && Number(old.setAt) && Number(old.setAt) !== nowMs) upd[`${R}/ended/${x.pid}/${Number(old.setAt)}`] = { ...old, endedAt: nowMs, endedBy: uid, why: "replaced" }; });
-  for (const x of ok) {
+  const ends = {};
+  ok.forEach((x, i) => {
+    const end = named || (core.saleActive(before[i], nowMs) ? Number(before[i].end) : fallbackEnd);
+    ends[x.pid] = end;
     const rec = core.saleRecord({ row: x.row, price, start: nowMs, end, uid, photo: x.photo });
     upd[`${R}/sales/${x.pid}`] = rec;
     upd[`products/${x.pid}/bfSale`] = core.tillMirror(rec);
     entries.push({ pid: x.pid, name: rec.name, sale: rec });
-  }
+  });
+  const end = Math.max(...Object.values(ends));
   upd[`${R}/log/${db.ref(`${R}/log`).push().key}`] = { at: nowMs, by: uid, action: "sale", price, end, pids: ok.map((x) => x.pid), ...(above.length ? { aboveStock: above.map((a) => a.pid) } : {}) };
   await db.ref().update(upd);
   // Marked Not for sale in this same instant: the sale does not stand.
@@ -284,10 +292,12 @@ const bfSaleList = onCall(callableOpts, async (request) => {
   const d = request.data || {};
   // The card's own small nodes (the finder's list is the largest: one slim row per product that is not moving).
   const [items, removed, sales, photos, posted, meta] = await Promise.all(["candidates/items", "removed", "sales", "photos", "posted", "candidates/meta"].map((p) => val(db, `${R}/${p}`)));
-  const windowDays = core.windowOf(d.windowDays);
+  const cutoff = core.cutoffOf(d.cutoff);
   const locNames = Object.fromEntries((await locations(db)).map((l) => [l.id, l.name]));
-  const view = core.viewList({ items: items || {}, removed: removed || {}, sales: sales || {}, photos: photos || {}, posted: posted || {} }, { tab: d.tab, windowDays, from: d.from, n: d.n, nowMs });
-  return { ...view, locNames, tab: core.TABS.includes(d.tab) ? d.tab : "clothing", windowDays, windows: core.WINDOWS, defaultEndDay: core.DEFAULT_END_DAY, defaultUntil: core.endLabel(core.endOfDayMs(core.DEFAULT_END_DAY)), today: core.sastDay(nowMs), now: nowMs, meta: meta || null };
+  const view = core.viewList({ items: items || {}, removed: removed || {}, sales: sales || {}, photos: photos || {}, posted: posted || {} }, { tab: d.tab, cutoff, from: d.from, n: d.n, nowMs });
+  // The end a sale put on now gets (Mon 30 Nov, or later once the running sales were extended past it).
+  const dEnd = core.defaultEnd(sales || {}, nowMs);
+  return { ...view, locNames, tab: core.VIEWS.includes(d.tab) ? d.tab : "clothing", cutoff, cutoffs: Object.keys(core.CUTOFFS).map((k) => ({ key: k, label: core.CUTOFF_LABEL[k], day: core.CUTOFFS[k] })), defaultEndDay: core.sastDay(dEnd), defaultUntil: core.endLabel(dEnd), today: core.sastDay(nowMs), now: nowMs, meta: meta || null };
 });
 
 const bfSaleSet = onCall(callableOpts, async (request) => {
