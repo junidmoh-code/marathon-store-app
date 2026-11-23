@@ -32,7 +32,8 @@ const sastDay = (ms) => new Date(ms + 2 * 3600_000).toISOString().slice(0, 10);
 function endOfDayMs(day) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day))) return null;
   const ms = Date.parse(`${day}T23:59:59.999+02:00`);
-  return Number.isFinite(ms) ? ms : null;
+  // A date that is not on the calendar (31 Nov) rolls into the next month when parsed: refused, not moved.
+  return Number.isFinite(ms) && sastDay(ms) === String(day) ? ms : null;
 }
 /** "Mon 30 Nov" (the card, the alerts and the WhatsApp caption all say it this way). */
 function endLabel(endMs) {
@@ -44,6 +45,9 @@ const priceLabel = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${N
 // ── candidates ───────────────────────────────────────────────────────────────
 const windowOf = (w) => (WINDOWS.includes(Number(w)) ? Number(w) : DEFAULT_WINDOW);
 const tabOf = (row) => (row && row.kind === "sneakers" ? "sneakers" : "clothing");
+// The finder's own rule (marathon-group-poster src/bf/core.mjs FOOTWEAR_KEYS), for a product whose finder row is gone.
+const FOOTWEAR_KEYS = Object.freeze(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes", "sandals"]);
+const kindOfCat = (categoryKey) => (FOOTWEAR_KEYS.includes(String(categoryKey || "")) ? "sneakers" : "clothing");
 /** On hand and nothing sold inside the window (never sold counts). */
 function isCandidate(row, windowDays, nowMs) {
   if (!row || !(Number(row.qty) > 0)) return false;
@@ -120,7 +124,8 @@ function viewList({ items = {}, removed = {}, sales = {}, photos = {}, posted = 
 function parsePrice(v) {
   const n = typeof v === "string" ? Number(v.replace(/^\s*R\s*/i, "").replace(/\s+/g, "").replace(",", ".")) : Number(v);
   if (!Number.isFinite(n) || n <= 0 || n > 100000) return null;
-  return Math.round(n * 100) / 100;
+  const cents = Math.round(n * 100);
+  return cents >= 1 ? cents / 100 : null; // a price that rounds to nothing is not a price
 }
 /** The products a sale price would NOT be a saving for resellers: sale price ≥ their current stock price. */
 function aboveStock(rows, price) {
@@ -153,14 +158,16 @@ function alertText(type, name, sale) {
   if (type === "extend") return { title: "Black Friday sale extended", body: `${n} stays ${priceLabel(sale.salePrice)} until ${endLabel(sale.end)}` };
   return { title: "Black Friday sale", body: `Black Friday sale: ${n} now ${priceLabel(sale.salePrice)}, re-tag` };
 }
-/** Several products in one tap: one notification per store, naming the first. */
+/** Several products in one tap: one notification per store, naming up to three (staff must know WHAT to re-tag). */
 function alertBurst(type, names, sale) {
   if (names.length <= 1) return alertText(type, names[0], sale);
   const first = alertText(type, names[0], sale);
-  const rest = names.length - 1;
-  if (type === "end") return { title: first.title, body: `${names[0]} and ${rest} more are back to normal price, re-tag` };
-  if (type === "extend") return { title: first.title, body: `${names[0]} and ${rest} more stay on sale until ${endLabel(sale.end)}` };
-  return { title: first.title, body: `Black Friday sale: ${names[0]} and ${rest} more now ${priceLabel(sale.salePrice)}, re-tag` };
+  const shown = names.slice(0, 3).map((n) => String(n || "A product").trim());
+  const rest = names.length - shown.length;
+  const list = rest > 0 ? `${shown.join(", ")} and ${rest} more` : `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
+  if (type === "end") return { title: first.title, body: `${list} are back to normal price, re-tag` };
+  if (type === "extend") return { title: first.title, body: `${list} stay on sale until ${endLabel(sale.end)}` };
+  return { title: first.title, body: `Black Friday sale: ${list} now ${priceLabel(sale.salePrice)}, re-tag` };
 }
 /** Locations holding a product now (qty > 0), from { loc: qty }. Stock in transit is on no shelf. */
 const holders = (locs) => Object.entries(locs || {}).filter(([loc, q]) => Number(q) > 0 && loc !== "in_transit").map(([loc]) => loc);
@@ -191,7 +198,7 @@ function salePhotoCaption(sizes, at, endMs) {
 
 module.exports = {
   ROOT, WINDOWS, DEFAULT_WINDOW, DEFAULT_END_DAY, TABS, DAY_MS, PAGE, MAX_PIDS, PID_RE, AT,
-  sastDay, endOfDayMs, endLabel, priceLabel, windowOf, tabOf, isCandidate, sinceLabel, saleVersion, saleActive, photoOf,
+  sastDay, endOfDayMs, endLabel, priceLabel, windowOf, tabOf, kindOfCat, FOOTWEAR_KEYS, isCandidate, sinceLabel, saleVersion, saleActive, photoOf,
   viewRow, viewList, parsePrice, aboveStock, saleEnd, saleRecord, tillMirror,
   alertText, alertBurst, holders, storeList, saleText, salePhotoCaption,
 };

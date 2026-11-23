@@ -111,11 +111,13 @@ export default function BfCandidatesScreen({ api, onExit }) {
     } catch (e) { if (mine === seq.current) setError(errText(e)); }
     finally { if (mine === seq.current) setLoading(false); }
   }, [api, tab, windowDays]);
-  useEffect(() => { load(tab, windowDays); }, [tab, windowDays]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setRows([]); setTicks(new Set()); load(tab, windowDays); }, [tab, windowDays]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const more = async () => {
+    const mine = seq.current; // a page asked for under another tab or window is thrown away
     try {
       const v = await api.list(tab, windowDays, rows.length);
+      if (mine !== seq.current) return;
       setRows((cur) => [...cur, ...(v.rows || []).filter((r) => !cur.some((c) => c.pid === r.pid))]);
       setView((cur) => ({ ...(cur || {}), more: v.more, total: v.total, counts: v.counts }));
     } catch (e) { setToast(errText(e)); }
@@ -123,11 +125,14 @@ export default function BfCandidatesScreen({ api, onExit }) {
 
   const names = (view && view.locNames) || {};
   const say = (t) => { setToast(t); setTimeout(() => setToast((cur) => (cur === t ? null : cur)), 6000); };
+  const inFlight = useRef(false);
   const withBusy = async (pids, label, fn) => {
+    if (inFlight.current) return null; // one tap at a time: a second tap never lands on a half-finished first
+    inFlight.current = true;
     setBusyPids(new Set(pids)); setWorking(label);
     try { return await fn(); }
     catch (e) { say(errText(e)); return null; }
-    finally { setBusyPids(new Set()); setWorking(null); }
+    finally { inFlight.current = false; setBusyPids(new Set()); setWorking(null); }
   };
   const done = () => { setTicks(new Set()); setSelecting(false); setDialog(null); load(tab, windowDays, { quiet: true }); };
 
@@ -137,7 +142,8 @@ export default function BfCandidatesScreen({ api, onExit }) {
     const r = await withBusy(pids, `Putting ${pids.length} on sale…`, async () => [await api.sale(pids, priceNum, endDay, { confirmAbove })]);
     if (!r) return;
     const need = r.flatMap((o) => o.needConfirm || []);
-    if (need.length && !confirmAbove) { setDialog({ type: "confirm", pids, price: priceNum, endDay, need }); return; }
+    // (Again, if a product came to need the warning since the first one: the confirmation is of the products shown.)
+    if (need.length) { setDialog({ type: "confirm", pids, price: priceNum, endDay, need }); return; }
     const ok = r.flatMap((o) => o.done || []), refused = r.flatMap((o) => o.refused || []);
     const until = (r.find((o) => o.until) || {}).until;
     say(`${ok.length} on sale at ${price(priceNum)}${until ? ` until ${until}` : ""}. Stores alerted; queued for the groups.${refused.length ? ` ${refused.length} not saved: ${refused[0].refusal}.` : ""}`);
@@ -165,8 +171,10 @@ export default function BfCandidatesScreen({ api, onExit }) {
   };
   const openRemoved = async () => {
     setDialog({ type: "removed", list: null });
-    try { const r = await api.removed(); setDialog({ type: "removed", list: r.removed || [] }); }
-    catch (e) { setDialog(null); say(errText(e)); }
+    // A late answer never replaces (or closes) a sheet opened since.
+    const still = (d) => d && d.type === "removed" && d.list === null;
+    try { const r = await api.removed(); setDialog((d) => (still(d) ? { type: "removed", list: r.removed || [] } : d)); }
+    catch (e) { setDialog((d) => (still(d) ? null : d)); say(errText(e)); }
   };
   const undoRemove = async (pid) => {
     try {
@@ -220,7 +228,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
           </div>
         )}
         {rows.map((r) => (
-          <Row key={r.pid} r={r} names={names} thumb={api.thumb} selecting={selecting} ticked={ticks.has(r.pid)} onTick={tick} busy={busyPids.has(r.pid)}
+          <Row key={r.pid} r={r} names={names} thumb={api.thumb} selecting={selecting} ticked={ticks.has(r.pid)} onTick={tick} busy={busyPids.has(r.pid) || !!working}
             onSale={(rs) => setDialog({ type: "sale", rows: rs })} onExtend={(pids) => setDialog({ type: "extend", pids, n: pids.length })} onEnd={doEnd} onRemove={doRemove} />
         ))}
         {view && view.more && <button type="button" style={bGray} onClick={more}>Show more ({(view.total || 0) - rows.length} more)</button>}
@@ -242,7 +250,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
         </div>
       )}
 
-      {dialog && dialog.type === "sale" && <SaleSheet rows={dialog.rows} view={view} working={working} onClose={() => setDialog(null)} onSave={(p, d) => saveSale(dialog.rows.map((r) => r.pid), p, d, false)} />}
+      {dialog && dialog.type === "sale" && <SaleSheet rows={dialog.rows} view={view} working={working} onClose={() => setDialog(null)} onSave={(p, d) => saveSale(dialog.rows.map((r) => r.pid), p, d, null)} />}
       {dialog && dialog.type === "confirm" && (
         <Sheet title="This price is not lower than the stock price" onClose={() => setDialog(null)}>
           <div style={{ color: "#dfe7ff", fontSize: "0.88rem", lineHeight: 1.45 }}>
@@ -255,7 +263,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
             <button type="button" style={bGray} onClick={() => setDialog(null)}>Go back</button>
-            <button type="button" style={bRed} disabled={!!working} onClick={() => saveSale(dialog.pids, dialog.price, dialog.endDay, true)}>{working || `Save at ${price(dialog.price)} anyway`}</button>
+            <button type="button" style={bRed} disabled={!!working} onClick={() => saveSale(dialog.pids, dialog.price, dialog.endDay, dialog.need.map((n) => n.pid))}>{working || `Save at ${price(dialog.price)} anyway`}</button>
           </div>
         </Sheet>
       )}

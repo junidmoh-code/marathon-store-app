@@ -36,9 +36,13 @@ const R = core.ROOT;
 function assertJunid(request) {
   if (!isSuperAdminToken(request.auth && request.auth.token)) throw new HttpsError("permission-denied", "The BF Candidates card is Junid's.");
 }
-function assertStaff(request) {
+/** Staff only: Junid, or an account with a staff record (/users/{uid}/role — one leaf, never the record). */
+async function assertStaff(db, request) {
   const t = request.auth && request.auth.token;
   if (!t || (t.firebase && t.firebase.sign_in_provider === "anonymous")) throw new HttpsError("unauthenticated", "Sign in first.");
+  if (isSuperAdminToken(t)) return;
+  const role = await db.ref(`users/${request.auth.uid}/role`).once("value").then((s) => s.val()).catch(() => null);
+  if (!role) throw new HttpsError("permission-denied", "The re-tag list is for staff.");
 }
 const val = async (db, path) => (await db.ref(path).once("value")).val();
 async function inBatches(xs, width, fn) {
@@ -113,12 +117,14 @@ async function putOnSale(db, data, uid, nowMs) {
     if (!p || (!p.name && !p.stockPrice) || p.mergedInto) { refused.push({ pid, refusal: "no longer in the catalogue" }); return; }
     if (removed[i]) { refused.push({ pid, refusal: "marked Not for sale" }); return; }
     // The prices are the product's own, read now (the list is a night old); the list supplies kind and photo.
-    const row = { ...(rows[i] || {}), pid, name: p.name || (rows[i] && rows[i].name) || pid, stockPrice: p.stockPrice, retailPrice: p.retailPrice, cat: p.categoryKey || (rows[i] && rows[i].cat) || null, photo: (rows[i] && rows[i].photo) || p.photoUrl || null };
+    const row = { ...(rows[i] || { kind: core.kindOfCat(p.categoryKey) }), pid, name: p.name || (rows[i] && rows[i].name) || pid, stockPrice: p.stockPrice, retailPrice: p.retailPrice, cat: p.categoryKey || (rows[i] && rows[i].cat) || null, photo: (rows[i] && rows[i].photo) || p.photoUrl || null };
     ok.push({ pid, row, photo: core.photoOf(row, chosen[i]) });
   });
   // The warning comes BEFORE anything is saved: a sale price at or above the stock price means resellers pay more than usual.
   const above = core.aboveStock(ok.map((x) => x.row), price);
-  if (above.length && data.confirmAbove !== true) return { ok: false, needConfirm: above, price, refused };
+  // The confirmation is OF the products the warning showed: one that came to need it since is warned about first.
+  const confirmed = new Set(Array.isArray(data.confirmAbove) ? data.confirmAbove : []);
+  if (above.some((a) => !confirmed.has(a.pid))) return { ok: false, needConfirm: above, price, refused };
   if (!ok.length) return { ok: false, refused, done: [] };
   const upd = {};
   const entries = [];
@@ -133,8 +139,18 @@ async function putOnSale(db, data, uid, nowMs) {
   }
   upd[`${R}/log/${db.ref(`${R}/log`).push().key}`] = { at: nowMs, by: uid, action: "sale", price, end, pids: ok.map((x) => x.pid), ...(above.length ? { aboveStock: above.map((a) => a.pid) } : {}) };
   await db.ref().update(upd);
-  const stores = await alertStores(db, "start", entries, nowMs);
+  // Marked Not for sale in this same instant: the sale does not stand.
+  const gone = await inBatches(ok.map((x) => x.pid), 25, (p) => val(db, `${R}/removed/${p}`));
+  const late = ok.filter((_, i) => gone[i]).map((x) => [x.pid, null]);
+  if (late.length) await closeSales(db, late, { uid, why: "not_for_sale", nowMs });
+  const stores = await alertStores(db, "start", entries.filter((e) => !late.some(([p]) => p === e.pid)), nowMs);
   return { ok: true, done: ok.map((x) => x.pid), refused, price, end, until: core.endLabel(end), stores };
+}
+
+/** The till's mirror is always made from the sale as it IS (never from a value read earlier): gone when there is no sale. */
+async function syncMirror(db, pid) {
+  const s = await val(db, `${R}/sales/${pid}`);
+  await db.ref(`products/${pid}/bfSale`).set(s && Number(s.salePrice) > 0 && Number(s.end) > 0 ? core.tillMirror(s) : null);
 }
 
 /** The sales a tap names: its pids, or every active sale (all: true). → [[pid, sale]] */
@@ -162,7 +178,7 @@ async function extend(db, data, uid, nowMs) {
     });
     const next = t.committed ? t.snapshot.val() : null;
     if (!next || Number(next.end) !== end) continue;
-    await db.ref(`products/${pid}/bfSale`).set(core.tillMirror(next));
+    await syncMirror(db, pid);
     done.push(pid);
     entries.push({ pid, name: next.name, sale: next });
   }
@@ -188,10 +204,8 @@ async function closeSales(db, list, { uid = null, why, nowMs }) {
       return null;
     });
     if (!t.committed || !closed) continue;
-    await db.ref().update({
-      [`products/${pid}/bfSale`]: null,
-      [`${R}/ended/${pid}/${Number(closed.setAt) || nowMs}`]: { ...closed, endedAt: nowMs, endedBy: uid, why },
-    });
+    await db.ref(`${R}/ended/${pid}/${Number(closed.setAt) || nowMs}`).set({ ...closed, endedAt: nowMs, endedBy: uid, why });
+    await syncMirror(db, pid); // a sale Junid set again in this instant keeps its mirror
     done.push(pid);
     entries.push({ pid, name: closed.name, sale: closed });
   }
@@ -208,11 +222,13 @@ async function remove(db, data, uid, nowMs) {
     inBatches(pids, 25, (p) => val(db, `${R}/candidates/items/${p}`)),
     inBatches(pids, 25, (p) => val(db, `${R}/sales/${p}`)),
   ]);
-  const onSale = pids.map((p, i) => [p, sales[i]]).filter(([, s]) => s);
-  if (onSale.length) await closeSales(db, onSale, { uid, why: "not_for_sale", nowMs });
+  // The marker FIRST: from here the product cannot be put on sale again; then any sale on it is closed (and only
+  // then are the stores told). A close that fails leaves the marker, and the same tap again finishes it.
   const upd = {};
   pids.forEach((pid, i) => { upd[`${R}/removed/${pid}`] = { at: nowMs, by: uid, name: String((rows[i] && rows[i].name) || (sales[i] && sales[i].name) || pid).slice(0, 200), kind: core.tabOf(rows[i] || sales[i]), photo: (rows[i] && rows[i].photo) || null }; });
   await db.ref().update(upd);
+  const onSale = pids.map((p, i) => [p, sales[i]]).filter(([, s]) => s);
+  if (onSale.length) await closeSales(db, onSale, { uid, why: "not_for_sale", nowMs });
   return { ok: true, done: pids };
 }
 async function restore(db, data) {
@@ -257,8 +273,8 @@ const bfSaleSet = onCall(callableOpts, async (request) => {
 
 /** The staff re-tag list: every product on sale, by the location that holds it now. */
 const bfSaleStoreList = onCall(callableOpts, async (request) => {
-  assertStaff(request);
   const db = admin.database();
+  await assertStaff(db, request);
   const nowMs = Date.now();
   const sales = Object.fromEntries(Object.entries((await val(db, `${R}/sales`)) || {}).filter(([, s]) => core.saleActive(s, nowMs)));
   const locs = await locations(db);

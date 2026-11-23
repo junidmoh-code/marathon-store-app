@@ -48,7 +48,7 @@ describe("BF Candidates card", () => {
     await type(field(r, "Sale price"), "150");
     expect(field(r, "Sale end date").props.value).toBe("2026-11-30");
     await press(buttons(dialog(r), "Put on sale")[0]);
-    expect(api.sale).toHaveBeenCalledWith(["a"], 150, "2026-11-30", { confirmAbove: false });
+    expect(api.sale).toHaveBeenCalledWith(["a"], 150, "2026-11-30", { confirmAbove: null });
     expect(all(r)).toContain("1 on sale at R150 until Mon 30 Nov");
   });
 
@@ -64,7 +64,7 @@ describe("BF Candidates card", () => {
     expect(t).toContain("Nothing has been saved yet");
     expect(sale).toHaveBeenCalledTimes(1);
     await press(buttons(r.root, "Save at R220 anyway")[0]);
-    expect(sale).toHaveBeenLastCalledWith(["a"], 220, "2026-11-30", { confirmAbove: true });
+    expect(sale).toHaveBeenLastCalledWith(["a"], 220, "2026-11-30", { confirmAbove: ["a"] });
   });
 
   it("a row on sale says until when, and offers Extend and End sale", async () => {
@@ -99,7 +99,7 @@ describe("BF Candidates card", () => {
     await press(buttons(r.root, "Put on sale")[0]);
     await type(field(r, "Sale price"), "99,50");
     await press(buttons(dialog(r), "Put on sale")[0]);
-    expect(api.sale).toHaveBeenCalledWith(["a", "b"], 99.5, "2026-11-30", { confirmAbove: false });
+    expect(api.sale).toHaveBeenCalledWith(["a", "b"], 99.5, "2026-11-30", { confirmAbove: null });
   });
 
   it("small pure parts", () => {

@@ -14,8 +14,8 @@ export const bfCandidatesApi = {
   // One tab, one page: { rows, counts, total, more, windowDays, defaultEndDay, defaultUntil, today, locNames, meta }
   list: (tab, windowDays, from = 0) => call("bfSaleList")({ tab, windowDays, from }),
   // ONE sale price for the chosen products. → { ok, done, refused, until } or { ok:false, needConfirm:[…] } when the
-  // price is at or above a stock price (nothing saved until confirmAbove: true).
-  sale: (pids, price, endDay, { confirmAbove = false } = {}) => set({ action: "sale", pids, price, endDay, ...(confirmAbove ? { confirmAbove: true } : {}) }),
+  // price is at or above a stock price (nothing saved until confirmAbove names exactly the products warned about).
+  sale: (pids, price, endDay, { confirmAbove = null } = {}) => set({ action: "sale", pids, price, endDay, ...(confirmAbove ? { confirmAbove } : {}) }),
   extend: (pids, endDay) => set({ action: "extend", pids, endDay }),
   extendAll: (endDay) => set({ action: "extend", all: true, endDay }),
   end: (pids) => set({ action: "end", pids }),

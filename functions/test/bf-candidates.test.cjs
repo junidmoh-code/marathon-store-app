@@ -20,6 +20,7 @@ test("the sale ends Monday 30 Nov 2026 at 23:59 Africa/Johannesburg, and says so
   assert.equal(core.saleEnd(null, NOW), END);
   assert.equal(core.saleEnd("2026-11-22", NOW), null, "an end already past is refused");
   assert.equal(core.saleEnd("30 Nov", NOW), null);
+  assert.equal(core.saleEnd("2026-11-31", NOW), null, "31 Nov is not a day: refused, never rolled into 1 Dec");
 });
 
 test("a candidate is on hand with nothing sold inside the window; never sold counts", () => {
@@ -64,6 +65,9 @@ test("the sale price: rands, more than zero; the warning names every product who
   assert.equal(core.parsePrice("R 249,50"), 249.5);
   assert.equal(core.parsePrice("0"), null);
   assert.equal(core.parsePrice("abc"), null);
+  assert.equal(core.parsePrice("0.001"), null, "a price that rounds to nothing");
+  assert.equal(core.kindOfCat("soccer-boots"), "sneakers");
+  assert.equal(core.kindOfCat("t-shirts"), "clothing");
   const rows = [{ pid: "a", name: "A", stockPrice: 200 }, { pid: "b", name: "B", stockPrice: 250 }, { pid: "n", name: "N", stockPrice: null }];
   assert.deepEqual(core.aboveStock(rows, 200).map((x) => x.pid), ["a"], "equal to the stock price warns too");
   assert.deepEqual(core.aboveStock(rows, 199), []);
@@ -116,7 +120,11 @@ test("a sale price at or above the stock price saves NOTHING until Junid confirm
   assert.deepEqual(r.needConfirm, [{ pid: "a", name: "Tee A", stockPrice: 200 }]);
   assert.equal(await get(db, `${R}/sales`), null);
   assert.equal(await get(db, "products/a/bfSale"), null);
-  const ok = await X.putOnSale(db, { pids: ["a", "b"], price: 220, confirmAbove: true }, "junid", NOW);
+  // a confirmation of OTHER products is not a confirmation of this one
+  const other = await X.putOnSale(db, { pids: ["a", "b"], price: 220, confirmAbove: ["b"] }, "junid", NOW);
+  assert.equal(other.ok, false);
+  assert.equal(await get(db, `${R}/sales`), null);
+  const ok = await X.putOnSale(db, { pids: ["a", "b"], price: 220, confirmAbove: ["a"] }, "junid", NOW);
   assert.deepEqual(ok.done, ["a", "b"]);
   assert.equal((await get(db, `${R}/sales/a`)).salePrice, 220);
 });
@@ -179,7 +187,9 @@ test("the alert words, and one notification per store for a multi-select", () =>
   assert.deepEqual(core.alertText("start", "Tee A", s), { title: "Black Friday sale", body: "Black Friday sale: Tee A now R150, re-tag" });
   assert.equal(core.alertText("extend", "Tee A", { salePrice: 150, end: core.endOfDayMs("2026-12-07") }).body, "Tee A stays R150 until Mon 7 Dec");
   assert.equal(core.alertText("end", "Tee A", s).body, "Tee A is back to its normal price, re-tag");
-  assert.equal(core.alertBurst("start", ["Tee A", "Tee B", "Shoe C"], s).body, "Black Friday sale: Tee A and 2 more now R150, re-tag");
+  assert.equal(core.alertBurst("start", ["Tee A", "Tee B", "Shoe C"], s).body, "Black Friday sale: Tee A, Tee B and Shoe C now R150, re-tag");
+  assert.equal(core.alertBurst("end", ["A", "B", "C", "D", "E"], s).body, "A, B, C and 2 more are back to normal price, re-tag");
+  assert.equal(core.alertBurst("end", ["A", "B"], s).body, "A and B are back to normal price, re-tag");
 });
 
 test("alerts go to the people assigned to a holding location, minus the muted, by their own tokens", async () => {
@@ -192,6 +202,13 @@ test("alerts go to the people assigned to a holding location, minus the muted, b
   const messaging = { sendEachForMulticast: async (m) => { sent.push(m); return { successCount: m.tokens.length, responses: m.tokens.map(() => ({ success: true })) }; } };
   const out = await sendStoreAlerts({ db, messaging, nowMs: NOW }, { hub2: { title: "Black Friday sale", body: "x" }, "marathon-pe": { title: "t", body: "y" } });
   assert.deepEqual(out, { hub2: { tokens: 1, delivered: 1 }, "marathon-pe": { tokens: 0, delivered: 0 } });
+  // a payload refusal (generic invalid-argument) never deletes a good token; a dead token is removed
+  const bad = { sendEachForMulticast: async (m) => ({ successCount: 0, responses: m.tokens.map(() => ({ success: false, error: { code: "messaging/invalid-argument" } })) }) };
+  await sendStoreAlerts({ db, messaging: bad, nowMs: NOW }, { hub2: { title: "t", body: "b" } });
+  assert.equal((await db.ref("push_tokens/u1/t1/token").once("value")).val(), "tok-1");
+  const dead = { sendEachForMulticast: async (m) => ({ successCount: 0, responses: m.tokens.map(() => ({ success: false, error: { code: "messaging/registration-token-not-registered" } })) }) };
+  await sendStoreAlerts({ db, messaging: dead, nowMs: NOW }, { hub2: { title: "t", body: "b" } });
+  assert.equal((await db.ref("push_tokens/u1").once("value")).val(), null);
   assert.deepEqual(sent[0].tokens, ["tok-1"]);
   assert.equal(sent[0].data.kind, "bf_sale");
   assert.equal(sent[0].data.link, "/#bf-sale-list/hub2");

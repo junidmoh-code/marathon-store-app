@@ -12,6 +12,8 @@ export default function BfSaleStoreList({ api, store = null, onExit }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [at, setAt] = useState(store);
+  // An alert for another store, tapped while this list is open, moves the list to that store.
+  useEffect(() => { setAt(store); }, [store]);
   useEffect(() => {
     let live = true;
     api.storeList().then((d) => { if (live) setData(d); }).catch((e) => { if (live) setError(String((e && e.message) || e)); });

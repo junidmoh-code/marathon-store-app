@@ -14,7 +14,8 @@
 
 const MAX_RECIPIENTS = 60;
 const MULTICAST_MAX = 500;
-const DEAD = new Set(["messaging/registration-token-not-registered", "messaging/invalid-registration-token", "messaging/invalid-argument"]);
+// Token-specific failures only: a generic invalid-argument can mean a bad payload, and must never delete a good token.
+const DEAD = new Set(["messaging/registration-token-not-registered", "messaging/invalid-registration-token"]);
 const okKey = (k) => typeof k === "string" && k.length > 0 && k.length < 80 && !/[.#$/[\]]/.test(k);
 
 async function recipients(db, loc) {
@@ -27,9 +28,11 @@ async function recipients(db, loc) {
 }
 async function tokensOf(db, uids) {
   const rows = [];
-  const snaps = await Promise.all(uids.map((u) => db.ref(`push_tokens/${u}`).get()));
-  snaps.forEach((s, i) => {
-    const v = s && s.val();
+  // One person's tokens failing to read never costs the others their alert.
+  const snaps = await Promise.allSettled(uids.map((u) => db.ref(`push_tokens/${u}`).get()));
+  snaps.forEach((r, i) => {
+    if (r.status !== "fulfilled") { console.error(`BF_SALE_ALERT tokens of ${uids[i]} could not be read:`, r.reason && r.reason.message); return; }
+    const v = r.value && r.value.val();
     if (!v || typeof v !== "object") return;
     for (const [tokenId, rec] of Object.entries(v)) if (rec && typeof rec.token === "string") rows.push({ uid: uids[i], tokenId, token: rec.token });
   });
