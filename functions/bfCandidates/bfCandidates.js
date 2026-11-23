@@ -1,7 +1,7 @@
 // ─── BF CANDIDATES — the card's callables and the expiry job (Junid, 23 Nov 2026) ──
 // bfSaleList      the card: candidates (one tab, one page), counts, what is on sale. Junid only.
 // bfSaleSet       one tap: sale (ONE price, several products), extend, end, remove ("Not for
-//                 sale"), restore, removed (the undo list). Junid only. Nothing changes price,
+//                 sale"), restore, removed (the undo list), photo (which photo posts). Junid only. Nothing changes price,
 //                 alerts a store or queues a post without this tap.
 // bfSaleStoreList the staff re-tag list: what is on sale at each location (any signed-in staff).
 // bfSaleExpire    every 10 minutes: a sale past its end is closed — its till mirror removed
@@ -237,6 +237,34 @@ async function restore(db, data) {
   return { ok: true, done: pids };
 }
 
+/**
+ * The photo a product posts with (Junid, 23 Nov: the same options as the Black Friday card). The photos themselves
+ * are made and kept by the Black Friday card's own callables (bfGenerate = the shared New Arrivals generator at full
+ * resolution; bfPhotoSource = Replace photo), in bf_campaign_2026/photos/{pid}/gens. This records WHICH one this card
+ * posts — on this card's own node, so a product's approval on the Black Friday card is never changed from here.
+ * use: "current" (the product's own photo) | "generated" + genId (an AI photo or his own upload).
+ */
+const BF_PHOTOS = "bf_campaign_2026/photos";
+const GEN_RE = /^g\d{10,16}$/;
+async function choosePhoto(db, data, uid, nowMs) {
+  const pid = String(data.pid || "");
+  if (!core.PID_RE.test(pid)) throw new HttpsError("invalid-argument", "Which product?");
+  let url = null;
+  if (data.use === "generated") {
+    if (!GEN_RE.test(String(data.genId || ""))) throw new HttpsError("invalid-argument", "Which photo?");
+    url = await val(db, `${BF_PHOTOS}/${pid}/gens/${data.genId}/url`);
+    if (typeof url !== "string" || !/^https:\/\//.test(url)) throw new HttpsError("not-found", "That photo is not there any more. Generate again.");
+  } else if (data.use !== "current") throw new HttpsError("invalid-argument", "Use the current photo or a generated one.");
+  const own = url ? null : await val(db, `products/${pid}/photoUrl`);
+  const upd = { [`${R}/photos/${pid}`]: url ? { use: "generated", genId: data.genId, url, at: nowMs, by: uid } : null };
+  // On sale already: the sale posts with the photo chosen now (a post that has gone out is not changed).
+  const sale = await val(db, `${R}/sales/${pid}/setAt`);
+  const photo = url || (typeof own === "string" && /^https:\/\//.test(own) ? own : null);
+  if (sale && photo) upd[`${R}/sales/${pid}/photo`] = photo;
+  await db.ref().update(upd);
+  return { ok: true, pid, photo, use: url ? "generated" : "current" };
+}
+
 // ── the card ─────────────────────────────────────────────────────────────────
 const bfSaleList = onCall(callableOpts, async (request) => {
   assertJunid(request);
@@ -263,6 +291,7 @@ const bfSaleSet = onCall(callableOpts, async (request) => {
     case "end": { const r = await closeSales(db, await salesFor(db, d, nowMs), { uid, why: "ended_by_junid", nowMs }); return { ok: true, ...r }; }
     case "remove": return remove(db, d, uid, nowMs);
     case "restore": return restore(db, d);
+    case "photo": return choosePhoto(db, d, uid, nowMs);
     case "removed": {
       const v = (await val(db, `${R}/removed`)) || {};
       return { ok: true, removed: Object.entries(v).map(([pid, r]) => ({ pid, name: r.name || pid, at: r.at || null, kind: r.kind || "clothing", photo: r.photo || null })).sort((a, b) => (b.at || 0) - (a.at || 0)) };
@@ -299,4 +328,4 @@ const bfSaleExpire = onSchedule(
   },
 );
 
-module.exports = { bfSaleList, bfSaleSet, bfSaleStoreList, bfSaleExpire, _internals: { putOnSale, extend, closeSales, remove, restore, salesFor, stockOf, locations } };
+module.exports = { bfSaleList, bfSaleSet, bfSaleStoreList, bfSaleExpire, _internals: { choosePhoto, putOnSale, extend, closeSales, remove, restore, salesFor, stockOf, locations } };

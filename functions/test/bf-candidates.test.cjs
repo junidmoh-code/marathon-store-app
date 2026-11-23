@@ -257,3 +257,23 @@ test("the expiry job never closes a sale Junid set again after it was read", asy
   assert.deepEqual(await get(db, "products/a/bfSale"), { price: 120, start: END + 10, end: core.endOfDayMs("2026-12-07") });
   assert.equal((await get(db, `${R}/ended/a/${NOW}`)).why, "replaced", "the sale it replaced is kept on record");
 });
+
+test("the photo that posts: a generated or replaced photo is chosen on this card's own node; Use current photo takes it back", async () => {
+  const db = world({ bf_campaign_2026: { photos: { a: { use: "current", gens: { g1795432000000: { url: "https://x/a-ai.jpg" } } } }, picks: { a: { state: "approved", sig: "current", at: 5 } } } });
+  const r = await X.choosePhoto(db, { pid: "a", use: "generated", genId: "g1795432000000" }, "junid", NOW);
+  assert.deepEqual(r, { ok: true, pid: "a", photo: "https://x/a-ai.jpg", use: "generated" });
+  assert.equal((await get(db, `${R}/photos/a`)).url, "https://x/a-ai.jpg");
+  assert.equal((await get(db, "bf_campaign_2026/photos/a")).use, "current", "the Black Friday card's own choice (and so its approval) is untouched");
+  // the list shows it, and a sale set now posts with it
+  const v = core.viewList({ items: ITEMS, photos: await get(db, `${R}/photos`) }, { tab: "clothing", nowMs: NOW });
+  assert.equal(v.rows.find((x) => x.pid === "a").photo, "https://x/a-ai.jpg");
+  await X.putOnSale(db, { pids: ["a"], price: 150 }, "junid", NOW);
+  assert.equal((await get(db, `${R}/sales/a`)).photo, "https://x/a-ai.jpg");
+  // Use current photo: the product's own photo again, on the sale too
+  const c = await X.choosePhoto(db, { pid: "a", use: "current" }, "junid", NOW + 1);
+  assert.equal(c.photo, "https://x/a.jpg");
+  assert.equal(await get(db, `${R}/photos/a`), null);
+  assert.equal((await get(db, `${R}/sales/a`)).photo, "https://x/a.jpg");
+  await assert.rejects(() => X.choosePhoto(db, { pid: "a", use: "generated", genId: "g1795439999999" }, "junid", NOW), /not there any more/);
+  await assert.rejects(() => X.choosePhoto(db, { pid: "a", use: "generated", genId: "../x" }, "junid", NOW), /Which photo/);
+});

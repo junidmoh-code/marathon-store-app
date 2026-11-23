@@ -8,9 +8,13 @@
 //                 by themselves at the end. A price at or above the stock price
 //                 warns before saving. The tap also alerts the stores and
 //                 queues the product for the WhatsApp groups (Black Friday sale).
+//   Photos        Use current photo, Generate / Regenerate (the shared New Arrivals
+//                 generator, full resolution), Replace photo: the Black Friday
+//                 card's own options. The photo shown is the one that posts.
 //   Not for sale  off this list for good; "Removed (n)" at the bottom undoes it.
 // IN-STORE ONLY: the website keeps its normal price.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { photoToBase64 } from "../blackFriday/BlackFridayScreen";
 import { FONT, BG, GLASS, GLASS_SOLID, GREEN, GRAY, AMBER, RED, BLUE_L, bGreen, bGray, bBlue, bRed, tabOn, tabOff, input } from "../stock/ui";
 
 const price = (p) => (Number.isInteger(Number(p)) ? `R${Number(p)}` : `R${Number(p).toFixed(2)}`);
@@ -30,7 +34,8 @@ export function readPrice(text) {
   return { price: Math.round(n * 100) / 100 };
 }
 
-function Row({ r, names, thumb, selecting, ticked, onTick, onSale, onExtend, onEnd, onRemove, busy }) {
+function Row({ r, names, thumb, selecting, ticked, onTick, onSale, onExtend, onEnd, onRemove, busy, making, onGenerate, onReplace, onUseCurrent }) {
+  const chosen = r.photoChoice && r.photoChoice.use === "generated";
   const locs = locsLine(r.locs, names);
   return (
     <div data-pid={r.pid} style={{ ...GLASS, borderRadius: 16, padding: 12, display: "flex", gap: 12, alignItems: "flex-start", opacity: busy ? 0.55 : 1 }}>
@@ -69,6 +74,18 @@ function Row({ r, names, thumb, selecting, ticked, onTick, onSale, onExtend, onE
             <button type="button" style={bGray} disabled={busy} onClick={() => onRemove([r.pid])}>Not for sale</button>
           </div>
         )}
+        {!selecting && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
+            {making ? <span role="status" style={{ color: BLUE_L, fontSize: "0.78rem" }}>{making}</span> : (
+              <>
+                {chosen && r.ownPhoto && <button type="button" style={{ ...bGray, padding: "6px 10px", fontSize: "0.76rem" }} onClick={() => onUseCurrent(r)}>Use current photo</button>}
+                <button type="button" style={{ ...bBlue, padding: "6px 10px", fontSize: "0.76rem" }} onClick={() => onGenerate(r)}>{chosen ? "Regenerate" : "Generate"}</button>
+                <button type="button" style={{ ...bGray, padding: "6px 10px", fontSize: "0.76rem" }} onClick={() => onReplace(r)}>Replace photo</button>
+                {chosen && <span style={{ color: GRAY, fontSize: "0.72rem" }}>Posting with the photo shown</span>}
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -99,6 +116,9 @@ export default function BfCandidatesScreen({ api, onExit }) {
   const [dialog, setDialog] = useState(null);  // { type: "sale" | "confirm" | "extend" | "removed", … }
   const [working, setWorking] = useState(null); // progress text of a tap in flight
   const seq = useRef(0);
+  const [making, setMaking] = useState({});    // { pid: progress text } while a photo is being made / uploaded
+  const fileRef = useRef(null);
+  const replaceFor = useRef(null);
 
   const load = useCallback(async (t = tab, w = windowDays, { quiet = false } = {}) => {
     const mine = ++seq.current;
@@ -184,6 +204,34 @@ export default function BfCandidatesScreen({ api, onExit }) {
     } catch (e) { say(errText(e)); }
   };
 
+  // ── Photos: the photo shown on the row is the one that posts ──
+  const patchPhoto = (pid, photo, use) => setRows((cur) => cur.map((x) => (x.pid === pid ? { ...x, photo: photo || x.ownPhoto, photoChoice: use === "generated" ? { use } : null } : x)));
+  const photoJob = async (r, label, fn) => {
+    setMaking((m) => ({ ...m, [r.pid]: label }));
+    try { await fn(); }
+    catch (e) { say(`${r.name}: ${errText(e)}`); }
+    setMaking((m) => { const n = { ...m }; delete n[r.pid]; return n; });
+  };
+  const generate = (r) => photoJob(r, "Starting…", async () => {
+    const res = await api.generate(r.pid, { onEvent: (ev) => { if (ev && ev.text) setMaking((m) => (m[r.pid] ? { ...m, [r.pid]: String(ev.text).slice(0, 80) } : m)); } });
+    const genId = res && (res.genId || (res.result && res.result.genId));
+    if (!genId) throw new Error("no photo came back. Tap Generate to try again");
+    const c = await api.photo(r.pid, "generated", genId);
+    patchPhoto(r.pid, c.photo, "generated");
+  });
+  const replace = (r) => { replaceFor.current = r; if (fileRef.current) { fileRef.current.value = ""; fileRef.current.click(); } };
+  const uploadPicked = (file) => {
+    const r = replaceFor.current;
+    replaceFor.current = null;
+    if (!r || !file) return null;
+    return photoJob(r, "Uploading your photo…", async () => {
+      const res = await api.photoUpload(r.pid, await photoToBase64(file));
+      const c = await api.photo(r.pid, "generated", res.id);
+      patchPhoto(r.pid, c.photo, "generated");
+    });
+  };
+  const useCurrent = (r) => photoJob(r, "Saving…", async () => { const c = await api.photo(r.pid, "current"); patchPhoto(r.pid, c.photo, "current"); });
+
   const tick = (pid) => setTicks((cur) => { const n = new Set(cur); if (n.has(pid)) n.delete(pid); else if (n.size < MAX_PICK) n.add(pid); return n; });
   const picked = useMemo(() => rows.filter((r) => ticks.has(r.pid)), [rows, ticks]);
   const counts = (view && view.counts) || { clothing: 0, sneakers: 0, onSale: 0, removed: 0 };
@@ -228,7 +276,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
           </div>
         )}
         {rows.map((r) => (
-          <Row key={r.pid} r={r} names={names} thumb={api.thumb} selecting={selecting} ticked={ticks.has(r.pid)} onTick={tick} busy={busyPids.has(r.pid) || !!working}
+          <Row key={r.pid} r={r} names={names} thumb={api.thumb} selecting={selecting} ticked={ticks.has(r.pid)} onTick={tick} busy={busyPids.has(r.pid) || !!working} making={making[r.pid]} onGenerate={generate} onReplace={replace} onUseCurrent={useCurrent}
             onSale={(rs) => setDialog({ type: "sale", rows: rs })} onExtend={(pids) => setDialog({ type: "extend", pids, n: pids.length })} onEnd={doEnd} onRemove={doRemove} />
         ))}
         {view && view.more && <button type="button" style={bGray} onClick={more}>Show more ({(view.total || 0) - rows.length} more)</button>}
@@ -236,6 +284,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
         <button type="button" onClick={openRemoved} style={{ background: "none", border: "none", color: GRAY, textDecoration: "underline", fontSize: "0.8rem", cursor: "pointer", fontFamily: FONT, padding: 10 }}>Removed ({counts.removed || 0})</button>
       </div>
 
+      <input ref={fileRef} aria-label="Replace photo file" type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => uploadPicked(e.target.files && e.target.files[0])} />
       {selecting && (
         <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 30, background: "rgba(8,11,20,.97)", borderTop: "1px solid rgba(255,255,255,.12)", padding: "10px 14px calc(10px + env(safe-area-inset-bottom))" }}>
           <div style={{ color: GRAY, fontSize: "0.78rem", marginBottom: 8 }}>

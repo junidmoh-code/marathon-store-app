@@ -6,7 +6,7 @@ import TestRenderer, { act } from "react-test-renderer";
 import BfCandidatesScreen, { locsLine, readPrice } from "./BfCandidatesScreen";
 import { openSaleList } from "../../push/useForegroundPush";
 
-const row = (over = {}) => ({ pid: "a", name: "Tee A", tab: "clothing", qty: 40, since: "never sold", stockPrice: 200, retailPrice: 350, locs: { "marathon-pe": 30, central: 10 }, photo: "https://x/a.jpg", sale: null, posted: null, ...over });
+const row = (over = {}) => ({ ownPhoto: "https://x/a.jpg", pid: "a", name: "Tee A", tab: "clothing", qty: 40, since: "never sold", stockPrice: 200, retailPrice: 350, locs: { "marathon-pe": 30, central: 10 }, photo: "https://x/a.jpg", sale: null, posted: null, ...over });
 const answer = (rows, over = {}) => ({ rows, counts: { clothing: rows.length, sneakers: 3, onSale: rows.filter((r) => r.sale).length, removed: 2 }, total: rows.length, more: false, windowDays: 30, windows: [14, 30, 60, 90], defaultEndDay: "2026-11-30", defaultUntil: "Mon 30 Nov", today: "2026-11-23", locNames: { "marathon-pe": "Marathon PE", central: "Central" }, meta: { builtAt: 1 }, ...over });
 function fakeApi(rows, over = {}) {
   return {
@@ -100,6 +100,26 @@ describe("BF Candidates card", () => {
     await type(field(r, "Sale price"), "99,50");
     await press(buttons(dialog(r), "Put on sale")[0]);
     expect(api.sale).toHaveBeenCalledWith(["a", "b"], 99.5, "2026-11-30", { confirmAbove: null });
+  });
+
+  it("photos: Generate makes one with the shared generator and that photo is the one that posts; Use current photo takes it back", async () => {
+    const api = fakeApi([row()], {
+      generate: vi.fn(async () => ({ ok: true, genId: "g1795432000000", url: "https://x/ai.jpg" })),
+      photoUpload: vi.fn(async () => ({ ok: true, id: "g1795432000001", url: "https://x/mine.jpg" })),
+      photo: vi.fn(async (pid, use, genId) => ({ ok: true, pid, use, photo: use === "generated" ? (genId === "g1795432000000" ? "https://x/ai.jpg" : "https://x/mine.jpg") : "https://x/a.jpg" })),
+    });
+    const r = await mount(api);
+    const img = () => r.root.find((n) => n.type === "img").props.src;
+    expect(buttons(r.root, "Use current photo").length).toBe(0);
+    await press(buttons(r.root, "Generate")[0]);
+    expect(api.generate).toHaveBeenCalledWith("a", expect.anything());
+    expect(api.photo).toHaveBeenCalledWith("a", "generated", "g1795432000000");
+    expect(img()).toBe("https://x/ai.jpg");
+    expect(buttons(r.root, "Regenerate").length).toBe(1);
+    await press(buttons(r.root, "Use current photo")[0]);
+    expect(api.photo).toHaveBeenLastCalledWith("a", "current");
+    expect(img()).toBe("https://x/a.jpg");
+    expect(buttons(r.root, "Replace photo").length).toBe(1);
   });
 
   it("small pure parts", () => {

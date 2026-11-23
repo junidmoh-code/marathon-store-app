@@ -23,6 +23,12 @@ export const bfCandidatesApi = {
   remove: (pids) => set({ action: "remove", pids }),
   restore: (pids) => set({ action: "restore", pids }),
   removed: () => set({ action: "removed" }),
+  // PHOTOS (the Black Friday card's own options, Junid 23 Nov): Generate / Regenerate = the shared New Arrivals
+  // generator at full resolution; Replace photo = his own photo. Both keep the photo on the Black Friday card's
+  // store; `photo` records which one THIS card posts ("current" = the product's own photo again).
+  generate: (pid, opts) => blackFridayApi.generate(pid, undefined, opts),
+  photoUpload: (pid, imageBase64) => blackFridayApi.photoUpload(pid, imageBase64),
+  photo: (pid, use, genId = null) => set({ action: "photo", pid, use, ...(genId ? { genId } : {}) }),
   // The staff re-tag list: what is on sale at each location.
   storeList: () => call("bfSaleStoreList")({}),
 };
