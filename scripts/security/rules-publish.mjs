@@ -126,7 +126,7 @@ const HEALTH = [
   ["cashier", "pos/storeCredits", true], ["cashier", "pos/sales", true], ["cashier", "customers", true],
   ["cashier", "pos_manager_pins", false], ["owner", "pos_manager_pins", false],
 ];
-const STRANGER_DENY = ["users", "products", "stock", "laybys", "config", "pos_meta", "restock_requests"];
+const STRANGER_DENY = ["users", "products", "stock", "laybys", "config", "pos_meta", "customers_meta"];
 async function healthCheck(db, p, { strangerMustBeDenied }) {
   let bad = 0;
   for (const [who, path, want] of HEALTH) {
@@ -177,7 +177,7 @@ try {
     [`users/${uids.owner}`]: { stockRole: "admin" }, [`users/${uids.poller}`]: { isService: true, permFlags: { card_recon: true } },
     "settings/probe": 1, "orders/probe": { status: "probe", destShop: CASHIER_SHOP || "pe" }, "products/probe": { name: "probe" }, "stock/probe": 1,
     "locations/probe": 1, "config/probe": 1, "laybys/probe": 1, "pos_meta/probe": 1, "eft_pool/probe": 1, "card_batches/probe": 1,
-    "online_orders/probe": 1, "card_batch_intake/probe": 1, "restock_requests/probe": 1,
+    "online_orders/probe": 1, "card_batch_intake/probe": 1, "customers_meta/probe": 1,
     "pos/storeCredits/probe": { remainingAmount: 1, status: "active" }, "pos/sales/probe": { total: 1, type: "sale" }, "customers/probe": { name: "probe" } };
   console.log(`  → SEEDING ${TEST.name} (probe rows only)`);
   await fetch(`${TEST.url}/.json`, { method: "PATCH", headers: H, body: JSON.stringify(seed) });
