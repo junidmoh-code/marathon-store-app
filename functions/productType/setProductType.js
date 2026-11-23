@@ -15,6 +15,7 @@
 // Deploy by name, never bare:
 //   firebase deploy --only functions:setProductType
 "use strict";
+const { requireStaffRecord } = require("../lib/require-staff-record.cjs");
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { randomUUID } = require("node:crypto");
@@ -56,9 +57,9 @@ async function whoIs(db, auth, manager, clientDeviceId) {
 async function handleSetProductType(request, deps) {
   const { db } = deps;
   const auth = request.auth;
-  if (!auth || !auth.uid || auth.token?.firebase?.sign_in_provider === "anonymous") {
-    throw new HttpsError("unauthenticated", "Sign in first.");
-  }
+  // Staff only (Nov 2026 audit): a live /users record, not merely a signed-in
+  // token — client sign-up is open. Access check only; the type logic is unchanged.
+  await requireStaffRecord(db, auth, HttpsError);
   const pid = typeof request.data?.productId === "string" && PID_RE.test(request.data.productId) ? request.data.productId : null;
   if (!pid) throw new HttpsError("invalid-argument", "Which product?");
   const clientDeviceId = typeof request.data?.deviceId === "string" && DEVICE_RE.test(request.data.deviceId) ? request.data.deviceId : null;

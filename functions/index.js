@@ -331,6 +331,10 @@ exports.sendWhatsApp = onCall(
     if (!request.auth || provider === "anonymous") {
       throw new HttpsError("unauthenticated", "Sign-in required to send WhatsApp messages.");
     }
+    // Nov 2026 audit: sign-up is open, so a signed-in stranger passed the check
+    // above and could send any approved template, with free text, to any number
+    // from the business account. Staff only: a live /users record.
+    await require("./lib/require-staff-record.cjs").requireStaffRecord(admin.database(), request.auth, HttpsError);
     return enqueueWhatsApp(request.data);
   }
 );
@@ -6782,3 +6786,11 @@ exports.insightsRollupSweep = onSchedule(
   exports.alternativesProfileFromAttributes = alt.alternativesProfileFromAttributes;
   exports.alternativesEnrichSweep = alt.alternativesEnrichSweep;
 }
+
+// ─── SECURITY — syncStaffClaim (a /users record becomes a `staff` token claim) ─
+// Storage rules cannot read the RTDB; this lets storage.rules require a real
+// staff record instead of "any signed-in account" (sign-up is open). Acts only
+// when a whole record appears/disappears. See functions/security/staffClaim.js
+// and docs/security/2026-11-audit.md.
+//   firebase deploy --only functions:syncStaffClaim --project marathon-club
+exports.syncStaffClaim = require("./security/staffClaim.js").syncStaffClaim;
