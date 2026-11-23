@@ -23,46 +23,71 @@ test("the sale ends Monday 30 Nov 2026 at 23:59 Africa/Johannesburg, and says so
   assert.equal(core.saleEnd("2026-11-31", NOW), null, "31 Nov is not a day: refused, never rolled into 1 Dec");
 });
 
-test("a candidate is on hand with nothing sold inside the window; never sold counts", () => {
-  assert.equal(core.isCandidate({ qty: 5, lastSold: NOW - 31 * DAY }, 30, NOW), true);
-  assert.equal(core.isCandidate({ qty: 5, lastSold: NOW - 29 * DAY }, 30, NOW), false);
-  assert.equal(core.isCandidate({ qty: 5, lastSold: NOW - 29 * DAY }, 14, NOW), true, "the window is adjustable");
-  assert.equal(core.isCandidate({ qty: 5, lastSold: null }, 30, NOW), true);
-  assert.equal(core.isCandidate({ qty: 0, lastSold: null }, 30, NOW), false);
-  assert.equal(core.sinceLabel(null, NOW), "never sold");
-  assert.equal(core.sinceLabel(NOW - 42.5 * DAY, NOW), "42 days");
-  assert.equal(core.windowOf(45), 30, "an unknown window falls back to 30 days");
+const JUL = Date.parse("2026-07-10T10:00:00+02:00"), JUN = Date.parse("2026-06-20T10:00:00+02:00"), AUG = Date.parse("2026-08-05T10:00:00+02:00");
+test("a candidate: arrived on or before the cut-off, still on hand, sold under 10% of received (Junid 15:44)", () => {
+  assert.equal(core.isCandidate({ qty: 5, arrived: JUL, received: 50, sold: 0 }, "july"), true, "zero sold counts");
+  assert.equal(core.isCandidate({ qty: 5, arrived: JUL, received: 50, sold: 4 }, "july"), true, "4 of 50 is under 10%");
+  assert.equal(core.isCandidate({ qty: 5, arrived: JUL, received: 50, sold: 5 }, "july"), false, "exactly 10% is not under 10%");
+  assert.equal(core.isCandidate({ qty: 50, arrived: NOW - DAY, received: 50, sold: 0 }, "july"), false, "new stock is not dead stock");
+  assert.equal(core.isCandidate({ qty: 5, arrived: Date.parse("2026-07-31T23:30:00+02:00"), received: 9, sold: 0 }, "july"), true, "31 Jul is inside");
+  assert.equal(core.isCandidate({ qty: 5, arrived: Date.parse("2026-08-01T00:10:00+02:00"), received: 9, sold: 0 }, "july"), false);
+  assert.equal(core.isCandidate({ qty: 5, arrived: AUG, received: 9, sold: 0 }, "august"), true, "the cut-off is selectable");
+  assert.equal(core.isCandidate({ qty: 5, arrived: JUL, received: 9, sold: 0 }, "june"), false);
+  assert.equal(core.isCandidate({ qty: 0, arrived: JUL, received: 9, sold: 0 }, "july"), false, "nothing on hand");
+  assert.equal(core.isCandidate({ qty: 5, received: 9, sold: 0 }, "july"), false, "no arrival on record is never guessed");
+  assert.equal(core.isCandidate({ qty: 5, lastSold: null }, "july"), false, "a row built by the old rule is not a candidate");
+  assert.equal(core.cutoffOf("march"), "july", "an unknown cut-off falls back to July");
+  assert.equal(core.dayLabel(JUL), "10 Jul 2026");
 });
 
 const ITEMS = {
-  a: { name: "Tee A", kind: "clothing", qty: 40, lastSold: null, stockPrice: 200, retailPrice: 350, photo: "https://x/a.jpg", locs: { "marathon-pe": 30, central: 10 } },
-  b: { name: "Tee B", kind: "clothing", qty: 90, lastSold: NOW - 60 * DAY, stockPrice: 250, retailPrice: 400, photo: "https://x/b.jpg" },
-  c: { name: "Shoe C", kind: "sneakers", qty: 12, lastSold: NOW - 35 * DAY, stockPrice: 900, retailPrice: 1500, photo: "https://x/c.jpg" },
-  d: { name: "Sold lately", kind: "clothing", qty: 99, lastSold: NOW - 3 * DAY, stockPrice: 100, retailPrice: 150 },
-  e: { name: "Cap E", kind: "headwear", qty: 7, lastSold: null, stockPrice: 80, retailPrice: 120 },
+  a: { name: "Tee A", kind: "clothing", qty: 40, arrived: JUL, received: 40, sold: 0, stockPrice: 200, retailPrice: 350, photo: "https://x/a.jpg", locs: { "marathon-pe": 30, central: 10 } },
+  b: { name: "Tee B", kind: "clothing", qty: 90, arrived: JUN, received: 100, sold: 6, stockPrice: 250, retailPrice: 400, photo: "https://x/b.jpg" },
+  c: { name: "Shoe C", kind: "sneakers", qty: 12, arrived: JUL, received: 12, sold: 0, stockPrice: 900, retailPrice: 1500, photo: "https://x/c.jpg" },
+  d: { name: "New arrival", kind: "clothing", qty: 99, arrived: NOW - DAY, received: 99, sold: 0, stockPrice: 100, retailPrice: 150 },
+  e: { name: "Cap E", kind: "headwear", qty: 7, arrived: JUN, received: 7, sold: 0, stockPrice: 80, retailPrice: 120 },
 };
 
-test("the list: Clothing | Sneakers (others under Clothing), highest quantity first, removed never shown", () => {
-  const v = core.viewList({ items: ITEMS, removed: { e: { at: 1 } } }, { tab: "clothing", windowDays: 30, nowMs: NOW });
-  assert.deepEqual(v.rows.map((r) => r.pid), ["b", "a"]);
+test("the list: Clothing | Sneakers (others under Clothing); by arrival date, the oldest first; removed never shown", () => {
+  const v = core.viewList({ items: ITEMS, removed: { e: { at: 1 } } }, { tab: "clothing", cutoff: "july", nowMs: NOW });
+  assert.deepEqual(v.rows.map((r) => r.pid), ["b", "a"], "June before July");
   assert.deepEqual(v.counts, { clothing: 2, sneakers: 1, onSale: 0, removed: 1 });
-  assert.equal(v.rows[1].since, "never sold");
-  const all = core.viewList({ items: ITEMS }, { tab: "clothing", windowDays: 30, nowMs: NOW });
-  assert.deepEqual(all.rows.map((r) => r.pid), ["b", "a", "e"], "a cap is listed under Clothing");
+  assert.deepEqual({ arrivedOn: v.rows[1].arrivedOn, received: v.rows[1].received, sold: v.rows[1].sold }, { arrivedOn: "10 Jul 2026", received: 40, sold: 0 });
+  const all = core.viewList({ items: ITEMS }, { tab: "clothing", nowMs: NOW });
+  assert.deepEqual(all.rows.map((r) => r.pid), ["e", "b", "a"], "a cap is listed under Clothing; the same June day: the unsold cap before the tee that sold 6");
   assert.deepEqual(core.viewList({ items: ITEMS }, { tab: "sneakers", nowMs: NOW }).rows.map((r) => r.pid), ["c"]);
+  assert.deepEqual(core.viewList({ items: ITEMS }, { tab: "clothing", cutoff: "june", nowMs: NOW }).rows.map((r) => r.pid), ["e", "b"]);
+  assert.equal(v.saleEnds, null);
 });
 
-test("a product on sale stays on the card with its sale, even once it starts selling", () => {
-  const sales = { d: { salePrice: 80, start: NOW - 1000, end: END, setAt: NOW - 1000, name: "Sold lately", kind: "clothing" } };
-  const v = core.viewList({ items: ITEMS, sales, posted: { d: { version: NOW - 1000, at: NOW, groups: 15 } } }, { tab: "clothing", nowMs: NOW });
+test("the On sale tab lists EVERYTHING on sale, candidate or not; a non-candidate on sale is not among the candidates", () => {
+  const sales = {
+    d: { salePrice: 80, start: NOW - 1000, end: END, setAt: NOW - 1000, name: "New arrival", kind: "clothing" },
+    a: { salePrice: 150, start: NOW - 1000, end: core.endOfDayMs("2026-12-07"), setAt: NOW - 1000, name: "Tee A", kind: "clothing" },
+    gone: { salePrice: 60, start: NOW - 1000, end: END, setAt: NOW - 1000, name: "Sold through", kind: "sneakers", baseStock: 100, baseRetail: 180 },
+    over: { salePrice: 60, start: NOW - 9000, end: NOW - 1, setAt: NOW - 9000, name: "Ended" },
+  };
+  const v = core.viewList({ items: ITEMS, sales, posted: { d: { version: NOW - 1000, at: NOW, groups: 15 } } }, { tab: "onsale", nowMs: NOW });
+  assert.deepEqual(v.rows.map((r) => r.pid), ["d", "gone", "a"], "by name");
   const d = v.rows.find((r) => r.pid === "d");
-  assert.deepEqual({ price: d.sale.price, until: d.sale.until }, { price: 80, until: "Mon 30 Nov" });
+  assert.deepEqual({ price: d.sale.price, until: d.sale.until, qty: d.qty }, { price: 80, until: "Mon 30 Nov", qty: 99 });
   assert.equal(d.posted.groups, 15);
-  assert.equal(v.counts.onSale, 1);
+  assert.deepEqual({ qty: v.rows[1].qty, stockPrice: v.rows[1].stockPrice }, { qty: null, stockPrice: 100 }, "no finder row: from the sale itself, and no stock figure is invented");
+  assert.equal(v.counts.onSale, 3);
+  assert.deepEqual({ same: v.saleEnds.same, first: v.saleEnds.firstLabel, last: v.saleEnds.lastLabel }, { same: false, first: "Mon 30 Nov", last: "Mon 7 Dec" });
+  const c = core.viewList({ items: ITEMS, sales }, { tab: "clothing", nowMs: NOW });
+  assert.deepEqual(c.rows.map((r) => r.pid), ["e", "b", "a"], "the new arrival on sale is not a candidate");
+  assert.equal(c.rows[2].sale.price, 150, "a candidate on sale shows its sale");
+  assert.equal(core.defaultEnd(sales, NOW), END, "one product extended on its own does not move the date for new sales");
+  assert.equal(core.defaultEnd({ a: sales.a }, NOW), core.endOfDayMs("2026-12-07"), "every running sale extended: a new one ends with them");
+  assert.equal(core.defaultEnd({}, NOW), END);
 });
 
 test("the sale price: rands, more than zero; the warning names every product whose stock price it reaches", () => {
   assert.equal(core.parsePrice("R 249,50"), 249.5);
+  assert.equal(core.parsePrice("1,500"), 1500, "a thousands comma is never read as R1.50");
+  assert.equal(core.parsePrice("1,500.50"), 1500.5);
+  assert.equal(core.parsePrice("99,5"), 99.5);
   assert.equal(core.parsePrice("0"), null);
   assert.equal(core.parsePrice("abc"), null);
   assert.equal(core.parsePrice("0.001"), null, "a price that rounds to nothing");
@@ -72,6 +97,8 @@ test("the sale price: rands, more than zero; the warning names every product who
   assert.deepEqual(core.aboveStock(rows, 200).map((x) => x.pid), ["a"], "equal to the stock price warns too");
   assert.deepEqual(core.aboveStock(rows, 199), []);
   assert.deepEqual(core.aboveStock(rows, 300).map((x) => x.pid), ["a", "b"]);
+  assert.deepEqual(core.aboveStock([{ pid: "n", name: "N", stockPrice: null, retailPrice: 150 }], 1500), [{ pid: "n", name: "N", stockPrice: null, retailPrice: 150 }], "no stock price: checked against retail");
+  assert.deepEqual(core.aboveStock([{ pid: "n", name: "N", stockPrice: null, retailPrice: 150 }], 99), []);
 });
 
 test("a sale charges only between its start and its end; anything malformed is not a sale", () => {
@@ -286,4 +313,160 @@ test("a photo chosen after its sale ended never brings the sale back; no photo o
   await assert.rejects(() => X.choosePhoto(db, { pid: "zz", use: "current" }, "junid", NOW), /no photo of its own/);
   await X.choosePhoto(db, { pid: "a", use: "generated", genId: ["g1795432000000"] }, "junid", NOW);
   assert.equal((await get(db, `${R}/photos/a`)).genId, "g1795432000000", "the id is stored as text, whatever was sent");
+});
+
+test("Edit price keeps the sale's own end; a new sale ends with the extended ones", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a"], price: 150 }, "junid", NOW);
+  await X.extend(db, { pids: ["a"], endDay: "2026-12-07" }, "junid", NOW + 1);
+  const r = await X.putOnSale(db, { pids: ["a", "b"], price: 120 }, "junid", NOW + 2);
+  assert.equal(r.ok, true);
+  const DEC7 = core.endOfDayMs("2026-12-07");
+  assert.deepEqual([(await get(db, `${R}/sales/a`)).end, (await get(db, `${R}/sales/b`)).end], [DEC7, DEC7]);
+  assert.deepEqual(await get(db, "products/a/bfSale"), { price: 120, start: NOW + 2, end: DEC7 });
+});
+
+test("Edit price on products with different ends says so; after the default end a new sale needs the date Junid picks (CodeRabbit #969)", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a", "b"], price: 150 }, "junid", NOW);
+  await X.extend(db, { pids: ["a"], endDay: "2026-12-07" }, "junid", NOW + 1);
+  const r = await X.putOnSale(db, { pids: ["a", "b"], price: 120 }, "junid", NOW + 2);
+  assert.deepEqual({ until: r.until, untilFrom: r.untilFrom }, { until: "Mon 7 Dec", untilFrom: "Mon 30 Nov" });
+  const one = await X.putOnSale(db, { pids: ["b"], price: 110 }, "junid", NOW + 3);
+  assert.deepEqual({ until: one.until, untilFrom: one.untilFrom }, { until: "Mon 30 Nov", untilFrom: undefined });
+  const later = world();
+  const DEC2 = Date.parse("2026-12-02T10:00:00+02:00");
+  await assert.rejects(() => X.putOnSale(later, { pids: ["a"], price: 150 }, "junid", DEC2), /Pick a new end date/);
+  const ok = await X.putOnSale(later, { pids: ["a"], price: 150, endDay: "2026-12-07" }, "junid", DEC2);
+  assert.equal(ok.until, "Mon 7 Dec");
+});
+
+test("a close that died half-way is finished by the job: the till's discount never outlives its sale (CodeRabbit #968)", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a", "b"], price: 150 }, "junid", NOW);
+  const sale = await get(db, `${R}/sales/a`);
+  // The instance died right after the sale was taken off its node: the record is gone, the mirror still charges.
+  await db.ref(`${R}/closing/a`).set({ at: NOW + 1000, why: "ended_by_junid", by: "junid", sale, taken: true });
+  await db.ref(`${R}/sales/a`).remove();
+  assert.deepEqual(await get(db, "products/a/bfSale"), { price: 150, start: NOW, end: END }, "the state the fix is for");
+  assert.deepEqual(await X.finishClosing(db, NOW + 60_000), [], "a marker younger than two minutes belongs to a tap still running");
+  assert.deepEqual(await X.finishClosing(db, NOW + 10 * 60_000), ["a"]);
+  assert.equal(await get(db, "products/a/bfSale"), null);
+  assert.equal((await get(db, `${R}/ended/a/${NOW}`)).why, "ended_by_junid");
+  assert.equal(await get(db, `${R}/closing`), null);
+  assert.deepEqual(await get(db, "products/b/bfSale"), { price: 150, start: NOW, end: END }, "the other sale is untouched");
+  // Died BEFORE the sale was taken off: the sale stands, only the marker goes.
+  await db.ref(`${R}/closing/b`).set({ at: NOW + 1000, why: "ended_by_junid", by: "junid", sale: await get(db, `${R}/sales/b`) });
+  assert.deepEqual(await X.finishClosing(db, NOW + 10 * 60_000), []);
+  assert.equal((await get(db, `${R}/sales/b`)).salePrice, 150);
+  assert.deepEqual(await get(db, "products/b/bfSale"), { price: 150, start: NOW, end: END });
+  assert.equal(await get(db, `${R}/closing`), null);
+});
+
+test("a normal close leaves no marker; the re-tag list names what goes BACK to the normal price for two days", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a", "b"], price: 150 }, "junid", NOW);
+  await X.closeSales(db, await X.salesFor(db, { pids: ["a"] }, NOW + 5), { uid: "junid", why: "ended_by_junid", nowMs: NOW + 5 });
+  assert.equal(await get(db, `${R}/closing`), null);
+  const back = await get(db, `${R}/back`);
+  assert.deepEqual({ at: back.a.at, name: back.a.name, was: back.a.was }, { at: NOW + 5, name: "Tee A", was: 150 });
+  const stock = { a: { "marathon-pe": 5, hub2: 4 }, b: { concrete: 6 } };
+  const list = core.storeList(await get(db, `${R}/sales`), stock, { "marathon-pe": "Marathon PE" }, NOW + 10, { back });
+  const pe = list.find((x) => x.loc === "marathon-pe");
+  assert.deepEqual([pe.items.length, pe.back.map((x) => [x.pid, x.was, x.qty])], [0, [["a", 150, 5]]]);
+  assert.deepEqual(list.find((x) => x.loc === "concrete").back, []);
+  // On sale again: it is on the sale list, never on both.
+  await X.putOnSale(db, { pids: ["a"], price: 140 }, "junid", NOW + 20);
+  const again = core.storeList(await get(db, `${R}/sales`), stock, {}, NOW + 30, { back });
+  assert.deepEqual([again.find((x) => x.loc === "hub2").items.map((x) => x.price), again.find((x) => x.loc === "hub2").back], [[140], []]);
+  // Forgotten after two days.
+  await X.finishClosing(db, NOW + 5 + core.BACK_MS + 1);
+  assert.equal(await get(db, `${R}/back`), null);
+});
+
+test("the till's mirror is made again when the sale changed while it was being written (CodeRabbit #968)", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a"], price: 150 }, "junid", NOW);
+  // A price change lands between this sync's read of the sale and its write of the mirror.
+  const real = db.ref.bind(db);
+  let raced = false;
+  const racing = { ...db, ref: (p) => {
+    const r = real(p);
+    if (p !== "products/a/bfSale" || raced) return r;
+    return { ...r, set: async (v) => { raced = true; await real(`${R}/sales/a/salePrice`).set(120); return r.set(v); } };
+  } };
+  await X.syncMirror(racing, "a");
+  assert.equal(raced, true);
+  assert.equal((await get(db, "products/a/bfSale")).price, 120, "the stale R150 was replaced by the sale as it is");
+});
+
+test("stores RECEIVING a sale item are alerted too, from its OPEN requests only (Junid approved the request read, 23 Nov)", async () => {
+  assert.deepEqual(core.receivers({
+    r1: { productId: "a", status: "open", requestingLocation: "concrete", qty: 2 }, r2: { productId: "a", status: "open", requestingLocation: "concrete", qty: 1 },
+    r3: { productId: "a", status: "fulfilled", requestingLocation: "trophy", qty: 4 }, r4: { productId: "a", status: "cancelled", requestingLocation: "hub1", qty: 1 },
+    r5: { productId: "a", status: "open" }, r6: null,
+  }), { concrete: 3 });
+  assert.deepEqual(core.alertBurst("start", ["Tee A"], { salePrice: 150, end: END }, { arriving: true }), { title: "Black Friday sale", body: "Black Friday sale: Tee A now R150. On its way to you: tag at the sale price on arrival" });
+  assert.equal(core.alertBurst("extend", ["Tee A", "Tee B"], { salePrice: 150, end: END }, { arriving: true }).body, "Tee A and Tee B, on their way to you, stay on sale until Mon 30 Nov");
+  assert.equal(core.alertBurst("end", ["Tee A"], { salePrice: 150, end: END }, { arriving: true }).body, "Tee A is back to its normal price, re-tag");
+  // The re-tag list: Concrete holds none of Tee A but has it on request.
+  const sales = { a: { salePrice: 150, start: NOW, end: END, setAt: NOW, name: "Tee A" } };
+  const list = core.storeList(sales, { a: { "marathon-pe": 5 } }, { "marathon-pe": "Marathon PE", concrete: "Concrete" }, NOW + 1, { coming: { a: { concrete: 3, "marathon-pe": 2, nowhere: 1 } } });
+  assert.deepEqual(list.map((x) => [x.loc, x.items.map((i) => [i.qty, i.arriving || 0])]), [["concrete", [[0, 3]]], ["marathon-pe", [[5, 0]]]], "a holder is listed once, as a holder; an unknown location is not a store");
+});
+
+test("the receiving read is one indexed query per product and changes nothing on the requests", async () => {
+  const asked = [];
+  const rows = { r1: { productId: "a", status: "open", requestingLocation: "concrete", qty: 2 }, r2: { productId: "a", status: "fulfilled", requestingLocation: "trophy", qty: 1 } };
+  const db = { ref: (p) => ({ orderByChild: (k) => ({ equalTo: (v) => ({ once: async () => { asked.push([p, k, v]); return { val: () => rows }; } }) }) }) };
+  assert.deepEqual(await X.receivingOf(db, "a"), { concrete: 2 });
+  assert.deepEqual(asked, [["refill_requests", "productId", "a"]]);
+});
+
+test("the repair job never announces an end for a product that is on sale again, and one failing product never loses the others (architect review)", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a"], price: 150 }, "junid", NOW);
+  const old = await get(db, `${R}/sales/a`);
+  // A close wrote its marker and died BEFORE taking the sale off; Junid then changed the price (a new sale).
+  await db.ref(`${R}/closing/a`).set({ at: NOW + 1000, why: "expired", by: null, sale: old });
+  await X.putOnSale(db, { pids: ["a"], price: 120 }, "junid", NOW + 2000);
+  assert.deepEqual(await X.finishClosing(db, NOW + 10 * 60_000), []);
+  assert.equal((await get(db, `${R}/sales/a`)).salePrice, 120, "the running sale is untouched");
+  assert.equal(await get(db, `${R}/back/a`), null, "not on the back-to-normal list");
+  assert.equal((await get(db, `${R}/ended/a/${NOW}`)).why, "replaced", "the record the price change kept is not rewritten");
+  assert.deepEqual(await get(db, "products/a/bfSale"), { price: 120, start: NOW + 2000, end: END });
+  assert.equal(await get(db, `${R}/closing`), null);
+  // A sale closed normally leaves the ended sale on the product for the till's returns (additive; never charged from).
+  await X.closeSales(db, await X.salesFor(db, { pids: ["a"] }, NOW + 3000), { uid: "junid", why: "ended_by_junid", nowMs: NOW + 3000 });
+  assert.equal(await get(db, "products/a/bfSale"), null);
+  assert.deepEqual(await get(db, "products/a/bfSaleWas"), { price: 120, start: NOW + 2000, end: END });
+  assert.equal(await get(db, "products/a/stockPrice"), 200);
+});
+
+test("the 10-minute job makes a wrong or missing till mirror right; a deleted product is never brought back as a stub", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a", "b"], price: 150 }, "junid", NOW);
+  await db.ref("products/a/bfSale").set({ price: 150, start: NOW, end: END - 5 }); // stale end
+  await db.ref("products/b/bfSale").remove();
+  assert.deepEqual((await X.mirrorsRight(db, await get(db, `${R}/sales`), NOW + 1)).sort(), ["a", "b"]);
+  assert.deepEqual(await get(db, "products/a/bfSale"), { price: 150, start: NOW, end: END });
+  assert.deepEqual(await get(db, "products/b/bfSale"), { price: 150, start: NOW, end: END });
+  assert.deepEqual(await X.mirrorsRight(db, await get(db, `${R}/sales`), NOW + 2), []);
+  await db.ref("products/b").remove();
+  await X.syncMirror(db, "b");
+  assert.equal(await get(db, "products/b"), null);
+});
+
+test("a store that holds some and is receiving others gets one alert worded for both; an end is no news for a store only receiving", async () => {
+  const db = world({ refill_requests: {
+    r1: { productId: "b", status: "open", requestingLocation: "marathon-pe", qty: 2 },
+    r2: { productId: "a", status: "open", requestingLocation: "concrete", qty: 1 },
+  } });
+  await X.putOnSale(db, { pids: ["a", "b"], price: 150 }, "junid", NOW);
+  const sale = await get(db, `${R}/sales/a`);
+  const entries = [{ pid: "a", name: "Tee A", sale }, { pid: "b", name: "Tee B", sale }];
+  const start = await X.alertStores(db, "start", entries, NOW + 1);
+  assert.deepEqual([start["marathon-pe"].n, start.concrete.n, start.hub2.n], [2, 2, 1], "PE holds A and is receiving B; Concrete holds B and is receiving A");
+  const end = await X.alertStores(db, "end", entries, NOW + 2);
+  assert.deepEqual([end["marathon-pe"].n, end.concrete.n], [1, 1], "only what each store holds goes back to normal");
 });
