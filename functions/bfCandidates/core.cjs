@@ -200,7 +200,16 @@ function alertText(type, name, sale) {
   return { title: "Black Friday sale", body: `Black Friday sale: ${n} now ${priceLabel(sale.salePrice)}, re-tag` };
 }
 /** Several products in one tap: one notification per store, naming up to three (staff must know WHAT to re-tag). */
-function alertBurst(type, names, sale) {
+function alertBurst(type, names, sale, { arriving = false } = {}) {
+  // A store that holds none of it yet but has it on request: the same news, and the tag goes on when it arrives.
+  if (arriving && type !== "end") {
+    const shown = names.slice(0, 3).map((n) => String(n || "A product").trim());
+    const rest = names.length - shown.length;
+    const list = rest > 0 ? `${shown.join(", ")} and ${rest} more` : shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown[0];
+    return type === "extend"
+      ? { title: "Black Friday sale extended", body: `${list}, on ${names.length > 1 ? "their" : "its"} way to you, ${names.length > 1 ? "stay" : "stays"} on sale until ${endLabel(sale.end)}` }
+      : { title: "Black Friday sale", body: `Black Friday sale: ${list} now ${priceLabel(sale.salePrice)}. On ${names.length > 1 ? "their" : "its"} way to you: tag at the sale price on arrival` };
+  }
   if (names.length <= 1) return alertText(type, names[0], sale);
   const first = alertText(type, names[0], sale);
   const shown = names.slice(0, 3).map((n) => String(n || "A product").trim());
@@ -210,21 +219,41 @@ function alertBurst(type, names, sale) {
   if (type === "extend") return { title: first.title, body: `${list} stay on sale until ${endLabel(sale.end)}` };
   return { title: first.title, body: `Black Friday sale: ${list} now ${priceLabel(sale.salePrice)}, re-tag` };
 }
+/**
+ * The locations RECEIVING a product, from its request rows ({ id: { status, requestingLocation, qty } }): only OPEN
+ * requests count. → { loc: units asked for }. Pure, read only.
+ */
+function receivers(rows) {
+  const out = {};
+  for (const r of Object.values(rows || {})) {
+    if (!r || r.status !== "open" || typeof r.requestingLocation !== "string" || !r.requestingLocation) continue;
+    out[r.requestingLocation] = (out[r.requestingLocation] || 0) + (Number(r.qty) > 0 ? Number(r.qty) : 1);
+  }
+  return out;
+}
 /** Locations holding a product now (qty > 0), from { loc: qty }. Stock in transit is on no shelf. */
 const holders = (locs) => Object.entries(locs || {}).filter(([loc, q]) => Number(q) > 0 && loc !== "in_transit").map(([loc]) => loc);
 /**
  * The re-tag list, per store: every product on sale that the store holds, and (back) every product whose sale ended
  * in the last two days that it holds — the tags to put BACK to the normal price (what the END alert opens).
  * sales: sales node; stock: { pid: { loc: qty } }; names: { loc: display name }; back: { pid: { at, name, was, photo } }.
- * → [{ loc, name, items: [{ pid, name, price, until, qty, photo }], back: [{ pid, name, was, qty, photo, endedAt }] }]
+ * coming: { pid: { loc: units on open request } } (a store receiving it is listed with qty 0 and `arriving`).
+ * → [{ loc, name, items: [{ pid, name, price, until, qty, arriving?, photo }], back: [{ pid, name, was, qty, photo, endedAt }] }]
  */
-function storeList(sales, stock, names = {}, nowMs, { back = {} } = {}) {
+function storeList(sales, stock, names = {}, nowMs, { back = {}, coming = {} } = {}) {
   const by = {};
   const at = (loc) => (by[loc] ||= { items: [], back: [] });
   for (const [pid, s] of Object.entries(sales || {})) {
     if (!saleActive(s, nowMs)) continue;
     for (const loc of holders(stock && stock[pid])) {
       at(loc).items.push({ pid, name: s.name || pid, price: Number(s.salePrice), until: endLabel(s.end), qty: Number(stock[pid][loc]) || 0, photo: s.photo || null });
+    }
+    // coming: { pid: { loc: units on request } } — a store that holds none yet but has it on request (only stores
+    // the names table knows: a request row naming anything else is not a place to tag).
+    const here = holders(stock && stock[pid]);
+    for (const [loc, n] of Object.entries((coming && coming[pid]) || {})) {
+      if (here.includes(loc) || !Object.prototype.hasOwnProperty.call(names, loc)) continue;
+      at(loc).items.push({ pid, name: s.name || pid, price: Number(s.salePrice), until: endLabel(s.end), qty: 0, arriving: Number(n) || 1, photo: s.photo || null });
     }
   }
   for (const [pid, b] of Object.entries(back || {})) {
@@ -248,5 +277,5 @@ module.exports = {
   ROOT, CUTOFFS, CUTOFF_LABEL, DEFAULT_CUTOFF, SOLD_SHARE, DEFAULT_END_DAY, TABS, VIEWS, DAY_MS, PAGE, MAX_PIDS, PID_RE, BACK_MS, AT,
   sastDay, endOfDayMs, endLabel, priceLabel, cutoffOf, cutoffMs, dayLabel, defaultEnd, tabOf, kindOfCat, FOOTWEAR_KEYS, isCandidate, saleVersion, saleActive, photoOf,
   viewRow, viewList, plainNumber, parsePrice, aboveStock, saleEnd, saleRecord, tillMirror,
-  alertText, alertBurst, holders, storeList, saleText, salePhotoCaption,
+  alertText, alertBurst, holders, receivers, storeList, saleText, salePhotoCaption,
 };

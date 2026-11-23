@@ -79,15 +79,36 @@ async function productNow(db, pid) {
   return Object.fromEntries(f.map((k, i) => [k, v[i]]));
 }
 
-/** Tells each holding location once (several products of one tap = one notification per store). Never throws. */
+/**
+ * The locations RECEIVING a product: an open request for it (Junid approved this read of request data, 23 Nov:
+ * "Alert stores that are receiving a sale item: yes"). READ ONLY, one indexed query per product (productId is
+ * indexed on the live rules; never the whole node). Nothing here creates, changes or closes a request.
+ * → { loc: units asked for }
+ */
+async function receivingOf(db, pid) {
+  const rows = (await db.ref("refill_requests").orderByChild("productId").equalTo(pid).once("value")).val() || {};
+  return core.receivers(rows);
+}
+
+/**
+ * Tells each location once (several products of one tap = one notification per store): the ones HOLDING the product
+ * and the ones RECEIVING it (the stock lands after the tag was changed everywhere else). Never throws.
+ */
 async function alertStores(db, type, entries, nowMs) {
   // entries: [{ pid, name, sale }]
   try {
     const locs = (await locations(db)).filter((l) => l.type === "store" || l.type === "hub");
+    const known = new Set(locs.map((l) => l.id));
     const held = await inBatches(entries, 20, (e) => stockOf(db, e.pid, locs));
-    const byLoc = {};
-    entries.forEach((e, i) => { for (const loc of core.holders(held[i])) (byLoc[loc] ||= []).push(e); });
-    const msgs = Object.fromEntries(Object.entries(byLoc).map(([loc, es]) => [loc, core.alertBurst(type, es.map((e) => e.name), es[0].sale)]));
+    // A request read that fails never costs the holding stores their alert.
+    const coming = await inBatches(entries, 20, (e) => receivingOf(db, e.pid).catch((err) => { console.error(`BF_SALE_ALERT receiving ${e.pid} not read:`, err && err.message); return {}; }));
+    const byLoc = {}, arriving = {};
+    entries.forEach((e, i) => {
+      const here = core.holders(held[i]);
+      for (const loc of here) (byLoc[loc] ||= []).push(e);
+      for (const loc of Object.keys(coming[i])) if (known.has(loc) && !here.includes(loc)) { (byLoc[loc] ||= []).push(e); (arriving[loc] ||= new Set()).add(e.pid); }
+    });
+    const msgs = Object.fromEntries(Object.entries(byLoc).map(([loc, es]) => [loc, core.alertBurst(type, es.map((e) => e.name), es[0].sale, { arriving: es.every((e) => arriving[loc] && arriving[loc].has(e.pid)) })]));
     const sent = await sendStoreAlerts({ db, messaging: admin.messaging(), nowMs }, msgs);
     const stores = Object.fromEntries(Object.entries(byLoc).map(([loc, es]) => [loc, { n: es.length, ...(sent[loc] || {}) }]));
     await db.ref(`${R}/alerts`).push({ at: nowMs, type, products: entries.length, stores });
@@ -397,7 +418,11 @@ const bfSaleStoreList = onCall(callableOpts, async (request) => {
   const pids = [...new Set([...Object.keys(sales), ...Object.keys(back)])];
   const held = await inBatches(pids, 20, (p) => stockOf(db, p, locs));
   const stock = Object.fromEntries(pids.map((p, i) => [p, held[i]]));
-  return { now: nowMs, stores: core.storeList(sales, stock, Object.fromEntries(locs.map((l) => [l.id, l.name])), nowMs, { back }), onSale: Object.keys(sales).length };
+  // On its way to a store (an open request): listed there too, so it is tagged at the sale price when it lands.
+  const onSalePids = Object.keys(sales);
+  const asked = await inBatches(onSalePids, 20, (p) => receivingOf(db, p).catch(() => ({})));
+  const coming = Object.fromEntries(onSalePids.map((p, i) => [p, asked[i]]));
+  return { now: nowMs, stores: core.storeList(sales, stock, Object.fromEntries(locs.map((l) => [l.id, l.name])), nowMs, { back, coming }), onSale: onSalePids.length };
 });
 
 // The till stops charging a sale at its end time by itself (it checks the dates); this job tidies the record
@@ -419,4 +444,4 @@ const bfSaleExpire = onSchedule(
   },
 );
 
-module.exports = { bfSaleList, bfSaleSet, bfSaleStoreList, bfSaleExpire, _internals: { choosePhoto, putOnSale, extend, closeSales, finishClosing, syncMirror, remove, restore, salesFor, stockOf, locations } };
+module.exports = { bfSaleList, bfSaleSet, bfSaleStoreList, bfSaleExpire, _internals: { receivingOf, alertStores, choosePhoto, putOnSale, extend, closeSales, finishClosing, syncMirror, remove, restore, salesFor, stockOf, locations } };

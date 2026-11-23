@@ -399,3 +399,26 @@ test("the till's mirror is made again when the sale changed while it was being w
   assert.equal(raced, true);
   assert.equal((await get(db, "products/a/bfSale")).price, 120, "the stale R150 was replaced by the sale as it is");
 });
+
+test("stores RECEIVING a sale item are alerted too, from its OPEN requests only (Junid approved the request read, 23 Nov)", async () => {
+  assert.deepEqual(core.receivers({
+    r1: { productId: "a", status: "open", requestingLocation: "concrete", qty: 2 }, r2: { productId: "a", status: "open", requestingLocation: "concrete", qty: 1 },
+    r3: { productId: "a", status: "fulfilled", requestingLocation: "trophy", qty: 4 }, r4: { productId: "a", status: "cancelled", requestingLocation: "hub1", qty: 1 },
+    r5: { productId: "a", status: "open" }, r6: null,
+  }), { concrete: 3 });
+  assert.deepEqual(core.alertBurst("start", ["Tee A"], { salePrice: 150, end: END }, { arriving: true }), { title: "Black Friday sale", body: "Black Friday sale: Tee A now R150. On its way to you: tag at the sale price on arrival" });
+  assert.equal(core.alertBurst("extend", ["Tee A", "Tee B"], { salePrice: 150, end: END }, { arriving: true }).body, "Tee A and Tee B, on their way to you, stay on sale until Mon 30 Nov");
+  assert.equal(core.alertBurst("end", ["Tee A"], { salePrice: 150, end: END }, { arriving: true }).body, "Tee A is back to its normal price, re-tag");
+  // The re-tag list: Concrete holds none of Tee A but has it on request.
+  const sales = { a: { salePrice: 150, start: NOW, end: END, setAt: NOW, name: "Tee A" } };
+  const list = core.storeList(sales, { a: { "marathon-pe": 5 } }, { "marathon-pe": "Marathon PE", concrete: "Concrete" }, NOW + 1, { coming: { a: { concrete: 3, "marathon-pe": 2, nowhere: 1 } } });
+  assert.deepEqual(list.map((x) => [x.loc, x.items.map((i) => [i.qty, i.arriving || 0])]), [["concrete", [[0, 3]]], ["marathon-pe", [[5, 0]]]], "a holder is listed once, as a holder; an unknown location is not a store");
+});
+
+test("the receiving read is one indexed query per product and changes nothing on the requests", async () => {
+  const asked = [];
+  const rows = { r1: { productId: "a", status: "open", requestingLocation: "concrete", qty: 2 }, r2: { productId: "a", status: "fulfilled", requestingLocation: "trophy", qty: 1 } };
+  const db = { ref: (p) => ({ orderByChild: (k) => ({ equalTo: (v) => ({ once: async () => { asked.push([p, k, v]); return { val: () => rows }; } }) }) }) };
+  assert.deepEqual(await X.receivingOf(db, "a"), { concrete: 2 });
+  assert.deepEqual(asked, [["refill_requests", "productId", "a"]]);
+});

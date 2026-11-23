@@ -44,7 +44,7 @@ export default function BfSaleStoreList({ api, store = null, onExit }) {
             {it.photo && <img src={api.thumb(it.photo)} alt="" loading="lazy" style={{ width: 56, height: 56, borderRadius: 10, objectFit: "cover", flex: "0 0 auto" }} />}
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 700, fontSize: "0.9rem", overflowWrap: "anywhere" }}>{it.name}</div>
-              <div style={{ color: GRAY, fontSize: "0.78rem" }}>{it.qty} here · ends {it.until}</div>
+              <div style={{ color: GRAY, fontSize: "0.78rem" }}>{it.arriving ? `On its way to you (${it.arriving}): tag on arrival` : `${it.qty} here`} · ends {it.until}</div>
             </div>
             <div style={{ color: AMBER, fontWeight: 800, fontSize: "1.05rem" }}>{price(it.price)}</div>
           </div>
