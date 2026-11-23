@@ -48,15 +48,15 @@ const ITEMS = {
   e: { name: "Cap E", kind: "headwear", qty: 7, arrived: JUN, received: 7, sold: 0, stockPrice: 80, retailPrice: 120 },
 };
 
-test("the list: Clothing | Sneakers (others under Clothing); by arrival date, the oldest first; removed never shown", () => {
+test("the list: Clothing | Sneakers (others under Clothing); by quantity on hand, the most first; removed never shown", () => {
   const v = core.viewList({ items: ITEMS, removed: { e: { at: 1 } } }, { tab: "clothing", cutoff: "july", nowMs: NOW });
-  assert.deepEqual(v.rows.map((r) => r.pid), ["b", "a"], "June before July");
+  assert.deepEqual(v.rows.map((r) => r.pid), ["b", "a"], "90 on hand before 40");
   assert.deepEqual(v.counts, { clothing: 2, sneakers: 1, onSale: 0, removed: 1 });
   assert.deepEqual({ arrivedOn: v.rows[1].arrivedOn, received: v.rows[1].received, sold: v.rows[1].sold }, { arrivedOn: "10 Jul 2026", received: 40, sold: 0 });
   const all = core.viewList({ items: ITEMS }, { tab: "clothing", nowMs: NOW });
-  assert.deepEqual(all.rows.map((r) => r.pid), ["e", "b", "a"], "a cap is listed under Clothing; the same June day: the unsold cap before the tee that sold 6");
+  assert.deepEqual(all.rows.map((r) => r.pid), ["b", "a", "e"], "a cap is listed under Clothing; 7 on hand goes below 90 and 40");
   assert.deepEqual(core.viewList({ items: ITEMS }, { tab: "sneakers", nowMs: NOW }).rows.map((r) => r.pid), ["c"]);
-  assert.deepEqual(core.viewList({ items: ITEMS }, { tab: "clothing", cutoff: "june", nowMs: NOW }).rows.map((r) => r.pid), ["e", "b"]);
+  assert.deepEqual(core.viewList({ items: ITEMS }, { tab: "clothing", cutoff: "june", nowMs: NOW }).rows.map((r) => r.pid), ["b", "e"]);
   assert.equal(v.saleEnds, null);
 });
 
@@ -76,8 +76,8 @@ test("the On sale tab lists EVERYTHING on sale, candidate or not; a non-candidat
   assert.equal(v.counts.onSale, 3);
   assert.deepEqual({ same: v.saleEnds.same, first: v.saleEnds.firstLabel, last: v.saleEnds.lastLabel }, { same: false, first: "Mon 30 Nov", last: "Mon 7 Dec" });
   const c = core.viewList({ items: ITEMS, sales }, { tab: "clothing", nowMs: NOW });
-  assert.deepEqual(c.rows.map((r) => r.pid), ["e", "b", "a"], "the new arrival on sale is not a candidate");
-  assert.equal(c.rows[2].sale.price, 150, "a candidate on sale shows its sale");
+  assert.deepEqual(c.rows.map((r) => r.pid), ["b", "a", "e"], "the new arrival on sale is not a candidate");
+  assert.equal(c.rows[1].sale.price, 150, "a candidate on sale shows its sale");
   assert.equal(core.defaultEnd(sales, NOW), END, "one product extended on its own does not move the date for new sales");
   assert.equal(core.defaultEnd({ a: sales.a }, NOW), core.endOfDayMs("2026-12-07"), "every running sale extended: a new one ends with them");
   assert.equal(core.defaultEnd({}, NOW), END);
@@ -469,4 +469,10 @@ test("a store that holds some and is receiving others gets one alert worded for 
   assert.deepEqual([start["marathon-pe"].n, start.concrete.n, start.hub2.n], [2, 2, 1], "PE holds A and is receiving B; Concrete holds B and is receiving A");
   const end = await X.alertStores(db, "end", entries, NOW + 2);
   assert.deepEqual([end["marathon-pe"].n, end.concrete.n], [1, 1], "only what each store holds goes back to normal");
+});
+
+test("one left goes all the way down; the same quantity: the oldest arrival first (Junid 18:15)", () => {
+  const items = { one: { name: "One left", kind: "clothing", qty: 1, arrived: JUN, received: 20, sold: 0 }, big: { name: "Big", kind: "clothing", qty: 60, arrived: JUL, received: 60, sold: 0 },
+    mid1: { name: "Mid July", kind: "clothing", qty: 10, arrived: JUL, received: 10, sold: 0 }, mid2: { name: "Mid June", kind: "clothing", qty: 10, arrived: JUN, received: 10, sold: 0 } };
+  assert.deepEqual(core.viewList({ items }, { tab: "clothing", nowMs: NOW }).rows.map((r) => r.pid), ["big", "mid2", "mid1", "one"]);
 });

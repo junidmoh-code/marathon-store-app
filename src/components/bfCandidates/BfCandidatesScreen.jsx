@@ -2,8 +2,8 @@
 // Old stock that isn't selling (Junid, 15:44: "new stock is not dead stock"): the
 // product first arrived in the network on or before the cut-off ("In store since":
 // May, June, July (default) or August), still has stock on hand, and has sold
-// under 10% of the units received. Tabs: Clothing, Sneakers (by arrival date, the
-// oldest first; every row shows its arrival date) and On sale (everything on sale).
+// under 10% of the units received. Tabs: Clothing, Sneakers (by quantity on hand,
+// the most first; every row shows its arrival date) and On sale (everything on sale).
 // FAST: the last answer for each tab is kept (memory + this device) and shown at
 // once while the fresh one is fetched; the other tabs are fetched ahead.
 //   Put on sale   every row has a PRICE BOX: type the sale price, tap Put on sale
