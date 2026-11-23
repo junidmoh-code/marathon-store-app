@@ -2,13 +2,15 @@
 // functions/bfCandidates/ (Junid only, except storeList: any signed-in staff).
 // Kept apart from the screens so they render in tests with a fake api.
 import { httpsCallable } from "firebase/functions";
-import { functions } from "../../firebase";
+import { functions, auth } from "../../firebase";
 import { blackFridayApi } from "../blackFriday/blackFridayApi";
 
 const call = (name, opts) => async (data) => (await httpsCallable(functions, name, opts)(data)).data;
 const set = call("bfSaleSet", { timeout: 300_000 });
 
 export const bfCandidatesApi = {
+  // Whose card this is (the list kept on the device is kept per account).
+  uid: () => (auth.currentUser && auth.currentUser.uid) || null,
   // The list's small photo: the Black Friday card's own 360 px thumbnails.
   thumb: blackFridayApi.thumb,
   // One tab ("clothing" | "sneakers" | "onsale"), one page:

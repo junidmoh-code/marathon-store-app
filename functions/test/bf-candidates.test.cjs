@@ -422,3 +422,51 @@ test("the receiving read is one indexed query per product and changes nothing on
   assert.deepEqual(await X.receivingOf(db, "a"), { concrete: 2 });
   assert.deepEqual(asked, [["refill_requests", "productId", "a"]]);
 });
+
+test("the repair job never announces an end for a product that is on sale again, and one failing product never loses the others (architect review)", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a"], price: 150 }, "junid", NOW);
+  const old = await get(db, `${R}/sales/a`);
+  // A close wrote its marker and died BEFORE taking the sale off; Junid then changed the price (a new sale).
+  await db.ref(`${R}/closing/a`).set({ at: NOW + 1000, why: "expired", by: null, sale: old });
+  await X.putOnSale(db, { pids: ["a"], price: 120 }, "junid", NOW + 2000);
+  assert.deepEqual(await X.finishClosing(db, NOW + 10 * 60_000), []);
+  assert.equal((await get(db, `${R}/sales/a`)).salePrice, 120, "the running sale is untouched");
+  assert.equal(await get(db, `${R}/back/a`), null, "not on the back-to-normal list");
+  assert.equal((await get(db, `${R}/ended/a/${NOW}`)).why, "replaced", "the record the price change kept is not rewritten");
+  assert.deepEqual(await get(db, "products/a/bfSale"), { price: 120, start: NOW + 2000, end: END });
+  assert.equal(await get(db, `${R}/closing`), null);
+  // A sale closed normally leaves the ended sale on the product for the till's returns (additive; never charged from).
+  await X.closeSales(db, await X.salesFor(db, { pids: ["a"] }, NOW + 3000), { uid: "junid", why: "ended_by_junid", nowMs: NOW + 3000 });
+  assert.equal(await get(db, "products/a/bfSale"), null);
+  assert.deepEqual(await get(db, "products/a/bfSaleWas"), { price: 120, start: NOW + 2000, end: END });
+  assert.equal(await get(db, "products/a/stockPrice"), 200);
+});
+
+test("the 10-minute job makes a wrong or missing till mirror right; a deleted product is never brought back as a stub", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a", "b"], price: 150 }, "junid", NOW);
+  await db.ref("products/a/bfSale").set({ price: 150, start: NOW, end: END - 5 }); // stale end
+  await db.ref("products/b/bfSale").remove();
+  assert.deepEqual((await X.mirrorsRight(db, await get(db, `${R}/sales`), NOW + 1)).sort(), ["a", "b"]);
+  assert.deepEqual(await get(db, "products/a/bfSale"), { price: 150, start: NOW, end: END });
+  assert.deepEqual(await get(db, "products/b/bfSale"), { price: 150, start: NOW, end: END });
+  assert.deepEqual(await X.mirrorsRight(db, await get(db, `${R}/sales`), NOW + 2), []);
+  await db.ref("products/b").remove();
+  await X.syncMirror(db, "b");
+  assert.equal(await get(db, "products/b"), null);
+});
+
+test("a store that holds some and is receiving others gets one alert worded for both; an end is no news for a store only receiving", async () => {
+  const db = world({ refill_requests: {
+    r1: { productId: "b", status: "open", requestingLocation: "marathon-pe", qty: 2 },
+    r2: { productId: "a", status: "open", requestingLocation: "concrete", qty: 1 },
+  } });
+  await X.putOnSale(db, { pids: ["a", "b"], price: 150 }, "junid", NOW);
+  const sale = await get(db, `${R}/sales/a`);
+  const entries = [{ pid: "a", name: "Tee A", sale }, { pid: "b", name: "Tee B", sale }];
+  const start = await X.alertStores(db, "start", entries, NOW + 1);
+  assert.deepEqual([start["marathon-pe"].n, start.concrete.n, start.hub2.n], [2, 2, 1], "PE holds A and is receiving B; Concrete holds B and is receiving A");
+  const end = await X.alertStores(db, "end", entries, NOW + 2);
+  assert.deepEqual([end["marathon-pe"].n, end.concrete.n], [1, 1], "only what each store holds goes back to normal");
+});

@@ -33,20 +33,24 @@ export function photoError(e) {
   if (/not in the campaign|not on the Black Friday card/i.test(t)) return "it is not on the Black Friday list yet, so a photo can't be made for it here. It joins that list at the 05:00 build if it has a stock price and a photo";
   return t.replace(/^.*?:\s(?=[A-Z])/, "") || "something went wrong";
 }
-// The last answer per tab + cut-off, kept on this device: the card opens with it at once and then refreshes.
+// The last answer per tab + cut-off, kept on this device FOR THE SIGNED-IN ACCOUNT (the key carries its uid: another
+// account on the same device never sees it): the card opens with it at once and then refreshes. `gen` moves on every
+// tap that changes what is on sale; an answer asked for before that tap is never kept.
 const KEEP = "bfCandidates.v2.";
 const kept = new Map();
+let gen = 0;
 function recall(key) {
   if (kept.has(key)) return kept.get(key);
   try { const v = JSON.parse(window.localStorage.getItem(KEEP + key) || "null"); if (v && Array.isArray(v.rows)) { kept.set(key, v); return v; } } catch { /* no storage: memory only */ }
   return null;
 }
-function keep(key, v) {
+function keep(key, v, asked = gen) {
+  if (asked !== gen) return;
   kept.set(key, v);
   try { window.localStorage.setItem(KEEP + key, JSON.stringify(v)); } catch { /* full or blocked: memory only */ }
 }
-/** For tests: forget every kept answer. */
-export function forgetKept() { kept.clear(); try { Object.keys(window.localStorage).filter((k) => k.startsWith(KEEP)).forEach((k) => window.localStorage.removeItem(k)); } catch { /* none */ } }
+/** Forget every kept answer (after a tap that changed what is on sale; and for tests). */
+export function forgetKept() { gen += 1; kept.clear(); try { Object.keys(window.localStorage).filter((k) => k.startsWith(KEEP)).forEach((k) => window.localStorage.removeItem(k)); } catch { /* none */ } }
 /**
  * What happened to the store alert, said apart from the sale itself (the sale is saved either way). stores: the
  * server's { loc: { n, tokens, delivered } | { error } } or { error }. Pure.
@@ -165,10 +169,12 @@ export default function BfCandidatesScreen({ api, onExit }) {
   const fileRef = useRef(null);
   const replaceFor = useRef(null);
 
+  const who = (api.uid && api.uid()) || "anon";  // whose kept answers these are
   const [stale, setStale] = useState(false);     // showing a kept answer while the fresh one is on its way
   const load = useCallback(async (t = tab, w = cutoff, { quiet = false } = {}) => {
     const mine = ++seq.current;
-    const key = `${t}.${w}`;
+    const key = `${who}.${t}.${w}`;
+    const asked = gen;
     // The kept answer first, at once; the fresh one replaces it when it lands.
     const old = quiet ? null : recall(key);
     if (old) { setView(old); setRows(old.rows || []); setStale(true); }
@@ -176,18 +182,19 @@ export default function BfCandidatesScreen({ api, onExit }) {
     setError(null);
     try {
       const v = await api.list(t, w, 0);
-      keep(key, v);
+      keep(key, v, asked);
       if (mine !== seq.current) return;
       setView(v); setRows(v.rows || []); setStale(false);
     } catch (e) { if (mine === seq.current) setError(errText(e)); }
     finally { if (mine === seq.current) setLoading(false); }
-  }, [api, tab, cutoff]);
+  }, [api, tab, cutoff, who]);
   useEffect(() => { setRows([]); setTicks(new Set()); load(tab, cutoff); }, [tab, cutoff]); // eslint-disable-line react-hooks/exhaustive-deps
   // The other tabs are fetched ahead, once the first answer is in: a tab switch shows its list at once.
   useEffect(() => {
     let live = true;
     const ahead = setTimeout(() => {
-      for (const t of Object.keys(TAB_LABEL)) if (t !== tab && !kept.has(`${t}.${cutoff}`)) api.list(t, cutoff, 0).then((v) => { if (live) keep(`${t}.${cutoff}`, v); }).catch(() => {});
+      const asked = gen;
+      for (const t of Object.keys(TAB_LABEL)) if (t !== tab && !kept.has(`${who}.${t}.${cutoff}`)) api.list(t, cutoff, 0).then((v) => { if (live) keep(`${who}.${t}.${cutoff}`, v, asked); }).catch(() => {});
     }, 1200);
     return () => { live = false; clearTimeout(ahead); };
   }, [api, cutoff]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -225,7 +232,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
     finally { inFlight.current = false; setBusyPids(new Set()); setWorking(null); }
   };
   // A tap changed what is on sale: the answers kept for the other tabs are no longer true.
-  const done = () => { kept.clear(); setTicks(new Set()); setSelecting(false); setDialog(null); refresh(); };
+  const done = () => { forgetKept(); setTicks(new Set()); setSelecting(false); setDialog(null); refresh(); };
 
   // ── Put on sale: ONE price; the warning (price ≥ stock price) comes before anything is saved ──
   const saveSale = async (pids, priceNum, confirmAbove, after) => {

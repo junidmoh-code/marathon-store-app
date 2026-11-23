@@ -108,7 +108,18 @@ async function alertStores(db, type, entries, nowMs) {
       for (const loc of here) (byLoc[loc] ||= []).push(e);
       for (const loc of Object.keys(coming[i])) if (known.has(loc) && !here.includes(loc)) { (byLoc[loc] ||= []).push(e); (arriving[loc] ||= new Set()).add(e.pid); }
     });
-    const msgs = Object.fromEntries(Object.entries(byLoc).map(([loc, es]) => [loc, core.alertBurst(type, es.map((e) => e.name), es[0].sale, { arriving: es.every((e) => arriving[loc] && arriving[loc].has(e.pid)) })]));
+    // One notification per store, worded for what it HOLDS (re-tag now) and, apart, for what is on its way (tag on
+    // arrival). A sale that ended is no news for a store that never had the product to tag.
+    const msgs = {};
+    for (const [loc, es] of Object.entries(byLoc)) {
+      const isArr = (e) => !!(arriving[loc] && arriving[loc].has(e.pid));
+      const here = es.filter((e) => !isArr(e)), onWay = type === "end" ? [] : es.filter(isArr);
+      if (!here.length && !onWay.length) { delete byLoc[loc]; continue; }
+      if (!here.length) { msgs[loc] = core.alertBurst(type, onWay.map((e) => e.name), onWay[0].sale, { arriving: true }); byLoc[loc] = onWay; continue; }
+      const m = core.alertBurst(type, here.map((e) => e.name), here[0].sale);
+      msgs[loc] = onWay.length ? { title: m.title, body: `${m.body}. Also on the way to you: ${onWay.slice(0, 2).map((e) => e.name).join(", ")}${onWay.length > 2 ? ` and ${onWay.length - 2} more` : ""} (tag on arrival)` } : m;
+      byLoc[loc] = [...here, ...onWay];
+    }
     const sent = await sendStoreAlerts({ db, messaging: admin.messaging(), nowMs }, msgs);
     const stores = Object.fromEntries(Object.entries(byLoc).map(([loc, es]) => [loc, { n: es.length, ...(sent[loc] || {}) }]));
     await db.ref(`${R}/alerts`).push({ at: nowMs, type, products: entries.length, stores });
@@ -185,6 +196,8 @@ async function putOnSale(db, data, uid, nowMs) {
 const mirrorOf = (s) => (s && Number(s.salePrice) > 0 && Number(s.end) > 0 ? core.tillMirror(s) : null);
 async function syncMirror(db, pid) {
   let s = await val(db, `${R}/sales/${pid}`);
+  // A product deleted since its sale was made is never brought back as a stub holding only a sale price.
+  if (mirrorOf(s) && (await val(db, `products/${pid}/name`)) == null && (await val(db, `products/${pid}/stockPrice`)) == null) return;
   for (let i = 0; i < 5; i += 1) {
     await db.ref(`products/${pid}/bfSale`).set(mirrorOf(s));
     const now = await val(db, `${R}/sales/${pid}`);
@@ -192,6 +205,20 @@ async function syncMirror(db, pid) {
     s = now;
   }
   throw new Error(`the till's sale price for ${pid} kept changing; open the card and check it`);
+}
+
+/** Every running sale's till mirror compared with its sale (one small read each); a wrong or missing one is made again. → pids repaired */
+async function mirrorsRight(db, sales, nowMs) {
+  const live = Object.entries(sales || {}).filter(([pid, s]) => core.PID_RE.test(pid) && core.saleActive(s, nowMs));
+  const mirrors = await inBatches(live, 25, ([pid]) => val(db, `products/${pid}/bfSale`));
+  const fixed = [];
+  for (let i = 0; i < live.length; i += 1) {
+    const [pid, s] = live[i];
+    if (JSON.stringify(mirrors[i] || null) === JSON.stringify(mirrorOf(s))) continue;
+    await syncMirror(db, pid);
+    fixed.push(pid);
+  }
+  return fixed;
 }
 
 /** The sales a tap names: its pids, or every active sale (all: true). → [[pid, sale]] */
@@ -219,7 +246,9 @@ async function extend(db, data, uid, nowMs) {
     });
     const next = t.committed ? t.snapshot.val() : null;
     if (!next || Number(next.end) !== end) continue;
-    await syncMirror(db, pid);
+    // The sale IS extended. A mirror that could not be written now is made right by the 10-minute job (mirrorsRight);
+    // it never stops the rest of the tap, its log or its alert.
+    await syncMirror(db, pid).catch((e) => console.error(`BF_SALE mirror of ${pid} not written after Extend (the job repairs it):`, e && e.message));
     done.push(pid);
     entries.push({ pid, name: next.name, sale: next });
   }
@@ -238,24 +267,29 @@ async function extend(db, data, uid, nowMs) {
 async function closeSales(db, list, { uid = null, why, nowMs }) {
   const done = [], entries = [];
   for (const [pid, seen] of list) {
-    // One transaction per sale: only the sale that was read is closed. A sale Junid set again (or extended) in the
-    // meantime is left alone — the expiry job never wipes a sale that is running.
-    await db.ref(`${R}/closing/${pid}`).set({ at: nowMs, why, by: uid, sale: seen || null });
-    let closed = null;
-    const t = await db.ref(`${R}/sales/${pid}`).transaction((cur) => {
-      closed = null;
-      if (cur === null) return null;
-      if (seen && Number(cur.setAt) !== Number(seen.setAt)) return undefined;
-      if (why === "expired" && Number(cur.end) > nowMs) return undefined;
-      closed = cur;
-      return null;
-    });
-    if (!t.committed || !closed) { await db.ref(`${R}/closing/${pid}`).remove(); continue; } // nothing was closed: nothing to finish
-    // The record first travels in the marker, so the job can keep it even if this instance dies on the next line.
-    await db.ref(`${R}/closing/${pid}`).set({ at: nowMs, why, by: uid, sale: closed, taken: true });
-    await finishClose(db, pid, closed, { uid, why, nowMs });
-    done.push(pid);
-    entries.push({ pid, name: closed.name, sale: closed });
+    // One product failing never loses the others their record, log or alert: its marker stays and the job finishes it.
+    try {
+      // One transaction per sale: only the sale that was read is closed. A sale Junid set again (or extended) in the
+      // meantime is left alone — the expiry job never wipes a sale that is running.
+      await db.ref(`${R}/closing/${pid}`).set({ at: nowMs, why, by: uid, sale: seen || null });
+      let closed = null;
+      const t = await db.ref(`${R}/sales/${pid}`).transaction((cur) => {
+        closed = null;
+        if (cur === null) return null;
+        if (seen && Number(cur.setAt) !== Number(seen.setAt)) return undefined;
+        if (why === "expired" && Number(cur.end) > nowMs) return undefined;
+        closed = cur;
+        return null;
+      });
+      if (!t.committed || !closed) { await db.ref(`${R}/closing/${pid}`).remove(); continue; } // nothing was closed: nothing to finish
+      // The record travels in the marker, so the job can keep it even if this instance dies on the next line.
+      await db.ref(`${R}/closing/${pid}`).set({ at: nowMs, why, by: uid, sale: closed, taken: true });
+      await finishClose(db, pid, closed, { uid, why, nowMs });
+      done.push(pid);
+      entries.push({ pid, name: closed.name, sale: closed });
+    } catch (e) {
+      console.error(`BF_SALE close of ${pid} not finished (the 10-minute job finishes it):`, e && e.message);
+    }
   }
   if (!done.length) return { done: [] };
   await db.ref(`${R}/log`).push({ at: nowMs, by: uid, action: why, pids: done });
@@ -269,6 +303,12 @@ async function finishClose(db, pid, closed, { uid = null, why, nowMs }) {
     // What the END alert opens: the staff list names what to tag back for two days (core.BACK_MS).
     [`${R}/back/${pid}`]: { at: nowMs, name: String(closed.name || pid).slice(0, 200), was: Number(closed.salePrice) || null, photo: closed.photo || null },
   });
+  // ADDITIVE, for the till's returns (Junid, 23 Nov: a sale item comes back at the PRICE PAID, never the normal
+  // price): the sale that ended stays on the product as bfSaleWas, so a no-receipt return after the sale is still
+  // known to be a sale item. The till never charges from it. Not for a product deleted meanwhile (no stub).
+  if (mirrorOf(closed) && ((await val(db, `products/${pid}/name`)) != null || (await val(db, `products/${pid}/stockPrice`)) != null)) {
+    await db.ref(`products/${pid}/bfSaleWas`).set(core.tillMirror(closed));
+  }
   await syncMirror(db, pid); // a sale Junid set again in this instant keeps its mirror
   await db.ref(`${R}/closing/${pid}`).remove();
 }
@@ -281,18 +321,31 @@ async function finishClosing(db, nowMs) {
   const fixed = [], entries = [];
   for (const [pid, m] of Object.entries(marks)) {
     if (!core.PID_RE.test(pid) || !m || !(nowMs - Number(m.at) > 120_000)) continue;
-    const cur = await val(db, `${R}/sales/${pid}`);
-    const standing = cur && m.sale && Number(cur.setAt) === Number(m.sale.setAt);
-    if (!m.sale || (standing && m.taken !== true)) {
-      // Died before the sale was taken off its node (it still stands), or nothing is known of the sale that was
-      // being closed: the mirror is made again from what IS (no sale = no mirror) and only the marker goes.
-      await syncMirror(db, pid);
-      await db.ref(`${R}/closing/${pid}`).remove();
-      continue;
+    try {
+      const cur = await val(db, `${R}/sales/${pid}`);
+      const setAt = m.sale ? Number(m.sale.setAt) || 0 : 0;
+      // What really happened to the sale this marker was closing:
+      //   • nothing is known of it, or it STANDS (the instance died before taking it off), or the product is on sale
+      //     AGAIN under a newer tap (the old sale was replaced, its record kept by that tap): nothing to announce —
+      //     the mirror is made from what IS and the marker goes;
+      //   • it is gone and nobody kept its record: this close took it off and died — it is finished here.
+      const gone = cur === null && setAt > 0;
+      const recorded = gone && !!(await val(db, `${R}/ended/${pid}/${setAt}/endedAt`));
+      if (!gone || (recorded && m.taken !== true)) {
+        if (cur && m.taken === true && setAt && Number(cur.setAt) !== setAt && !(await val(db, `${R}/ended/${pid}/${setAt}/endedAt`))) {
+          // Taken off, then put on sale again before the record was kept: the record only (no alert: it IS on sale).
+          await db.ref(`${R}/ended/${pid}/${setAt}`).set({ ...m.sale, endedAt: Number(m.at) || nowMs, endedBy: m.by || null, why: m.why || "ended" });
+        }
+        await syncMirror(db, pid);
+        await db.ref(`${R}/closing/${pid}`).remove();
+        continue;
+      }
+      await finishClose(db, pid, m.sale, { uid: m.by || null, why: m.why || "ended", nowMs: Number(m.at) || nowMs });
+      fixed.push(pid);
+      if (!recorded) entries.push({ pid, name: m.sale.name, sale: m.sale }); // recorded = the tap's own alert may have gone: never twice
+    } catch (e) {
+      console.error(`BF_SALE half-closed ${pid} not finished this run (tried again in 10 minutes):`, e && e.message);
     }
-    await finishClose(db, pid, m.sale, { uid: m.by || null, why: m.why || "ended", nowMs: Number(m.at) || nowMs });
-    fixed.push(pid);
-    entries.push({ pid, name: m.sale.name, sale: m.sale });
   }
   if (fixed.length) { await db.ref(`${R}/log`).push({ at: nowMs, action: "close_finished", pids: fixed }); await alertStores(db, "end", entries, nowMs); }
   // The staff's "back to normal" list forgets a product after two days.
@@ -435,13 +488,16 @@ const bfSaleExpire = onSchedule(
     const sales = (await val(db, `${R}/sales`)) || {};
     const over = Object.entries(sales).filter(([, s]) => !s || !(Number(s.end) > nowMs));
     if (over.length) {
-      const r = await closeSales(db, over, { why: "expired", nowMs });
+      const r = await closeSales(db, over, { why: "expired", nowMs }).catch((e) => { console.error("bfSaleExpire: closing failed:", e && e.message); return { done: [] }; });
       console.log(`bfSaleExpire: closed ${r.done.length} sale(s) past their end`);
     }
+    // The till's price is checked against every running sale: a mirror that was not written (or went stale) is made right.
+    const fixedMirrors = await mirrorsRight(db, sales, nowMs).catch((e) => { console.error("bfSaleExpire: mirror check failed:", e && e.message); return []; });
+    if (fixedMirrors.length) console.log(`bfSaleExpire: made ${fixedMirrors.length} till mirror(s) right: ${fixedMirrors.join(", ")}`);
     // A close that died half-way is finished here (the till never keeps a discount whose sale is gone).
     const fixed = await finishClosing(db, nowMs);
     if (fixed.length) console.log(`bfSaleExpire: finished ${fixed.length} half-closed sale(s): ${fixed.join(", ")}`);
   },
 );
 
-module.exports = { bfSaleList, bfSaleSet, bfSaleStoreList, bfSaleExpire, _internals: { receivingOf, alertStores, choosePhoto, putOnSale, extend, closeSales, finishClosing, syncMirror, remove, restore, salesFor, stockOf, locations } };
+module.exports = { bfSaleList, bfSaleSet, bfSaleStoreList, bfSaleExpire, _internals: { receivingOf, alertStores, choosePhoto, putOnSale, extend, closeSales, finishClosing, syncMirror, mirrorsRight, remove, restore, salesFor, stockOf, locations } };
