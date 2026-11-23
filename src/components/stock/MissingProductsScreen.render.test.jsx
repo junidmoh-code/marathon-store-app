@@ -117,7 +117,7 @@ beforeEach(() => {
   updateMock.mockClear(); pushN = 0; seatCalls.length = 0; txnCalls.length = 0; txnData = {};
   for (const k of Object.keys(gets)) delete gets[k];
   __resetNetworkForTests();
-  for (const p of ["settings/missingProductsHidden", "settings/stockHold/held", "stock_targets", "refill_engine/seats/concrete", "refill_engine/seats/marathon-pine"]) emit(p, null);
+  for (const p of ["settings/missingProductsHidden", "settings/concreteOnlyIndex", "settings/marathonOnlyIndex", "settings/stockHold/held", "stock_targets", "refill_engine/seats/concrete", "refill_engine/seats/marathon-pine"]) emit(p, null);
   emit("network", S1_LIVE);
   emit("config/refillEngine", CONFIG);
   emit("refill_requests", null);
@@ -143,7 +143,7 @@ describe("the screen Junid asked for", () => {
     expect(host(tree, "data-view").length).toBe(0);
     const all = textOf(tree);
     for (const gone of [/To do/, /Queued & solved/, /newest uploads first/, /missing from/i, /Move by hand/, /Mark & hide/, /Carry at/, /Starts keeping/, /Never sent/, /One moment/, /Concrete-only/]) expect(all).not.toMatch(gone);
-    for (const b of buttons(tree)) expect(["← Back", "Marathon", "Concrete", "Sneakers", "Clothing", "✓Hub 1", "✓Hub 2", "Hide", "Solve", ""].some((ok) => b.trim() === ok || /^(Marathon|Concrete)\d+$/.test(b))).toBe(true);
+    for (const b of buttons(tree)) expect(["← Back", "Marathon", "Concrete", "Sneakers", "Clothing", "✓Hub 1", "✓Hub 2", "Solve", ""].some((ok) => b.trim() === ok || /^(Marathon|Concrete)\d+$/.test(b))).toBe(true);
   });
 
   it("the header count is the number of cards on that division's two lists", async () => {
@@ -158,12 +158,13 @@ describe("the screen Junid asked for", () => {
     expect(n).toEqual({ [MARATHON]: 8, [CONCRETE]: 8 });
   });
 
-  it("every card is the same fixed box: photo, name, one stock line, its destinations and Hide", async () => {
+  it("every card is the same fixed box: photo, name, one stock line, its destinations and the division button", async () => {
     const tree = await mount();
     const heights = host(tree, "data-card").map((n) => n.props.style.height);
     expect(new Set(heights).size).toBe(1);
     expect(stockLine(tree, SHOE_B)).toBe("Central 18");
-    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "hide").length).toBe(1);
+    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "hide").length).toBe(0);
+    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "division").map((b) => b.props["data-division-mark"])).toEqual(["concrete"]);
     for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(solveBtn(tree, pid)).toBeDefined();
   });
 });
@@ -528,23 +529,7 @@ describe("Undo", () => {
   });
 });
 
-describe("Hide, and the hidden tab behind the invisible spot", () => {
-  it("Hide is one tap: one entry in the hidden node and nothing else; the card leaves; Undo takes the entry away again", async () => {
-    const tree = await mount();
-    await kind(tree, "clothing");
-    await act(async () => { await card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "hide")[0].props.onClick(); });
-    await act(async () => {});
-    expect(updateMock).toHaveBeenCalledTimes(1);
-    expect(lastUpdate()).toEqual({ [`settings/missingProductsHidden/${TEE}`]: { at: NOW, by: "u1" } });
-    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
-    expect(count(tree, MARATHON)).toBe("7");
-    expect(toast(tree).text).toMatch(/Hidden/);
-    await act(async () => { await toast(tree).undo.props.onClick(); });
-    await act(async () => {});
-    expect(lastUpdate()).toEqual({ [`settings/missingProductsHidden/${TEE}`]: null });
-    expect(cardsOf(tree)).toContain("Essentials Tee Olive");
-  });
-
+describe("the hidden tab behind the invisible spot (Hide left the cards, 23 Nov 2026)", () => {
   it("the hidden node is honoured on every device, and the tab behind the press-and-hold spot lists it with Unhide", async () => {
     emit("settings/missingProductsHidden", { [TEE]: { at: NOW, by: "u1" } });
     const tree = await mount();
@@ -578,10 +563,10 @@ describe("who may do what", () => {
   it("without a stock role nothing can be tapped", async () => {
     perm.isSuperAdmin = false; perm.permRecord = { displayName: "Viewer" };
     const tree = await mount();
-    // no stock role: nothing to choose, no Solve, no Hide — and nothing rendered disabled
+    // no stock role: nothing to choose, no Solve, no division button — and nothing rendered disabled
     expect(live(tree, SHOE_B)).toEqual([]);
     expect(solveBtn(tree, SHOE_B)).toBeUndefined();
-    expect(card(tree, SHOE_B).findAll((n) => n.type === "button" && n.props["data-action"] === "hide").length).toBe(0);
+    expect(card(tree, SHOE_B).findAll((n) => n.type === "button" && (n.props["data-action"] === "hide" || n.props["data-action"] === "division")).length).toBe(0);
   });
 });
 
@@ -809,6 +794,217 @@ describe("one product, one shop — Pine or Concrete, never both", () => {
     expect(updateMock).not.toHaveBeenCalled();
     expect(toast(tree).kind).toBe("fail");
     expect(toast(tree).text).toMatch(/Pine already has this/);
+    expect(cardsOf(tree)).toContain("Essentials Tee Olive");
+  });
+});
+
+// ─── THE DIVISION BUTTON (Junid, 23 Nov 2026) ────────────────────────────────
+// Where Hide was: "Concrete" on a Marathon card, "Marathon" on a Concrete card.
+// One tap = this product belongs to that division only. It writes the mark and
+// nothing else: no stock, no seat, no request.
+describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
+  const markBtn = (tree, pid) => card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0];
+  const tapMark = async (tree, pid) => { await act(async () => { await markBtn(tree, pid).props.onClick(); }); await act(async () => {}); await act(async () => {}); };
+  const allWrites = () => updateMock.mock.calls.flatMap((c) => Object.keys(c[1]));
+  const FORBIDDEN = /^(stock|refill_requests|refill_engine|stock_targets|stock_movements|transfers)\//;
+  const withProducts = async (over) => {
+    const list = PRODUCTS.map((p) => (over[p.id] ? { ...p, ...over[p.id] } : p));
+    let tree; await act(async () => { tree = TestRenderer.create(<MissingProductsScreen products={list} onExit={() => {}} />); }); await act(async () => {}); await act(async () => {});
+    return tree;
+  };
+  const listOf = async (tree, sec, k) => { await division(tree, sec); await kind(tree, k); return cardsOf(tree); };
+
+  it("Marathon card: Concrete marks it Concrete-only — leaves Marathon's list and count; writes the mark only", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    expect(flat(markBtn(tree, TEE).children)).toBe("Concrete");
+    expect(count(tree, MARATHON)).toBe("8");
+    await tapMark(tree, TEE);
+    const writes = allWrites();
+    expect(writes).toEqual(expect.arrayContaining([`products/${TEE}/concreteProduct`, `settings/concreteOnlyIndex/${TEE}`]));
+    expect(writes.filter((k) => FORBIDDEN.test(k))).toEqual([]);
+    expect(txnCalls.filter((t) => FORBIDDEN.test(t.path))).toEqual([]);
+    expect(seatCalls).toEqual([]);
+    expect(lastUpdate()[`products/${TEE}/concreteProduct`]).toBe(true);
+    expect(lastUpdate()[`settings/concreteOnlyIndex/${TEE}`]).toBe(true);
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+    expect(count(tree, MARATHON)).toBe("7");
+    expect(toast(tree).text).toMatch(/Concrete only/);
+    // the database echoes the mark: it stays off Marathon for good
+    await act(async () => { emit("settings/concreteOnlyIndex", { [TEE]: true }); });
+    await act(async () => {});
+    expect(await listOf(tree, MARATHON, "clothing")).not.toContain("Essentials Tee Olive");
+    expect(count(tree, MARATHON)).toBe("7");
+    // genuinely missing at Concrete → on Concrete's list, Concrete-division shops only
+    expect(await listOf(tree, CONCRETE, "clothing")).toContain("Essentials Tee Olive");
+    expect(offered(tree, TEE)).toEqual(["marathon-pine", "concrete"]);
+  });
+
+  it("marking does not force a product onto Concrete's list: not missing there → not listed there", async () => {
+    // Concrete and Pine already keep every size of the tee: nothing to send there.
+    const st = baseStock();
+    st.concrete[TEE] = { S: cell(4), M: cell(4), L: cell(4) };
+    st["marathon-pine"] = { [TEE]: { S: cell(4), M: cell(4), L: cell(4) } };
+    emit("stock", st);
+    const tree = await mount();
+    const concreteBefore = await listOf(tree, CONCRETE, "clothing");
+    expect(concreteBefore).not.toContain("Essentials Tee Olive");
+    await act(async () => { emit("settings/concreteOnlyIndex", { [TEE]: true }); });
+    await act(async () => {});
+    expect(await listOf(tree, CONCRETE, "clothing")).toEqual(concreteBefore);
+    expect(await listOf(tree, MARATHON, "clothing")).not.toContain("Essentials Tee Olive");
+  });
+
+  it("Undo of a Concrete mark puts the card back and clears exactly the mark", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    const before = cardsOf(tree);
+    await tapMark(tree, TEE);
+    updateMock.mockClear();
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {}); await act(async () => {});
+    const upd = updateMock.mock.calls.map((c) => c[1]).find((u) => `products/${TEE}/concreteProduct` in u);
+    expect(upd[`products/${TEE}/concreteProduct`]).toBe(false);
+    expect(upd[`settings/concreteOnlyIndex/${TEE}`]).toBe(null);
+    expect(allWrites().filter((k) => FORBIDDEN.test(k))).toEqual([]);
+    expect(cardsOf(tree)).toEqual(before);
+    expect(count(tree, MARATHON)).toBe("8");
+  });
+
+  it("Concrete card: Marathon marks it Marathon-only — the mirror", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE); await kind(tree, "clothing");
+    const n = Number(count(tree, CONCRETE));
+    expect(flat(markBtn(tree, TEE).children)).toBe("Marathon");
+    await tapMark(tree, TEE);
+    expect(lastUpdate()).toEqual({
+      [`products/${TEE}/marathonProduct`]: true, [`products/${TEE}/marathonProductSetBy`]: "u1", [`products/${TEE}/marathonProductSetAt`]: NOW,
+      [`settings/marathonOnlyIndex/${TEE}`]: true,
+    });
+    expect(allWrites().filter((k) => FORBIDDEN.test(k))).toEqual([]);
+    expect(seatCalls).toEqual([]);
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+    expect(count(tree, CONCRETE)).toBe(String(n - 1));
+    await act(async () => { emit("settings/marathonOnlyIndex", { [TEE]: true }); });
+    await act(async () => {});
+    expect(await listOf(tree, CONCRETE, "clothing")).not.toContain("Essentials Tee Olive");
+    expect(await listOf(tree, MARATHON, "clothing")).toContain("Essentials Tee Olive");   // still genuinely missing at Marathon
+  });
+
+  it("Undo of a Marathon mark writes the mark away and the card comes back", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE); await kind(tree, "clothing");
+    const before = cardsOf(tree);
+    await tapMark(tree, TEE);
+    updateMock.mockClear();
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {}); await act(async () => {});
+    expect(lastUpdate()).toEqual({
+      [`products/${TEE}/marathonProduct`]: false, [`products/${TEE}/marathonProductSetBy`]: "u1", [`products/${TEE}/marathonProductSetAt`]: NOW,
+      [`settings/marathonOnlyIndex/${TEE}`]: null,
+    });
+    expect(cardsOf(tree)).toEqual(before);
+  });
+
+  it("marking Marathon on a Concrete-only product clears its Concrete mark in the same write (never both)", async () => {
+    emit("settings/concreteOnlyIndex", { [TEE]: true });
+    const tree = await withProducts({ [TEE]: { concreteProduct: true } });
+    await division(tree, CONCRETE); await kind(tree, "clothing");
+    await tapMark(tree, TEE);
+    const ups = updateMock.mock.calls.map((c) => c[1]);
+    expect(ups.length).toBe(1);                                // one multi-path update: all or nothing
+    expect(ups[0][`products/${TEE}/marathonProduct`]).toBe(true);
+    expect(ups[0][`settings/marathonOnlyIndex/${TEE}`]).toBe(true);
+    expect(ups[0][`products/${TEE}/concreteProduct`]).toBe(false);
+    expect(ups[0][`settings/concreteOnlyIndex/${TEE}`]).toBe(null);
+    expect(ups.flatMap(Object.keys).filter((k) => FORBIDDEN.test(k))).toEqual([]);
+  });
+
+  it("pre-rebuild Concrete markings are honoured (record + index, as all 98 live ones are), a sneaker too", async () => {
+    emit("settings/concreteOnlyIndex", { [TEE]: true, [SHOE_B]: true });
+    const tree = await withProducts({ [TEE]: { concreteProduct: true }, [SHOE_B]: { concreteProduct: true } });
+    expect(await listOf(tree, MARATHON, "sneakers")).not.toContain("Gazelle Bold");
+    expect(await listOf(tree, MARATHON, "clothing")).not.toContain("Essentials Tee Olive");
+    expect(count(tree, MARATHON)).toBe("6");
+    expect(await listOf(tree, CONCRETE, "clothing")).toContain("Essentials Tee Olive");
+    expect(await listOf(tree, CONCRETE, "sneakers")).toContain("Gazelle Bold");
+    // a mark made on another device (the index) applies here at once
+    await act(async () => { emit("settings/concreteOnlyIndex", { [TEE]: true, [SHOE_B]: true, [JACKET]: true }); });
+    await act(async () => {});
+    expect(await listOf(tree, MARATHON, "clothing")).not.toContain("Varsity Jacket");
+  });
+
+  it("an unmark on another device applies here at once, whatever the mirrored record still says", async () => {
+    emit("settings/concreteOnlyIndex", { [TEE]: true });
+    const tree = await withProducts({ [TEE]: { concreteProduct: true } });
+    expect(await listOf(tree, MARATHON, "clothing")).not.toContain("Essentials Tee Olive");
+    await act(async () => { emit("settings/concreteOnlyIndex", null); });
+    // (a list re-works its rows after a quiet moment — useSlicedRows QUIET_MS)
+    await act(async () => { await new Promise((r) => setTimeout(r, 1700)); });
+    await act(async () => {});
+    expect(await listOf(tree, MARATHON, "clothing")).toContain("Essentials Tee Olive");
+  });
+
+  it("Solve asks the server which division the product belongs to: marked Marathon a moment ago elsewhere → nothing sent into Concrete", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE);
+    gets[`settings/marathonOnlyIndex/${SHOE_B}`] = true;      // another device, a second ago
+    await tapDest(tree, SHOE_B, "hub3");
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(toast(tree).text).toMatch(/belongs to the other division/);
+    expect(cardsOf(tree)).toContain("Gazelle Bold");
+  });
+
+  it("a product marked for one division is never offered the other's destinations, and Solve refuses it", async () => {
+    emit("settings/marathonOnlyIndex", { [SHOE_B]: true });
+    const tree = await mount();
+    expect(await listOf(tree, CONCRETE, "sneakers")).not.toContain("Gazelle Bold");
+    expect(await listOf(tree, MARATHON, "sneakers")).toContain("Gazelle Bold");
+    expect(offered(tree, SHOE_B)).toEqual(["hub1", "hub2"]);
+  });
+
+  it("previously hidden products stay hidden; no card carries Hide any more", async () => {
+    emit("settings/missingProductsHidden", { [TEE]: { at: NOW, by: "u1" } });
+    const tree = await mount();
+    for (const sec of [MARATHON, CONCRETE]) for (const k of ["sneakers", "clothing"]) {
+      expect(await listOf(tree, sec, k)).not.toContain("Essentials Tee Olive");
+      expect(tree.root.findAll((n) => n.type === "button" && n.props["data-action"] === "hide")).toEqual([]);
+    }
+  });
+
+  it("the card height is unchanged: the button sits in the stock line and is smaller than it", async () => {
+    const tree = await mount();
+    const { CARD_H } = await import("./MissingRow.jsx");
+    for (const n of host(tree, "data-card")) expect(n.props.style.height).toBe(CARD_H);
+    expect(CARD_H).toBe(168);
+    const b = markBtn(tree, SHOE_B);
+    expect(b.props.style.height).toBe(44);
+    expect(b.props.style.margin).toBe("-4px 0");          // 44 − 8 = the 36 px stock line
+    expect(b.findAll((n) => n.type === "span")[0].props.style.height).toBe(26);
+  });
+
+  it("the button is only for Junid, Jafer or a stock admin", async () => {
+    perm.isSuperAdmin = false; perm.permRecord = { stockRole: "warehouse", section: 2 };
+    const tree = await mount();
+    expect(tree.root.findAll((n) => n.type === "button" && n.props["data-action"] === "division")).toEqual([]);
+  });
+});
+
+describe("division Undo that fails (CodeRabbit, PR #967)", () => {
+  it("a failed Undo changes nothing and keeps its Undo to retry", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    await act(async () => { await card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0].props.onClick(); });
+    await act(async () => {}); await act(async () => {});
+    updateMock.mockImplementationOnce(() => Promise.reject(new Error("offline")));
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {}); await act(async () => {});
+    expect(toast(tree).kind).toBe("fail");
+    expect(toast(tree).text).toMatch(/Not undone — offline/);
+    expect(toast(tree).undo).toBeDefined();
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+    await act(async () => { await toast(tree).undo.props.onClick(); });
+    await act(async () => {}); await act(async () => {});
     expect(cardsOf(tree)).toContain("Essentials Tee Olive");
   });
 });

@@ -8,6 +8,13 @@
 // THE CARD (MissingRow.jsx) is a fixed box: photo, name, one stock line, and
 // the destinations as buttons. Tapping a destination IS the solve.
 //
+// THE DIVISION BUTTON (Junid, 23 Nov 2026) sits where Hide was: "Concrete" on
+// a Marathon card, "Marathon" on a Concrete card. One tap says the product
+// belongs to that division only (divisionMark.js — the pre-rebuild Concrete
+// button's own data, plus its mirror). The card leaves this list for good and
+// is never counted here; on the other list it shows only when it is genuinely
+// missing there. Hide left the cards; the hidden tab still works.
+//
 // WHAT IS ON THE LIST is decided before a card is drawn (missingListCore.js):
 // only a product a tap would send something for. The count on a division is
 // the number of cards on its two lists, nothing else.
@@ -36,7 +43,7 @@ import { useStockCells, useStockTargetsState, useHiddenMissingProducts, usePathS
 import { useMySections } from "../../utils/useMySections";
 import { sectionName } from "../../utils/networkRegistry";
 import { hubIds, storeIds, centralId, nameOf } from "./sectionRouting";
-import { computeMissingProducts } from "./missingProductsCore";
+import { computeMissingProducts, concreteSection } from "./missingProductsCore";
 import { computeMissingFootwear } from "./missingFootwearCore";
 import { partitionQueued } from "./missingScreenCore";
 import { openingOrder, openRequestsByProduct, openLocationsByProduct, isSeat, productRow, sneakerRow, createFrozenOrder, freezeOrder, tapProblem, shopOwners, pickNext } from "./missingListCore";
@@ -45,7 +52,9 @@ import { useProductSolve } from "./NetworkTransfer";
 import { useSneakerRequest } from "./MissingFootwear";
 import { shopDestinations, shopsAreExclusive, destinationProblem } from "./divisionDestinations";
 import { otherMarathonHub, marathonHubSeated, marathonSolveRefusal, SEATS_PATH, DIVISION_SHOPS } from "./concreteDivision";
-import { hideProduct, unhideProduct, undoSneakerRequest, shopOwnersNow } from "./missingActions";
+import { undoSneakerRequest, shopOwnersNow } from "./missingActions";
+import { withDivisionMarks, listedForDivision, markDivision, undoDivision, liveMarksOf, CONCRETE_INDEX_PATH, MARATHON_INDEX_PATH } from "./divisionMark";
+import { usePermissions } from "../PermissionsContext";
 import HiddenProducts, { HoldSpot } from "./HiddenProducts";
 import { PhotoLightbox } from "./healthWidgets";
 import MissingRow, { Slot, SkeletonRow, CARD_H, CARD_GAP, LEAVE_MS } from "./MissingRow";
@@ -68,8 +77,20 @@ const SHORT = { "marathon-pine": "Pine" };
 
 const bucketId = (section, kind) => `${section}:${kind}`;
 
-export default function MissingProductsScreen({ products = [], onExit }) {
+// Which division's list this is: "concrete" for the Concrete division's
+// section, "marathon" for every other (divisionMark.js).
+const listKindOf = (network, sec) => (sec === concreteSection(network) ? "concrete" : "marathon");
+
+export default function MissingProductsScreen({ products: rawProducts = [], onExit }) {
   const { registry: network, sections: mySections } = useMySections();
+  // WHICH DIVISION A PRODUCT BELONGS TO (Junid, 23 Nov 2026): the two small
+  // index nodes, live on every device, laid over the product records so a
+  // mark made anywhere applies here at once (divisionMark.js).
+  const concreteIdx = usePathState(CONCRETE_INDEX_PATH);
+  const marathonIdx = usePathState(MARATHON_INDEX_PATH);
+  const marksSettled = concreteIdx.settled && marathonIdx.settled;
+  const marksError = !!(concreteIdx.error || marathonIdx.error);
+  const products = useMemo(() => withDivisionMarks(rawProducts, concreteIdx.value, marathonIdx.value, marksSettled && !marksError), [rawProducts, concreteIdx.value, marathonIdx.value, marksSettled, marksError]);
   const allStock = useStockCells();
   const targetsState = useStockTargetsState();
   const hiddenMap = useHiddenMissingProducts();
@@ -103,6 +124,7 @@ export default function MissingProductsScreen({ products = [], onExit }) {
   const stockReady = (stockState.settled && !stockState.error) || (!!allStock && Object.keys(allStock).length > 0);
 
   // ── WHAT IS MISSING, per division — the two cores, memoised on what they read.
+  const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const walked = useMemo(() => {
     const out = {};
     for (const sec of divisions) {
@@ -113,10 +135,14 @@ export default function MissingProductsScreen({ products = [], onExit }) {
         ? computeMissingProducts({ allStock, products })
         : computeMissingProducts({ allStock, products, network, section: sec, centralFed: cfg });
       const sneakers = !stockReady ? [] : computeMissingFootwear({ allStock, products, hubs, heldLines, central: CENTRAL });
-      out[sec] = { all, sneakers, hubs };
+      // A product marked for the other division is never on this one's list,
+      // in either kind, and never counted in its number.
+      const kindOf = listKindOf(network, sec);
+      const mine = (c) => listedForDivision(byId.get(c.pid), kindOf);
+      out[sec] = { all: all.filter(mine), sneakers: sneakers.filter(mine), hubs };
     }
     return out;
-  }, [divisions, stockReady, allStock, products, network, cfg, heldLines, CENTRAL]);
+  }, [divisions, stockReady, allStock, products, byId, network, cfg, heldLines, CENTRAL]);
 
   // QUEUED AT CENTRAL → OFF THAT DIVISION'S LIST. One source of truth: a real
   // open request at one of the division's hubs (missingScreenCore.js). There
@@ -153,7 +179,7 @@ export default function MissingProductsScreen({ products = [], onExit }) {
           another division's Solve state, and never remounts the list. */}
       {divisions.map((sec) => <Engine key={sec} section={sec} shared={shared} box={apisBox} report={report} />)}
       <Body apis={apisBox.current} flags={flags} divisions={divisions} network={network} products={products} allStock={allStock} targets={targetsState}
-        hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled && seatsSettled} requestsError={!!reqState.error || seatsError} seats={seats} cfg={cfg} cfgSettled={cfgState.settled}
+        hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled && seatsSettled && marksSettled} requestsError={!!reqState.error || seatsError || marksError} seats={seats} cfg={cfg} cfgSettled={cfgState.settled}
         heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} />
     </>
   );
@@ -188,6 +214,10 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const [lightbox, setLightbox] = useState(null);
   const active = bucketId(section, kind);
   const canAct = divisions.length ? !!flags[divisions[0]]?.canAct : false;
+  // Marking a division is Junid's / Jafer's / a stockRole admin's — the same
+  // identities the pre-rebuild Concrete button had (the mark is the brand check).
+  const { permRecord, isSuperAdmin } = usePermissions();
+  const canMark = !!isSuperAdmin || permRecord?.stockRole === "admin";
 
   const label = useCallback((loc) => SHORT[loc] || nameOf(loc, network), [network]);
   const reqByPid = useMemo(() => openRequestsByProduct(requests), [requests]);
@@ -373,6 +403,11 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     const sel = chosen(row);
     if (!sel.length) return;                                   // nothing chosen: nothing happens
     const c = ctx.current;
+    // A product marked for the other division is never sent into this one.
+    if (!listedForDivision(c.byId.get(row.pid), listKindOf(c.network, row.section))) {
+      say({ ok: false, text: "This product belongs to the other division — nothing sent." });
+      return;
+    }
     // THE GATE AT SOLVE, whatever the card showed: this list's own locations,
     // never both of a one-or-the-other pair, never a location with nothing to
     // send. The hooks ask destinationProblem again of what they write.
@@ -385,6 +420,17 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     // device solved it to the other shop a minute ago — must not write a
     // second shop. Read now, per product: stock and seat at the other shop,
     // and its queued requests.
+    // WHICH DIVISION IT BELONGS TO, asked of the server now: a mark made on
+    // another device a moment ago is never sent into the other division.
+    if (!problem) {
+      try {
+        const live = await liveMarksOf(row.pid);
+        const mark = live.concrete ? "concrete" : live.marathon ? "marathon" : null;
+        if (mark && mark !== listKindOf(c.network, row.section)) problem = "This product belongs to the other division — nothing sent.";
+      } catch (e) {
+        problem = `Couldn't check which division this belongs to — nothing sent, retry. (${e?.message || "error"})`;
+      }
+    }
     if (!problem && row.kind === "clothing" && shopsAreExclusive(c.network, row.section)) {
       const shops = shopDestinations(c.network, row.section);
       try {
@@ -441,20 +487,37 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       },
     });
   };
-  act.current.hide = async (row) => {
-    if (inFlight.current.has(row.pid) || !canAct) return;
+  // THE DIVISION BUTTON (Junid, 23 Nov 2026), where Hide was: one tap marks
+  // the product for the OTHER division; the card leaves this list for good.
+  // It writes the mark only (divisionMark.js) — no stock, seat or request.
+  act.current.division = async (row) => {
+    if (inFlight.current.has(row.pid) || !canMark || gone[row.key]) return;
+    const c = ctx.current;
+    const product = c.byId.get(row.pid);
+    if (!product) return;
+    const to = listKindOf(c.network, row.section) === "concrete" ? "marathon" : "concrete";
+    const name = to === "concrete" ? "Concrete" : "Marathon";
     inFlight.current.add(row.pid);
-    setBusy((b) => ({ ...b, [row.key]: "hide" }));
-    const res = await hideProduct(row.pid);
+    setBusy((b) => ({ ...b, [row.key]: "division" }));
+    let res;
+    try { res = await markDivision(product, to); } catch (e) { res = { ok: false, msg: `Nothing changed — retry. (${e?.message || "error"})` }; }
     inFlight.current.delete(row.pid);
     setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
     if (!res.ok) { say({ ok: false, text: res.msg }); return; }
     setGone((g) => ({ ...g, [row.key]: true }));
-    say({ ok: true, text: "Hidden", undo: async () => { const r = await unhideProduct(row.pid); if (r.ok) { back(row.key); say({ ok: true, text: "Back on the list" }); } else say({ ok: false, text: r.msg }); } });
+    setPicks((m) => { const n = { ...m }; delete n[row.key]; return n; });
+    say({
+      ok: true, text: res.msg || `${name} only`,
+      // A failed Undo changed nothing (one write), so it keeps its Undo to retry.
+      undo: async function undoMark() {
+        const r = await undoDivision(row.pid, to, res.prior);
+        if (r.ok) { back(row.key); say({ ok: !r.msg, text: r.msg || "Back on the list" }); } else say({ ok: false, text: r.msg, undo: undoMark });
+      },
+    });
   };
   const onPick = useCallback((row, dest) => act.current.pick(row, dest), []);
   const onSolve = useCallback((row) => act.current.solve(row), []);
-  const onHide = useCallback((row) => act.current.hide(row), []);
+  const onDivision = useCallback((row) => act.current.division(row), []);
   const onPhoto = useCallback((p) => { const url = primaryPhotoUrl(p) || p?.photoUrl; if (url) setLightbox(url); }, []);
 
   // The hidden tab lists every hidden product against the cards still missing.
@@ -530,7 +593,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
                     {i === firstNormal && i > 0 && anyNeeds && <div aria-hidden="true" style={{ height: 14 }} />}
                     <Slot leaving={d.leaving} entering={d.entering} data-slot={d.key}>
                       <MissingRow row={d.row} product={byId.get(d.row.pid)} twinProduct={d.row.twin ? byId.get(d.row.twin) : null}
-                        selected={d.leaving ? NO_PICK : chosen(d.row)} busy={!!busy[d.key]} canAct={canAct} onPick={onPick} onSolve={onSolve} onHide={onHide} onPhoto={onPhoto} />
+                        selected={d.leaving ? NO_PICK : chosen(d.row)} busy={!!busy[d.key]} canAct={canAct} onPick={onPick} onSolve={onSolve} onPhoto={onPhoto}
+                        divisionLabel={canMark ? (listKindOf(network, d.row.section) === "concrete" ? "Marathon" : "Concrete") : null} onDivision={onDivision} />
                     </Slot>
                   </React.Fragment>
                 ))}

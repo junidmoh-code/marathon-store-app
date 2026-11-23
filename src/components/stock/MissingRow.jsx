@@ -42,11 +42,20 @@ const solveBtn = (ready, busy) => ({
   color: ready || busy ? "#052e14" : "rgba(255,255,255,.28)",
   opacity: busy ? 0.75 : 1,
 });
-// Hide: small and secondary — a quiet word beside the stock line.
-const hideLink = {
-  flexShrink: 0, height: 44, margin: "-4px 0", padding: "0 4px 0 12px", background: "none", border: "none", fontFamily: FONT,
-  fontSize: 13.5, fontWeight: 600, color: "rgba(255,255,255,.42)", cursor: "pointer", WebkitTapHighlightColor: "transparent",
+// THE DIVISION BUTTON (Junid, 23 Nov 2026): where Hide was, beside the stock
+// line. Small and secondary, and shaped unlike anything else on the card — a
+// short dashed violet tag, not a filled or outlined 48 px chip — so it can't
+// be read as a destination or as Solve. The tap target is 44 px tall; the tag
+// drawn inside it is 26 px, so the stock line (and the card) never grows.
+const divisionHit = {
+  flexShrink: 0, height: 44, margin: "-4px 0", padding: "0 0 0 10px", background: "none", border: "none", fontFamily: FONT,
+  display: "flex", alignItems: "center", cursor: "pointer", WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
 };
+const divisionTag = (busy) => ({
+  height: 26, lineHeight: "24px", boxSizing: "border-box", padding: "0 9px", borderRadius: 7,
+  border: "1px dashed rgba(196,160,255,.55)", color: "rgba(214,190,255,.9)", background: "transparent",
+  fontSize: 12, fontWeight: 700, letterSpacing: ".02em", whiteSpace: "nowrap", opacity: busy ? 0.5 : 1,
+});
 
 // The slot a card sits in. `leaving` closes it once; `entering` (a card put
 // back by Undo) opens it the same way.
@@ -93,10 +102,12 @@ export function SkeletonRow() {
  * row       missingListCore's row (its `dests` are only the offered locations)
  * selected  the location ids chosen on THIS card, in tap order
  * busy      true while this card's Solve is being written
- * canAct    the viewer may choose, solve and hide
- * onPick (row, destId)   onSolve (row)   onHide (row)   onPhoto (product)
+ * canAct    the viewer may choose and solve
+ * divisionLabel  "Concrete" (on a Marathon card) / "Marathon" (on a Concrete
+ *           card), or null when this viewer may not mark a division
+ * onPick (row, destId)   onSolve (row)   onDivision (row)   onPhoto (product)
  */
-function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = false, canAct = true, onPick, onSolve, onHide, onPhoto }) {
+function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = false, canAct = true, onPick, onSolve, divisionLabel = null, onDivision, onPhoto }) {
   const live = product || { id: row.pid, photoUrl: row.photo };
   const ready = canAct && !busy && selected.length > 0;
   return (
@@ -119,8 +130,12 @@ function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = fals
                 <PrimaryPhoto product={twinProduct || { id: row.twin }} productId={row.twin} alt="" width={32} height={32} style={{ width: 32, height: 32, objectFit: "cover", display: "block" }} />
               </button>
             )}
-            {canAct && (
-              <button type="button" data-action="hide" onClick={() => { if (!busy) onHide?.(row); }} style={hideLink}>Hide</button>
+            {divisionLabel && (
+              <button type="button" data-action="division" data-division-mark={divisionLabel.toLowerCase()}
+                aria-label={`Belongs to ${divisionLabel} only`} title={`This product belongs to ${divisionLabel} only`}
+                onClick={() => { if (!busy) onDivision?.(row); }} style={divisionHit}>
+                <span style={divisionTag(busy === "division")}>{divisionLabel}</span>
+              </button>
             )}
           </div>
         </div>
