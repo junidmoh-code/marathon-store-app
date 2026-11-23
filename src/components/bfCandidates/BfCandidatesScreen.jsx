@@ -350,7 +350,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, paddingBottom: selecting ? 150 : 60 }}>
-      <div style={{ position: "sticky", top: 0, zIndex: 20, background: "rgba(0,0,0,.92)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", padding: "calc(10px + env(safe-area-inset-top)) 14px 10px", borderBottom: "1px solid rgba(255,255,255,.08)" }}>
+      <div style={{ position: "sticky", top: "env(safe-area-inset-top, 0px)", zIndex: 20, background: "rgba(0,0,0,.92)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", padding: "10px 14px", borderBottom: "1px solid rgba(255,255,255,.08)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <button type="button" style={{ ...bGray, padding: "8px 12px" }} onClick={onExit}>Back</button>
           <div style={{ flex: 1, minWidth: 0 }}>

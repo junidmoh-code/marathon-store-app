@@ -1,0 +1,50 @@
+/* ─── THE APP SHELL AND THE iPHONE SAFE AREAS (Junid, 23 Nov 2026) ───────────
+   index.html asks for viewport-fit=cover and the black-translucent status bar,
+   so the INSTALLED app (home-screen icon) is drawn edge to edge: the page
+   starts at the very top of the glass, under the clock and battery, and ends
+   under the home indicator. Nothing used to pad for that, so every screen's
+   top controls sat behind the status bar — blurred and untappable.
+
+   The fix lives here, once, for every screen:
+     • the body is padded by the four safe-area insets, so normal page content
+       starts below the status bar and ends above the home indicator;
+     • a solid strip is laid over the status bar, so content scrolling up
+       passes UNDER it instead of showing through behind the clock;
+     • a screen that asked for "at least / exactly the whole viewport tall"
+       gets the viewport minus the insets, so padding the body never makes a
+       short screen scroll or pushes a full-height layout's bottom off screen.
+   Sticky headers stick at top: env(safe-area-inset-top), fixed bars add
+   env(safe-area-inset-bottom) — in their own files.
+
+   In a browser tab, on Android and on a desktop every inset is 0, so none of
+   this changes anything there. */
+
+html { background: #000; }
+
+body {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-top, 0px);
+  background: #000;
+  z-index: 2147483000;
+  pointer-events: none;
+}
+
+/* React writes minHeight:"100vh" / height:"100vh" as these exact strings. */
+[style*="min-height: 100vh"] {
+  min-height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
+}
+[style^="height: 100vh"],
+[style*="; height: 100vh"] {
+  height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
+}

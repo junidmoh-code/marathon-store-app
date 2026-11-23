@@ -54,7 +54,7 @@ export function Toast({ msg }) {
   const ok = msg.kind === "ok";
   return (
     <div style={{
-      position: "fixed", left: 16, right: 16, bottom: 20, zIndex: 50, textAlign: "center",
+      position: "fixed", left: 16, right: 16, bottom: "calc(20px + env(safe-area-inset-bottom, 0px))", zIndex: 50, textAlign: "center",
       background: ok ? "rgba(0,150,70,.95)" : "rgba(150,20,20,.95)", color: "#fff",
       borderRadius: RADIUS, padding: "10px 14px", fontSize: 13, fontFamily: FONT,
     }}>{msg.text}</div>

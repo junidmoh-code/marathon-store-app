@@ -147,7 +147,7 @@ export default function ConcreteProductsCard({ products = [], ProductPhoto = nul
 
   return (
     <div style={{ minHeight: "100vh", background: "#0B0B0B", color: "#fff", paddingBottom: 90 }}>
-      <div style={{ position: "sticky", top: 0, zIndex: 5, background: "#0B0B0B", padding: "14px 14px 8px", borderBottom: "1px solid rgba(255,255,255,.08)" }}>
+      <div style={{ position: "sticky", top: "env(safe-area-inset-top, 0px)", zIndex: 5, background: "#0B0B0B", padding: "14px 14px 8px", borderBottom: "1px solid rgba(255,255,255,.08)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {onExit && <button onClick={onExit} style={{ ...chip(false), padding: "6px 10px" }}>← Home</button>}
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -203,7 +203,7 @@ export default function ConcreteProductsCard({ products = [], ProductPhoto = nul
       </div>
 
       {toast && (
-        <div role="status" style={{ position: "fixed", left: 12, right: 12, bottom: 16, zIndex: 20, display: "flex", alignItems: "center", gap: 10, background: "#1C1C1C", border: "1px solid rgba(255,255,255,.18)", borderRadius: 12, padding: "10px 12px", boxShadow: "0 8px 30px rgba(0,0,0,.5)" }}>
+        <div role="status" style={{ position: "fixed", left: 12, right: 12, bottom: "calc(16px + env(safe-area-inset-bottom, 0px))", zIndex: 20, display: "flex", alignItems: "center", gap: 10, background: "#1C1C1C", border: "1px solid rgba(255,255,255,.18)", borderRadius: 12, padding: "10px 12px", boxShadow: "0 8px 30px rgba(0,0,0,.5)" }}>
           <span style={{ flex: 1, fontSize: 12.5, lineHeight: 1.35 }}>
             <b>{toast.name}</b> {toast.on ? "is now Concrete-only." : "is back on Marathon."}
           </span>

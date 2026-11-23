@@ -181,7 +181,7 @@ export default function AssistantLabelFinder({ products, onFound, onClose }) {
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 900, background: "#05070C", overflowY: "auto",
-                  fontFamily: FONT, color: "#fff" }}>
+                  fontFamily: FONT, color: "#fff", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "14px 16px 60px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0 10px" }}>
           <div style={{ fontSize: 15, fontWeight: 800, color: "#9DBCFF" }}>Find by the tongue label</div>

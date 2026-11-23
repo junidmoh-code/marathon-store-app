@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import "./appShell.css";
 import App from "./App.jsx";
 import { startUpdateChecker } from "./update/updateChecker.js";
 import { applyPushDeepLink } from "./push/deepLink.js";
@@ -20,7 +21,7 @@ if (typeof window !== "undefined") {
       if (!el) {
         el = document.createElement("div");
         el.id = "__fatal_error";
-        el.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:2147483647;background:#7f1d1d;color:#fff;font:12px/1.5 -apple-system,system-ui,sans-serif;padding:10px 40px 10px 12px;white-space:pre-wrap;word-break:break-word;max-height:45vh;overflow:auto;box-shadow:0 2px 10px rgba(0,0,0,.5)";
+        el.style.cssText = "position:fixed;left:0;right:0;top:env(safe-area-inset-top,0px);z-index:2147483647;background:#7f1d1d;color:#fff;font:12px/1.5 -apple-system,system-ui,sans-serif;padding:10px 40px 10px 12px;white-space:pre-wrap;word-break:break-word;max-height:45vh;overflow:auto;box-shadow:0 2px 10px rgba(0,0,0,.5)";
         const x = document.createElement("button");
         x.textContent = "✕";
         x.style.cssText = "position:absolute;right:8px;top:6px;background:transparent;border:0;color:#fff;font-size:16px;cursor:pointer";

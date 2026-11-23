@@ -358,7 +358,7 @@ function UserListView({ users, loading, onSelect, onAdd, onExit }) {
   // dedicated large-title row below the bar.
   return (
     <>
-      <div style={{ position: "sticky", top: 0, zIndex: 10, background: "rgba(0,0,0,.85)", backdropFilter: "blur(10px)",
+      <div style={{ position: "sticky", top: "env(safe-area-inset-top, 0px)", zIndex: 10, background: "rgba(0,0,0,.85)", backdropFilter: "blur(10px)",
                     borderBottom: `1px solid ${DIVIDER}`, padding: "12px 16px",
                     display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <button onClick={onExit} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4 }}>
@@ -904,7 +904,7 @@ function UserDetailView({ user, onBack }) {
 
 function TopBar({ title, onBack }) {
   return (
-    <div style={{ position: "sticky", top: 0, zIndex: 10, background: "rgba(0,0,0,.85)", backdropFilter: "blur(10px)",
+    <div style={{ position: "sticky", top: "env(safe-area-inset-top, 0px)", zIndex: 10, background: "rgba(0,0,0,.85)", backdropFilter: "blur(10px)",
                   borderBottom: `1px solid ${DIVIDER}`, padding: "12px 16px",
                   display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <button onClick={onBack} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 2 }}>
