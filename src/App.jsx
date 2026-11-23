@@ -69,6 +69,9 @@ import NewArrivalsScreen from "./components/newArrivals/NewArrivalsScreen";
 import { newArrivalsApi } from "./components/newArrivals/newArrivalsApi";
 import BlackFridayScreen from "./components/blackFriday/BlackFridayScreen";
 import { blackFridayApi } from "./components/blackFriday/blackFridayApi";
+import BfCandidatesScreen from "./components/bfCandidates/BfCandidatesScreen";
+import BfSaleStoreList from "./components/bfCandidates/BfSaleStoreList";
+import { bfCandidatesApi } from "./components/bfCandidates/bfCandidatesApi";
 import { enginePolicyVisibleForViewer } from "./config/enginePolicy";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import { createVoiceKeeper, isKioskLaunch, readVoiceArmed, shouldShowVoiceHint, voiceWanted } from "./components/tv/tvVoiceKeeper";
@@ -3100,6 +3103,13 @@ const RoleIcons = {
       <path d="M12 13v8"/>
     </svg>
   ),
+  bf_candidates: (
+    // A falling price — BF Candidates drops slow stock to one sale price.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#FBBF24" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6l6 6 4-4 8 8"/>
+      <path d="M15 16h6v-6"/>
+    </svg>
+  ),
   black_friday: (
     // A price tag — the Black Friday card groups everything by its stock price.
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -3642,6 +3652,8 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // src/config/temporaryCards.js CONCRETE_PRODUCTS_CARD.
       CONCRETE_PRODUCTS_CARD && canVerifyBrand(homeUser, homePerm) && { key:"concrete_products", icon:RoleIcons.concrete_products, name:"Concrete Products", desc:"Temporary · mark clothing Concrete-only", onClick:()=>(window.location.hash = "#concrete-products") },
       isSuperAdmin                                             && { key:"black_friday", icon:RoleIcons.black_friday, name:"Black Friday", desc:"Price groups · approve · WhatsApp", onClick:()=>(window.location.hash = "#black-friday") },
+      // BF Candidates (Junid, 23 Nov 2026): stock that isn't moving → ONE in-store sale price until Mon 30 Nov.
+      isSuperAdmin                                             && { key:"bf_candidates", icon:RoleIcons.bf_candidates, name:"BF Candidates", desc:"Slow stock · one sale price · stores + WhatsApp", onClick:()=>(window.location.hash = "#bf-candidates") },
       shopifyVisible                                           && { key:"shopify_publish", icon:RoleIcons.shopify_publish, name:"Shopify Publishing", desc:"Clean names · condition · publish", badge:shopifyBadge, onClick:()=>onSelect(ROLES.SHOPIFY_PUBLISH) },
       // Social — generated posts waiting for approval, the style reference
       // library, and the generator. Nothing goes out without approval, so
@@ -21247,6 +21259,10 @@ function AppInner() {
   // /#black-friday — the Black Friday 2026 card. Recognises the hash only; the
   // mount below gates (super admin), and the callables are what actually refuse.
   const wantBlackFriday = hash === "#black-friday" || hash === "#black-friday/";
+  // /#bf-candidates — the BF Candidates card (super admin; the bfSale* callables are what refuse).
+  // /#bf-sale-list[/<location>] — the staff re-tag list of what is on sale (any signed-in staff).
+  const wantBfCandidates = hash === "#bf-candidates" || hash === "#bf-candidates/";
+  const wantBfSaleList = hash === "#bf-sale-list" || hash.startsWith("#bf-sale-list/");
   // /#concrete-products — the TEMPORARY Concrete Products card (temporaryCards.js).
   const wantConcreteProducts = CONCRETE_PRODUCTS_CARD && (hash === "#concrete-products" || hash === "#concrete-products/");
   // /#admin/network — NETWORK. Recognises the HASH only and grants nothing;
@@ -21562,6 +21578,14 @@ function AppInner() {
   } else if (wantConcreteProducts) {
     view = canVerifyBrand(authUser, permRecord)
       ? <ConcreteProductsCardRoute products={products} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantBfCandidates) {
+    view = isSuperAdmin
+      ? <BfCandidatesScreen api={bfCandidatesApi} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantBfSaleList) {
+    view = authUser
+      ? <BfSaleStoreList api={bfCandidatesApi} store={decodeURIComponent(hash.split("/")[1] || "") || null} onExit={() => (window.location.hash = "")} />
       : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantBlackFriday) {
     view = isSuperAdmin

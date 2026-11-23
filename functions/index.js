@@ -6761,6 +6761,18 @@ exports.insightsRollupSweep = onSchedule(
   exports.bfWebQueue = require("./blackFriday/webQueue.js").bfWebQueue;
 }
 
+// ── BF CANDIDATES: stock that isn't moving, and the in-store Black Friday sale (Junid, 23 Nov 2026) ──
+// One sale price per product on its own node (bf_sales_2026); the till reads products/{pid}/bfSale.
+// Base prices are never written; nothing here touches Shopify. See functions/bfCandidates/.
+//   firebase deploy --only functions:bfSaleList,functions:bfSaleSet,functions:bfSaleStoreList,functions:bfSaleExpire
+{
+  const bfs = require("./bfCandidates/bfCandidates.js");
+  exports.bfSaleList = bfs.bfSaleList;
+  exports.bfSaleSet = bfs.bfSaleSet;
+  exports.bfSaleStoreList = bfs.bfSaleStoreList;
+  exports.bfSaleExpire = bfs.bfSaleExpire;
+}
+
 // ── ALTERNATIVES: automatic enrichment + per-product profile (2026-10-09) ────
 // See alternativesProfile.js. Deploy by name:
 //   firebase deploy --only functions:alternativesProfile,functions:alternativesProfileFromAttributes,functions:alternativesEnrichSweep

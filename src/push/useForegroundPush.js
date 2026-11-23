@@ -21,6 +21,13 @@ import { armAudioUnlock, playChime } from "./chime";
 import { routeFromPushMessage } from "./deepLink";
 
 const BANNER_MS = 8000;
+/** A Black Friday sale alert opens the store's re-tag list (a hash route, no reload). → handled? */
+export function openSaleList(link, win = typeof window === "undefined" ? null : window) {
+  const i = typeof link === "string" ? link.indexOf("#bf-sale-list") : -1;
+  if (i < 0 || !win) return false;
+  win.location.hash = link.slice(i);
+  return true;
+}
 
 /** @param {{enabled: boolean}} args — no listener at all when push is off. */
 export function useForegroundPush({ enabled }) {
@@ -69,7 +76,8 @@ export function useForegroundPush({ enabled }) {
         if (cancelled || !(await isSupported())) return;
         unsubscribe = onMessage(getMessaging(), (payload) => {
           const data = (payload && payload.data) || {};
-          if (data.kind !== "order") return;
+          // "bf_sale" (23 Nov 2026): a Black Friday sale started / was extended / ended at this location.
+          if (data.kind !== "order" && data.kind !== "bf_sale") return;
           show(data);
         });
       } catch (err) {
@@ -83,7 +91,7 @@ export function useForegroundPush({ enabled }) {
     // than as a fresh page load.
     const onSwMessage = (event) => {
       const msg = event && event.data;
-      if (msg && msg.type === "marathon-push-navigate" && msg.link) routeFromPushMessage(msg.link);
+      if (msg && msg.type === "marathon-push-navigate" && msg.link) { if (!openSaleList(msg.link)) routeFromPushMessage(msg.link); }
     };
     if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", onSwMessage);
 
@@ -98,7 +106,7 @@ export function useForegroundPush({ enabled }) {
   const open = useCallback(() => {
     const link = banner && banner.link;
     dismiss();
-    if (link) routeFromPushMessage(link);
+    if (link && !openSaleList(link)) routeFromPushMessage(link);
   }, [banner, dismiss]);
 
   return { banner, dismiss, open };
