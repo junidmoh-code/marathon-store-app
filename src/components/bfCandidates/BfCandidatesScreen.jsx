@@ -81,7 +81,7 @@ export function readPrice(text) {
   return { price: Math.round(n * 100) / 100 };
 }
 
-function Row({ r, names, thumb, selecting, ticked, onTick, onSale, onExtend, onEnd, onRemove, busy, making, onGenerate, onReplace, onUseCurrent }) {
+function Row({ r, names, thumb, waiting, selecting, ticked, onTick, onSale, onExtend, onEnd, onRemove, busy, making, onGenerate, onReplace, onUseCurrent }) {
   const chosen = r.photoChoice && r.photoChoice.use === "generated";
   const locs = locsLine(r.locs, names);
   const [text, setText] = useState("");
@@ -107,7 +107,7 @@ function Row({ r, names, thumb, selecting, ticked, onTick, onSale, onExtend, onE
         {r.sale && (
           <div style={{ marginTop: 6, color: AMBER, fontWeight: 700, fontSize: "0.84rem" }}>
             🔥 {price(r.sale.price)} · On sale until {r.sale.until}
-            <span style={{ color: r.posted ? GREEN : GRAY, fontWeight: 600 }}> · {r.posted ? "Posted to the groups" : r.photo ? "Queued to post" : "No photo: not posting"}</span>
+            <span style={{ color: r.posted ? GREEN : GRAY, fontWeight: 600 }}> · {r.posted ? "Posted to the groups" : !r.photo ? "No photo: not posting" : waiting || "Queued to post"}</span>
           </div>
         )}
         {!selecting && (
@@ -232,6 +232,12 @@ export default function BfCandidatesScreen({ api, onExit }) {
     finally { inFlight.current = false; setBusyPids(new Set()); setWorking(null); }
   };
   // A tap changed what is on sale: the answers kept for the other tabs are no longer true.
+  const leaveList = (pids) => {
+    if (!pids.length) return;
+    const t = shown.current.tab;
+    setRows((cur) => cur.filter((x) => !pids.includes(x.pid)));
+    setView((v) => (v && v.counts ? { ...v, counts: { ...v.counts, [t]: Math.max(0, (v.counts[t] || 0) - pids.length), onSale: (v.counts.onSale || 0) + pids.length } } : v));
+  };
   const done = () => { forgetKept(); setTicks(new Set()); setSelecting(false); setDialog(null); refresh(); };
 
   // ── Put on sale: ONE price; the warning (price ≥ stock price) comes before anything is saved ──
@@ -249,6 +255,8 @@ export default function BfCandidatesScreen({ api, onExit }) {
     // Nothing saved (every product refused): the typed price stays in its box.
     if (!ok.length) { say(`Nothing was put on sale: ${refused.length ? refused[0].refusal : "try again"}.`); done(); return; }
     if (after) after();
+    // Right away (the fresh list follows): what went on sale leaves this list and the tab counts move.
+    if (shown.current.tab !== "onsale") leaveList(ok.filter((p) => !rows.find((x) => x.pid === p && x.sale)));
     say(`${ok.length} on sale at ${price(priceNum)}${until ? ` until ${until}` : ""}; queued for the groups.${alertLine((r[0] || {}).stores)}${refused.length ? ` ${refused.length} not saved: ${refused[0].refusal}.` : ""}`);
     done();
   };
@@ -263,6 +271,9 @@ export default function BfCandidatesScreen({ api, onExit }) {
     const r = await withBusy(pids, "Ending the sale…", async () => [await api.end(pids)]);
     if (!r) return;
     const n = r.reduce((t, o) => t + (o.done || []).length, 0);
+    // Right away: it leaves the On sale tab (and is back in its own list on the fresh read).
+    const gone = r.flatMap((o) => o.done || []);
+    if (shown.current.tab === "onsale") { setRows((cur) => cur.filter((x) => !gone.includes(x.pid))); setView((v) => (v && v.counts ? { ...v, counts: { ...v.counts, onSale: Math.max(0, (v.counts.onSale || 0) - gone.length) } } : v)); }
     say(`${n} removed from the sale: back to normal prices.${n ? alertLine((r[0] || {}).stores) : ""}`);
     done();
   };
@@ -354,6 +365,9 @@ export default function BfCandidatesScreen({ api, onExit }) {
           <span style={{ color: GRAY, fontSize: "0.76rem" }}>{counts.onSale > 0 ? `${counts.onSale} on sale` : "nothing on sale yet"}</span>
           <a href="#bf-sale-list" style={{ color: BLUE_L, fontSize: "0.78rem", fontWeight: 700, marginLeft: "auto" }}>Store re-tag lists</a>
         </div>
+        {view && view.posting && view.posting.banner && (
+          <div role="status" style={{ color: "#dfe7ff", fontSize: "0.8rem", marginTop: 8 }}>{view.posting.banner}</div>
+        )}
         {view && view.endPassed && (
           <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, color: "#dfe7ff", fontSize: "0.8rem", flexWrap: "wrap" }}>
             That date has passed. New sales end at 23:59 on
@@ -387,7 +401,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
           </div>
         )}
         {rows.map((r) => (
-          <Row key={r.pid} r={r} names={names} thumb={api.thumb} selecting={selecting} ticked={ticks.has(r.pid)} onTick={tick} busy={busyPids.has(r.pid) || !!working} making={making[r.pid]} onGenerate={generate} onReplace={replace} onUseCurrent={useCurrent}
+          <Row key={r.pid} r={r} names={names} thumb={api.thumb} waiting={view && view.posting && view.posting.waiting} selecting={selecting} ticked={ticks.has(r.pid)} onTick={tick} busy={busyPids.has(r.pid) || !!working} making={making[r.pid]} onGenerate={generate} onReplace={replace} onUseCurrent={useCurrent}
             onSale={(rs, p, after) => saveSale(rs.map((x) => x.pid), p, null, after)} onExtend={(pids) => setDialog({ type: "extend", pids, n: pids.length })} onEnd={doEnd} onRemove={doRemove} />
         ))}
         {view && view.more && <button type="button" style={bGray} onClick={more}>Show more ({(view.total || 0) - rows.length} more)</button>}

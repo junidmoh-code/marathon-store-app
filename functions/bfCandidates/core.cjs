@@ -104,7 +104,7 @@ function byQuantity(a, b) {
 }
 /**
  * The card's list. items: candidates/items; removed: removed; sales: sales; photos: photos; posted: posted.
- * tab: "clothing" | "sneakers" (the candidates; one still on sale shows its sale) | "onsale" (EVERYTHING on sale now,
+ * tab: "clothing" | "sneakers" (the candidates NOT on sale) | "onsale" (EVERYTHING on sale now,
  * candidate or not, built from the sale itself when the finder no longer lists the product).
  * → { rows (this tab's page), counts: { clothing, sneakers, onSale, removed }, total, from, more, saleEnds }
  */
@@ -114,6 +114,9 @@ function viewList({ items = {}, removed = {}, sales = {}, photos = {}, posted = 
   const mine = [];
   for (const [pid, row] of Object.entries(items || {})) {
     if (!row || (removed && removed[pid]) || !isCandidate(row, cutoff)) continue;
+    // ON SALE = off the candidate lists (Junid, 18:17): it shows only under On sale, and comes back here when it is
+    // removed from the sale.
+    if (saleActive(sales && sales[pid], nowMs)) continue;
     counts[tabOf(row)] += 1;
     if (tabOf(row) === t) mine.push([pid, row]);
   }
@@ -268,6 +271,20 @@ function storeList(sales, stock, names = {}, nowMs, { back = {}, coming = {} } =
     .sort(byName);
 }
 
+// ── when the sale posts start (the poster's own rule: marathon-group-poster src/bf/sale.mjs saleGate) ──
+// Junid, 23 Nov 18:17: no sale post on Mon 23 Nov; from Tue 24 Nov 08:00, only once 30 items are on sale in total.
+// Once met (the poster writes posting/startedAt) every sale item posts, and later ones as they come in.
+const POSTS_FROM_MS = Date.parse("2026-11-24T08:00:00+02:00");
+const POSTS_MIN_ITEMS = 30;
+/** For the card. posting: bf_sales_2026/posting. → { started, onSale, need, waiting: text | null } */
+function postingState(sales, posting, nowMs) {
+  const onSale = Object.values(sales || {}).filter((s) => saleActive(s, nowMs)).length;
+  const started = nowMs >= POSTS_FROM_MS && Number(posting && posting.startedAt) > 0;
+  let waiting = null;
+  if (!started) waiting = onSale >= POSTS_MIN_ITEMS ? "Waiting: posts start Tue 24 Nov 08:00" : `Waiting: ${onSale} of ${POSTS_MIN_ITEMS}`;
+  return { started, onSale, need: POSTS_MIN_ITEMS, waiting, banner: started ? null : onSale >= POSTS_MIN_ITEMS ? `Sale posts start Tue 24 Nov 08:00: ${onSale} items ready` : `Sale posts start at ${POSTS_MIN_ITEMS} items: ${onSale} of ${POSTS_MIN_ITEMS}` };
+}
+
 // ── the WhatsApp caption, as it will post (the poster builds the same words) ─
 const AT = Object.freeze({ both: "Marathon Club & Concrete", marathon: "Marathon Club only", concrete: "Concrete only" });
 const saleText = (price) => `🔥 BLACK FRIDAY SALE: ${priceLabel(price)}`;
@@ -280,5 +297,5 @@ module.exports = {
   ROOT, CUTOFFS, CUTOFF_LABEL, DEFAULT_CUTOFF, SOLD_SHARE, DEFAULT_END_DAY, TABS, VIEWS, DAY_MS, PAGE, MAX_PIDS, PID_RE, BACK_MS, AT,
   sastDay, endOfDayMs, endLabel, priceLabel, cutoffOf, cutoffMs, dayLabel, defaultEnd, tabOf, kindOfCat, FOOTWEAR_KEYS, isCandidate, saleVersion, saleActive, photoOf,
   viewRow, viewList, plainNumber, parsePrice, aboveStock, saleEnd, saleRecord, tillMirror,
-  alertText, alertBurst, holders, receivers, storeList, saleText, salePhotoCaption,
+  POSTS_FROM_MS, POSTS_MIN_ITEMS, postingState, alertText, alertBurst, holders, receivers, storeList, saleText, salePhotoCaption,
 };
