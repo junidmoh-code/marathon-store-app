@@ -55,7 +55,10 @@
 
 export const CELL_HOLDS_PATH = "online_cell_holds";
 export const PICKABLE_CONFIG_PATH = "config/onlineOrders/pickable";
-export const HOLD_KINDS = Object.freeze(["hub_out_of_stock", "shop_not_found", "shelf_check"]);
+// Website rejections write the first three; every other rejection (a store customer's order Out of Stock, a refill
+// refused, a display check's No Stock, …) writes its own kind (functions/lib/shelf-rejects.cjs, Junid 24 Nov 2026
+// evening). Every kind holds the shelf the same way: until it next moves or is checked.
+export const HOLD_KINDS = Object.freeze(["hub_out_of_stock", "shop_not_found", "shelf_check", "store_order_oos", "shop_refill_rej", "stock_depleted", "refill_refused", "display_no_stock"]);
 
 /** Units a stock cell shows (a bare number is tolerated for old data). */
 export const cellQty = (cell) => Math.max(0, Number(cell !== null && typeof cell === "object" ? cell.qty : cell) || 0);
