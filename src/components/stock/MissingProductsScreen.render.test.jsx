@@ -816,6 +816,17 @@ describe("one product, one shop — Pine or Concrete, never both", () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
+  it("a request the feed has not delivered yet, seen by the live read at Solve, holds the product: nothing sent (architect review, #991)", async () => {
+    const tree = await conc();
+    await pick(tree, TEE, "concrete");
+    gets[`refill_requests?orderBy=productId&equalTo=${TEE}`] = { rx: { productId: TEE, size: "M", qty: 2, requestingLocation: "marathon-pine", status: "open", requestSource: "scan", createdFrom: { source: "central" } } };
+    await solve(tree, TEE);
+    delete gets[`refill_requests?orderBy=productId&equalTo=${TEE}`];
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(toast(tree).text).toMatch(/Marathon Pine|Pine/);
+    expect(toast(tree).text).toMatch(/Nothing sent/);
+  });
+
   it("a card that leaves the list during the live check sends nothing (CodeRabbit, PR #966)", async () => {
     const tree = await conc();
     await pick(tree, TEE, "concrete");
@@ -1288,6 +1299,6 @@ describe("the numbers are exact — after the architect review (PR #990)", () =>
     const solve = src.slice(src.indexOf("act.current.solve = async"), src.indexOf("act.current.division = async"));
     const claimAt = solve.indexOf("await claimSolve(");
     expect(claimAt).toBeGreaterThan(-1);
-    for (const later of ["await liveMarksOf(", "await shopOwnersNow(", "await readLiveProduct("]) expect(solve.indexOf(later)).toBeGreaterThan(claimAt);
+    for (const later of ["await liveMarksOf(", "shopOwnersNow(", "readLiveProduct("]) expect(solve.indexOf(later)).toBeGreaterThan(claimAt);
   });
 });
