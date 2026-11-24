@@ -501,3 +501,13 @@ test("setPolicyFollow: Concrete follows Trophy with a history entry; Revert send
   await call(db, { action: "setPolicyFollow", location: "concrete", follows: h.before ?? null, expectedBefore: "trophy" });
   assert.equal(stored(db)?.concrete ?? null, null);
 });
+
+test("the card's chip names the shop the scan reads: Trophy's entry, else Marathon PE's; never perfume at Concrete", async () => {
+  const db = world({ policyFollow: BOTH });
+  const r = await call(db, { action: "census", refresh: true });
+  const cat = (k) => (Array.isArray(r.categories) ? r.categories.find((x) => x.key === k || x.categoryKey === k) : r.categories?.[k]);
+  assert.equal(cat("sunglasses").follows.concrete, "trophy");
+  assert.equal(cat("sunglasses").follows[PINE], "trophy");
+  assert.equal(cat("perfumes").follows[PINE], "marathon-pe");
+  assert.equal(cat("perfumes").follows.concrete, undefined);
+});
