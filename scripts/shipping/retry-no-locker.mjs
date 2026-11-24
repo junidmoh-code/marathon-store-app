@@ -22,12 +22,13 @@
 // door-to-locker service to the lockers near …"), nothing booked or half booked, no claim held, no locker a person
 // named, and not already handed back. An address that could not be placed on the map is NOT one of them.
 //
-// ONCE: --commit claims shipping/doorRetry by transaction before it books, exactly as the tick does, so the two never
-// both try an order and neither tries it twice. An order whose door-to-door booking is refused too (over the ceiling,
+// ONCE: --commit claims shipping/doorRetry by transaction before it books (bookShipment.mjs claimDoorRetry: doorRetryDue
+// re-checked on the order as it is then), exactly as the tick does, so the two never both try an order and neither
+// tries it twice. A booking whose hand-back to the ship step does not land is finished by the tick (doorHandBackDue). An order whose door-to-door booking is refused too (over the ceiling,
 // no rate) keeps "Packed, courier not booked" with the new reason and waits for a person.
 // With /config/shipping/live off, --commit books nothing and claims nothing (it prints the dry run).
 import { pathToFileURL } from "node:url";
-import { bookShipment, planShipment, readLive, doorRetryDue, bookingRef } from "./bookShipment.mjs";
+import { bookShipment, planShipment, readLive, doorRetryDue, bookingRef, claimDoorRetry, handBackBooked } from "./bookShipment.mjs";
 
 const ORDERS = "online_orders";
 const short = (v, n = 200) => String(v ?? "").slice(0, n);
@@ -62,43 +63,45 @@ export async function retryNoLocker({ db, client, commit = false, only = null, o
         row.would = plan.locker ? `door-to-locker (${plan.locker.name}, ${plan.locker.km} km: a locker is near now)` : plan.doorFallback ? "door-to-door" : "door-to-door (deliveryMode is door)";
         continue;
       }
-      // The once, shared with the tick (poll.mjs retryNoLockerOrders).
-      const claim = await db.ref(`${ORDERS}/${key}/shipping/doorRetry`).transaction((cur) => (cur ? undefined : { at: now(), by: "cli", reason: short(row.reason, 300) }));
-      if (!claim.committed) { row.skipped = "already handed back (shipping/doorRetry)"; continue; }
-      // A fresh read: the listing may be seconds old (a Retry tap, the tick).
-      const fresh = (await db.ref(`${ORDERS}/${key}`).get()).val() ?? {};
-      if (fresh.status !== "packed" || fresh.fulfilState !== "courier_failed" || fresh.shipping?.shipmentId != null || fresh.shipping?.waybill) {
-        row.skipped = `changed meanwhile (${fresh.status ?? "?"} / ${fresh.fulfilState ?? "?"}${fresh.shipping?.waybill ? `, waybill ${fresh.shipping.waybill}` : ""})`;
-        continue;
-      }
+      // The once, shared with the tick (poll.mjs retryNoLockerOrders): doorRetryDue re-checked on the order as it is
+      // NOW and shipping/doorRetry written in the same transaction (CodeRabbit, #984), so an order that was retried,
+      // shipped, re-failed for another reason or put on a condition hold since the listing is never booked from it.
+      const fresh = await claimDoorRetry(db, key, { by: "cli", at: now() });
+      if (!fresh) { row.skipped = "no longer due (already handed back, or it changed since the listing)"; continue; }
       let res;
       try { res = await bookShipment({ ...fresh, key }, { db, client, log, now, ...geo }); }
       catch (err) { res = { skipped: true, error: short(err?.message || err, 300) }; }
+      const { shipping: _whole, ...result } = res ?? {};
+      // The record the ship step keeps (poll.mjs shipOrder): this attempt's result, the newer reason either way.
+      const record = () => db.ref(`${ORDERS}/${key}/shipping/booking`).set(JSON.parse(JSON.stringify({ ...result, at: now() })))
+        .catch((e) => log(`retry-no-locker ${key}: booking record not written — ${short(e?.message || e)}`));
+      // Junid's line, in the slot the ship step uses: <key>-door (booked) / <key>-door-refused (not booked either).
+      const queueLine = async (slot) => {
+        if (!res?.junidLine) return;
+        try {
+          const lineRef = db.ref(`shipping_recon/junidLines/${slot}`);
+          if (!(await lineRef.get()).exists()) await lineRef.set({ orderId: key, text: res.junidLine, at: now() });
+        } catch (e) { log(`retry-no-locker ${key}: Junid's line not queued — ${short(e?.message || e)}`); }
+      };
       if (res && !res.skipped && res.waybill) {
         Object.assign(row, { booked: true, waybill: res.waybill, service: res.service ?? null, cost: res.cost ?? null, mode: res.deliveryMode ?? (res.deliveryLocker ? "locker" : "door") });
-        const { shipping: _whole, ...result } = res;
-        // What the ship step records and queues after a booking (poll.mjs shipOrder): the booking record, Junid's
-        // line in its own slot, the reconciliation set. None of them may undo a booking that is made.
-        await db.ref(`${ORDERS}/${key}/shipping/booking`).set(JSON.parse(JSON.stringify({ ...result, at: now() }))).catch((e) => log(`retry-no-locker ${key}: booking record not written — ${short(e?.message || e)}`));
-        if (res.junidLine) {
-          try {
-            const lineRef = db.ref(`shipping_recon/junidLines/${key}-door`);
-            if (!(await lineRef.get()).exists()) await lineRef.set({ orderId: key, text: res.junidLine, at: now() });
-          } catch (e) { log(`retry-no-locker ${key}: Junid's line not queued — ${short(e?.message || e)}`); }
-        }
+        // None of these may undo a booking that is made.
+        await record();
+        await queueLine(`${key}-door`);
         await db.ref(`shipping_recon/open/${key}`).set(now()).catch(() => {});
         // Back to the ship step (what the POS Retry writes): it finds the waybill ("already booked"), fulfils Shopify
-        // with it and queues the cost alert. It never books again: the claim is "booked" and the order has its shipmentId.
-        await db.ref(`${ORDERS}/${key}`).update({
-          fulfilState: "pending", "fulfil/state": "pending", courierError: null,
-          ...(!fresh.attention || fresh.attention.kind === "courier_failed" ? { attention: null, attentionOpen: null } : {}),
-          updatedAt: now(),
-        });
-        log(`retry-no-locker ${key} ${row.ref} BOOKED ${res.waybill} ${res.service ?? ""} R${res.cost ?? "?"} (${row.mode}) — handed to the ship step`);
+        // with it and queues the cost alert. It never books again: the claim is "booked" and the order has its
+        // shipmentId. In one transaction, only while the order still says "courier not booked"; when this write does
+        // not land, the tick finishes it (poll.mjs retryNoLockerOrders, doorHandBackDue).
+        const handed = await handBackBooked(db, key, { at: now() }).catch((e) => { log(`retry-no-locker ${key}: hand-back failed — ${short(e?.message || e)}`); return false; });
+        row.handedBack = handed;
+        log(`retry-no-locker ${key} ${row.ref} BOOKED ${res.waybill} ${res.service ?? ""} R${res.cost ?? "?"} (${row.mode}) — ${handed ? "handed to the ship step" : "hand-back left to the tick"}`);
       } else {
         // Still not booked: the order says the NEW reason (it was the door-to-door try that failed), and waits for a person.
         row.error = short(res?.error || res?.reason || "no waybill came back", 300);
         if (res?.dryRun) { row.skipped = "the live switch went off: nothing booked"; continue; }
+        await record();
+        await queueLine(`${key}-door-refused`);
         await db.ref(`${ORDERS}/${key}`).update({
           courierError: row.error,
           attention: { kind: "courier_failed", reason: `Packed, but Courier Guy was not booked: ${row.error}`, at: now() }, attentionOpen: true,
@@ -118,6 +121,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const args = process.argv.slice(2);
   const commit = args.includes("--commit") && !args.includes("--dry");
   const only = args.includes("--only") ? args[args.indexOf("--only") + 1] : null;
+  // "--only" with no order key after it would fall back to EVERY order (CodeRabbit, #984): refused before anything runs.
+  if (args.includes("--only") && (!only || only.startsWith("--"))) {
+    console.error("--only needs an order key: node scripts/shipping/retry-no-locker.mjs [--commit] --only <orderKey>");
+    process.exit(2);
+  }
   const { adminDb } = await import("./adminDb.mjs");
   const { createCourierClient, fileLogger } = await import("./courier-client.mjs");
   const file = fileLogger();

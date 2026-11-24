@@ -783,6 +783,32 @@ describe("Shopify fulfilment after the pack", () => {
         expect(order(f).fulfilState).toBe("courier_failed");
       });
 
+      it("the fallback switched off does not spend the one try: nothing is claimed, and once it is back on the order is handed back (CodeRabbit, #984)", async () => {
+        const f = fakeDb(refused({}, { locker: { doorFallback: false } }));
+        const creates = [];
+        await runOrdersPoll(deps(f, shopify({ fos }), { courier: farCourier(creates), geocoder }).deps);
+        expect(creates).toEqual([]);
+        expect(order(f).fulfilState).toBe("courier_failed");
+        expect(order(f).shipping.doorRetry).toBeUndefined();
+        await f.db.ref("config/shipping/locker/doorFallback").set(true);
+        await runOrdersPoll(deps(f, shopify({ fos }), { courier: farCourier(creates), geocoder }).deps);
+        expect(creates).toHaveLength(1);
+        expect(order(f)).toMatchObject({ fulfilState: "done", shipping: { deliveryMode: "door", doorRetry: { by: "tick" } } });
+      });
+
+      it("booked by retry-no-locker.mjs but never handed back: the tick hands it back and Shopify is fulfilled with that waybill, nothing booked again (CodeRabbit, #984)", async () => {
+        const f = fakeDb(refused({ shipping: {
+          doorRetry: { at: NOW - 5, by: "cli" }, provider: "courier_guy", shipmentId: 77, waybill: "DOOR77", trackingReference: "DOOR77", service: "ECO", cost: 100,
+          deliveryMode: "door", doorFallback: { reason: NO_LOCKER, kind: "none_near", at: NOW - 5 }, courierBooking: { state: "booked", at: NOW - 5 },
+        } }));
+        const sh = shopify({ fos });
+        const creates = [];
+        await runOrdersPoll(deps(f, sh, { courier: farCourier(creates), geocoder }).deps);
+        expect(creates).toEqual([]);
+        expect(order(f)).toMatchObject({ fulfilState: "done", shipping: { waybill: "DOOR77" } });
+        expect(sh.calls.filter((c) => c.query.includes("fulfillmentCreate"))).toHaveLength(1);
+      });
+
       it("left alone: another reason, a held claim, a named locker, a half-booked split, an order already booked, the live switch off", async () => {
         const cases = [
           refused({ courierError: "no Courier Guy locker could be chosen for Cape Town: the address could not be placed on the map" }),
@@ -792,6 +818,7 @@ describe("Shopify fulfilment after the pack", () => {
           refused({ shipping: { partial: { count: 2, locker: { id: "RVM01240" }, shipments: [{ waybill: "WB1", shipmentId: 1 }] } } }),
           refused({ shipping: { doorRetry: { at: NOW - 5, by: "cli" } } }),
           refused({}, { live: false }),
+          refused({ incoming: { conditionHold: { at: NOW - 5, by: "junid" } } }), // Junid's "not good" hold (CodeRabbit, #984)
         ];
         for (const [n, w] of cases.entries()) {
           const f = fakeDb(w);

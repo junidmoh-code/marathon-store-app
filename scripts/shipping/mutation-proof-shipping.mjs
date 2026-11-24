@@ -124,6 +124,10 @@ const MUTATIONS = [
     from: "if (s.shipmentId != null || s.waybill || s.doorRetry || s.booking?.doorTried) return null;", to: "if (s.shipmentId != null || s.waybill || s.booking?.doorTried) return null;" },
   { id: "F5", file: BOOK, guard: "the door-to-door booking says so on the order (deliveryMode door + doorFallback)",
     from: "...(plan.doorFallback && !plan.locker ? { deliveryMode: \"door\", doorFallback: plain({ ...plan.doorFallback, at: now() }) } : {}),", to: "" },
+  { id: "F10", file: BOOK, guard: "the once is re-checked on the order as it is NOW (a changed order is never booked from a stale listing)",
+    from: "    if (!why) return undefined;\n    const marked", to: "    const marked" },
+  { id: "F11", file: BOOK, guard: "the hand-back after a booking never undoes a fulfilment that moved on",
+    from: "doorHandBackDue(cur) ? handedBack(cur, at) : undefined", to: "handedBack(cur, at)" },
   { id: "F6", file: BRET, guard: "a return's door collection is OFF unless switched on (Jimmy still says \"drop it at the locker\")",
     from: "const doorOn = doorCollection === true || (doorCollection == null && cfg.returnDoorCollection === true);", to: "const doorOn = doorCollection !== false;" },
   { id: "F7", file: BRET, guard: "the spend ceiling blocks a door collection quoted above it",
@@ -298,6 +302,8 @@ for (const m of MUTATIONS.filter((x) => !ONLY || x.id.startsWith(ONLY))) {
   console.log(`${m.id}  mutated:${mutated}  restored:${restored}  ${proven ? "✅ PROVEN" : "❌ NOT PROVEN"}  — ${m.guard}`);
 }
 
+// A typo in --only would otherwise prove "0/0" and exit 0 (CodeRabbit, #984).
+if (!results.length) { console.error(`no mutation id starts with --only=${ONLY}`); process.exit(1); }
 const unproven = results.filter((r) => !r.proven);
 console.log(`\n${results.length - unproven.length}/${results.length} guards proven`);
 if (unproven.length) {

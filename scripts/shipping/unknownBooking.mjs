@@ -42,7 +42,7 @@
 // claim is still the same "unknown" (same `at`); a second sweeper (the tick and
 // fast-ship both run this) finds the claim moved on and does nothing. Reads
 // only at Courier Guy: nothing here creates or cancels a shipment.
-import { bookingRef, readLive } from "./bookShipment.mjs";
+import { bookingRef, readLive, doorFallbackLine } from "./bookShipment.mjs";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 
 export const UNKNOWN_WAIT_MS = 10 * 60 * 1000;
@@ -204,7 +204,9 @@ export async function recheckUnknownBooking(key, order, { db, client, now = () =
     const waybills = made.map((m) => m.waybill).filter(Boolean);
     // The claim carries the waybill FIRST: a crash before the order's fields land still reads as "booked" (shipOrder
     // takes courierBooking.waybill, bookShipment's "booked but not recorded"), never as free to book again.
-    const ok = await moveClaim(plain({ state: "booked", at: t, recovered: true, shipmentId: first.shipmentId, waybill: first.waybill, ...(made.length > 1 ? { waybills } : {}) }));
+    // A door-to-door booking made because there was no locker keeps WHY on the booked claim too (CodeRabbit, #984): if
+    // the order's write below fails, the claim is the only place the reason survives.
+    const ok = await moveClaim(plain({ state: "booked", at: t, recovered: true, shipmentId: first.shipmentId, waybill: first.waybill, ...(made.length > 1 ? { waybills } : {}), ...(!locker && claim.doorFallback?.reason ? { doorFallback: claim.doorFallback } : {}) }));
     if (!ok) return { action: "raced" };
     const bookedAt = Math.max(...found.map((m) => Number(m.createdAt) || 0)) || t;
     const costs = made.map((m) => m.cost);
@@ -230,6 +232,15 @@ export async function recheckUnknownBooking(key, order, { db, client, now = () =
     if (order?.fulfilState === "courier_failed") Object.assign(patch, backToPending(order, t));
     await db.ref(base).update(patch);
     try { await db.ref(`shipping_recon/open/${key}`).set(t); } catch { /* the reconciliation set is a convenience */ }
+    // Junid's "booked door-to-door: no locker within N km" line (Junid, 24 Nov 2026), in the ship step's slot
+    // (<key>-door, one per order): the ship step only queues it from a booking it made itself (CodeRabbit, #984).
+    const doorLine = shipping.doorFallback ? doorFallbackLine(ref, shipping) : null;
+    if (doorLine) {
+      try {
+        const lineRef = db.ref(`shipping_recon/junidLines/${key}-door`);
+        if (!(await lineRef.get()).exists()) await lineRef.set({ orderId: key, text: doorLine, at: t });
+      } catch (e) { log(`unknownBooking ${key} ${ref}: Junid's door-to-door line not queued — ${str(e?.message || e).slice(0, 200)}`); }
+    }
     log(`unknownBooking ${key} ${ref}: Courier Guy HAS the shipment — ${waybills.join("+") || first.waybill} attached`);
     return { action: "attached", waybill: first.waybill, waybills };
   }

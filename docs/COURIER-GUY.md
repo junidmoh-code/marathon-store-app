@@ -233,10 +233,12 @@ that ever changes, the call must become `bookShipment({ ...order, key: id })`.
 Without a key, bookShipment throws before any call; it never falls back to
 the WEB- ref.
 
-## Door-to-locker (Junid, 20 Nov 2026) — every booking
+## Door-to-locker (Junid, 20 Nov 2026) — the default booking
 
-Every Courier Guy booking is **door-to-locker**: collected from our shop door,
-delivered to the Courier Guy locker nearest the customer's address. Code:
+Every Courier Guy booking is **door-to-locker** by default: collected from our
+shop door, delivered to the Courier Guy locker nearest the customer's address.
+When there is no locker for the parcel it is booked **door-to-door** instead
+(Junid, 24 Nov 2026: "No locker → door-to-door" below). Code:
 `scripts/shipping/lockerDelivery.mjs` (the plan), `bookShipment.mjs` (the
 booking). Exchanges and second parcels follow the same rule outbound.
 
@@ -248,7 +250,7 @@ card does not edit it; set it in the database.
 | What | Rule |
 |---|---|
 | How many | **One order is ONE parcel on ONE waybill** (Junid, 20 Nov 2026 evening). The first version booked one shipment per pair of shoes: #2256 (2 pairs) cost R260.62 on two waybills and #2309 (5 pairs) R651.55 on five; one parcel to the same locker is R192.72. Only a person splits an order: `shipping/lockerParcels` on the order (`rebook-locker.mjs --parcels`), N one-shoe shipments to the SAME locker. Above `locker/maxParcels` (10) a person books it. |
-| The parcel | At most one pair of shoes in the order: declared as ONE SHOE, 34 x 23 x 13 cm, 1.5 kg (`/config/shipping/locker/parcel`), never estimated from the order's lines. Two or more pairs: declared as the one parcel the parcel rule packs the order in, so Courier Guy quotes a locker size it fits (measured 20 Nov: 2 to 6 pairs is D2LL - ECO, R192.72 flat). A parcel no locker takes is not booked: a person decides. Courier Guy measures at collection and re-rates; see "The adjustment" under the reconciliation loop. |
+| The parcel | At most one pair of shoes in the order: declared as ONE SHOE, 34 x 23 x 13 cm, 1.5 kg (`/config/shipping/locker/parcel`), never estimated from the order's lines. Two or more pairs: declared as the one parcel the parcel rule packs the order in, so Courier Guy quotes a locker size it fits (measured 20 Nov: 2 to 6 pairs is D2LL - ECO, R192.72 flat). A parcel no locker takes goes door-to-door (24 Nov 2026, below); only one that fits no standard box either is not booked and a person decides. Courier Guy measures at collection and re-rates; see "The adjustment" under the reconciliation loop. |
 | The locker | The address is placed on the map (OpenStreetMap: the street; when the map does not know the street, which is most of ours, the postal code's own point; failing that the suburb/town), then `GET /pickup-points` nearest first: online, listed, with a compartment a shoe fits. The nearest one Courier Guy prices wins (`locker/tryLockers`, 3). |
 | How near | Within `locker/maxKm` (**30 km**) of the address; within `locker/maxTownKm` (**20 km**) when only the postal code or the town could be placed on the map (`deliveryLocker.placedBy` says which: "nearest" is then nearest to that point, not to the customer's door). Further: **door-to-door instead** (24 Nov 2026, below). An address that cannot be placed at all: **not booked**. |
 | The service | The cheapest service Courier Guy quotes for that locker (`D2LM - ECO` for a shoe), `excludeServiceCodes` left out. |
@@ -278,7 +280,7 @@ before:** an address that cannot be placed on the map, a locker a person named
 (`lockerChoice`), ruled out (`lockerAvoid`) or split (`lockerParcels` > 1), a
 half-booked split (never finished as door), more parcels than
 `locker/maxParcels`, any API error or failed lookup, no customer mobile for a
-locker that IS near. Switch (no deploy): `/config/shipping/locker/doorFallback:
+locker that IS near and priced (door-to-door never needed the mobile). Switch (no deploy): `/config/shipping/locker/doorFallback:
 false` = the 20 Nov refusal again.
 
 On the order: `shipping/deliveryMode: "door"`, `shipping/doorFallback:
@@ -293,9 +295,13 @@ door-to-door try that was refused too goes to `<key>-door-refused`).
 `shipping/booking/noLocker: true`): the poller's tick hands each back to the
 ship step ONCE (`poll.mjs retryNoLockerOrders`, `bookShipment.mjs
 doorRetryDue`: packed, the current `courierError` one of the three reasons
-above, nothing booked, no claim held, nobody steering the locker), claiming
-`shipping/doorRetry { at, by, reason }` by transaction first; nothing is
-handed back while live is off. By hand, to see the prices first:
+above, nothing booked, no claim held, nobody steering the locker), taking
+`shipping/doorRetry { at, by, reason }` and the hand-back in ONE transaction on
+the order (`claimDoorRetry`: re-checked on the order as it is then); nothing is
+handed back while live is off, while `locker/doorFallback` is false (the one
+try is kept), or while an exchange's `incoming/conditionHold` stands. A
+`--commit` booking whose hand-back did not land is handed back by the next
+tick (`doorHandBackDue`), never booked again. By hand, to see the prices first:
 `node scripts/shipping/retry-no-locker.mjs` (dry run: each order and the door
 rate quoted now) and `… --commit` (books through `bookShipment`, then hands
 the order to the ship step for the Shopify fulfilment).
@@ -319,9 +325,9 @@ The Courier Guy locker at …" and must read `mode` first.
 | `deliveryMode`, `doorFallback` | `"locker"`; or `"door"` with `doorFallback { reason, kind, at }` when there was no locker (then no `deliveryLocker`). |
 | `deliveryLocker` | `{ id, provider, name, address, hours, description, km, placedBy: "street" \| "postcode" \| "town", smsTo, hasCollectionCode: false, collectionCodeNote }`: what Jamie tells the customer. |
 | `waybill`, `waybills[]`, `shipments[]` | The first waybill (what every older reader uses), every waybill, and each shipment `{ shipmentId, waybill, trackingReference, service, cost, quoted }`. |
-| `cost`, `priced.quoted` | Every shipment added up. `priced.mode` is `door_to_locker`. |
+| `cost`, `priced.quoted` | Every shipment added up. `priced.mode` is `door_to_locker` for a locker booking (`door` after a no-locker door-to-door fallback). |
 | `doorQuote` | `{ code, rate }`: what door-to-door would have cost for the parcel the old rule declared (one more `/rates` call; `locker/doorQuote: false` switches it off). |
-| `parcel` | `{ declaredAs: "one_shoe", parcels: [...], estimated: [...] }`. No `ruleVersion`: a fixed declaration never teaches the parcel table. |
+| `parcel` | A locker booking: `{ declaredAs: "one_shoe", parcels: [...], estimated: [...] }`, no `ruleVersion` (a fixed declaration never teaches the parcel table). A door-to-door fallback: the parcel rule's estimate, with `ruleVersion`. |
 | `partial` | Only while a split is half booked (a later parcel failed): the parcels already booked. The retry books only the rest, to the same locker. |
 
 **There is no collection code at booking.** Courier Guy SMSes the PIN to the

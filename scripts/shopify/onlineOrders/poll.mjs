@@ -54,7 +54,7 @@ import {
   displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName, shippingOf,
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder, fetchShippingPoint } from "./shopifyOrders.mjs";
-import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey, doorRetryDue } from "./shipping.mjs";
+import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey, doorRetryDue, doorHandBackDue, claimDoorRetry, handBackBooked } from "./shipping.mjs";
 import { sweepUnknownBookings, RELEASED_PATH as UNKNOWN_RELEASED_PATH } from "../../shipping/unknownBooking.mjs";
 // The held-courier text (scripts/shipping/exchangeReturn.mjs releases an order carrying exactly this when Junid says good).
 export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
@@ -1184,10 +1184,16 @@ export async function recheckUnknownBookings(ctx) {
  * 'courier not booked' for this reason"). An order refused under the 20 Nov rule ("no locker, no booking") sits at
  * fulfilState "courier_failed" with shipping/booking { noLocker: true } and nothing retries it but a tap on the POS.
  * Each one whose CURRENT reason is a no-locker one (bookShipment.mjs doorRetryDue) is handed back to the ship step
- * exactly as the POS Retry does, ONCE: shipping/doorRetry is claimed by transaction first, so a second tick, the other
- * shipper or retry-no-locker.mjs never hands it back again. The ship step then books it door-to-door under the same
- * ceiling, claim and live switch; if that fails too (over the ceiling, no rate) the order says why and waits for a
- * person, as before. Nothing is handed back while /config/shipping/live is off (the try would be spent on a dry run).
+ * exactly as the POS Retry does, ONCE: bookShipment.mjs claimDoorRetry re-checks doorRetryDue on the order as it is NOW
+ * and writes shipping/doorRetry together with the hand-back in ONE transaction (CodeRabbit, #984: a marker without its
+ * hand-back would strand the order; a hand-back from a stale read could undo a Retry or a fast ship). A second tick,
+ * the other shipper or retry-no-locker.mjs never hands it back again. The ship step then books it door-to-door under
+ * the same ceiling, claim and live switch; if that fails too (over the ceiling, no rate) the order says why and waits
+ * for a person, as before. Nothing is handed back while /config/shipping/live is off (the try would be spent on a dry
+ * run), nor while /config/shipping/locker/doorFallback is false (the ship step would only refuse it again, and the one
+ * try is kept for when the fallback is switched back on; CodeRabbit, #984).
+ * Also finished here: an order retry-no-locker.mjs --commit BOOKED whose hand-back did not land (doorHandBackDue:
+ * doorRetry taken, the waybill on the order, still "courier not booked") is handed back, never booked again.
  * Never throws. → the keys handed back.
  */
 export async function retryNoLockerOrders(ctx) {
@@ -1196,22 +1202,25 @@ export async function retryNoLockerOrders(ctx) {
   try {
     const failed = await queryEq(ctx, "fulfilState", "courier_failed");
     const due = Object.entries(failed).filter(([, o]) => doorRetryDue(o));
-    if (!due.length || !(await readLive(db))) return out;
+    const booked = Object.entries(failed).filter(([, o]) => doorHandBackDue(o));
+    if ((!due.length && !booked.length) || !(await readLive(db))) return out;
+    for (const [id, order] of booked) {
+      try {
+        if (!(await handBackBooked(db, id, { at: Date.now() }))) continue;
+        out.push(id);
+        log(`  ↻ ${orderLabel(order) || id}: booked door-to-door (${order.shipping?.waybill ?? order.shipping?.courierBooking?.waybill}) but not handed back — handed to the ship step`);
+      } catch (e) {
+        log(`  ! ${orderLabel(order) || id}: booked door-to-door, hand-back failed — ${String(e?.message || e).slice(0, 160)}`);
+      }
+    }
+    if (!due.length) return out;
+    // The fallback switched off: the one try is not spent on a refusal.
+    if ((await db.ref("config/shipping/locker/doorFallback").get()).val() === false) return out;
     for (const [id, order] of due) {
       try {
-        const t = Date.now();
         const reason = doorRetryDue(order);
-        const claim = await db.ref(`${ONLINE_ORDERS_PATH}/${assertSafeSegment(id, "order key")}/shipping/doorRetry`)
-          .transaction((cur) => (cur ? undefined : { at: t, by: "tick", reason: String(reason).slice(0, 300) }));
-        if (!claim.committed) continue;
-        // What the POS "Retry courier" writes (as unknownBooking.mjs backToPending).
-        await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
-          fulfilState: "pending",
-          "fulfil/state": "pending",
-          courierError: null,
-          ...(!order.attention || order.attention.kind === ATTENTION_KIND.COURIER_FAILED ? { attention: null, attentionOpen: null } : {}),
-          updatedAt: t,
-        });
+        const now = await claimDoorRetry(db, id, { by: "tick", at: Date.now(), handBack: true });
+        if (!now) continue;
         out.push(id);
         log(`  ↻ ${orderLabel(order) || id}: no locker (${String(reason).slice(0, 120)}) — handed back once, to be booked door-to-door`);
       } catch (e) {
@@ -1325,8 +1334,9 @@ async function shipOrder(ctx, id, order) {
     log(`  ! ${orderLabel(order)}: courier booking failed — ${booking.error}`);
   }
   const prior = order.shipping?.booking;
-  // A real booking replaces a recorded dry run; nothing replaces a real one.
-  if (booking && (!prior || (prior.skipped && !booking.skipped))) {
+  // A real booking replaces a recorded dry run; nothing replaces a real one. The door-to-door try's refusal (no locker,
+  // and door-to-door refused too: doorTried) replaces the old locker refusal, so the record says the newer reason.
+  if (booking && (!prior || (prior.skipped && (!booking.skipped || (booking.doorTried && !prior.doorTried))))) {
     // "already booked" returns the order's whole shipping node — never nest it.
     const { shipping: _whole, ...result } = booking;
     try {

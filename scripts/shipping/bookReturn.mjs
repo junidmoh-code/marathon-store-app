@@ -198,7 +198,14 @@ const lockerShape = ({ p, d }) => {
  */
 export async function nearestLockers(client, at, size, { maxKm = null } = {}) {
   const ask = (extra) => client.getPickupPoints({ lat: at.lat, lng: at.lng, order_closest: "true", type: "locker", ...extra });
-  const listOf = (res) => (Array.isArray(res) ? res : res?.pickup_points) || [];
+  // A reply with no pickup_points list at all is a broken answer, not "no locker here" (CodeRabbit, #984): since
+  // 24 Nov 2026 "no locker" books door-to-door, so it throws (the callers' failed-lookup path, tried again later).
+  // `pickup_points: null` stays an empty answer: it is what Courier Guy says beyond its own search radius.
+  const listOf = (res) => {
+    const list = Array.isArray(res) ? res : res?.pickup_points;
+    if (list === undefined) throw new Error("the pickup-points reply has no pickup_points list");
+    return list || [];
+  };
   let list = listOf(await ask({}));
   if (!list.length && Number.isFinite(Number(maxKm)) && Number(maxKm) > 0) list = listOf(await ask({ max_distance: Math.ceil(Number(maxKm)) }));
   return list
@@ -317,6 +324,9 @@ export async function planReturn(order, { db, client, products = null, email = n
     const retry = { ...from, local_area: town };
     const again = await rates(client, body(retry));
     if (again.rates.length) [quoted, used] = [again, retry];
+    // A retry that FAILED is a failed lookup (tried again later), never "no locker service here" (CodeRabbit, #984:
+    // that answer now books a door collection, so a lost lookup must not reach it).
+    else if (again.error) quoted = again;
   }
   const exclude = new Set(cfg.excludeServiceCodes ?? []);
   // STRICTLY locker to door (architect review 4): only an L2D service, whatever else TCG quotes.

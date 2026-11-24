@@ -280,6 +280,17 @@ describe("no locker for the return → a door collection from the customer's add
     const lookup = await plan({ client: failing });
     expect(lookup).toMatchObject({ ok: false, transient: true, reason: "no locker rate (HTTP 502)" });
     expect(lookup.doorFallback).toBeUndefined();
+    // a pickup-points reply with no pickup_points list is a broken answer, not "no locker here" (CodeRabbit, #984)
+    const broken = noLockers({ points: { count: 0 } });
+    expect(await plan({ client: broken })).toMatchObject({ ok: false, transient: true, reason: expect.stringMatching(/locker list could not be read \(the pickup-points reply has no pickup_points list\)/) });
+    expect(broken.creates()).toHaveLength(0);
+    // the locker rate answered empty, and its retry with the town as the suburb FAILED: a failed lookup (CodeRabbit, #984)
+    const halfDown = fakeClient(); let asked = 0;
+    halfDown.getRates = async () => { asked += 1; if (asked === 1) return { rates: [] }; throw new Error("HTTP 504"); };
+    const retried = await plan({ client: halfDown });
+    expect(asked).toBe(2);
+    expect(retried).toMatchObject({ ok: false, transient: true, reason: "no locker rate (HTTP 504)" });
+    expect(retried.doorFallback).toBeUndefined();
     // the return contact is not set
     expect(await plan({ db: db({ ...ON, returnContact: { name: "Yusuf", mobile_number: "" } }) })).toMatchObject({ ok: false, transient: true });
     // missing address

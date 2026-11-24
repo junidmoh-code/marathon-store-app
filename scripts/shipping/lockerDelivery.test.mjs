@@ -4,7 +4,7 @@
 // old booking, unchanged. No locker for the parcel → that door-to-door booking
 // instead (Junid, 24 Nov 2026).
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { bookShipment, cancelShipment, planShipment, doorRetryDue } from "./bookShipment.mjs";
+import { bookShipment, cancelShipment, planShipment, doorRetryDue, doorHandBackDue, handBackBooked } from "./bookShipment.mjs";
 import { retryNoLocker } from "./retry-no-locker.mjs";
 import { lockerParcelCount, declaredParcel, oneShoe, placeAddress, NO_CODE_NOTE, lockerSizeFor, chooseLockerRate, serviceSize } from "./lockerDelivery.mjs";
 import { rebookLocker, UNCOLLECTED } from "./rebook-locker.mjs";
@@ -1015,6 +1015,59 @@ describe("orders already refused for no locker: doorRetryDue and retry-no-locker
     expect(out).toMatchObject({ live: false, commit: false, asked: true, rows: [{ would: "door-to-door" }] });
     expect(client.shipmentCalls()).toEqual([]);
     expect(d.writes).toEqual([]);
+  });
+
+  it("Junid's condition hold on an exchange stops the hand-back until it is lifted (CodeRabbit, #984)", () => {
+    expect(doorRetryDue(REFUSED({ incoming: { conditionHold: { at: 1, by: "junid" } } }))).toBeNull();
+    expect(doorRetryDue(REFUSED({ incoming: { conditionHold: null } }))).toBe(WHY);
+  });
+
+  it("the once is checked on the order as it is NOW: an order that changed since the listing is never booked (CodeRabbit, #984)", async () => {
+    // listed for no locker; meanwhile a person pressed Retry and it failed for another reason
+    const d = world(REFUSED({ courierError: "HTTP 400 bad address" }));
+    const client = fakeClient({ points: [FAR] });
+    const out = await retryNoLocker({ db: d, client, orders: { 1001: REFUSED() }, commit: true, geocoder: geo(), now: () => NOW });
+    expect(out.rows[0].skipped).toMatch(/no longer due/);
+    expect(client.calls).toEqual([]);
+    expect(d.root.online_orders["1001"].shipping.doorRetry).toBeUndefined();
+  });
+
+  it("a refused door-to-door try keeps its own record and queues its own line for Junid (CodeRabbit, #984)", async () => {
+    const d = world(REFUSED(), true, { maxChargeRand: 99 });
+    await run(d, fakeClient({ points: [FAR] }), { commit: true });
+    const o = d.root.online_orders["1001"];
+    expect(o.shipping.booking).toMatchObject({ skipped: true, noLocker: true, doorTried: true, doorFallback: { kind: "none_near" }, at: NOW });
+    expect(d.root.shipping_recon.junidLines["1001-door-refused"].text).toMatch(/door-to-door/);
+    expect(d.root.shipping_recon.junidLines["1001-door"]).toBeUndefined();
+  });
+
+  it("booked, but the hand-back did not land: the order is due for the hand-back only, which never undoes a later fulfilment (CodeRabbit, #984)", async () => {
+    const d = world(REFUSED());
+    const client = fakeClient({ points: [FAR] });
+    // the hand-back's transaction on the order fails once (network), after the booking was made
+    const ref = d.ref.bind(d);
+    let broken = true;
+    d.ref = (p) => {
+      const r = ref(p);
+      if (p !== "online_orders/1001") return r;
+      return { ...r, transaction: async (fn) => { const cur = (await r.get()).val(); if (broken && cur?.shipping?.waybill) { broken = false; throw new Error("network"); } return r.transaction(fn); } };
+    };
+    const out = await run(d, client, { commit: true });
+    expect(out.rows[0]).toMatchObject({ booked: true, waybill: "WB1", handedBack: false });
+    let o = d.root.online_orders["1001"];
+    expect(o.fulfilState).toBe("courier_failed");
+    expect(doorRetryDue(o)).toBeNull();
+    expect(doorHandBackDue(o)).toBe(true);
+    // the tick's finish: handed back, nothing booked again
+    expect(await handBackBooked(d, "1001", { at: NOW + 1 })).toBe(true);
+    o = d.root.online_orders["1001"];
+    expect(o).toMatchObject({ fulfilState: "pending", fulfil: { state: "pending" } });
+    expect(o.courierError).toBeUndefined();
+    expect(client.of("createShipment")).toHaveLength(1);
+    // already moved on (pending / done): left exactly as it is
+    expect(doorHandBackDue(o)).toBe(false);
+    expect(await handBackBooked(d, "1001", { at: NOW + 2 })).toBe(false);
+    expect(d.root.online_orders["1001"].updatedAt).toBe(NOW + 1);
   });
 
   it("an order that is not there for a no-locker reason is not listed; --only narrows to one order", async () => {

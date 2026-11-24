@@ -295,7 +295,66 @@ export function doorRetryDue(order) {
   const claim = s.courierBooking?.state;
   if (claim && claim !== "failed") return null;
   if (lockerSteered(order)) return null;
+  // Junid's "not good" hold on an exchange stops its replacement being booked (poll.mjs shipOrder): never handed back
+  // under it (CodeRabbit, #984). It is due again once the hold is lifted.
+  if (conditionHeld(order)) return null;
   return why;
+}
+
+const conditionHeld = (order) => !!order?.incoming?.conditionHold && typeof order.incoming.conditionHold === "object";
+
+/**
+ * An order that WAS handed back for its door-to-door try and is booked (the order or the claim carries the waybill),
+ * but still says "courier not booked": the hand-back to the ship step after the booking did not land (retry-no-locker.mjs
+ * books first, then hands back; CodeRabbit, #984). Due for that hand-back only: the ship step finds the waybill
+ * ("already booked") and fulfils with it, it never books again. Pure. → true | false
+ */
+export function doorHandBackDue(order) {
+  const s = order?.shipping ?? {};
+  if (order?.status !== "packed" || order?.fulfilState !== "courier_failed" || !s.doorRetry) return false;
+  if (conditionHeld(order)) return false;
+  return !!(s.waybill || (s.courierBooking?.state === "booked" && s.courierBooking.waybill));
+}
+
+/** What the POS "Retry courier" writes (unknownBooking.mjs backToPending), on a whole order node. Pure. */
+function handedBack(cur, at) {
+  const next = { ...cur, fulfilState: "pending", fulfil: { ...(cur.fulfil ?? {}), state: "pending" }, updatedAt: at };
+  delete next.courierError;
+  if (!cur.attention || cur.attention.kind === "courier_failed") { delete next.attention; delete next.attentionOpen; }
+  return next;
+}
+
+/**
+ * THE ONCE, checked and taken in ONE transaction on the order (CodeRabbit, #984): the order is read as it is NOW, and
+ * only while doorRetryDue still holds is shipping/doorRetry written — with, for the tick (`handBack`), the hand-back
+ * to the ship step in the same write, so a marker never lands without its hand-back, and an order a person retried,
+ * fast-shipped or re-failed for another reason meanwhile is left exactly as it is.
+ * → the order as committed | null (not due any more, or another caller took it).
+ */
+export async function claimDoorRetry(db, key, { by, at, handBack = false }) {
+  assertSafeSegment(key, "order key");
+  const tx = await db.ref(`online_orders/${key}`).transaction((cur) => {
+    // The Admin SDK's first pass sees null (a cold cache): answered with null so the server's value comes back.
+    if (cur == null) return null;
+    const why = doorRetryDue(cur);
+    if (!why) return undefined;
+    const marked = { ...cur, shipping: { ...(cur.shipping ?? {}), doorRetry: { at, by, reason: why.slice(0, 300) } } };
+    return handBack ? handedBack(marked, at) : marked;
+  });
+  const v = tx?.snapshot?.val?.();
+  return tx?.committed && v?.shipping?.doorRetry?.at === at && v.shipping.doorRetry.by === by ? v : null;
+}
+
+/**
+ * The hand-back after a door-to-door booking was made (doorHandBackDue), in one transaction on the order: applied only
+ * while the order still says "courier not booked" with that booking, so a fulfilment that moved on is never undone.
+ * → true when handed back.
+ */
+export async function handBackBooked(db, key, { at }) {
+  assertSafeSegment(key, "order key");
+  const tx = await db.ref(`online_orders/${key}`).transaction((cur) => (cur == null ? null : doorHandBackDue(cur) ? handedBack(cur, at) : undefined));
+  const v = tx?.snapshot?.val?.();
+  return !!(tx?.committed && v && v.fulfilState === "pending" && v.updatedAt === at);
 }
 
 /** Junid's one line for a parcel that went door-to-door because there was no locker. Pure. */
