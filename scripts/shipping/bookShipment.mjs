@@ -38,7 +38,28 @@
 // parcel per shipment, N shipments to the same locker when the order needs N.
 // The locker is written to shipping/deliveryLocker, every waybill to
 // shipping/waybills (the first stays shipping/waybill), the door-to-door price
-// to shipping/doorQuote. No locker near the address → refused, never door.
+// to shipping/doorQuote.
+//
+// NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026, STANDING RULE, reversing "No
+// locker near the address → refused, never door" of 20 Nov): "if no Courier Guy
+// locker is near the customer (like #2411 Alistair, Jansenville: 'no locker
+// within 30 km'), book DOOR-TO-DOOR delivery to their address automatically
+// instead of failing. Never leave an order unbooked because there's no locker."
+// planShipment books the door-to-door plan (the one /config/shipping/deliveryMode
+// "door" books: the estimated parcel, the customer's address, the cheapest door
+// service) when the locker plan fails for one of doorFallbackFor's reasons, and
+// ONLY those: no locker within the limit, a parcel no locker box takes, or no
+// door-to-locker service quoted to any near locker. The same ceiling
+// (maxChargeRand), cost alert, claim and live switch apply. Written on the
+// order: shipping/deliveryMode "door" and shipping/doorFallback { reason, kind,
+// at } (no deliveryLocker, no waybills[]); Junid's one line says "booked
+// door-to-door: no Courier Guy locker within N km …". Still refused as before:
+// an address that cannot be placed on the map, a locker a person named
+// (lockerChoice / lockerAvoid / a split), an API error, anything transient, a
+// quote over the ceiling. A half-booked split is never finished as door.
+// /config/shipping/locker/doorFallback false switches it off. Orders already
+// "Packed, courier not booked" for this reason are handed back ONCE
+// (doorRetryDue; poll.mjs retryNoLockerOrders, retry-no-locker.mjs).
 //
 // No waybill printing: waybills stay handwritten. `waybill` is returned for
 // that, and a later label-print step can open TCG's label PDF
@@ -169,53 +190,181 @@ export async function planShipment(order, { db, client, products = null, geocode
     ...(!toLocker && !parcel.fits ? ["no standard box fits"] : []),
   ];
   if (toLocker) {
-    return planLockerDelivery({ order, key: keyOf(order), cfg, client, estimate: parcel, address, contact, ref, liveBlockers, ...(geocoder ? { geocoder } : {}) });
+    const lockerPlan = await planLockerDelivery({ order, key: keyOf(order), cfg, client, estimate: parcel, address, contact, ref, liveBlockers, ...(geocoder ? { geocoder } : {}) });
+    // NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026): only for a no-locker reason, never for any other failure.
+    const fallback = doorFallbackFor(order, lockerPlan, cfg);
+    if (!fallback) return lockerPlan;
+    // The door plan's own blockers: the box list matters again (a locker booking never asked it).
+    const door = await planDoor([...liveBlockers, ...(!parcel.fits ? ["no standard box fits"] : [])], { noDropBox: true });
+    if (door.ok) return { ...door, doorFallback: fallback };
+    // No locker AND no door price: refused with the door plan's own reason (what the POS reads), the locker's kept beside it.
+    return {
+      ...door, attention: true, doorFallback: fallback, doorTried: true,
+      junidLine: `${ref}: ${fallback.reason}, and door-to-door could not be booked either (${door.reason}). Not booked. Book it in the portal, or fix the address and press Retry on the POS.`,
+    };
   }
+  return planDoor(liveBlockers);
 
-  // The locker is only asked when the drop box is ON (door-to-door otherwise).
-  const dropBox = cfg.dropBox?.enabled
-    ? { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider }
-    : null;
-  const quoted = await quoteParcel(client, { collectionAddress: cfg.collectionAddress, deliveryAddress: address, parcels: parcel.parcels, dropBox });
-  const chosen = chooseRate({ door: quoted.door.rates, locker: quoted.locker.rates }, parcel, cfg);
-  if (!chosen) {
-    return { ok: false, reason: `no usable rate (door: ${quoted.door.error ?? "none"}; locker: ${quoted.locker.error ?? "none"})`, parcel, quoted };
-  }
-  // THE SPEND CEILING (Junid, 6 Nov 2026: "the R300-per-booking ceiling
-  // stays; a booking above it goes to Junid as one line with the cheaper
-  // option"). The account is prepaid; an order that quotes above this is
-  // booked by a person in the portal, not by this code. The cheaper option is
-  // a locker drop-off when the parcel fits one (asked here even while the
-  // drop box is off — rates book nothing), else the next service quoted.
-  const ceiling = Number(cfg.maxChargeRand);
-  let overCeiling = null;
-  if (Number.isFinite(ceiling) && ceiling > 0 && chosen.rate.rate > ceiling) {
-    liveBlockers.push(`quote R${chosen.rate.rate.toFixed(2)} is over the R${ceiling} ceiling`);
-    let lockerRates = quoted.locker.rates;
-    const p0 = parcel.parcels[0];
-    const fitsLocker = chooseLocker([p0.lengthCm, p0.widthCm, p0.heightCm], p0.actualKg, { ...(cfg.dropBox ?? {}), enabled: true });
-    if (!lockerRates.length && fitsLocker && cfg.dropBox?.pickupPointId) {
-      const lk = await quoteParcel(client, { collectionAddress: cfg.collectionAddress, deliveryAddress: quoted.deliveryAddress ?? address, parcels: parcel.parcels, dropBox: { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider } });
-      lockerRates = lk.locker.rates;
+  // The door-to-door plan: /config/shipping/deliveryMode "door", and the fallback when there is no locker.
+  async function planDoor(liveBlockers, { noDropBox = false } = {}) {
+    // The locker is only asked when the drop box is ON (door-to-door otherwise). The no-locker fallback is ALWAYS
+    // collected at our door (architect review, #984): it is recorded as deliveryMode "door", so it never books a
+    // drop-box (collection_pickup_point_id) rate.
+    const dropBox = !noDropBox && cfg.dropBox?.enabled
+      ? { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider }
+      : null;
+    const quoted = await quoteParcel(client, { collectionAddress: cfg.collectionAddress, deliveryAddress: address, parcels: parcel.parcels, dropBox });
+    const chosen = chooseRate({ door: quoted.door.rates, locker: quoted.locker.rates }, parcel, cfg);
+    if (!chosen) {
+      return { ok: false, reason: `no usable rate (door: ${quoted.door.error ?? "none"}; locker: ${quoted.locker.error ?? "none"})`, parcel, quoted };
     }
-    overCeiling = { ceiling, chosen: { mode: chosen.mode, code: chosen.rate.code, rate: chosen.rate.rate }, cheaper: cheaperOption(chosen.rate, quoted.door.rates, lockerRates, cfg) };
-  }
+    // THE SPEND CEILING (Junid, 6 Nov 2026: "the R300-per-booking ceiling
+    // stays; a booking above it goes to Junid as one line with the cheaper
+    // option"). The account is prepaid; an order that quotes above this is
+    // booked by a person in the portal, not by this code. The cheaper option is
+    // a locker drop-off when the parcel fits one (asked here even while the
+    // drop box is off — rates book nothing), else the next service quoted.
+    const ceiling = Number(cfg.maxChargeRand);
+    let overCeiling = null;
+    if (Number.isFinite(ceiling) && ceiling > 0 && chosen.rate.rate > ceiling) {
+      liveBlockers.push(`quote R${chosen.rate.rate.toFixed(2)} is over the R${ceiling} ceiling`);
+      let lockerRates = quoted.locker.rates;
+      const p0 = parcel.parcels[0];
+      const fitsLocker = chooseLocker([p0.lengthCm, p0.widthCm, p0.heightCm], p0.actualKg, { ...(cfg.dropBox ?? {}), enabled: true });
+      if (!lockerRates.length && fitsLocker && cfg.dropBox?.pickupPointId) {
+        const lk = await quoteParcel(client, { collectionAddress: cfg.collectionAddress, deliveryAddress: quoted.deliveryAddress ?? address, parcels: parcel.parcels, dropBox: { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider } });
+        lockerRates = lk.locker.rates;
+      }
+      overCeiling = { ceiling, chosen: { mode: chosen.mode, code: chosen.rate.code, rate: chosen.rate.rate }, cheaper: cheaperOption(chosen.rate, quoted.door.rates, lockerRates, cfg) };
+    }
 
-  const payload = {
-    collection_address: cfg.collectionAddress,
-    ...(chosen.mode === "locker" ? lockerCollection(dropBox) : {}),
-    collection_contact: { name: collectionContact.name ?? "", mobile_number: collectionContact.mobile_number ?? "", email: collectionContact.email ?? "" },
-    // The address TCG priced (the town as suburb when the typed suburb gave no rates).
-    delivery_address: quoted.deliveryAddress ?? address,
-    delivery_contact: contact,
-    // ONE shipment, every parcel of the parcel rule (N shoeboxes + any flat box).
-    parcels: tcgParcels(parcel.parcels),
-    service_level_code: chosen.rate.code,
-    customer_reference: ref,
-    customer_reference_name: "Order no.",
-    mute_notifications: false,
-  };
-  return { ok: true, payload, parcel, chosen, quoted, ref, liveBlockers, overCeiling, quotes: quoteList(quoted) };
+    const payload = {
+      collection_address: cfg.collectionAddress,
+      ...(chosen.mode === "locker" ? lockerCollection(dropBox) : {}),
+      collection_contact: { name: collectionContact.name ?? "", mobile_number: collectionContact.mobile_number ?? "", email: collectionContact.email ?? "" },
+      // The address TCG priced (the town as suburb when the typed suburb gave no rates).
+      delivery_address: quoted.deliveryAddress ?? address,
+      delivery_contact: contact,
+      // ONE shipment, every parcel of the parcel rule (N shoeboxes + any flat box).
+      parcels: tcgParcels(parcel.parcels),
+      service_level_code: chosen.rate.code,
+      customer_reference: ref,
+      customer_reference_name: "Order no.",
+      mute_notifications: false,
+    };
+    return { ok: true, payload, parcel, chosen, quoted, ref, liveBlockers, overCeiling, quotes: quoteList(quoted) };
+  }
+}
+
+// ── NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026) ────────────────────────────
+// The locker plan's refusals that mean "there is no locker for this parcel" (lockerDelivery.mjs noLockerKind).
+export const DOOR_FALLBACK_KINDS = Object.freeze(["none_near", "too_big", "none_priced"]);
+// The same three, as the reason an order ALREADY refused carries (courierError; written before noLockerKind existed).
+export const NO_LOCKER_REASON = /^(?:no Courier Guy locker within \d|the parcel is bigger or heavier than the largest Courier Guy locker box|Courier Guy quoted no door-to-locker service to the lockers? near )/;
+
+/** A person steered this booking to a locker (named one, ruled one out, split it) or it is half booked: never door instead. Pure. */
+export function lockerSteered(order) {
+  const s = order?.shipping ?? {};
+  const avoid = s.lockerAvoid && typeof s.lockerAvoid === "object" ? Object.values(s.lockerAvoid) : [];
+  return !!String(s.lockerChoice?.id ?? "").trim() || avoid.length > 0 || Number(s.lockerParcels) > 1 || !!partialOf(order);
+}
+
+/**
+ * Does this failed locker plan go door-to-door instead? → { reason, kind } | null. Pure.
+ * Only a no-locker refusal (DOOR_FALLBACK_KINDS), only when no person steered the locker and no split is half booked,
+ * and only while /config/shipping/locker/doorFallback is not false. Everything else is refused exactly as before.
+ */
+export function doorFallbackFor(order, lockerPlan, cfg = {}) {
+  if (!lockerPlan || lockerPlan.ok || !DOOR_FALLBACK_KINDS.includes(lockerPlan.noLockerKind)) return null;
+  if (cfg?.locker?.doorFallback === false || lockerSteered(order)) return null;
+  return { reason: String(lockerPlan.reason), kind: lockerPlan.noLockerKind };
+}
+
+/**
+ * An order ALREADY sitting at "Packed, courier not booked" because there was no locker (refused under the 20 Nov rule):
+ * due for its ONE hand-back to the ship step, which now books it door-to-door? Pure. → the reason | null.
+ *   packed + courier_failed, its current courierError one of the no-locker reasons (NO_LOCKER_REASON), nothing booked
+ *   or half booked, no claim held, door-to-door not already tried for it (booking.doorTried, shipping/doorRetry),
+ *   and no person steering the locker (that order would be refused again: lockerSteered).
+ * shipping/doorRetry is the once: the caller sets it in a transaction before handing the order back.
+ */
+export function doorRetryDue(order) {
+  const s = order?.shipping ?? {};
+  if (order?.status !== "packed" || order?.fulfilState !== "courier_failed") return null;
+  const why = String(order.courierError ?? "");
+  if (!NO_LOCKER_REASON.test(why)) return null;
+  if (s.shipmentId != null || s.waybill || s.doorRetry || s.booking?.doorTried) return null;
+  const claim = s.courierBooking?.state;
+  if (claim && claim !== "failed") return null;
+  if (lockerSteered(order)) return null;
+  // Junid's "not good" hold on an exchange stops its replacement being booked (poll.mjs shipOrder): never handed back
+  // under it (CodeRabbit, #984). It is due again once the hold is lifted.
+  if (conditionHeld(order)) return null;
+  return why;
+}
+
+const conditionHeld = (order) => !!order?.incoming?.conditionHold && typeof order.incoming.conditionHold === "object";
+
+/**
+ * An order that WAS handed back for its door-to-door try and is booked (the order or the claim carries the waybill),
+ * but still says "courier not booked": the hand-back to the ship step after the booking did not land (retry-no-locker.mjs
+ * books first, then hands back; CodeRabbit, #984). Due for that hand-back only: the ship step finds the waybill
+ * ("already booked") and fulfils with it, it never books again. Pure. → true | false
+ */
+export function doorHandBackDue(order) {
+  const s = order?.shipping ?? {};
+  if (order?.status !== "packed" || order?.fulfilState !== "courier_failed" || !s.doorRetry) return false;
+  if (conditionHeld(order)) return false;
+  return !!(s.waybill || (s.courierBooking?.state === "booked" && s.courierBooking.waybill));
+}
+
+/** What the POS "Retry courier" writes (unknownBooking.mjs backToPending), on a whole order node. Pure. */
+function handedBack(cur, at) {
+  const next = { ...cur, fulfilState: "pending", fulfil: { ...(cur.fulfil ?? {}), state: "pending" }, updatedAt: at };
+  delete next.courierError;
+  if (!cur.attention || cur.attention.kind === "courier_failed") { delete next.attention; delete next.attentionOpen; }
+  return next;
+}
+
+/**
+ * THE ONCE, checked and taken in ONE transaction on the order (CodeRabbit, #984): the order is read as it is NOW, and
+ * only while doorRetryDue still holds is shipping/doorRetry written — with, for the tick (`handBack`), the hand-back
+ * to the ship step in the same write, so a marker never lands without its hand-back, and an order a person retried,
+ * fast-shipped or re-failed for another reason meanwhile is left exactly as it is.
+ * → the order as committed | null (not due any more, or another caller took it).
+ */
+export async function claimDoorRetry(db, key, { by, at, handBack = false }) {
+  assertSafeSegment(key, "order key");
+  const tx = await db.ref(`online_orders/${key}`).transaction((cur) => {
+    // The Admin SDK's first pass sees null (a cold cache): answered with null so the server's value comes back.
+    if (cur == null) return null;
+    const why = doorRetryDue(cur);
+    if (!why) return undefined;
+    const marked = { ...cur, shipping: { ...(cur.shipping ?? {}), doorRetry: { at, by, reason: why.slice(0, 300) } } };
+    return handBack ? handedBack(marked, at) : marked;
+  });
+  const v = tx?.snapshot?.val?.();
+  return tx?.committed && v?.shipping?.doorRetry?.at === at && v.shipping.doorRetry.by === by ? v : null;
+}
+
+/**
+ * The hand-back after a door-to-door booking was made (doorHandBackDue), in one transaction on the order: applied only
+ * while the order still says "courier not booked" with that booking, so a fulfilment that moved on is never undone.
+ * → true when handed back.
+ */
+export async function handBackBooked(db, key, { at }) {
+  assertSafeSegment(key, "order key");
+  const tx = await db.ref(`online_orders/${key}`).transaction((cur) => (cur == null ? null : doorHandBackDue(cur) ? handedBack(cur, at) : undefined));
+  const v = tx?.snapshot?.val?.();
+  return !!(tx?.committed && v && v.fulfilState === "pending" && v.updatedAt === at);
+}
+
+/** Junid's one line for a parcel that went door-to-door because there was no locker. Pure. */
+export function doorFallbackLine(ref, shipping) {
+  const f = shipping?.doorFallback;
+  if (!f?.reason) return null;
+  const cost = Number.isFinite(Number(shipping.cost)) ? ` R${Number(shipping.cost).toFixed(2)}` : "";
+  return `${ref}: booked door-to-door: ${f.reason}. ${shipping.service ?? "Courier Guy"}${cost}, waybill ${shipping.waybill ?? "?"}.`;
 }
 
 // Every service TCG quoted for the parcel, door and locker, cheapest first —
@@ -253,7 +402,9 @@ export function ceilingLine(ref, plan) {
   const cheaper = oc.cheaper
     ? `Cheaper: ${oc.cheaper.mode === "locker" ? "locker drop-off " : ""}${oc.cheaper.code} ${rand(oc.cheaper.rate)}.`
     : "No cheaper service quoted.";
-  return `${ref}: Courier Guy quotes ${rand(oc.chosen.rate)} (${oc.chosen.code}, ${dims}${kg}), over the R${oc.ceiling} ceiling, not booked. ${cheaper} Book it in the portal.`;
+  // No locker, so door-to-door was priced (Junid, 24 Nov 2026) — and that is over the ceiling: the line says both.
+  const noLocker = plan.doorFallback?.reason ? `${plan.doorFallback.reason}, so door-to-door was priced. ` : "";
+  return `${ref}: ${noLocker}Courier Guy quotes ${rand(oc.chosen.rate)} (${oc.chosen.code}, ${dims}${kg}), over the R${oc.ceiling} ceiling, not booked. ${cheaper} Book it in the portal.`;
 }
 
 /**
@@ -280,7 +431,11 @@ export async function bookShipment(order, deps = {}) {
     log(`bookShipment ${key} REFUSED ${plan.reason}`);
     // No locker for this address: the reason goes on the order, and (live only) one line to Junid.
     const line = plan.attention && plan.junidLine && (await readLive(db).catch(() => false)) ? plan.junidLine : null;
-    return { skipped: true, reason: plan.reason, parcel: plan.parcel ?? null, ...(plan.attention ? { noLocker: true } : {}), ...(line ? { junidLine: line } : {}) };
+    return {
+      skipped: true, reason: plan.reason, parcel: plan.parcel ?? null, ...(plan.attention ? { noLocker: true } : {}), ...(line ? { junidLine: line } : {}),
+      // No locker and door-to-door could not be priced either: said on the record, and never handed back for another try.
+      ...(plan.doorTried ? { doorTried: true, doorFallback: plain(plan.doorFallback) } : {}),
+    };
   }
   const payloads = plan.payloads ?? [plan.payload];
   // A half-booked split is only ever finished as what it was: the same locker, at least as many parcels. A plan
@@ -307,14 +462,24 @@ export async function bookShipment(order, deps = {}) {
       quote: { mode: plan.chosen.mode, code: plan.chosen.rate.code, rate: plan.chosen.rate.rate },
       quotes: plan.quotes,
       ...(plan.locker ? { deliveryLocker: plain(plan.locker), doorQuote: plan.doorQuote ?? null, shipments: payloads.length, ...(payloads.length > 1 ? { dryRuns: payloads } : {}) } : {}),
+      // No locker: this is the door-to-door booking it would be (Junid, 24 Nov 2026).
+      ...(plan.doorFallback ? { deliveryMode: "door", doorFallback: plain(plan.doorFallback) } : {}),
     };
   }
 
   // ── LIVE ──────────────────────────────────────────────────────────────────
   if (plan.liveBlockers.length) {
     log(`bookShipment ${key} REFUSED ${plan.liveBlockers.join(", ")}`);
-    const junidLine = ceilingLine(plan.ref, plan);
-    return { skipped: true, reason: plan.liveBlockers.join(", "), quotes: plan.quotes, ...(junidLine ? { junidLine, overCeiling: plan.overCeiling } : {}) };
+    // No locker AND the door-to-door booking is stopped (over the ceiling, no box fits): the same refusal as any door
+    // booking (the reason unchanged, as the POS reads it), with the locker's reason beside it and in Junid's line.
+    const fb = plan.doorFallback ?? null;
+    const junidLine = ceilingLine(plan.ref, plan)
+      ?? (fb ? `${plan.ref}: ${fb.reason}, and door-to-door was not booked either (${plan.liveBlockers.join(", ")}). Book it in the portal.` : null);
+    return {
+      skipped: true, reason: plan.liveBlockers.join(", "), quotes: plan.quotes,
+      ...(junidLine ? { junidLine } : {}), ...(plan.overCeiling ? { overCeiling: plan.overCeiling } : {}),
+      ...(fb ? { noLocker: true, doorTried: true, doorFallback: plain(fb) } : {}),
+    };
   }
   // The order must exist at that key — never mint a node by booking.
   // shopifyGid is on every ingested order (ref is not, since 2026-10-21 —
@@ -383,7 +548,7 @@ export async function bookShipment(order, deps = {}) {
         ...(made.length ? { booked: made.map((m) => m.waybill) } : {}),
         // What the attempt was, for the unknown-booking check (unknownBooking.mjs): the reference it carried and,
         // door-to-locker, the locker — so a shipment Courier Guy did make is attached with its locker.
-        ...(ambiguous || !kept ? { ref: plan.ref ?? null, shipments: payloads.length, ...(plan.locker ? { locker: plain(plan.locker) } : {}) } : {}),
+        ...(ambiguous || !kept ? { ref: plan.ref ?? null, shipments: payloads.length, ...(plan.locker ? { locker: plain(plan.locker) } : {}), ...(plan.doorFallback ? { doorFallback: plain(plan.doorFallback) } : {}) } : {}),
         // A re-book after a release: counted now that it reached a create (MAX_AUTO_REBOOKS stops the next one).
         ...(prior ? { released: prior.released, rebooks: (ambiguous || !kept) ? prior.rebooks + 1 : prior.rebooks } : {}),
       });
@@ -394,7 +559,7 @@ export async function bookShipment(order, deps = {}) {
     // as "unknown" (nothing re-books it) and let a person check the portal.
     if (!res || typeof res !== "object" || (res.id == null && !res.short_tracking_reference && !res.custom_tracking_reference)) {
       await keepPartial();
-      await claimRef.set({ state: "unknown", at: now(), error: `create returned no shipment id or tracking reference${nth}`, ...(made.length ? { booked: made.map((m) => m.waybill) } : {}), ref: plan.ref ?? null, shipments: payloads.length, ...(plan.locker ? { locker: plain(plan.locker) } : {}), ...(prior ? { released: prior.released, rebooks: prior.rebooks + 1 } : {}) });
+      await claimRef.set({ state: "unknown", at: now(), error: `create returned no shipment id or tracking reference${nth}`, ...(made.length ? { booked: made.map((m) => m.waybill) } : {}), ref: plan.ref ?? null, shipments: payloads.length, ...(plan.locker ? { locker: plain(plan.locker) } : {}), ...(plan.doorFallback ? { doorFallback: plain(plan.doorFallback) } : {}), ...(prior ? { released: prior.released, rebooks: prior.rebooks + 1 } : {}) });
       log(`bookShipment ${key} CREATE UNCONFIRMED${nth} — response named no shipment: ${JSON.stringify(res)?.slice(0, 300)}`);
       throw new Error("bookShipment: Courier Guy's create response named no shipment — check the portal before retrying");
     }
@@ -438,9 +603,12 @@ export async function bookShipment(order, deps = {}) {
       // What door-to-door would have cost for the parcel the old rule declared.
       doorQuote: plain(plan.doorQuote ?? null),
     } : {}),
+    // NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026): delivered to the customer's own address, and why — so the packing
+    // screen, the reports and Jamie can say so. No deliveryLocker: there is no locker to collect from and no PIN.
+    ...(plan.doorFallback && !plan.locker ? { deliveryMode: "door", doorFallback: plain({ ...plan.doorFallback, at: now() }) } : {}),
     bookedAt: now(),
   };
-  log(`bookShipment ${key} BOOKED ${plan.locker ? (shipping.waybills.join("+") || shipping.waybill) : shipping.waybill} ${shipping.service} R${shipping.cost}${plan.locker ? ` to locker ${plan.locker.id} (${plan.locker.name}, ${plan.locker.km} km)` : ""}`);
+  log(`bookShipment ${key} BOOKED ${plan.locker ? (shipping.waybills.join("+") || shipping.waybill) : shipping.waybill} ${shipping.service} R${shipping.cost}${plan.locker ? ` to locker ${plan.locker.id} (${plan.locker.name}, ${plan.locker.km} km)` : ""}${shipping.doorFallback ? ` DOOR-TO-DOOR (${shipping.doorFallback.reason})` : ""}`);
   try {
     await db.ref(`online_orders/${key}/shipping`).update({ ...shipping, ...(partial || made.length > 1 ? { partial: null } : {}), courierBooking: { state: "booked", at: shipping.bookedAt } });
   } catch (err) {
@@ -449,7 +617,9 @@ export async function bookShipment(order, deps = {}) {
     log(`bookShipment ${key} BOOKED BUT NOT RECORDED ${shipping.waybill}: ${err?.message || err}`);
     await claimRef.set({ state: "booked", at: shipping.bookedAt, shipmentId: shipping.shipmentId, waybill: shipping.waybill, ...(made.length > 1 ? { waybills: made.map((m) => m.waybill) } : {}) }).catch(() => {});
   }
-  return shipping;
+  // Junid's one line ("booked door-to-door: no Courier Guy locker within N km …"): returned, never part of the shipping node.
+  const doorLine = doorFallbackLine(plan.ref, shipping);
+  return doorLine ? { ...shipping, junidLine: doorLine } : shipping;
 }
 
 // The parcels of a split already booked by an earlier, interrupted attempt. → { count, locker, shipments[] } | null

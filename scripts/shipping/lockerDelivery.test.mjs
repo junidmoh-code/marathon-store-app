@@ -1,9 +1,11 @@
 // DOOR-TO-LOCKER (Junid, 20 Nov 2026) — fakes only, never the network.
 // Every booking: our door → the Courier Guy locker nearest the customer, one
 // shoe-sized parcel per shipment. /config/shipping/deliveryMode "door" is the
-// old booking, unchanged.
+// old booking, unchanged. No locker for the parcel → that door-to-door booking
+// instead (Junid, 24 Nov 2026).
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { bookShipment, cancelShipment, planShipment } from "./bookShipment.mjs";
+import { bookShipment, cancelShipment, planShipment, doorRetryDue, doorHandBackDue, handBackBooked } from "./bookShipment.mjs";
+import { retryNoLocker } from "./retry-no-locker.mjs";
 import { lockerParcelCount, declaredParcel, oneShoe, placeAddress, NO_CODE_NOTE, lockerSizeFor, chooseLockerRate, serviceSize } from "./lockerDelivery.mjs";
 import { rebookLocker, UNCOLLECTED } from "./rebook-locker.mjs";
 import { reconcileOrder, runReconcile, shipmentsOf } from "./reconcile.mjs";
@@ -116,7 +118,7 @@ describe("the default is door-to-locker", () => {
     expect(d.root.online_orders["1001"].shipping.parcel).toMatchObject({ lockerSize: "L", declaredAs: "whole_order" });
   });
 
-  it("thirty-one bags (15.5 kg) fit no locker box: refused, a person books it, nothing created", async () => {
+  it("thirty-one bags (15.5 kg) fit no locker box (nor a standard box, so door-to-door refuses them too): nothing created", async () => {
     const client = fakeClient();
     const res = await bookShipment(ORDER({ lines: [{ category: "Accessories", subcategory: "Bags", qty: 31 }] }), deps(db(true), client));
     expect(client.of("createShipment")).toEqual([]);
@@ -208,50 +210,170 @@ describe("deliveryMode \"door\" restores door-to-door exactly", () => {
   });
 });
 
-describe("no locker → refused with the reason, NEVER a silent door-to-door", () => {
+// NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026, STANDING RULE: "if no Courier Guy locker is near the customer (like #2411
+// Alistair, Jansenville: 'no locker within 30 km'), book DOOR-TO-DOOR delivery to their address automatically instead of
+// failing. Never leave an order unbooked because there's no locker."). This block used to pin the 20 Nov rule ("refused
+// with the reason, NEVER a silent door-to-door"); only a no-locker reason falls back, every other failure still refuses.
+describe("no locker → booked DOOR-TO-DOOR with the reason on the order; every other failure still refuses", () => {
   const expectNothingBooked = (client, d) => {
     expect(client.shipmentCalls()).toEqual([]);
     expect(d.root.online_orders["1001"].shipping?.waybill).toBeUndefined();
     expect(d.root.online_orders["1001"].shipping?.courierBooking).toBeUndefined();
   };
+  // The door-to-door booking, exactly as /config/shipping/deliveryMode "door" makes it: the estimated parcel, the
+  // customer's own address, no pickup point, the cheapest door service (ECO R100 in the fixture).
+  const expectDoorBooking = (client, d, res) => {
+    const creates = client.of("createShipment");
+    expect(creates).toHaveLength(1);
+    expect(creates[0]).not.toHaveProperty("delivery_pickup_point_id");
+    expect(creates[0]).toMatchObject({
+      service_level_code: "ECO", customer_reference: "#2257",
+      delivery_address: { street_address: "12 Carmichael Street", city: "Ventersdorp", code: "2710" },
+      parcels: [{ submitted_length_cm: 34, submitted_width_cm: 23, submitted_height_cm: 13, submitted_weight_kg: 1.2 }],
+    });
+    expect(res).toMatchObject({ waybill: "WB1", service: "ECO", deliveryMode: "door", priced: { mode: "door" } });
+    const s = d.root.online_orders["1001"].shipping;
+    expect(s).toMatchObject({ waybill: "WB1", deliveryMode: "door", doorFallback: { reason: res.doorFallback.reason, at: NOW }, courierBooking: { state: "booked" } });
+    // No locker on a door booking: nothing for Jamie to send the customer to, no PIN, no waybills[] list.
+    expect(s).not.toHaveProperty("deliveryLocker");
+    expect(s).not.toHaveProperty("waybills");
+    // A real estimate again (not the fixed one-shoe declaration): it carries the rule version.
+    expect(s.parcel.ruleVersion).toBe(4);
+    // The line is returned for the poller to queue; it is never part of the shipping node.
+    expect(s).not.toHaveProperty("junidLine");
+  };
 
-  it("the nearest locker is too far: \"no Courier Guy locker within 30 km of Ventersdorp\", one line for Junid", async () => {
+  it("the nearest locker is too far (#2411): booked door-to-door, shipping.deliveryMode \"door\" + doorFallback, Junid's line says so", async () => {
     const client = fakeClient({ points: [FAR] });
     const d = db(true);
     const res = await bookShipment(ORDER(), deps(d, client));
-    expect(res).toMatchObject({ skipped: true, noLocker: true });
-    expect(res.reason).toMatch(/^no Courier Guy locker within 30 km of Ventersdorp \(the nearest, Potchefstroom Mall, is 5\d(\.\d)? km away\)$/);
-    expect(res.junidLine).toMatch(/^#2257: no Courier Guy locker within 30 km of Ventersdorp .* Not booked \(door-to-locker only\)\. Book it in the portal, or name a locker on the order \(online_orders\/1001\/shipping\/lockerChoice\/id\) and press Retry on the POS\.$/);
-    expectNothingBooked(client, d);
-    // no door-to-door booking was even priced as a fallback service
-    expect(res.dryRun).toBeUndefined();
+    expect(res.skipped).toBeUndefined();
+    expect(res.doorFallback).toMatchObject({ kind: "none_near", at: NOW });
+    expect(res.doorFallback.reason).toMatch(/^no Courier Guy locker within 30 km of Ventersdorp \(the nearest, Potchefstroom Mall, is 5\d(\.\d)? km away\)$/);
+    expect(res.junidLine).toMatch(/^#2257: booked door-to-door: no Courier Guy locker within 30 km of Ventersdorp \(the nearest, Potchefstroom Mall, is 5\d(\.\d)? km away\)\. ECO R130\.31, waybill WB1\.$/);
+    expect(res.junidLine).not.toMatch(/Not booked/);
+    expectDoorBooking(client, d, res);
   });
 
   it("the distance is config: /config/shipping/locker/maxKm 60 books the 52 km locker", async () => {
     const client = fakeClient({ points: [FAR] });
     const res = await bookShipment(ORDER(), deps(db(true, { locker: { maxKm: 60 } }), client));
-    expect(res).toMatchObject({ waybill: "WB1", deliveryLocker: { id: "CG900" } });
+    expect(res).toMatchObject({ waybill: "WB1", deliveryLocker: { id: "CG900" }, deliveryMode: "locker" });
+    expect(res.doorFallback).toBeUndefined();
   });
 
-  it("only the town could be placed: the tighter town limit (20 km) applies and the reason says so", async () => {
+  it("only the town could be placed: the tighter town limit (20 km) applies, the reason says so, and it goes door-to-door", async () => {
     const mid = point("CG777", "Twenty-five away", -26.541, 26.8227); // ~25 km
     const client = fakeClient({ points: [mid] });
     const d = db(true);
     const res = await bookShipment(ORDER(), deps(d, client, { geocoder: geo(AT, "Ventersdorp, 2710") }));
-    expect(res.reason).toMatch(/no Courier Guy locker within 20 km of Ventersdorp .*; only the town could be placed on the map/);
-    expectNothingBooked(client, d);
-    // by its street the same locker is inside the 30 km limit
-    expect((await bookShipment(ORDER(), deps(db(true), fakeClient({ points: [mid] })))).waybill).toBe("WB1");
+    expect(res.doorFallback.reason).toMatch(/no Courier Guy locker within 20 km of Ventersdorp .*; only the town could be placed on the map/);
+    expectDoorBooking(client, d, res);
+    // by its street the same locker is inside the 30 km limit: door-to-locker, as before
+    expect((await bookShipment(ORDER(), deps(db(true), fakeClient({ points: [mid] })))).deliveryLocker.id).toBe("CG777");
   });
 
-  it("no locker at all near the address", async () => {
+  it("only the town placed because the postal-code lookup FAILED (429, timeout): tried again later, never door-to-door (architect review, #984)", async () => {
+    const mid = point("CG777", "Twenty-five away", -26.541, 26.8227); // ~25 km: inside 30, outside the town's 20
+    const client = fakeClient({ points: [mid] });
+    const d = db(true);
+    const failedLookup = vi.fn(async () => ({ ...AT, from: "Ventersdorp, 2710", by: "town", postcodeFailed: "HTTP 429" }));
+    const res = await bookShipment(ORDER(), deps(d, client, { geocoder: failedLookup }));
+    expect(res).toMatchObject({ skipped: true, reason: expect.stringMatching(/postal code lookup failed \(HTTP 429\): tried again later/) });
+    expect(res.noLocker).toBeUndefined();
+    expect(res.doorFallback).toBeUndefined();
+    expect(client.shipmentCalls()).toEqual([]);
+    // a genuine no-match (the town point, nothing failed) still goes door-to-door
+    const noMatch = fakeClient({ points: [mid] });
+    const d2 = db(true);
+    const res2 = await bookShipment(ORDER(), deps(d2, noMatch, { geocoder: vi.fn(async () => ({ ...AT, from: "Ventersdorp, 2710", by: "town" })) }));
+    expect(res2.doorFallback.reason).toMatch(/within 20 km/);
+    expectDoorBooking(noMatch, d2, res2);
+  });
+
+  it("the drop box switched on: the no-locker fallback is still collected at our door, never a drop-box rate (architect review, #984)", async () => {
+    const L2D = { rates: [{ rate: 40, service_level: { code: "L2DM - ECO" } }] };
+    const withDropBox = () => { const c = fakeClient({ points: [FAR] }); const base = c.getRates; c.getRates = async (b) => (b.collection_pickup_point_id ? (c.calls.push(["getRates", b]), L2D) : base(b)); return c; };
+    const client = withDropBox();
+    const d = db(true, { dropBox: { enabled: true } });
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(res).toMatchObject({ waybill: "WB1", deliveryMode: "door", service: "ECO" });
+    expect(client.of("getRates").some((b) => b.collection_pickup_point_id)).toBe(false);
+    expect(client.of("createShipment")[0]).not.toHaveProperty("collection_pickup_point_id");
+    // an explicit deliveryMode "door" keeps the drop box exactly as before
+    const explicit = withDropBox();
+    await bookShipment(ORDER(), deps(db(false, { dropBox: { enabled: true }, deliveryMode: "door" }), explicit));
+    expect(explicit.of("getRates").some((b) => b.collection_pickup_point_id)).toBe(true);
+  });
+
+  it("no locker at all near the address: door-to-door", async () => {
     const client = fakeClient({ points: [] });
     const d = db(true);
     const res = await bookShipment(ORDER(), deps(d, client));
-    expect(res.reason).toBe("no Courier Guy locker within 30 km of Ventersdorp");
+    expect(res.doorFallback.reason).toBe("no Courier Guy locker within 30 km of Ventersdorp");
+    expectDoorBooking(client, d, res);
+  });
+
+  it("the same ceiling: a door rate UNDER it books, OVER it is refused live with both reasons in Junid's line, and never handed back again", async () => {
+    // ECO is R100 in the door fixture.
+    const under = fakeClient({ points: [FAR] });
+    expect((await bookShipment(ORDER(), deps(db(true, { maxChargeRand: 100 }), under))).waybill).toBe("WB1");
+    const client = fakeClient({ points: [FAR] });
+    const d = db(true, { maxChargeRand: 99 });
+    const res = await bookShipment(ORDER(), deps(d, client));
+    // The reason is the ceiling's own, unchanged (what the POS card translates); the locker's reason sits beside it.
+    expect(res).toMatchObject({ skipped: true, reason: "quote R100.00 is over the R99 ceiling", noLocker: true, doorTried: true, doorFallback: { kind: "none_near" }, overCeiling: { ceiling: 99, chosen: { mode: "door", code: "ECO", rate: 100 } } });
+    expect(res.junidLine).toMatch(/^#2257: no Courier Guy locker within 30 km of Ventersdorp .*, so door-to-door was priced\. Courier Guy quotes R100\.00 \(ECO, .*\), over the R99 ceiling, not booked\./);
+    expectNothingBooked(client, d);
+    // named in a dry run, like any ceiling
+    const dry = await bookShipment(ORDER(), deps(db(false, { maxChargeRand: 99 }), fakeClient({ points: [FAR] })));
+    expect(dry).toMatchObject({ skipped: true, deliveryMode: "door", doorFallback: { kind: "none_near" }, liveBlockers: ["quote R100.00 is over the R99 ceiling"] });
+  });
+
+  it("no locker AND no door price: refused with the door plan's reason, the locker's beside it, one line for Junid", async () => {
+    const client = fakeClient({ points: [FAR] });
+    client.getRates = async (body) => { client.calls.push(["getRates", body]); return { rates: null }; };
+    const d = db(true);
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(res).toMatchObject({ skipped: true, reason: "no usable rate (door: none; locker: none)", noLocker: true, doorTried: true, doorFallback: { kind: "none_near" } });
+    expect(res.junidLine).toMatch(/^#2257: no Courier Guy locker within 30 km of Ventersdorp .*, and door-to-door could not be booked either \(no usable rate/);
     expectNothingBooked(client, d);
   });
 
+  it("a parcel no locker box takes (31 bags, 15.5 kg) is a no-locker outcome too: door-to-door, where the box list decides", async () => {
+    const bags = (qty) => ORDER({ lines: [{ category: "Accessories", subcategory: "Bags", qty }] });
+    // 31 bags fit no standard box either: refused as any door booking is, Junid told both.
+    const client = fakeClient();
+    const d = db(true);
+    const res = await bookShipment(bags(31), deps(d, client));
+    expect(res).toMatchObject({ skipped: true, reason: "no standard box fits", noLocker: true, doorTried: true, doorFallback: { kind: "too_big" } });
+    expect(res.junidLine).toMatch(/largest Courier Guy locker box .*, and door-to-door was not booked either \(no standard box fits\)/);
+    expectNothingBooked(client, d);
+    expect(client.of("getPickupPoints")).toEqual([]); // the locker list was never asked: no box, no locker
+  });
+
+  it("Courier Guy quotes no service to any near locker: door-to-door (an answer, not a failed lookup)", async () => {
+    const client = fakeClient({ lockerRates: { rates: null } });
+    const d = db(true);
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(res.doorFallback).toMatchObject({ kind: "none_priced" });
+    expect(res.doorFallback.reason).toMatch(/Courier Guy quoted no door-to-locker service to the lockers near Ventersdorp/);
+    expectDoorBooking(client, d, res);
+  });
+
+  it("/config/shipping/locker/doorFallback false is the 20 Nov rule again: refused, one line for Junid, nothing priced door-to-door", async () => {
+    const client = fakeClient({ points: [FAR] });
+    const d = db(true, { locker: { doorFallback: false, doorQuote: false } });
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(res).toMatchObject({ skipped: true, noLocker: true });
+    expect(res.reason).toMatch(/^no Courier Guy locker within 30 km of Ventersdorp/);
+    expect(res.junidLine).toMatch(/Not booked \(door-to-locker only\)/);
+    expect(res.doorTried).toBeUndefined();
+    expect(client.of("getRates")).toEqual([]);
+    expectNothingBooked(client, d);
+  });
+
+  // ── STILL REFUSED, exactly as before ──────────────────────────────────────
   it("the address cannot be placed on the map: refused, no locker asked for, no line to Junid (the map service being down looks the same)", async () => {
     const client = fakeClient();
     const d = db(true);
@@ -259,15 +381,9 @@ describe("no locker → refused with the reason, NEVER a silent door-to-door", (
     expect(res).toMatchObject({ skipped: true, noLocker: true });
     expect(res.reason).toMatch(/no Courier Guy locker could be chosen for Ventersdorp: the address could not be placed on the map/);
     expect(res.junidLine).toBeUndefined();
+    expect(res.doorFallback).toBeUndefined();
+    expect(client.of("getRates").filter((b) => !b.delivery_pickup_point_id).length).toBeLessThanOrEqual(1); // only the doorQuote comparison, never a booking plan
     expect(client.of("getPickupPoints")).toEqual([]);
-    expectNothingBooked(client, d);
-  });
-
-  it("Courier Guy quotes no service to any near locker: refused", async () => {
-    const client = fakeClient({ lockerRates: { rates: null } });
-    const d = db(true);
-    const res = await bookShipment(ORDER(), deps(d, client));
-    expect(res.reason).toMatch(/Courier Guy quoted no door-to-locker service to the lockers near Ventersdorp/);
     expectNothingBooked(client, d);
   });
 
@@ -277,6 +393,7 @@ describe("no locker → refused with the reason, NEVER a silent door-to-door", (
     const res = await bookShipment(ORDER(), deps(db(true), client));
     expect(res.reason).toMatch(/no door-to-locker rate \(HTTP 503\)/);
     expect(res.noLocker).toBeUndefined();
+    expect(res.doorFallback).toBeUndefined();
     expect(res.junidLine).toBeUndefined();
     expect(client.shipmentCalls()).toEqual([]);
   });
@@ -292,10 +409,94 @@ describe("no locker → refused with the reason, NEVER a silent door-to-door", (
     expect((await bookShipment(emailOnly, deps(db(true, { deliveryMode: "door" }), fakeClient()))).waybill).toBe("WB1");
   });
 
-  it("with live off the refusal carries no line for Junid", async () => {
-    const res = await bookShipment(ORDER(), deps(db(false), fakeClient({ points: [FAR] })));
-    expect(res).toMatchObject({ skipped: true, noLocker: true });
+  it("a locker a PERSON named, ruled out or split is never swapped for door-to-door", async () => {
+    const steer = (shipping) => { const o = ORDER(); return { ...o, shipping: { ...o.shipping, ...shipping } }; };
+    for (const [shipping, why] of [
+      [{ lockerChoice: { id: "CG404", by: "hand" } }, /locker CG404 is not among the online Courier Guy lockers/],
+      [{ lockerAvoid: ["RVM01240", "CG648"] }, /no Courier Guy locker within 30 km/],
+      [{ lockerParcels: 2 }, /no Courier Guy locker within 30 km/],
+    ]) {
+      const client = fakeClient(shipping.lockerParcels ? { points: [FAR] } : {});
+      const d = db(true);
+      const res = await bookShipment(steer(shipping), deps(d, client));
+      expect(res).toMatchObject({ skipped: true, noLocker: true });
+      expect(res.reason).toMatch(why);
+      expect(res.doorFallback).toBeUndefined();
+      expect(res.junidLine).toMatch(/Not booked \(door-to-locker only\)/);
+      expectNothingBooked(client, d);
+    }
+  });
+
+  it("a HALF-BOOKED split is never finished as door: the lockers gone, nothing is booked and the checkpoint is kept", async () => {
+    const d = db(true);
+    const client = fakeClient({ createErrors: { 2: Object.assign(new Error("HTTP 400 invalid"), { status: 400 }) } });
+    await expect(bookShipment(SPLIT(3), deps(d, client))).rejects.toThrow(/400/);
+    expect(d.root.online_orders["1001"].shipping.partial).toMatchObject({ shipments: [{ waybill: "WB1" }], locker: { id: "RVM01240" } });
+    // The retry: no locker near any more (the very case that now goes door-to-door for a fresh order).
+    const client2 = fakeClient({ points: [FAR] });
+    // Even with the person's split count gone from the copy the retry holds, the checkpoint alone stops it.
+    const retry = { ...ORDER(), shipping: { ...ORDER().shipping, partial: d.root.online_orders["1001"].shipping.partial, courierBooking: d.root.online_orders["1001"].shipping.courierBooking } };
+    const res = await bookShipment(retry, deps(d, client2));
+    expect(res.skipped).toBe(true);
+    expect(res.doorFallback).toBeUndefined();
+    expect(res.reason).toMatch(/locker RVM01240 is not among the online Courier Guy lockers/);
+    expect(client2.shipmentCalls()).toEqual([]);
+    const s = d.root.online_orders["1001"].shipping;
+    expect(s.partial).toMatchObject({ shipments: [{ waybill: "WB1" }] });
+    expect(s.waybill).toBeUndefined();
+    expect(s.deliveryMode).toBeUndefined();
+  });
+
+  it("an order already booked is skipped before anything is priced, whatever the lockers say", async () => {
+    const client = fakeClient({ points: [FAR] });
+    const o = ORDER();
+    const res = await bookShipment({ ...o, shipping: { ...o.shipping, shipmentId: 55, waybill: "OLD1" } }, deps(db(true), client));
+    expect(res).toMatchObject({ skipped: true, reason: "already booked" });
+    expect(client.calls).toEqual([]);
+  });
+
+  it("a second booking of the same order after the door-to-door one books nothing (the claim, then the shipmentId)", async () => {
+    const d = db(true);
+    const first = fakeClient({ points: [FAR] });
+    await bookShipment(ORDER(), deps(d, first));
+    // a stale copy of the order (no shipmentId on it): the claim on the database stops it
+    const stale = fakeClient({ points: [FAR] });
+    expect(await bookShipment(ORDER(), deps(d, stale))).toMatchObject({ skipped: true, reason: "booking already booked" });
+    expect(stale.shipmentCalls()).toEqual([]);
+    // the fresh copy: its shipmentId
+    const fresh = fakeClient({ points: [FAR] });
+    expect(await bookShipment({ ...ORDER(), shipping: d.root.online_orders["1001"].shipping }, deps(d, fresh))).toMatchObject({ skipped: true, reason: "already booked" });
+    expect(fresh.calls).toEqual([]);
+  });
+
+  it("no customer mobile number: not booked live to a locker (the PIN is sent by SMS), named in a dry run; door-to-door never needed one", async () => {
+    const emailOnly = ORDER({ customer: { name: "A Customer", email: "a@example.com" } });
+    const client = fakeClient();
+    const d = db(true);
+    expect((await bookShipment(emailOnly, deps(d, client))).reason).toBe("no customer mobile number (the locker PIN is sent by SMS)");
+    expectNothingBooked(client, d);
+    expect((await bookShipment(emailOnly, deps(db(false), fakeClient()))).liveBlockers).toEqual(["no customer mobile number (the locker PIN is sent by SMS)"]);
+    // door-to-door never needed one: the old mode, and the no-locker fallback
+    expect((await bookShipment(emailOnly, deps(db(true, { deliveryMode: "door" }), fakeClient()))).waybill).toBe("WB1");
+    expect((await bookShipment(emailOnly, deps(db(true), fakeClient({ points: [FAR] })))).deliveryMode).toBe("door");
+  });
+
+  it("with live off: a dry run of the door-to-door booking it would be, nothing created, no line for Junid", async () => {
+    const client = fakeClient({ points: [FAR] });
+    const d = db(false);
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(res).toMatchObject({ skipped: true, deliveryMode: "door", doorFallback: { kind: "none_near" }, quote: { mode: "door", code: "ECO", rate: 100 }, liveBlockers: [] });
+    expect(res.dryRun).not.toHaveProperty("delivery_pickup_point_id");
     expect(res.junidLine).toBeUndefined();
+    expectNothingBooked(client, d);
+  });
+
+  it("a lost create response on the door-to-door booking holds the claim as unknown, with why it was door on the claim", async () => {
+    const d = db(true);
+    const client = fakeClient({ points: [FAR], createErrors: { 1: Object.assign(new Error("HTTP 502"), { status: 502 }) } });
+    await expect(bookShipment(ORDER(), deps(d, client))).rejects.toThrow(/502/);
+    expect(d.root.online_orders["1001"].shipping.courierBooking).toMatchObject({ state: "unknown", ref: "#2257", shipments: 1, doorFallback: { kind: "none_near" } });
+    expect(d.root.online_orders["1001"].shipping.courierBooking).not.toHaveProperty("locker");
   });
 });
 
@@ -691,7 +892,11 @@ describe("placeAddress: the street, else the postal code's own point, else the t
   it("no postal-code point (or the lookup fails): the town's; nothing at all: null", async () => {
     const town = async () => ({ lat: -26.223, lng: 27.89, from: "Soweto, 1804" });
     expect(await placeAddress(ADDRESS, { fetchImpl: async () => ({ ok: true, json: async () => [] }), wait, base: town })).toMatchObject({ lat: -26.223, by: "town" });
-    expect(await placeAddress(ADDRESS, { fetchImpl: async () => { throw new Error("down"); }, wait, base: town })).toMatchObject({ by: "town" });
+    const noMatch = await placeAddress(ADDRESS, { fetchImpl: async () => ({ ok: true, json: async () => [] }), wait, base: town });
+    expect(noMatch).not.toHaveProperty("postcodeFailed");
+    // a lookup that FAILED is marked, so it is never read as "no locker near" (architect review, #984)
+    expect(await placeAddress(ADDRESS, { fetchImpl: async () => { throw new Error("down"); }, wait, base: town })).toMatchObject({ by: "town", postcodeFailed: "down" });
+    expect(await placeAddress(ADDRESS, { fetchImpl: async () => ({ ok: false, status: 429 }), wait, base: town })).toMatchObject({ by: "town", postcodeFailed: "HTTP 429" });
     expect(await placeAddress({ ...ADDRESS, code: "" }, { fetchImpl: async () => { throw new Error("never"); }, wait, base: async () => null })).toBe(null);
   });
 
@@ -700,7 +905,8 @@ describe("placeAddress: the street, else the postal code's own point, else the t
     expect(res.deliveryLocker.placedBy).toBe("postcode");
     const mid = point("CG777", "Twenty-five away", -26.541, 26.8227);
     const far = await bookShipment(ORDER(), deps(db(false), fakeClient({ points: [mid] }), { geocoder: async () => ({ ...AT, from: "postal code 2710", by: "postcode" }) }));
-    expect(far.reason).toMatch(/within 20 km of Ventersdorp .*; only the postal code could be placed on the map/);
+    // no locker inside the tighter limit: the dry run is the door-to-door booking, the reason kept (Junid, 24 Nov 2026)
+    expect(far.doorFallback.reason).toMatch(/within 20 km of Ventersdorp .*; only the postal code could be placed on the map/);
   });
 });
 
@@ -756,5 +962,157 @@ describe("the locker box size (Junid, 21 Nov 2026: the smallest real box each pa
     await bookShipment(order, deps(d, client));
     expect(client.of("createShipment")[0].service_level_code).toBe("D2LL - ECO");
     expect(d.root.online_orders["1001"].shipping.parcel.lockerSize).toBe("L");
+  });
+});
+
+// THE FIRST SWEEP (Junid, 24 Nov 2026: "Retry every order that's currently 'courier not booked' for this reason"):
+// doorRetryDue picks the orders, retry-no-locker.mjs lists them (--dry, the default) or books them (--commit).
+describe("orders already refused for no locker: doorRetryDue and retry-no-locker.mjs", () => {
+  const WHY = "no Courier Guy locker within 30 km of Ventersdorp (the nearest, Potchefstroom Mall, is 52.1 km away)";
+  const REFUSED = (over = {}, shipping = {}) => {
+    const o = ORDER();
+    return { ...o, status: "packed", fulfilState: "courier_failed", courierError: WHY, attention: { kind: "courier_failed", reason: `Packed, but Courier Guy was not booked: ${WHY}`, at: 1 }, attentionOpen: true,
+      ...over, shipping: { ...o.shipping, booking: { skipped: true, reason: WHY, noLocker: true, at: 1 }, ...shipping } };
+  };
+  const world = (order, live = true, cfg = {}) => db(live, cfg, { online_orders: { 1001: order } });
+  const run = (d, client, over = {}) => retryNoLocker({ db: d, client, orders: { 1001: d.root.online_orders["1001"] }, geocoder: geo(), now: () => NOW, ...over });
+
+  it("due: packed + courier_failed for one of the three no-locker reasons, nothing booked, no claim held, nobody steering, not yet handed back", () => {
+    expect(doorRetryDue(REFUSED())).toBe(WHY);
+    expect(doorRetryDue(REFUSED({ courierError: "the parcel is bigger or heavier than the largest Courier Guy locker box (L: 60 × 41 × 41 cm, 15 kg)" }))).toMatch(/largest/);
+    expect(doorRetryDue(REFUSED({ courierError: "Courier Guy quoted no door-to-locker service to the lockers near Ventersdorp (A, B)" }))).toMatch(/quoted no/);
+    for (const not of [
+      REFUSED({ courierError: "no Courier Guy locker could be chosen for Ventersdorp: the address could not be placed on the map" }),
+      REFUSED({ courierError: "locker CG404 is not among the online Courier Guy lockers near Ventersdorp" }),
+      REFUSED({ courierError: "quote R612.00 is over the R500 ceiling" }),
+      REFUSED({ courierError: "HTTP 400 bad address" }),
+      REFUSED({ fulfilState: "pending" }), REFUSED({ fulfilState: "done" }), REFUSED({ status: "cancelled" }),
+      REFUSED({}, { shipmentId: 7 }), REFUSED({}, { waybill: "WB9" }),
+      REFUSED({}, { courierBooking: { state: "unknown" } }), REFUSED({}, { courierBooking: { state: "booking" } }),
+      REFUSED({}, { doorRetry: { at: 5, by: "tick" } }),
+      REFUSED({}, { booking: { skipped: true, noLocker: true, doorTried: true } }),
+      REFUSED({}, { lockerChoice: { id: "CG1" } }), REFUSED({}, { lockerAvoid: ["CG1"] }), REFUSED({}, { lockerParcels: 2 }),
+      REFUSED({}, { partial: { count: 2, locker: { id: "CG1" }, shipments: [{ waybill: "WB1" }] } }),
+    ]) expect(doorRetryDue(not)).toBeNull();
+    // a failed claim (a refused create released it) and a rebook's lockerParcels: 1 do not stop it
+    expect(doorRetryDue(REFUSED({}, { courierBooking: { state: "failed" }, lockerParcels: 1 }))).toBe(WHY);
+  });
+
+  it("the default is a dry run: lists the order with the door-to-door rate quoted now; nothing created, nothing written", async () => {
+    const d = world(REFUSED());
+    const client = fakeClient({ points: [FAR] });
+    const out = await run(d, client);
+    expect(out).toMatchObject({ commit: false, rows: [{ key: "1001", ref: "#2257", town: "Ventersdorp", reason: WHY, would: "door-to-door", quote: { code: "ECO", rate: 100 }, blockers: [] }] });
+    expect(client.shipmentCalls()).toEqual([]);
+    expect(d.writes).toEqual([]);
+  });
+
+  it("the dry run says what would stop it: over the ceiling", async () => {
+    const out = await run(world(REFUSED(), true, { maxChargeRand: 99 }), fakeClient({ points: [FAR] }));
+    expect(out.rows[0]).toMatchObject({ would: "door-to-door", quote: { rate: 100 }, blockers: ["quote R100.00 is over the R99 ceiling"] });
+  });
+
+  it("--commit books it door-to-door through bookShipment, records it, queues Junid's line and hands the order to the ship step", async () => {
+    const d = world(REFUSED());
+    const client = fakeClient({ points: [FAR] });
+    const out = await run(d, client, { commit: true });
+    expect(out).toMatchObject({ commit: true, rows: [{ key: "1001", booked: true, waybill: "WB1", mode: "door", service: "ECO" }] });
+    expect(client.of("createShipment")).toHaveLength(1);
+    expect(client.of("createShipment")[0]).not.toHaveProperty("delivery_pickup_point_id");
+    const o = d.root.online_orders["1001"];
+    expect(o).toMatchObject({ fulfilState: "pending", fulfil: { state: "pending" }, shipping: { waybill: "WB1", deliveryMode: "door", doorFallback: { kind: "none_near" }, doorRetry: { by: "cli", at: NOW }, booking: { waybill: "WB1" }, courierBooking: { state: "booked" } } });
+    expect(o.courierError).toBeUndefined();
+    expect(o.attention).toBeUndefined();
+    expect(o.shipping.booking.noLocker).toBeUndefined();
+    expect(d.root.shipping_recon.junidLines["1001-door"].text).toMatch(/^#2257: booked door-to-door: no Courier Guy locker within 30 km/);
+    expect(d.root.shipping_recon.open["1001"]).toBe(NOW);
+  });
+
+  it("ONCE: a second --commit (or the tick) finds the claim and books nothing; a refused door booking is not tried again", async () => {
+    const d = world(REFUSED(), true, { maxChargeRand: 99 });
+    const client = fakeClient({ points: [FAR] });
+    const first = await run(d, client, { commit: true });
+    expect(first.rows[0]).toMatchObject({ error: "quote R100.00 is over the R99 ceiling" });
+    expect(first.rows[0].booked).toBeUndefined();
+    expect(client.shipmentCalls()).toEqual([]);
+    const o = d.root.online_orders["1001"];
+    expect(o).toMatchObject({ fulfilState: "courier_failed", courierError: "quote R100.00 is over the R99 ceiling", shipping: { doorRetry: { by: "cli" } } });
+    expect(doorRetryDue(o)).toBeNull();
+    // even if it is listed again (a stale list), the claim stops it
+    const again = fakeClient({ points: [FAR] });
+    const second = await retryNoLocker({ db: d, client: again, orders: { 1001: REFUSED() }, commit: true, geocoder: geo(), now: () => NOW });
+    expect(second.rows[0].skipped).toMatch(/already handed back/);
+    expect(again.calls).toEqual([]);
+  });
+
+  it("--commit with the live switch off is a dry run: nothing booked, nothing claimed", async () => {
+    const d = world(REFUSED(), false);
+    const client = fakeClient({ points: [FAR] });
+    const out = await run(d, client, { commit: true });
+    expect(out).toMatchObject({ live: false, commit: false, asked: true, rows: [{ would: "door-to-door" }] });
+    expect(client.shipmentCalls()).toEqual([]);
+    expect(d.writes).toEqual([]);
+  });
+
+  it("Junid's condition hold on an exchange stops the hand-back until it is lifted (CodeRabbit, #984)", () => {
+    expect(doorRetryDue(REFUSED({ incoming: { conditionHold: { at: 1, by: "junid" } } }))).toBeNull();
+    expect(doorRetryDue(REFUSED({ incoming: { conditionHold: null } }))).toBe(WHY);
+  });
+
+  it("the once is checked on the order as it is NOW: an order that changed since the listing is never booked (CodeRabbit, #984)", async () => {
+    // listed for no locker; meanwhile a person pressed Retry and it failed for another reason
+    const d = world(REFUSED({ courierError: "HTTP 400 bad address" }));
+    const client = fakeClient({ points: [FAR] });
+    const out = await retryNoLocker({ db: d, client, orders: { 1001: REFUSED() }, commit: true, geocoder: geo(), now: () => NOW });
+    expect(out.rows[0].skipped).toMatch(/no longer due/);
+    expect(client.calls).toEqual([]);
+    expect(d.root.online_orders["1001"].shipping.doorRetry).toBeUndefined();
+  });
+
+  it("a refused door-to-door try keeps its own record and queues its own line for Junid (CodeRabbit, #984)", async () => {
+    const d = world(REFUSED(), true, { maxChargeRand: 99 });
+    await run(d, fakeClient({ points: [FAR] }), { commit: true });
+    const o = d.root.online_orders["1001"];
+    expect(o.shipping.booking).toMatchObject({ skipped: true, noLocker: true, doorTried: true, doorFallback: { kind: "none_near" }, at: NOW });
+    expect(d.root.shipping_recon.junidLines["1001-door-refused"].text).toMatch(/door-to-door/);
+    expect(d.root.shipping_recon.junidLines["1001-door"]).toBeUndefined();
+  });
+
+  it("booked, but the hand-back did not land: the order is due for the hand-back only, which never undoes a later fulfilment (CodeRabbit, #984)", async () => {
+    const d = world(REFUSED());
+    const client = fakeClient({ points: [FAR] });
+    // the hand-back's transaction on the order fails once (network), after the booking was made
+    const ref = d.ref.bind(d);
+    let broken = true;
+    d.ref = (p) => {
+      const r = ref(p);
+      if (p !== "online_orders/1001") return r;
+      return { ...r, transaction: async (fn) => { const cur = (await r.get()).val(); if (broken && cur?.shipping?.waybill) { broken = false; throw new Error("network"); } return r.transaction(fn); } };
+    };
+    const out = await run(d, client, { commit: true });
+    expect(out.rows[0]).toMatchObject({ booked: true, waybill: "WB1", handedBack: false });
+    let o = d.root.online_orders["1001"];
+    expect(o.fulfilState).toBe("courier_failed");
+    expect(doorRetryDue(o)).toBeNull();
+    expect(doorHandBackDue(o)).toBe(true);
+    // the tick's finish: handed back, nothing booked again
+    expect(await handBackBooked(d, "1001", { at: NOW + 1 })).toBe(true);
+    o = d.root.online_orders["1001"];
+    expect(o).toMatchObject({ fulfilState: "pending", fulfil: { state: "pending" } });
+    expect(o.courierError).toBeUndefined();
+    expect(client.of("createShipment")).toHaveLength(1);
+    // already moved on (pending / done): left exactly as it is
+    expect(doorHandBackDue(o)).toBe(false);
+    expect(await handBackBooked(d, "1001", { at: NOW + 2 })).toBe(false);
+    expect(d.root.online_orders["1001"].updatedAt).toBe(NOW + 1);
+  });
+
+  it("an order that is not there for a no-locker reason is not listed; --only narrows to one order", async () => {
+    const d = db(true, {}, { online_orders: { 1001: REFUSED(), 1002: { ...REFUSED({ courierError: "HTTP 400 bad address" }), key: "1002" }, 1003: { ...REFUSED(), key: "1003" } } });
+    const all = await retryNoLocker({ db: d, client: fakeClient({ points: [FAR] }), orders: d.root.online_orders, geocoder: geo() });
+    expect(all.rows.map((r) => r.key)).toEqual(["1001", "1003"]);
+    expect(all.failed).toBe(3);
+    const one = await retryNoLocker({ db: d, client: fakeClient({ points: [FAR] }), orders: d.root.online_orders, only: "1003", geocoder: geo() });
+    expect(one.rows.map((r) => r.key)).toEqual(["1003"]);
   });
 });

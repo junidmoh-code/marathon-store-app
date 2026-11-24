@@ -2,7 +2,12 @@
 // Book an online exchange's RETURN leg (locker-to-door, the locker nearest the customer): scripts/shipping/bookReturn.mjs.
 // Called by Jimmy (marathon-dm-agent src/jimmy/returnBooking.js) from this checkout; prints ONE JSON line.
 //
-//   node scripts/shipping/book-return.mjs --key exchange-1793-1793333411004 [--email them@example.com]
+//   node scripts/shipping/book-return.mjs --key exchange-1793-1793333411004 [--email them@example.com] [--door-collection | --no-door-collection]
+//
+// No locker for the parcel (Junid, 24 Nov 2026): a courier collects from the customer's door instead, ONLY when
+// /config/shipping/returnDoorCollection is true or --door-collection is passed (a caller that reads `mode:
+// "door_collection"` and tells the customer a courier will collect, never "drop it at the locker"); --no-door-collection
+// forces the old refusal. The answer carries mode: "locker_dropoff" | "door_collection".
 //
 // Exit 0 with { booked: true, … } or { skipped: true, reason, refused?, dryRun? }; exit 1 with { error, ambiguous }
 // (ambiguous: the create may have run, check the portal before anything retries).
@@ -15,7 +20,8 @@ const arg = (name) => {
 const key = arg("key");
 try {
   if (!key) throw new Error("--key exchange-<n>-<paidAtMs> is required");
-  const out = await bookReturn(key, { email: arg("email") });
+  const doorCollection = process.argv.includes("--door-collection") ? true : process.argv.includes("--no-door-collection") ? false : null;
+  const out = await bookReturn(key, { email: arg("email"), doorCollection });
   process.stdout.write(`${JSON.stringify(out)}\n`);
   process.exit(0);
 } catch (err) {

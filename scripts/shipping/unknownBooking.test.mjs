@@ -61,6 +61,29 @@ describe("matchShipments: this order's reference, made since the claim, not canc
 });
 
 describe("recheckUnknownBooking", () => {
+  it("a door-to-door booking made because there was no locker is attached as door, keeps why on the claim, and queues Junid's door line once (CodeRabbit, #984)", async () => {
+    const fb = { reason: "no Courier Guy locker within 30 km of Khomanani", kind: "none_near" };
+    const order = ORDER({ courierBooking: UNKNOWN({ ref: "#2181", shipments: 1, doorFallback: fb }) });
+    const d = dbWith(order);
+    const res = await recheckUnknownBooking("1901", order, deps(d, listClient([[row({ service_level_code: "ECO", charged_amount: 185 })]])));
+    expect(res).toMatchObject({ action: "attached", waybill: "ABC123" });
+    const s = d.root.online_orders["1901"].shipping;
+    expect(s).toMatchObject({ deliveryMode: "door", doorFallback: { ...fb, at: NOW }, courierBooking: { state: "booked", recovered: true } });
+    expect(s).not.toHaveProperty("deliveryLocker");
+    expect(d.root.shipping_recon.junidLines["1901-door"]).toMatchObject({ orderId: "1901", at: NOW });
+    expect(d.root.shipping_recon.junidLines["1901-door"].text).toBe("#2181: booked door-to-door: no Courier Guy locker within 30 km of Khomanani. ECO R185.00, waybill ABC123.");
+  });
+
+  it("the booked claim keeps the door-to-door reason even when the order's own write fails (CodeRabbit, #984)", async () => {
+    const fb = { reason: "no Courier Guy locker within 30 km of Khomanani", kind: "none_near" };
+    const order = ORDER({ courierBooking: UNKNOWN({ ref: "#2181", shipments: 1, doorFallback: fb }) });
+    const d = dbWith(order);
+    const ref = d.ref;
+    d.ref = (p) => (p === "online_orders/1901" ? { ...ref(p), update: async () => { throw new Error("network"); } } : ref(p));
+    await expect(recheckUnknownBooking("1901", order, deps(d, listClient([[row()]])))).rejects.toThrow(/network/);
+    expect(d.root.online_orders["1901"].shipping.courierBooking).toMatchObject({ state: "booked", waybill: "ABC123", doorFallback: fb });
+  });
+
   it("a shipment Courier Guy DID make is attached: waybill, locker, claim booked, back to the ship flow — nothing created", async () => {
     const order = ORDER({ courierBooking: UNKNOWN({ ref: "#2181", locker: LOCKER, shipments: 1 }) });
     const d = dbWith(order);

@@ -39,12 +39,25 @@
 //                 delivery_pickup_point_provider (booked by hand for #2257 on
 //                 20 Nov 2026: D2LM - ECO R130.31 against ECOR R519.62 to the door).
 //
-// NO LOCKER, NO BOOKING. An address that cannot be placed on the map, or no
-// fitting locker within locker.maxKm of it (locker.maxTownKm when only the
-// town was placed), is NOT quietly sent door-to-door: the plan is refused with
-// `attention` set, the order shows "Packed, courier not booked" with the
-// reason, and Junid gets the one line (junidLine), as for a booking over the
-// ceiling.
+// NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026, STANDING RULE: "if no Courier
+// Guy locker is near the customer (like #2411 Alistair, Jansenville: 'no locker
+// within 30 km'), book DOOR-TO-DOOR delivery to their address automatically
+// instead of failing. Never leave an order unbooked because there's no
+// locker."). This REVERSES the 20 Nov rule ("no locker, no booking"). This
+// file still only says WHY there is no locker: the refusal carries
+// `noLockerKind`, and planShipment (bookShipment.mjs doorFallbackFor) books the
+// door-to-door plan instead for
+//   "none_near"    no fitting locker within locker.maxKm of the address
+//                  (locker.maxTownKm when only the postal code / town was placed)
+//   "too_big"      the parcel is bigger or heavier than the largest locker box
+//   "none_priced"  Courier Guy quotes no door-to-locker service to any of the
+//                  near lockers (an answer, not a failed lookup)
+// Every other refusal carries no kind and is refused exactly as before, with
+// `attention` set and the one line for Junid: an address that cannot be placed
+// on the map (the map service being down looks the same), a locker a PERSON
+// named that is not there, more parcels than locker.maxParcels, a lookup that
+// failed (transient). /config/shipping/locker/doorFallback false switches the
+// fallback off (the old refusal, no deploy).
 //
 // NO COLLECTION CODE EXISTS AT BOOKING. Courier Guy SMSes the PIN to the
 // customer's phone when the parcel lands in the locker; the create response
@@ -80,6 +93,10 @@ export async function placeAddress(address, { fetchImpl = globalThis.fetch, base
   const at = await base(address, { fetchImpl });
   if (at && placedByStreet(address, at)) return { ...at, by: "street" };
   const code = str(address?.code);
+  // A postal-code lookup that FAILED (an error, a timeout, a 429) is not "no match" (architect review, #984): the town's
+  // point is still returned, marked `postcodeFailed`, so planLockerDelivery never reads the tighter town limit as "no
+  // locker near" — since 24 Nov 2026 that books a paid door-to-door parcel a locker 21–30 km away would have served.
+  let postcodeFailed = null;
   if (/^\d{4}$/.test(code)) {
     try {
       await wait(1100); // Nominatim's policy: at most one request a second
@@ -87,12 +104,13 @@ export async function placeAddress(address, { fetchImpl = globalThis.fetch, base
         headers: { "User-Agent": "marathon-club-shipping/1.0", Accept: "application/json" },
         signal: AbortSignal.timeout(10000),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       // Only a point in the order's own province (bookReturn inProvince).
-      const hit = res.ok ? nominatimHit(await res.json(), address) : null;
+      const hit = nominatimHit(await res.json(), address);
       if (hit) return { lat: Number(hit.lat), lng: Number(hit.lon), from: `postal code ${code}`, by: "postcode" };
-    } catch { /* the town's point, below */ }
+    } catch (err) { postcodeFailed = str(err?.message || err).slice(0, 120) || "failed"; /* the town's point, below */ }
   }
-  return at ? { ...at, by: "town" } : null;
+  return at ? { ...at, by: "town", ...(postcodeFailed ? { postcodeFailed } : {}) } : null;
 }
 
 /** Shopify's point for the order's CURRENT address (shipping/geo), or null. Pure. */
@@ -263,7 +281,8 @@ async function rates(client, body) {
 /**
  * Everything up to (not including) the shipment calls.
  * → { ok: true, payload, payloads, parcel, chosen, quoted, ref, liveBlockers, overCeiling: null, quotes, locker, doorQuote }
- *   | { ok: false, reason, attention?, junidLine?, transient?, parcel }
+ *   | { ok: false, reason, attention?, junidLine?, transient?, parcel, noLockerKind?: "none_near" | "too_big" | "none_priced", withinKm? }
+ *     (noLockerKind: there is no locker for this parcel — planShipment books door-to-door instead, Junid 24 Nov 2026)
  */
 export async function planLockerDelivery({ order, key = "<orderKey>", cfg, client, estimate, address, contact, ref, liveBlockers, geocoder = placeAddress }) {
   const lk = cfg.locker ?? {};
@@ -288,7 +307,7 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
     ...extra,
   });
 
-  if (!shoe.size) return refuse(`the parcel is bigger or heavier than the largest Courier Guy locker box (L: 60 × 41 × 41 cm, 15 kg)`);
+  if (!shoe.size) return refuse(`the parcel is bigger or heavier than the largest Courier Guy locker box (L: 60 × 41 × 41 cm, 15 kg)`, { noLockerKind: "too_big" });
   const maxParcels = pos(lk.maxParcels, 10);
   if (count > maxParcels) return refuse(`the order needs ${count} locker parcels, more than the ${maxParcels} booked automatically`);
 
@@ -324,10 +343,15 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
     const avoid = new Set((Array.isArray(order?.shipping?.lockerAvoid) ? order.shipping.lockerAvoid : []).map(str));
     candidates = lockers.filter((l) => l.km != null && l.km <= limit && !avoid.has(l.id)).slice(0, pos(lk.tryLockers, 3));
     if (!candidates.length) {
+      // Only the town placed because the postal-code lookup FAILED: tried again later, never "no locker" (so never a
+      // door-to-door booking on a lookup that did not answer; architect review, #984).
+      if (!byStreet && at.postcodeFailed) {
+        return { ok: false, transient: true, parcel, reason: `no Courier Guy locker within ${limit} km of the centre of ${town}, but the postal code lookup failed (${at.postcodeFailed}): tried again later` };
+      }
       const nearest = lockers[0];
       return refuse(`no Courier Guy locker within ${limit} km of ${town}` +
         (nearest ? ` (the nearest, ${nearest.name}, is ${nearest.km ?? "?"} km away)` : "") +
-        (byStreet ? "" : `; only the ${placedBy === "postcode" ? "postal code" : "town"} could be placed on the map`));
+        (byStreet ? "" : `; only the ${placedBy === "postcode" ? "postal code" : "town"} could be placed on the map`), { noLockerKind: "none_near", withinKm: limit });
     }
   }
 
@@ -360,7 +384,8 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
   if (!found) {
     const tried = candidates.map((l) => l.name).join(", ");
     if (lastError) return { ok: false, transient: true, parcel, reason: `no door-to-locker rate (${lastError})` };
-    return refuse(`Courier Guy quoted no door-to-locker service to the locker${candidates.length > 1 ? "s" : ""} near ${town} (${tried})`);
+    // A locker a person named is theirs to fix: no kind, so never a door-to-door instead.
+    return refuse(`Courier Guy quoted no door-to-locker service to the locker${candidates.length > 1 ? "s" : ""} near ${town} (${tried})`, chosenId ? {} : { noLockerKind: "none_priced" });
   }
 
   const rate = chooseLockerRate(found.rates, size);
