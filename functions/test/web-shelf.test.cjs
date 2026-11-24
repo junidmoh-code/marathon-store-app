@@ -241,11 +241,27 @@ test("Found at Central: the line is handed FROM Central (the pack deducts there)
 });
 
 // ── the daily list (pure) ────────────────────────────────────────────────────
-test("the day's number is a setting; the default is 20", () => {
-  assert.deepEqual(L.configFrom(null), { on: true, perDay: 20 });
-  assert.deepEqual(L.configFrom({ perDay: 35 }), { on: true, perDay: 35 });
-  assert.deepEqual(L.configFrom({ perDay: 0, off: true }), { on: false, perDay: 20 });
+test("the settings: 20 a day, rechecked after 30 days, not selling after 21, and every shop's own tab OFF until Junid turns it on", () => {
+  const shopsOff = { "marathon-pe": false, trophy: false, concrete: false, "marathon-pine": false };
+  assert.deepEqual(L.configFrom(null), { on: true, perDay: 20, perDayAt: {}, recheckDays: 30, idleDays: 21, shops: shopsOff });
+  // A place's own number.
+  const own = L.configFrom({ perDay: 20, perDayAt: { hub2: 30, central: "lots", mars: 9 } });
+  assert.deepEqual(own.perDayAt, { hub2: 30, central: 20 });
+  assert.equal(L.perDayFor(own, "hub2"), 30);
+  assert.equal(L.perDayFor(own, "hub1"), 20);
+  assert.equal(L.configFrom({ perDay: 35 }).perDay, 35);
+  assert.deepEqual(L.configFrom({ perDay: 0, off: true }).on, false);
   assert.equal(L.configFrom({ perDay: "many" }).perDay, 20);
+  assert.equal(L.configFrom({ recheckDays: 7, idleDays: 28 }).recheckDays, 7);
+  assert.equal(L.configFrom({ idleDays: 0 }).idleDays, 21);
+  const c = L.configFrom({ shops: { trophy: { on: true }, concrete: { on: "yes" } } });
+  assert.deepEqual(c.shops, { ...shopsOff, trophy: true });
+  // Hubs and Central run whenever the routine is on; a shop only once switched on.
+  assert.equal(L.placeOn(c, "hub2"), true);
+  assert.equal(L.placeOn(c, "central"), true);
+  assert.equal(L.placeOn(c, "trophy"), true);
+  assert.equal(L.placeOn(c, "marathon-pe"), false);
+  assert.equal(L.placeOn(L.configFrom({ off: true, shops: { trophy: { on: true } } }), "trophy"), false);
 });
 
 test("who may work a place's list: its own screen's permission", () => {
@@ -280,13 +296,13 @@ test("what an answer does", () => {
   const one = { pid: "a", sizeKey: "M", shown: 1, lastMoved: NOW - 40 * DAY };
   const three = { pid: "a", sizeKey: "M", shown: 3, lastMoved: NOW - 40 * DAY };
   const plan = (item, c, result, count) => L.answerPlan({ item, cell: c, result, count });
-  assert.deepEqual(plan(one, cell(1), "found"), { kind: "touch", outcome: "found" });
-  assert.deepEqual(plan(one, cell(1), "not_found"), { kind: "write_down", outcome: "notFound" });
-  assert.deepEqual(plan(one, cell(1), "count", 0), { kind: "write_down", outcome: "notFound" });
-  assert.deepEqual(plan(one, cell(1), "count", 2), { kind: "adjust", delta: 1, outcome: "corrected" });
-  assert.deepEqual(plan(three, cell(3), "count", 3), { kind: "touch", outcome: "counted" });
-  assert.deepEqual(plan(three, cell(3), "count", 1), { kind: "adjust", delta: -2, outcome: "corrected" });
-  assert.deepEqual(plan(three, cell(3), "count", 0), { kind: "adjust", delta: -3, outcome: "corrected" });
+  assert.deepEqual(plan(one, cell(1), "found"), { kind: "touch", outcome: "found", target: 1 });
+  assert.deepEqual(plan(one, cell(1), "not_found"), { kind: "write_down", outcome: "notFound", target: 0 });
+  assert.deepEqual(plan(one, cell(1), "count", 0), { kind: "write_down", outcome: "notFound", target: 0 });
+  assert.deepEqual(plan(one, cell(1), "count", 2), { kind: "adjust", delta: 1, outcome: "corrected", target: 2 });
+  assert.deepEqual(plan(three, cell(3), "count", 3), { kind: "touch", outcome: "counted", target: 3 });
+  assert.deepEqual(plan(three, cell(3), "count", 1), { kind: "adjust", delta: -2, outcome: "corrected", target: 1 });
+  assert.deepEqual(plan(three, cell(3), "count", 0), { kind: "adjust", delta: -3, outcome: "corrected", target: 0 });
   // Several on the shelf: Found / Not found is not an answer — the number is.
   assert.deepEqual(plan(three, cell(3), "found"), { error: "pick_a_number" });
   assert.deepEqual(plan(three, cell(3), "not_found"), { error: "pick_a_number" });
@@ -305,7 +321,7 @@ const answer = (db, loc, id, result, count) => runAnswer(db, { loc, id, result, 
 test("Found on a single piece: the count stays, the shelf is stamped touched, a standing hold is lifted, the website is told", async () => {
   const item = { pid: "a", sizeKey: "M", shown: 1, why: "old_single", lastMoved: NOW - 40 * DAY };
   const db = listed("trophy", item, cell(1), { online_cell_holds: { a: { M: { trophy: { at: NOW - 3 * DAY, kind: "shop_not_found" } } } } });
-  assert.deepEqual(await answer(db, "trophy", "a__M", "found"), { outcome: "found" });
+  assert.deepEqual(await answer(db, "trophy", "a__M", "found"), { outcome: "found", unitsCorrected: 0 });
   const c = root(db).stock.trophy.a.M;
   assert.deepEqual({ qty: c.qty, updatedAt: c.updatedAt, checkedAt: c.checkedAt, checkedBy: c.checkedBy, mv: c.mv }, { qty: 1, updatedAt: iso(NOW), checkedAt: iso(NOW), checkedBy: "u-staff", mv: "seed" });
   assert.equal(root(db).stock_movements, undefined);
@@ -319,7 +335,7 @@ test("Found on a single piece: the count stays, the shelf is stamped touched, a 
 test("Not found on a single piece follows the write-down: zero, own movement, a row that undoes itself", async () => {
   const item = { pid: "a", sizeKey: "M", shown: 1, why: "old_single", lastMoved: NOW - 40 * DAY };
   const db = listed("trophy", item, cell(1));
-  assert.deepEqual(await answer(db, "trophy", "a__M", "not_found"), { outcome: "notFound" });
+  assert.deepEqual(await answer(db, "trophy", "a__M", "not_found"), { outcome: "notFound", unitsCorrected: 1 });
   assert.equal(root(db).stock.trophy.a.M.qty, 0);
   const [[id, mv]] = moves(db, "web_not_found");
   assert.equal(id, "web_nf_check_trophy_a__M_2026-11-24_trophy");
@@ -331,18 +347,21 @@ test("Not found on a single piece follows the write-down: zero, own movement, a 
 test("a shelf showing several: the number tapped becomes the count, as an adjustment that says so; the hold ends", async () => {
   const item = { pid: "w", sizeKey: "L", shown: 3, why: "wrong_by_more", lastMoved: NOW - 40 * DAY, holdAt: NOW - 2 * DAY };
   const db = listed("hub2", item, cell(3), { online_cell_holds: { w: { L: { hub2: { at: NOW - 2 * DAY, kind: "hub_out_of_stock" } } } } });
-  assert.deepEqual(await answer(db, "hub2", "w__L", "count", 1), { outcome: "corrected" });
+  assert.deepEqual(await answer(db, "hub2", "w__L", "count", 1), { outcome: "corrected", unitsCorrected: 2 });
   assert.equal(root(db).stock.hub2.w.L.qty, 1);
   const [[, mv]] = moves(db, "adjustment");
   assert.deepEqual({ from: mv.from, qty: mv.qty, reason: mv.reason, before: mv.before, after: mv.after }, { from: "hub2", qty: 2, reason: "shelf check: counted 1, the app showed 3", before: { hub2: 3 }, after: { hub2: 1 } });
   assert.equal(root(db).online_cell_holds, undefined);
-  assert.deepEqual(root(db).shelf_checks.hub2.done["2026-11-24"].w__L, { result: "corrected", shown: 3, counted: 1, by: "u-staff", byName: "Staff", at: NOW, why: "wrong_by_more" });
+  assert.deepEqual(root(db).shelf_checks.hub2.done["2026-11-24"].w__L, { result: "corrected", shown: 3, counted: 1, setTo: 1, units: 2, by: "u-staff", byName: "Staff", at: NOW, why: "wrong_by_more" });
+  // When the shelf was settled (the recheck window) and the day's counters by source and units.
+  assert.equal(root(db).shelf_checks.hub2.checked.w__L, NOW);
+  assert.deepEqual(root(db).shelf_checks.hub2.days["2026-11-24"], { corrected: 1, units: 2, by: { wrong_by_more: 1 } });
 
   const up = listed("hub2", item, cell(3));
   await answer(up, "hub2", "w__L", "count", 5);
   assert.equal(root(up).stock.hub2.w.L.qty, 5);
   const same = listed("hub2", item, cell(3));
-  assert.deepEqual(await answer(same, "hub2", "w__L", "count", 3), { outcome: "counted" });
+  assert.deepEqual(await answer(same, "hub2", "w__L", "count", 3), { outcome: "counted", unitsCorrected: 0 });
   assert.equal(root(same).stock_movements, undefined);
   assert.equal(root(same).stock.hub2.w.L.updatedAt, iso(NOW));
 });
@@ -372,8 +391,76 @@ test("a display check answered 'it is on display' puts a written-down piece back
   assert.equal(root(db).stock.trophy.a.M.qty, 1);
 });
 
-test("progress per place", () => {
-  const p = L.progressOf({ "2026-11-23": { listed: 20, found: 12, notFound: 3 }, "2026-11-24": { listed: 20, found: 4, corrected: 2, counted: 1 } }, { x: {}, y: {} });
-  assert.deepEqual(p.days[0], { day: "2026-11-24", listed: 20, checked: 7, found: 4, notFound: 0, counted: 1, corrected: 2 });
-  assert.deepEqual({ open: p.open, checked14: p.checked14, wrong14: p.wrong14 }, { open: 2, checked14: 22, wrong14: 5 });
+test("progress per place: by day, by week, found against corrected, units corrected, and today's list by source", () => {
+  const p = L.progressOf({
+    "2026-11-16": { found: 5, corrected: 1, units: 2 },
+    "2026-11-23": { listed: 20, found: 12, notFound: 3, units: 3 },
+    "2026-11-24": { listed: 20, found: 4, corrected: 2, counted: 1, units: 5, by: { web_reject: 2, not_selling: 5 } },
+  }, { x: { why: "web_reject" }, y: { why: "not_selling" }, z: { why: "not_selling" } });
+  assert.deepEqual(p.days[0], { day: "2026-11-24", listed: 20, checked: 7, found: 5, fixed: 2, notFound: 0, counted: 1, corrected: 2, units: 5, by: { web_reject: 2, not_selling: 5 }, added: {} });
+  assert.deepEqual({ open: p.open, checked14: p.checked14, wrong14: p.wrong14 }, { open: 3, checked14: 28, wrong14: 6 });
+  assert.deepEqual(p.openBySource, { web_reject: 1, not_selling: 2 });
+  // Weeks start on Monday: 23 and 24 Nov are one week, 16 Nov the week before.
+  assert.deepEqual(p.weeks, [{ week: "2026-11-23", checked: 22, found: 17, fixed: 5, units: 8 }, { week: "2026-11-16", checked: 6, found: 5, fixed: 1, units: 2 }]);
+});
+
+// ── THE DAILY ROUTINE (Junid, 24 Nov 2026 evening) ───────────────────────────
+test("planDay: filled in order — website rejections, other rejections, wrong by more, not selling, old singles — oldest first, never past the day's number", () => {
+  const c = (pid, why, at, extra = {}) => ({ pid, sizeKey: "M", why, shown: 2, at, ...extra });
+  const candidates = [c("old1", "old_single", 10), c("idle1", "not_selling", 50), c("idle0", "not_selling", 20), c("more1", "wrong_by_more", 30), c("st1", "store_reject", 40, { src: "store_order_oos", ref: "hub2 order 187" }), c("web1", "web_reject", 60, { mvId: "web_nf_1" })];
+  const p = L.planDay({ candidates, perDay: 4, nowMs: NOW, saDate: "2026-11-24" });
+  assert.deepEqual(Object.keys(p.open), ["web1__M", "st1__M", "more1__M", "idle0__M"]);
+  assert.deepEqual(p.bySource, { web_reject: 1, store_reject: 1, wrong_by_more: 1, not_selling: 1 });
+  assert.deepEqual({ src: p.open.st1__M.src, ref: p.open.st1__M.ref, mvId: p.open.web1__M.mvId }, { src: "store_order_oos", ref: "hub2 order 187", mvId: "web_nf_1" });
+});
+
+test("planDay: unchecked items roll over; a new rejection can push a quieter rolled item back into the pool; nothing is ever listed twice", () => {
+  const open = { "idle9__M": { pid: "idle9", sizeKey: "M", why: "not_selling", shown: 3, at: 5, addedDay: "2026-11-23", addedAt: NOW - DAY } };
+  const p = L.planDay({ open, candidates: [{ pid: "st1", sizeKey: "M", why: "store_reject", shown: 2, at: 99 }, { pid: "idle9", sizeKey: "M", why: "not_selling", shown: 3, at: 5 }], perDay: 1, nowMs: NOW, saDate: "2026-11-24" });
+  assert.deepEqual(Object.keys(p.open), ["st1__M"]);
+  assert.deepEqual(p.dropped, ["idle9__M"]);
+  const q = L.planDay({ open, candidates: [{ pid: "idle9", sizeKey: "M", why: "not_selling", shown: 3, at: 5 }], perDay: 5, nowMs: NOW, saDate: "2026-11-24" });
+  assert.deepEqual(Object.keys(q.open), ["idle9__M"]);
+  assert.equal(q.open.idle9__M.addedDay, "2026-11-23"); // a rolled item keeps the day it was first listed
+  assert.deepEqual(q.added, []);
+  // A rolled item seen again from a stronger source takes the stronger reason.
+  const r = L.planDay({ open, candidates: [{ pid: "idle9", sizeKey: "M", why: "store_reject", shown: 3, at: 70, src: "refill_refused" }], perDay: 5, nowMs: NOW, saDate: "2026-11-24" });
+  assert.equal(r.open.idle9__M.why, "store_reject");
+});
+
+test("planDay: a shelf settled within the recheck window is not asked again unless a NEW rejection arrived; stock on the way keeps it off", () => {
+  const checked = { "a__M": NOW - 10 * DAY, "b__M": NOW - 10 * DAY, "c__M": NOW - 40 * DAY };
+  const candidates = [
+    { pid: "a", sizeKey: "M", why: "old_single", shown: 1, at: 1 },                 // checked 10 days ago: left off
+    { pid: "b", sizeKey: "M", why: "store_reject", shown: 2, at: NOW - DAY },       // a rejection since the check: back on
+    { pid: "c", sizeKey: "M", why: "not_selling", shown: 2, at: 2 },               // checked 40 days ago: due again
+    { pid: "d", sizeKey: "M", why: "web_reject", shown: 1, at: NOW - 2 * DAY },     // stock on the way: left off
+    { pid: "e", sizeKey: "M", why: "wrong_by_more", shown: 3, at: NOW - 20 * DAY - 1 }, // a rejection a check has settled since: left off
+  ];
+  const p = L.planDay({ candidates, checked: { ...checked, "e__M": NOW - 20 * DAY }, onTheWay: (id) => (id === "d__M" ? 1 : 0), perDay: 20, recheckDays: 30, nowMs: NOW, saDate: "2026-11-24" });
+  assert.deepEqual(Object.keys(p.open).sort(), ["b__M", "c__M"]);
+  assert.deepEqual(p.skipped, { recent: 2, travelling: 1 });
+  // A recheck window of 0 asks again at once.
+  assert.equal(Object.keys(L.planDay({ candidates: candidates.slice(0, 1), checked, recheckDays: 0, nowMs: NOW, saDate: "x" }).open).length, 1);
+});
+
+test("a website write-down on the list: Found puts the piece back (only that write-down); Not found confirms it and changes nothing", async () => {
+  const db = makeFakeDb({ stock: { "marathon-pe": { p9: { M: cell(1) } } } });
+  const w = await W.writeDownSingle(db, { pid: "p9", sizeKey: "M", size: "M", loc: "marathon-pe", kind: "hub_out_of_stock", orderId: "o1", orderNumber: 2400, line: 0, gen: 0, at: NOW }, { nowIso: iso(NOW) });
+  assert.equal(w.wroteDown, true);
+  const after = root(db).stock["marathon-pe"].p9.M;
+  const item = { pid: "p9", sizeKey: "M", shown: 0, why: "web_reject", mvId: w.movementId, lastMoved: Date.parse(after.updatedAt), at: NOW, ref: "website order #2400" };
+  await db.ref("shelf_checks/marathon-pe/open/p9__M").set(item);
+  assert.deepEqual(await runAnswer(db, { loc: "marathon-pe", id: "p9__M", result: "found", uid: "u-z", name: "Zee", nowMs: NOW + 60e3 }), { outcome: "found", unitsCorrected: 1 });
+  assert.equal(root(db).stock["marathon-pe"].p9.M.qty, 1);
+  assert.equal(root(db).online_writedowns, undefined);
+  // Not found on a second write-down: the count stays at zero, the row stays (a later sale can still prove it was there).
+  const db2 = makeFakeDb({ stock: { "marathon-pe": { p9: { M: cell(1) } } } });
+  const w2 = await W.writeDownSingle(db2, { pid: "p9", sizeKey: "M", size: "M", loc: "marathon-pe", kind: "hub_out_of_stock", orderId: "o2", orderNumber: 2401, line: 0, gen: 0, at: NOW }, { nowIso: iso(NOW) });
+  const a2 = root(db2).stock["marathon-pe"].p9.M;
+  await db2.ref("shelf_checks/marathon-pe/open/p9__M").set({ ...item, mvId: w2.movementId, lastMoved: Date.parse(a2.updatedAt) });
+  assert.deepEqual(await runAnswer(db2, { loc: "marathon-pe", id: "p9__M", result: "not_found", uid: "u-z", name: "Zee", nowMs: NOW + 60e3 }), { outcome: "notFound", unitsCorrected: 0 });
+  assert.equal(root(db2).stock["marathon-pe"].p9.M.qty, 0);
+  assert.ok(root(db2).online_writedowns.p9.M["marathon-pe"]);
+  assert.equal(root(db2).shelf_checks["marathon-pe"].done["2026-11-24"].p9__M.ref, "website order #2400");
 });

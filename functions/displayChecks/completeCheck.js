@@ -55,6 +55,24 @@ const {
 const ALL_RESULTS = [...DISPLAY_RESULTS, ...ONLINE_PICK_RESULTS, ...ONLINE_RETURN_RESULTS];
 const { guardedMutate } = require("./guardedTransaction.cjs");
 const { applyOnlineOrderOutcome, applyFoundOnCheck } = require("./onlineOrder.cjs");
+const { holdRejection } = require("../lib/shelf-rejects.cjs");
+const { DIRTY_PATH, CONCRETE_DIRTY_PATH } = require("../lib/shopify-inventory-dirty.cjs");
+
+/** A display check closed "no stock" over stock the app shows: hold that shelf until it is checked. Never throws. */
+async function holdNoStock(db, store, record) {
+  try {
+    if (!record || record.result !== "no_stock" || isOnlinePickRecord(record) || !record.productId) return null;
+    const sizeKey = record.sizeKey || stockSizeKey(record.size);
+    const at = Number(record.completedAt) || Date.now();
+    return await holdRejection(db, { loc: store, pid: record.productId, sizeKey, size: record.size ?? null, at, kind: "display_no_stock", ref: `display check ${record.checkId || ""}`.trim() }, {
+      nowMs: at,
+      markDirty: async (pid) => { for (const node of [DIRTY_PATH, CONCRETE_DIRTY_PATH]) await db.ref(`${node}/${pid}`).set(admin.database.ServerValue.increment(1)); },
+    });
+  } catch (e) {
+    console.warn(`[displayChecks] no-stock hold for ${store} not written (${e && e.message})`);
+    return null;
+  }
+}
 const { locationName, SEED_REGISTRY } = require("../lib/network-registry.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { loadStoreSettings } = require("./settings.cjs");
@@ -165,6 +183,9 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
     applyOnlineOrderOutcome(db, store, record, { storeName: name }),
     // "It is on display" also undoes a website write-down on that shelf (never decides ok: best-effort).
     applyFoundOnCheck(db, store, record),
+    // "No Stock Available" while the app shows stock there: the shop's own "not found anywhere". The count is NOT
+    // changed; the shelf is held off the website and put on its shelf check (Junid, 24 Nov 2026 evening). Best-effort.
+    holdNoStock(db, store, record),
   ]).then(([a, o]) => a && o);
   const okOrRetry = (record) => durable(record).then((ok) =>
     ok ? { kind: "ok", result: record.result, completedAt: record.completedAt, overridden: !!record.resultOverridden }

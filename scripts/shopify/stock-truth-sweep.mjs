@@ -144,6 +144,11 @@ async function rollback(file) {
 // logs/shelf-singles.json at the end of the run for scripts/online/shelf-checks.mjs (Junid, 24 Nov 2026).
 const LONE_PIECES = [];
 const SHELF_SINGLES_FILE = new URL("../../logs/shelf-singles.json", import.meta.url);
+// Every shelf showing stock, from the same cells (no extra read): the "not selling" source of tomorrow's lists
+// (scripts/online/shelf-checks.mjs, Junid 24 Nov 2026 evening). Not limited to live listings: a shelf can be wrong
+// whether or not the website sells it.
+const HELD_CELLS = [];
+const SHELF_HELD_FILE = new URL("../../logs/shelf-held.json", import.meta.url);
 
 // ── Pass 1 for one listed product, from the bulk snapshot ────────────────────
 // The SAME comparison syncProduct makes (planProduct), fed by the snapshot
@@ -156,6 +161,7 @@ async function judgeFromSnapshot(pid, snapshot, locNames, published) {
   const shop = gid ? snapshot.get(gid) : null;
   // Lone pieces of a listing that is live and on a sales channel: tonight's candidates for the daily shelf checks.
   if (shop && (published ? published.has(gid) : true)) for (const c of desired.singles || []) LONE_PIECES.push({ pid, ...c });
+  for (const c of desired.held || []) HELD_CELLS.push({ pid, ...c });
   // Not in the snapshot = not ACTIVE on Shopify (draft, archived or deleted):
   // nothing can be bought from it, so there is nothing to correct.
   if (!shop) return { pid, gid, ok: true, inactive: true, drift: [], untracked: [], shopifyUnits: 0, appUnits: 0 };
@@ -318,6 +324,7 @@ async function main() {
     try {
       mkdirSync(new URL("../../logs/", import.meta.url), { recursive: true });
       writeFileSync(SHELF_SINGLES_FILE, JSON.stringify({ at: Date.now(), singles: LONE_PIECES }));
+      writeFileSync(SHELF_HELD_FILE, JSON.stringify({ at: Date.now(), held: HELD_CELLS }));
       log(`shelf checks: ${LONE_PIECES.length} lone piece(s) at shops and hubs noted for tomorrow's lists`);
     } catch (e) { log(`shelf checks: the lone-piece list was not written (${String(e?.message || e)})`); }
   }

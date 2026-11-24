@@ -104,7 +104,8 @@ import DisplayRegistrationCard from "./components/stock/DisplayRegistrationCard"
 // small node per store and nothing else.
 import StockAuditView from "./components/stock/StockAuditView";
 import ShelfChecksPanel from "./components/online/ShelfChecksPanel.jsx";
-import { WebOrderBanner, HubWebPicksSummary } from "./components/online/WebOrderBadge.jsx";
+import { WebOrderBanner } from "./components/online/WebOrderBadge.jsx";
+import { hubQueueDay } from "./utils/onlineOrders.js";
 import { stockAuditVisibleForViewer } from "./config/stockAudit";
 import DisplayRegistrationView from "./components/stock/DisplayRegistrationView";
 import { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
@@ -14369,14 +14370,14 @@ function WarehouseView({ products = [], orders, onExit }) {
           {laybyPhoto && <GalleryLightbox photos={laybyPhoto} onClose={() => setLaybyPhoto(null)}/>}
           {/* ORDER CARDS — grouped by day, last 3 days only (Phase 10) */}
           <div style={{ padding:"0 13px" }}>
-            {/* Website picks still to be pulled, at the very top whatever day they came in; then this hub's
-                daily shelf checks (Junid, 24 Nov 2026). */}
-            <HubWebPicksSummary orders={hubOrders.filter(webWaitingPick)} />
+            {/* This hub's daily shelf checks (Junid, 24 Nov 2026). Website picks still to be pulled are NOT
+                repeated in a box of their own (Junid, 24 Nov 2026 evening): they lead the list below, in the
+                Today group whatever day they came in, bold, with their three-letter code and waiting time. */}
             <ShelfChecksPanel loc={selectedHub} />
             <DayCollapsible
               sectionKey={`wh-${filter}`}
               items={filtered}
-              dateOf={queueDateOf}
+              dateOf={(o) => hubQueueDay(o, webWaitingPick, queueDateOf, serverNowIso())}
               columns={isWide ? 2 : 1}
               // Cards here are STATEFUL now (TomorrowActionButton holds a
               // Central probe); the date-index fallback key would hand one
@@ -14469,7 +14470,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                       )}
                     </div>
                     {/* A website pick still to be pulled: red, bold, with how long it has waited (Junid, 24 Nov 2026). */}
-                    {order.channel === "online" && incoming && <WebOrderBanner since={order.createdAt} />}
+                    {order.channel === "online" && incoming && <WebOrderBanner since={order.createdAt} code={order.id} />}
                     <div style={{ fontSize: order.channel === "online" && incoming ? 17 : 15, fontWeight: order.channel === "online" && incoming ? 800 : 600, color:"#fff" }}>{order.productName}{order.size ? ` — Size ${order.size}` : ""}{order.qty > 1 ? ` × ${order.qty}` : ""}</div>
                     <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginTop:3, display:"flex", alignItems:"center", gap:4 }}>
                       <svg width="10" height="10" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>

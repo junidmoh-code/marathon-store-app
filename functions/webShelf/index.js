@@ -24,7 +24,8 @@ const L = require("./lib.cjs");
 const { isSuperAdmin } = require("../lib/super-admins.cjs");
 const { saDateStringFromMs } = require("../lib/sa-time.cjs");
 const { applyMovementAdmin } = require("../lib/admin-movement.cjs");
-const { writeDownSingle, restoreFound } = require("../lib/web-writedown.cjs");
+const { writeDownSingle, restoreFound, WRITEDOWNS_PATH } = require("../lib/web-writedown.cjs");
+const { readOnTheWay } = require("../lib/on-the-way.cjs");
 const { DIRTY_PATH, CONCRETE_DIRTY_PATH } = require("../lib/shopify-inventory-dirty.cjs");
 const { readAccountSections, locationInSections } = require("../lib/section-access.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
@@ -65,15 +66,19 @@ async function showItem(db, loc, id, item) {
     val(db, `products/${item.pid}/name`), val(db, `products/${item.pid}/photoUrl`),
     val(db, `products/${item.pid}/barcodes/${item.sizeKey}`), val(db, `products/${item.pid}/barcode`),
   ]);
-  return { id, pid: item.pid, sizeKey: item.sizeKey, size: item.sizeKey === "_" ? null : String(item.sizeKey).replace(/_/g, "."), shown: Number(item.shown), why: item.why, lastMoved: item.lastMoved ?? null, addedDay: item.addedDay || null, name: name || item.pid, photoUrl: photoUrl || null, barcode: barcodeOfSize || barcode || null };
+  return { id, pid: item.pid, sizeKey: item.sizeKey, size: item.sizeKey === "_" ? null : String(item.sizeKey).replace(/_/g, "."), shown: Number(item.shown), why: item.why, lastMoved: item.lastMoved ?? null, at: item.at ?? null, addedDay: item.addedDay || null, ref: item.ref || null, src: item.src || null, confirm: item.why === L.WHY.WEB && !!item.mvId, name: name || item.pid, photoUrl: photoUrl || null, barcode: barcodeOfSize || barcode || null };
 }
 
 async function listFor(db, loc, nowMs) {
   const cfg = L.configFrom(await val(db, L.SHELF_CONFIG_PATH));
   const saDate = saDateStringFromMs(nowMs);
-  const open = cfg.on ? (await val(db, `${L.SHELF_CHECKS_PATH}/${loc}/open`)) || {} : {};
-  // "wrong by more than one" first, then the oldest single pieces; never more than the day's number on screen.
-  const ids = Object.keys(open).sort((a, b) => (open[a].why === open[b].why ? (Number(open[a].lastMoved) || 0) - (Number(open[b].lastMoved) || 0) : open[a].why === L.WHY.MORE ? -1 : 1)).slice(0, cfg.perDay);
+  // A shop's list shows only once Junid has turned that shop on (/config/onlineOrders/shelfChecks/shops/<loc>/on).
+  const on = L.placeOn(cfg, loc);
+  const open = on ? (await val(db, `${L.SHELF_CHECKS_PATH}/${loc}/open`)) || {} : {};
+  // In the day's order (website rejections, other rejections, wrong by more, not selling, old single pieces), oldest
+  // first inside each; never more than the day's number on screen.
+  const sortAt = (it) => (Number.isFinite(Number(it.at)) ? Number(it.at) : Number(it.lastMoved) || 0);
+  const ids = Object.keys(open).sort((a, b) => L.rankOf(open[a].why) - L.rankOf(open[b].why) || sortAt(open[a]) - sortAt(open[b])).slice(0, L.perDayFor(cfg, loc));
   const checks = (await Promise.all(ids.map((id) => showItem(db, loc, id, open[id])))).filter(Boolean);
   const today = (await val(db, `${L.SHELF_CHECKS_PATH}/${loc}/days/${saDate}`)) || {};
   let webRows = [];
@@ -83,7 +88,7 @@ async function listFor(db, loc, nowMs) {
       .map(([key, r]) => ({ key, checkId: r.checkId, kind: r.kind, productId: r.productId, productName: r.productName, size: r.size, qty: r.qty || 1, orderNumber: r.orderNumber ?? null, ref: r.ref || null, photoUrl: r.photoUrl || null, checkProperly: r.checkProperly === true, createdAt: r.createdAt || r.activatedAt || null }))
       .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
   }
-  return { ok: true, loc, saDate, webRows, checks, today: { found: Number(today.found) || 0, notFound: Number(today.notFound) || 0, counted: Number(today.counted) || 0, corrected: Number(today.corrected) || 0, listed: Number(today.listed) || 0 }, left: Object.keys(open).length };
+  return { ok: true, loc, saDate, on, webRows, checks, today: { found: Number(today.found) || 0, notFound: Number(today.notFound) || 0, counted: Number(today.counted) || 0, corrected: Number(today.corrected) || 0, listed: Number(today.listed) || 0, units: Number(today.units) || 0 }, left: Object.keys(open).length };
 }
 
 exports.webShelfList = onCall({ region: "europe-west1", timeoutSeconds: 30, memory: "256MiB" }, async (request) => {
@@ -110,22 +115,35 @@ async function runAnswer(db, { loc, id, result, count, uid, name, nowMs }) {
   if (!item) return { error: "gone" };
   const cellPath = `stock/${loc}/${item.pid}/${item.sizeKey}`;
   const cell = await val(db, cellPath);
-  const plan = L.answerPlan({ item, cell, result, count });
+  // Stock sent here that has not landed yet: a person counts only what is ON the shelf (functions/lib/on-the-way.cjs).
+  const otw = (await readOnTheWay(db, { loc, pid: item.pid, sizeKey: item.sizeKey, cell, nowMs })).qty;
+  const plan = L.answerPlan({ item, cell, result, count, onTheWay: otw });
   if (plan.error) { if (plan.error === "stale") await db.ref(openPath).remove(); return { error: plan.error }; }
   const nowIso = new Date(nowMs).toISOString();
   const saDate = saDateStringFromMs(nowMs);
   const shown = Number(item.shown);
+  let unitsCorrected = 0;
   if (plan.kind === "write_down") {
-    const res = await writeDownSingle(db, { pid: item.pid, sizeKey: item.sizeKey, size: item.sizeKey, loc, kind: "shelf_check_not_found", by: uid, at: nowMs, idTag: `check_${loc}_${id}_${saDate}` }, { nowIso });
+    const res = await writeDownSingle(db, { pid: item.pid, sizeKey: item.sizeKey, size: item.sizeKey, loc, kind: "shelf_check_not_found", by: uid, at: nowMs, idTag: `check_${loc}_${id}_${saDate}`, onTheWay: otw }, { nowIso });
     if (!res.ok) return { error: res.reason || "not_written" };
     if (!res.wroteDown) { await db.ref(openPath).remove(); return { error: "stale" }; }
+    unitsCorrected = 1;
   } else if (plan.kind === "adjust") {
     const res = await applyMovementAdmin(db, {
       type: "adjustment", productId: item.pid, size: item.sizeKey, sizeKey: item.sizeKey, qty: Math.abs(plan.delta), ...(plan.delta < 0 ? { from: loc } : { to: loc }), expectQty: shown,
       movementId: `shelf_check_${loc}_${id}_${saDate}`.replace(/[.#$/\[\]\s]/g, "_"), actor: uid, actorRole: "admin",
-      reason: `shelf check: counted ${Number(count)}, the app showed ${shown}`, link: {},
+      reason: otw > 0
+        ? `shelf check: counted ${Number(count)} + ${otw} on the way = ${plan.target}, the app showed ${shown}`
+        : `shelf check: counted ${Number(count)}, the app showed ${shown}`, link: {},
     }, { nowIso });
     if (!res.ok) { if (res.reason === "cell_changed") { await db.ref(openPath).remove(); return { error: "stale" }; } return { error: res.reason || "not_written" }; }
+    unitsCorrected = Math.abs(plan.delta);
+  } else if (plan.kind === "restore") {
+    // A website write-down, and the piece is there after all: put it back (only the write-down this item was listed for).
+    const r = await restoreFound(db, { pid: item.pid, sizeKey: item.sizeKey, loc, why: "found_on_check", by: uid, expectMvId: item.mvId || undefined }, { nowIso });
+    if (!r.ok) return { error: r.reason || "not_written" };
+    if (!r.restored) { await db.ref(openPath).remove(); return { error: "stale" }; }
+    unitsCorrected = 1;
   } else {
     // Found / counted right: the shelf has been looked at by a person. Only if it still is the shelf that was listed.
     const touched = await db.ref(cellPath).transaction((cur) => {
@@ -134,29 +152,37 @@ async function runAnswer(db, { loc, id, result, count, uid, name, nowMs }) {
       return { ...(typeof cur === "object" ? cur : { qty: Number(cur) || 0 }), updatedAt: nowIso, checkedAt: nowIso, checkedBy: uid };
     });
     if (!touched.committed || !touched.snapshot.val()) { await db.ref(openPath).remove(); return { error: "stale" }; }
-    await restoreFound(db, { pid: item.pid, sizeKey: item.sizeKey, loc, why: "found_on_check", by: uid }, { nowIso });
+    // Found on a shelf that shows nothing that should be there (a write-down left it at what is on the way): the
+    // piece the write-down took is back, so it is undone. Any other agreeing answer — a count equal to what the shelf
+    // shows — already includes every piece: nothing is added, and an open write-down on it is simply settled.
+    if (result === "found" && shown - otw <= 0) await restoreFound(db, { pid: item.pid, sizeKey: item.sizeKey, loc, why: "found_on_check", by: uid }, { nowIso });
+    else if (plan.outcome !== "notFound") await db.ref(`${WRITEDOWNS_PATH}/${item.pid}/${item.sizeKey}/${loc}`).remove();
   }
   // The shelf has been settled by a person: a hold on it from an older rejection ends here.
   await db.ref(`${CELL_HOLDS_PATH}/${item.pid}/${item.sizeKey}/${loc}`).transaction((cur) => (cur == null ? null : Number(cur.at) <= nowMs ? null : undefined));
   await markDirty(db, item.pid);
-  await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/done/${saDate}/${id}`).set({ result: plan.outcome, shown, ...(result === "count" ? { counted: Number(count) } : {}), by: uid, byName: name || null, at: nowMs, why: item.why || null });
+  await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/done/${saDate}/${id}`).set(L.doneRow({ item, plan, result, count, otw, uid, name, nowMs, unitsCorrected }));
+  // When this shelf was last settled by a person: it is not asked again for the recheck window unless a NEW rejection arrives.
+  await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/checked/${id}`).set(nowMs);
   await db.ref(openPath).remove();
-  await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/days/${saDate}/${plan.outcome}`).transaction((n) => (Number(n) || 0) + 1);
-  return { outcome: plan.outcome };
+  await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/days/${saDate}`).transaction((d) => L.bumpDay(d, { outcome: plan.outcome, why: item.why, units: unitsCorrected }));
+  return { outcome: plan.outcome, unitsCorrected };
 }
 exports._runAnswer = runAnswer;
 
 exports.webShelfProgress = onCall({ region: "europe-west1", timeoutSeconds: 30, memory: "256MiB" }, async (request) => {
   const c = await caller(request);
   if (!c.isSuper) throw new HttpsError("permission-denied", "Junid and Jafer only.");
+  const cfg = L.configFrom(await val(c.db, L.SHELF_CONFIG_PATH));
   const places = [];
   for (const loc of L.CHECK_LOCATIONS) {
+    // Eight weeks of day counters (a few hundred bytes each), so the counts can be seen healing week by week.
     const [days, open] = await Promise.all([
-      c.db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/days`).orderByKey().limitToLast(14).get().then((s) => s.val()),
+      c.db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/days`).orderByKey().limitToLast(56).get().then((s) => s.val()),
       val(c.db, `${L.SHELF_CHECKS_PATH}/${loc}/open`),
     ]);
     const more = Object.values(open || {}).filter((o) => o && o.why === L.WHY.MORE).length;
-    places.push({ loc, ...L.progressOf(days, open), wrongByMoreOpen: more });
+    places.push({ loc, on: L.placeOn(cfg, loc), perDay: L.perDayFor(cfg, loc), ...L.progressOf(days, open), wrongByMoreOpen: more });
   }
-  return { ok: true, saDate: saDateStringFromMs(Date.now()), perDay: L.configFrom(await val(c.db, L.SHELF_CONFIG_PATH)).perDay, places };
+  return { ok: true, saDate: saDateStringFromMs(Date.now()), perDay: cfg.perDay, places };
 });

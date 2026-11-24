@@ -43,7 +43,7 @@ import {
   ONLINE_EXCLUDED_LOCATIONS,
 } from "./inventory.mjs";
 import { ONLINE_RESERVATIONS_PATH, heldUnits } from "../../src/utils/onlineOrders.js";
-import { pickableTree, readCellHolds, readPickableRules, readPipeline, loneCells } from "./pickableStock.mjs";
+import { pickableTree, readCellHolds, readPickableRules, readPipeline, loneCells, heldCells } from "./pickableStock.mjs";
 
 // The node the trigger writes to and this sweep drains.
 export const DIRTY_PATH = storeNode("shopify_inventory_dirty");
@@ -113,7 +113,7 @@ export async function desiredFor(db, pid, locNames = null) {
   const { tree: pickable, hidden } = pickableTree(tree, pid, await readCellHolds(get, pid), pickRules, Date.now(), await readPipeline(get, pid, pickRules));
   // `singles`: this product's lone pieces at shops and hubs, from the cells just read (no extra read) — the nightly
   // sweep hands them to the daily shelf-check list (scripts/online/shelf-checks.mjs).
-  return { map, totals: withoutForeignHolds(networkTotals(pickable, pid, sizes), holds), reserved: reservedBySize(holds), released: releasedBySize(holds), hidden, singles: loneCells(tree, pid, sizes) };
+  return { map, totals: withoutForeignHolds(networkTotals(pickable, pid, sizes), holds), reserved: reservedBySize(holds), released: releasedBySize(holds), hidden, singles: loneCells(tree, pid, sizes), held: heldCells(tree, pid) };
 }
 
 // /online_reservations/{pid} → { [sizeKey]: units held by open website orders }.

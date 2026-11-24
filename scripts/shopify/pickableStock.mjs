@@ -55,7 +55,10 @@
 
 export const CELL_HOLDS_PATH = "online_cell_holds";
 export const PICKABLE_CONFIG_PATH = "config/onlineOrders/pickable";
-export const HOLD_KINDS = Object.freeze(["hub_out_of_stock", "shop_not_found", "shelf_check"]);
+// Website rejections write the first three; every other rejection (a store customer's order Out of Stock, a refill
+// refused, a display check's No Stock, …) writes its own kind (functions/lib/shelf-rejects.cjs, Junid 24 Nov 2026
+// evening). Every kind holds the shelf the same way: until it next moves or is checked.
+export const HOLD_KINDS = Object.freeze(["hub_out_of_stock", "shop_not_found", "shelf_check", "store_order_oos", "shop_refill_rej", "stock_depleted", "refill_refused", "display_no_stock"]);
 
 /** Units a stock cell shows (a bare number is tolerated for old data). */
 export const cellQty = (cell) => Math.max(0, Number(cell !== null && typeof cell === "object" ? cell.qty : cell) || 0);
@@ -174,6 +177,26 @@ export function loneCells(tree, pid, sizes) {
     for (const [sizeKey, cell] of Object.entries(cells)) {
       const at = cellStampMs(cell);
       if (cellQty(cell) === 1 && at != null && listed.has(sizeKey)) out.push({ loc, sizeKey, at });
+    }
+  }
+  return out;
+}
+
+/** Where the daily shelf check looks for shelves that hold stock but are not selling: the floors, the hubs and Central. */
+export const CHECK_HELD_LOCATIONS = Object.freeze([...CHECK_SINGLE_LOCATIONS, "central"]);
+
+/**
+ * Every shelf of one product showing stock, for the "not selling" source of the daily shelf check (Junid, 24 Nov
+ * 2026 evening). PURE. → [{ loc, sizeKey, qty, at }]
+ */
+export function heldCells(tree, pid) {
+  const out = [];
+  for (const loc of CHECK_HELD_LOCATIONS) {
+    const cells = tree?.[loc]?.[pid];
+    if (!cells || typeof cells !== "object") continue;
+    for (const [sizeKey, cell] of Object.entries(cells)) {
+      const qty = cellQty(cell);
+      if (qty > 0 && keyOk(sizeKey)) out.push({ loc, sizeKey, qty, at: cellStampMs(cell) });
     }
   }
   return out;

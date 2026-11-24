@@ -15,7 +15,6 @@ import { useEffect, useMemo, useState } from "react";
 import { FONT, MONO, BLUE, BLUE_SOFT, AMBER, INK, PANEL, META } from "./tokens";
 import { deriveFeed, isOnlinePick } from "./feedModel";
 import WebsiteOrdersStrip from "./WebsiteOrdersStrip";
-import ShelfChecksPanel from "../../components/online/ShelfChecksPanel.jsx";
 import CheckCard from "./CheckCard";
 import CheckSheet from "./CheckSheet";
 import { styleCodeProgressForFootwear } from "../../utils/styleCodeCapture";
@@ -128,9 +127,9 @@ export default function TodayView({ store, active, activeItems, completedItems, 
 
   return (
     <div>
+      {/* The ONLY place a shop sees its clothing website lines. The shop's shelf check has its own tab (Junid, 24 Nov
+          2026 evening), so it never covers this strip or the display refills below. */}
       <WebsiteOrdersStrip store={store} rows={websiteRows} />
-      {/* The day's shelf checks for this shop (Junid, 24 Nov 2026): under the website strip, above everything else. */}
-      <ShelfChecksPanel loc={store} active={active !== false} />
       <StatStrip stats={feed.stats} />
 
       {!ready && (
