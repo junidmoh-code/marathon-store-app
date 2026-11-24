@@ -716,7 +716,7 @@ async function runScan(opts) {
       // at both Pine and Concrete is supplied to one of them. The owners are one
       // small node (only products seated at both), decided once and kept.
       const owners = (await db.ref(concreteDivision.DIVISION_OWNER_PATH).once("value")).val() || {};
-      ownerPlan = concreteDivision.planDivisionOwners({ seats: seatPlan.effective, rawStock: stock, owners, products, nowIso: new Date(nowMs).toISOString() });
+      ownerPlan = concreteDivision.planDivisionOwners({ seats: seatPlan.effective, rawStock: stock, openIndex, owners, products, nowIso: new Date(nowMs).toISOString() });
     }
     const seatArgs = seatPlan ? { seats: seatPlan.effective, divisionOwners: ownerPlan ? ownerPlan.effective : {} } : {};
     const plan = pausedLocations.withoutPausedDestinations(engine.computeRefillPlan({

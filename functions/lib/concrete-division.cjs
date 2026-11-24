@@ -225,18 +225,22 @@ function divisionContext({ config, seats, owners, openIndex } = {}) {
 //
 // The owner is decided ONCE and kept (refill_engine/divisionOwner/{pid}), so it
 // never flips as units sell:
-//   1. the shop holding more units of the product now;
+//   1. the shop holding more of the product: units on hand PLUS units already
+//      on their way there (open engine requests) — a shop whose request is
+//      about to land is not handed to the other shop;
 //   2. a tie → the shop seated there first (the older seat);
 //   3. still a tie → Concrete (the established shop; Pine reopened after its
 //      11 Nov count).
-// The record goes when the product is no longer seated at both shops; if it is
-// seated at both again later, the owner is decided afresh.
+// The record goes only when the product is no longer seated at both shops (or
+// turns out to be footwear); a product row missing for one scan keeps it. If it
+// is seated at both again later, the owner is decided afresh.
 //
 // A REQUEST ALREADY OPEN at the other shop is left alone: for a size with an
 // engine lock there, the shop keeps resolving its keep, so the scan neither
-// withdraws nor starves it (Junid, 24 Nov: "do not cancel real requests"). It
-// is never grown into a second one; when it is fulfilled or closed the size
-// resolves nothing at that shop from then on.
+// withdraws nor starves it (Junid, 24 Nov: "do not cancel real requests"); it
+// may still be trued (resized) like any open request, but no second request is
+// raised. Once it is fulfilled, or withdrawn by the engine's own rules (source
+// empty, need gone), the size resolves nothing at that shop from then on.
 const DIVISION_OWNER_PATH = "refill_engine/divisionOwner";
 const OWNER_DEFAULT = "concrete";
 
@@ -248,15 +252,25 @@ const shopUnits = (rawStock, loc, pid) => {
   return n;
 };
 const seatedAtBothShops = (seats, pid) => DIVISION_SHOPS.every((s) => divisionIsObj(seats?.[s]?.[pid]));
+// Units already on their way to a shop: the open engine locks for the product there.
+const shopInbound = (openIndex, loc, pid) => {
+  const bySize = openIndex?.[loc]?.[pid];
+  if (!divisionIsObj(bySize)) return 0;
+  let n = 0;
+  for (const e of Object.values(bySize)) if (divisionIsObj(e)) n += Math.max(Number(e.qty) || 0, 0);
+  return n;
+};
 
-/** Who owns a both-seated product, by the rule above. → { shop, why, units }. Pure. */
-function chooseDivisionOwner({ seats, rawStock, pid }) {
+/** Who owns a both-seated product, by the rule above. → { shop, why, units, inbound }. Pure. */
+function chooseDivisionOwner({ seats, rawStock, openIndex, pid }) {
   const [a, b] = DIVISION_SHOPS; // "concrete", "marathon-pine"
   const units = { [a]: shopUnits(rawStock, a, pid), [b]: shopUnits(rawStock, b, pid) };
-  if (units[a] !== units[b]) return { shop: units[a] > units[b] ? a : b, why: "units", units };
+  const inbound = { [a]: shopInbound(openIndex, a, pid), [b]: shopInbound(openIndex, b, pid) };
+  const held = (s) => units[s] + inbound[s];
+  if (held(a) !== held(b)) return { shop: held(a) > held(b) ? a : b, why: "units", units, inbound };
   const at = (s) => String(seats?.[s]?.[pid]?.at || "");
-  if (at(a) && at(b) && at(a) !== at(b)) return { shop: at(a) < at(b) ? a : b, why: "seated_first", units };
-  return { shop: OWNER_DEFAULT, why: "default", units };
+  if (at(a) && at(b) && at(a) !== at(b)) return { shop: at(a) < at(b) ? a : b, why: "seated_first", units, inbound };
+  return { shop: OWNER_DEFAULT, why: "default", units, inbound };
 }
 
 /**
@@ -265,7 +279,7 @@ function chooseDivisionOwner({ seats, rawStock, pid }) {
  *   owners  what DIVISION_OWNER_PATH holds now
  * → { effective: { pid: owner }, writes: { pid: owner | null }, decided, cleared }
  */
-function planDivisionOwners({ seats, rawStock, owners, products, nowIso }) {
+function planDivisionOwners({ seats, rawStock, openIndex = {}, owners, products, nowIso }) {
   const effective = {};
   const writes = {};
   let decided = 0, cleared = 0;
@@ -276,12 +290,20 @@ function planDivisionOwners({ seats, rawStock, owners, products, nowIso }) {
     if (!p || isDivisionFootwear(p) || SEAT_PID_BAD.test(pid)) continue;
     const have = kept[pid];
     if (divisionIsObj(have) && DIVISION_SHOPS.includes(have.shop)) { effective[pid] = have; continue; }
-    const c = chooseDivisionOwner({ seats, rawStock, pid });
-    effective[pid] = writes[pid] = { shop: c.shop, why: c.why, units: c.units, at: nowIso };
+    const c = chooseDivisionOwner({ seats, rawStock, openIndex, pid });
+    effective[pid] = writes[pid] = { shop: c.shop, why: c.why, units: c.units, inbound: c.inbound, at: nowIso };
     decided++;
   }
-  for (const pid of Object.keys(kept)) {
+  // Clear only what the seat rule itself no longer covers: not seated at both
+  // shops any more, or a footwear product. A product row missing for one scan
+  // (a partial catalogue read) keeps its owner — and keeps the gate.
+  for (const [pid, have] of Object.entries(kept)) {
     if (effective[pid] || SEAT_PID_BAD.test(pid)) continue;
+    const p = products?.[pid];
+    if (seatedAtBothShops(seats, pid) && !(p && isDivisionFootwear(p))) {
+      if (divisionIsObj(have) && DIVISION_SHOPS.includes(have.shop)) effective[pid] = have;
+      continue;
+    }
     writes[pid] = null;
     cleared++;
   }

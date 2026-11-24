@@ -51,6 +51,21 @@ test("the owner: more units wins; a tie goes to the older seat; still a tie → 
   assert.deepEqual([tie.shop, tie.why], ["concrete", "default"]);
 });
 
+test("units already on their way count: a shop whose open request is about to land is not handed to the other (review)", () => {
+  const rawStock = { concrete: { t1: { S: shelf(1) } }, "marathon-pine": {} };
+  const openIndex = { "marathon-pine": { t1: { S: { refillId: "r1", qty: 2 }, M: { refillId: "r2", qty: 2 } } } };
+  const c = dv.chooseDivisionOwner({ seats: bothSeated(), rawStock, openIndex, pid: "t1" });
+  assert.equal(c.shop, "marathon-pine");
+  assert.deepEqual(c.inbound, { concrete: 0, "marathon-pine": 4 });
+});
+
+test("a product row missing for one scan keeps its owner and the gate (review)", () => {
+  const kept = { t1: { shop: "concrete", why: "units", at: ISO } };
+  const own = dv.planDivisionOwners({ seats: bothSeated(), rawStock: {}, owners: kept, products: {}, nowIso: ISO });
+  assert.deepEqual(own.writes, {});
+  assert.equal(own.effective.t1.shop, "concrete");
+});
+
 test("seated at both, empty at both: only the owner asks Central (before: both did)", () => {
   const seats = bothSeated();
   const before = plan({ stock: {}, seats, owners: {} });
