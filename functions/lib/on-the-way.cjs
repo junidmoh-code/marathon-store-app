@@ -199,11 +199,16 @@ async function readOnTheWay(db, { loc, pid, sizeKey, cell = undefined, nowMs = D
  */
 const OVERLAP_MS = 20 * 60e3;
 const FIRST_RUN_LOOKBACK_MS = 4 * 864e5;
+const REFOLD_MS = 2 * 864e5;
+const saDay = (ms) => new Date(ms + SAST_OFFSET_MS).toISOString().slice(0, 10);
 async function trackOnTheWay(db, { nowMs, readSince, log = () => {} }) {
   const cfg = await readConfig(db, nowMs);
   const meta = (await read(db, OTW_META_PATH)) || {};
   const cursorMs = Date.parse(meta.cursor || "");
-  const fromMs = Number.isFinite(cursorMs) ? cursorMs - OVERLAP_MS : nowMs - FIRST_RUN_LOOKBACK_MS;
+  // Once a day the read reaches back two days: a phone that synced a transfer hours late (its `ts` is when it was
+  // made, not when it reached the ledger) is folded in then, at about 2 MB a day instead of a wide overlap every tick.
+  const refold = meta.refoldDay !== saDay(nowMs);
+  const fromMs = !Number.isFinite(cursorMs) ? nowMs - FIRST_RUN_LOOKBACK_MS : refold ? Math.min(cursorMs - OVERLAP_MS, nowMs - REFOLD_MS) : cursorMs - OVERLAP_MS;
   const movements = (await readSince(new Date(fromMs).toISOString())) || {};
   const rows = cfg.on ? rowsFromMovements(movements, nowMs, cfg) : [];
   const upd = {};
@@ -224,7 +229,7 @@ async function trackOnTheWay(db, { nowMs, readSince, log = () => {} }) {
     }
     upd[`${OTW_DUE_PATH}/${untilKey}`] = null;
   }
-  upd[OTW_META_PATH] = { cursor: new Date(newest).toISOString(), ranAt: nowMs, read: Object.keys(movements).length, kept: rows.length };
+  upd[OTW_META_PATH] = { cursor: new Date(newest).toISOString(), ranAt: nowMs, read: Object.keys(movements).length, kept: rows.length, refoldDay: refold ? saDay(nowMs) : meta.refoldDay || null };
   await db.ref().update(upd);
   log(`on the way: ${Object.keys(movements).length} ledger rows read, ${rows.length} on the way kept, ${expired} landed`);
   return { read: Object.keys(movements).length, kept: rows.length, expired, cursor: upd[OTW_META_PATH].cursor };

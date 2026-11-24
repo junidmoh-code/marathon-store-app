@@ -17,7 +17,8 @@
 //   4. not_selling   stock on the shelf, no sale or outbound movement for 21 days (logs/shelf-last-out.json,
 //                    folded forward from the ledger each night; at Marathon PE and Trophy the stock audit card's
 //                    clothing rotation is respected — a product in its current batch, or walked by it within the
-//                    recheck window, is not asked here too)
+//                    recheck window, is not asked here too; a REJECTION is asked whatever the card is doing —
+//                    a customer was just turned away from that shelf)
 //   5. old_single    one piece, untouched longest (logs/shelf-singles.json, from the sweep)
 //
 // Left off: a shelf with stock still on the way (until the delivery cutoff,
@@ -179,6 +180,12 @@ async function main() {
     const prune = {};
     for (const [id, t] of Object.entries(checked || {})) if (!(nowMs - Number(t) < cfg.recheckDays * 864e5)) prune[id] = null;
     if (Object.keys(prune).length) await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/checked`).update(prune);
+    // The answers are kept 60 days (the day counters, which the progress view reads, stay eight weeks and more).
+    const doneDays = Object.keys((await rest(`${L.SHELF_CHECKS_PATH}/${loc}/done`, "shallow=true")) || {});
+    const cut = saDateStringFromMs(nowMs - 60 * 864e5);
+    const old = {};
+    for (const d of doneDays) if (d < cut) old[d] = null;
+    if (Object.keys(old).length) await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/done`).update(old);
   }
   // The local cache is saved on a dry run too: it is only what the ledger already says, and saves reading it twice.
   saveLastOut(LAST_OUT_FILE, lastOut);

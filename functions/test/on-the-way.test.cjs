@@ -187,3 +187,14 @@ test("d) the 60-day old-single rule sees a shelf with stock on the way as touche
   // The cell's own stamp is the arrival: pickableStock.oldSingleSizes measures age from it, so the shelf is 0 days old.
   assert.equal(root(db).stock.trophy.p1.M.updatedAt, iso(TUE_15));
 });
+
+test("once a day the tick reads two days back (a phone that synced a transfer late is folded in); otherwise only since the cursor", async () => {
+  const db = makeFakeDb({ shelf_on_the_way_meta: { cursor: iso(TUE_15 - 600e3), refoldDay: "2026-11-23" } });
+  const asked = [];
+  const readSince = async (from) => { asked.push(from); return {}; };
+  await O.trackOnTheWay(db, { nowMs: TUE_15, readSince });
+  await O.trackOnTheWay(db, { nowMs: TUE_15 + 600e3, readSince });
+  assert.equal(asked[0], iso(TUE_15 - 2 * DAY));
+  assert.equal(asked[1], iso(TUE_15 - 600e3 - 20 * 60e3));
+  assert.equal(root(db).shelf_on_the_way_meta.refoldDay, "2026-11-24");
+});

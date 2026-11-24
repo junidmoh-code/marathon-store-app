@@ -92,3 +92,11 @@ test("a display check's No Stock over stock the app shows holds the shop's shelf
   assert.equal(root(db).online_cell_holds.p5.M.trophy.kind, "display_no_stock");
   assert.deepEqual(await R.holdRejection(db, { loc: "trophy", pid: "p5", sizeKey: "M", at: NOW, kind: "made_up" }), { held: false, why: "bad_request" });
 });
+
+test("a push key minted by a phone whose clock runs ahead never carries the cursor past rows still to come", async () => {
+  const db = makeFakeDb({});
+  const ahead = R.pushKeyAt(NOW + 6 * 3600e3) + "zzzzzzzzzzzz";
+  const normal = R.pushKeyAt(NOW - 60e3) + "aaaaaaaaaaaa";
+  await R.scanRejections(db, { nowMs: NOW, readInsights: async () => ({ [normal]: oosRow({ action: "ready" }), [ahead]: oosRow({ action: "ready" }) }), readRequests: async () => ({}) });
+  assert.equal(root(db).shelf_checks_meta.rejects.insightsKey, normal);
+});

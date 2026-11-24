@@ -1,6 +1,6 @@
 // ─── FIX THE PAST: counts made while stock was still on the way ──────────────
 //
-//   node scripts/online/on-the-way-backfill.mjs [--since 2026-11-24T11:30:00.000Z] [--commit]
+//   node scripts/online/on-the-way-backfill.mjs [--since 2026-11-24T11:30:00.000Z] --until <rule live> [--commit]
 //   node scripts/online/on-the-way-backfill.mjs --rollback <file> [--commit]
 //
 // Junid, 24 Nov 2026 evening (commit 2 of his brief; functions/lib/on-the-way.cjs
@@ -51,7 +51,8 @@ const SETTLING = new Set(["adjustment", "web_not_found", "web_found", "refusal_w
 /** Is this movement one of the counts to look at? → { loc, kind: "write_down" | "count", counted? } | null. PURE. */
 export function countMovement(m) {
   if (!m || !m.productId) return null;
-  if (m.type === "web_not_found" && m.from) return { loc: m.from, kind: "write_down" };
+  // A write-down the on-the-way rule itself made already left what was on the way: never corrected again.
+  if (m.type === "web_not_found" && m.from && !(m.web && m.web.onTheWay != null) && !/on the way/.test(String(m.reason || ""))) return { loc: m.from, kind: "write_down" };
   const r = String(m.reason || "");
   const hit = /^shelf check: counted (\d+)(?: \+ \d+ on the way = \d+)?, the app showed (\d+)$/.exec(r);
   if (m.type === "adjustment" && hit && !/on the way/.test(r)) return { loc: m.from || m.to, kind: "count", counted: Number(hit[1]), shown: Number(hit[2]) };
@@ -63,7 +64,7 @@ export function countMovement(m) {
  *   ledger   { [movementId]: row }   from (since − lookback) to now
  * → { fixes: [{ mvId, loc, pid, sizeKey, size, kind, at, otw, delta, before, after }], skipped: [{ mvId, loc, pid, sizeKey, why }] }
  */
-export function planFixes(ledger, sinceMs, cfg = O.configFrom(null)) {
+export function planFixes(ledger, sinceMs, cfg = O.configFrom(null), untilMs = Infinity) {
   const byShelf = new Map();
   for (const [id, m] of Object.entries(ledger || {})) {
     const sk = O.sizeKeyOf(m && m.size);
@@ -78,7 +79,7 @@ export function planFixes(ledger, sinceMs, cfg = O.configFrom(null)) {
   for (const [mvId, m] of Object.entries(ledger || {})) {
     const c = countMovement(m);
     const at = tsOf(m);
-    if (!c || at == null || at < sinceMs) continue;
+    if (!c || at == null || at < sinceMs || at > untilMs) continue;
     const sizeKey = O.sizeKeyOf(m.size);
     const rows = byShelf.get(keyOf(c.loc, m.productId, sizeKey)) || [];
     const otw = O.onTheWayAt(rows.filter((r) => r.id !== mvId), at, cfg);
@@ -137,10 +138,15 @@ async function main() {
   const since = opt("--since") || SINCE_DEFAULT;
   const sinceMs = Date.parse(since);
   if (!Number.isFinite(sinceMs)) throw new Error(`--since ${since} is not a time`);
+  // --until: when the on-the-way rule went live. Counts after it were already made under the rule. Required to write.
+  const until = opt("--until");
+  const untilMs = until ? Date.parse(until) : Infinity;
+  if (until && !Number.isFinite(untilMs)) throw new Error(`--until ${until} is not a time`);
+  if (COMMIT && !until) throw new Error("--commit needs --until <when the on-the-way rule went live>: counts after it are already right");
   const from = new Date(sinceMs - LOOKBACK_MS).toISOString();
   const ledger = (await rest("stock_movements", `orderBy=${encodeURIComponent('"ts"')}&startAt=${encodeURIComponent(`"${from}"`)}`)) || {};
   const cfg = O.configFrom(await rest(O.OTW_CONFIG_PATH));
-  const { fixes, skipped } = planFixes(ledger, sinceMs, cfg);
+  const { fixes, skipped } = planFixes(ledger, sinceMs, cfg, untilMs);
   console.log(`ledger rows read since ${from}: ${Object.keys(ledger).length}`);
   console.log(`counts since ${since} on a shelf with stock on the way: ${fixes.length + skipped.length} — to correct ${fixes.length}, skipped ${skipped.length}`);
   for (const f of fixes) console.log(`  + ${f.loc} ${f.pid} size ${f.size}: ${f.kind === "write_down" ? "written down" : `counted ${f.counted}`} at ${new Date(f.at).toISOString()} with ${f.otw} on the way → +${f.delta} (${f.mvId})`);

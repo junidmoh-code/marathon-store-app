@@ -143,7 +143,12 @@ async function scanRejections(db, { nowMs, readInsights, readRequests, markDirty
   const [insights, requests] = await Promise.all([readInsights(startKey), readRequests(reqFrom)]);
   const rejections = [];
   let lastKey = typeof cur.insightsKey === "string" && cur.insightsKey > startKey ? cur.insightsKey : startKey;
-  for (const [k, r] of Object.entries(insights || {})) { if (k > lastKey) lastKey = k; const x = fromInsight(k, r); if (x) rejections.push(x); }
+  for (const [k, r] of Object.entries(insights || {})) {
+    // A key minted by a phone whose clock runs ahead must not carry the cursor past rows still to come.
+    const kt = pushKeyTime(k);
+    if (k > lastKey && kt != null && kt <= nowMs + 5 * 60e3) lastKey = k;
+    const x = fromInsight(k, r); if (x) rejections.push(x);
+  }
   let lastReq = tMs(cur.requestsAt) || nowMs - FIRST_RUN_LOOKBACK_MS;
   for (const [id, r] of Object.entries(requests || {})) {
     const t = tMs(r && r.resolvedAt); if (t != null && t > lastReq && t <= nowMs + 5 * 60e3) lastReq = t;

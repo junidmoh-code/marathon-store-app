@@ -73,3 +73,29 @@ describe("not selling", () => {
     expect(Date.parse(pr.since)).toBe(NOW - 120 * DAY);
   });
 });
+
+import { countMovement, planFixes } from "./on-the-way-backfill.mjs";
+describe("fixing the past (counts made while stock was on the way)", () => {
+  const T = Date.parse("2026-11-24T12:00:00.000Z");
+  const ledger = {
+    rf1: { type: "transfer_out", productId: "p1", size: "M", qty: 1, from: "central", to: "marathon-pe", ts: iso(T - 3600e3) },
+    wd1: { type: "web_not_found", productId: "p1", size: "M", qty: 1, from: "marathon-pe", before: { "marathon-pe": 1 }, after: { "marathon-pe": 0 }, ts: iso(T), reason: "website pick not found #2301: the one piece shown is not on the shelf" },
+    sc1: { type: "adjustment", productId: "p2", size: "L", qty: 2, from: "hub2", before: { hub2: 3 }, after: { hub2: 1 }, ts: iso(T), reason: "shelf check: counted 1, the app showed 3" },
+    rf2: { type: "transfer_out", productId: "p2", size: "L", qty: 2, from: "central", to: "hub2", ts: iso(T - 7200e3) },
+    // Made under the new rule: already left what was on the way.
+    wd2: { type: "web_not_found", productId: "p3", size: "S", qty: 1, from: "trophy", before: { trophy: 2 }, after: { trophy: 1 }, ts: iso(T), web: { onTheWay: 1 }, reason: "website pick not found #2: the one piece that should be on the shelf is not there (1 more on the way, left on the count)" },
+    rf3: { type: "transfer_out", productId: "p3", size: "S", qty: 1, from: "central", to: "trophy", ts: iso(T - 3600e3) },
+  };
+  it("a write-down of a travelling piece is put back; a count gets its travelling units back; a write-down the new rule made is never touched", () => {
+    expect(countMovement(ledger.wd2)).toBeNull();
+    const { fixes } = planFixes(ledger, T - 864e5);
+    expect(fixes.map((f) => [f.mvId, f.delta])).toEqual([["wd1", 1], ["sc1", 2]]);
+  });
+  it("nothing after --until (when the rule went live) and nothing counted again since", () => {
+    expect(planFixes(ledger, T - 864e5, undefined, T - 1).fixes).toEqual([]);
+    const later = { ...ledger, again: { type: "adjustment", productId: "p2", size: "L", qty: 1, to: "hub2", ts: iso(T + 3600e3), reason: "recount" } };
+    const r = planFixes(later, T - 864e5);
+    expect(r.fixes.map((f) => f.mvId)).toEqual(["wd1"]);
+    expect(r.skipped.map((s) => s.mvId)).toEqual(["sc1"]);
+  });
+});

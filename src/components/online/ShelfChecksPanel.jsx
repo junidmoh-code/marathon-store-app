@@ -148,8 +148,14 @@ export default function ShelfChecksPanel({ loc, style = null, active = true, mod
     live.current = true;
     setData(null); setHidden(false);
     load();
-    // Refreshed while the screen is in front (a hidden tab or a switched-off shop is not polled).
-    const id = setInterval(() => { if ((typeof document === "undefined" || !document.hidden) && activeRef.current && onRef.current) load(); }, REFRESH_MS);
+    // Every minute while the screen is in front; every ten minutes otherwise (a hidden tab, or a shop that is
+    // switched off — so a shop Junid switches on gets its tab without a reload).
+    let ticks = 0;
+    const id = setInterval(() => {
+      ticks += 1;
+      if (typeof document !== "undefined" && document.hidden) return;
+      if ((activeRef.current && onRef.current) || ticks % 10 === 0) load();
+    }, REFRESH_MS);
     return () => { live.current = false; clearInterval(id); };
   }, [load]);
 
