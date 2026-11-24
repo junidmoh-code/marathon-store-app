@@ -187,8 +187,9 @@ function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = fals
             <button type="button" data-action="division" data-division-mark={divisionLabel.toLowerCase()} data-armed={armed || undefined}
               aria-label={armed ? `Tap again to move to ${divisionLabel}` : `Belongs to ${divisionLabel} only`} title={`This product belongs to ${divisionLabel} only`}
               onClick={tapDivision} style={divisionHit}>
-              <span style={{ ...divisionTag(busy === "division"), visibility: armed ? "hidden" : "visible" }}>{divisionLabel}</span>
-              {armed && <span data-division-confirm style={divisionConfirm}>Tap again to move to {divisionLabel}</span>}
+              <span aria-hidden="true" style={{ ...divisionTag(busy === "division"), visibility: armed ? "hidden" : "visible" }}>{divisionLabel}</span>
+              {armed && <span data-division-confirm aria-hidden="true" style={divisionConfirm}>Tap again to move to {divisionLabel}</span>}
+              <span role="status" aria-live="polite" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>{armed ? `Tap again to move to ${divisionLabel}` : ""}</span>
             </button>
           )}
         </div>
@@ -208,7 +209,7 @@ function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = fals
             const on = selected.includes(d.id);
             return (
               <button key={d.id} type="button" data-dest={d.id} aria-pressed={on} aria-label={d.name}
-                onClick={() => { if (!busy) onPick?.(row, d.id); }} style={chip(on)}>
+                onClick={() => { if (armed) disarm(); if (!busy) onPick?.(row, d.id); }} style={chip(on)}>
                 {/* The tick sits at the chip's edge, so the name never moves when chosen. */}
                 <span aria-hidden="true" style={{ position: "absolute", left: 3, top: 0, bottom: 0, display: "flex", alignItems: "center", fontSize: 11, opacity: on ? 1 : 0 }}>✓</span>{d.name}
               </button>
@@ -216,7 +217,7 @@ function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = fals
           })}
           {canAct && (
             <button type="button" data-action="solve" aria-disabled={!ready} aria-busy={busy || undefined}
-              onClick={() => { if (ready) onSolve?.(row); }} style={solveBtn(ready, busy)}>
+              onClick={() => { if (armed) disarm(); if (ready) onSolve?.(row); }} style={solveBtn(ready, busy)}>
               {/* One word, always: a label that changed would move (busy = dimmed). */}
               Solve
             </button>

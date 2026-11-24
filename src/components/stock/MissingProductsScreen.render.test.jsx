@@ -349,6 +349,28 @@ describe("kids shoes: no policy is said as no policy, never as queued", () => {
     expect(opened).toBe(1);
   });
 
+  it("a no-policy shoe a SHOP of the division holds a pair of (so not 'stranded') is still under Not listed as No policy — never silently gone", async () => {
+    const st = baseStock(); st.trophy = { ...(st.trophy || {}), [KID]: { 24: cell(1) } };
+    emit("stock", st);
+    const tree = await mount();
+    expect(host(tree, "data-card", KID).length).toBe(0);
+    await act(async () => { host(tree, "data-not-listed-line")[0].props.onClick(); });
+    expect(host(tree, "data-not-listed-row", KID)[0].props["data-reason"]).toBe("noPolicy");
+  });
+
+  it("tapping a location or Solve disarms the division button", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    const mb = () => card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0];
+    await act(async () => { mb().props.onClick(); });
+    expect(mb().props["data-armed"]).toBe(true);
+    await pick(tree, TEE, offered(tree, TEE)[0]);
+    expect(mb().props["data-armed"]).toBeUndefined();
+    updateMock.mockClear();
+    await act(async () => { mb().props.onClick(); });            // arms again — writes nothing
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
   it("NO CARD ANYWHERE has the division button as its only control: every card on both divisions and both kinds offers a location", async () => {
     const tree = await mount();
     for (const sec of [MARATHON, CONCRETE]) {

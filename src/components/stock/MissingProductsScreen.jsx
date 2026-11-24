@@ -270,7 +270,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
         // A CARD ALWAYS OFFERS A LOCATION (Junid, 24 Nov 2026): a row with none
         // is "Not listed", never a card whose only control is the division button.
         const row = d.row && d.row.dests.length ? d.row : null;
-        noteWhy(bucketId(sec, "sneakers"), card.pid, row ? null : d.why || "noPolicy");
+        noteWhy(bucketId(sec, "sneakers"), card.pid, row ? null : d.why || "unknown");
         return row;
       },
     },
@@ -292,7 +292,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
           routes: c.cfg?.routes, nameOf: c.label, owners,
         });
         const row = d.row && d.row.dests.length ? d.row : null;
-        noteWhy(bucketId(sec, "clothing"), card.pid, row ? null : d.why || "noPolicy");
+        noteWhy(bucketId(sec, "clothing"), card.pid, row ? null : d.why || "unknown");
         return row;
       },
     },
