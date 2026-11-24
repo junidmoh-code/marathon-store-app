@@ -159,6 +159,9 @@ async function applyMovementAdmin(db, movement, { nowIso, network: trustNetwork 
       if (cur && (cur.relMv === mvId || cur.lastRelMv === mvId)) return undefined;
       const curQty = cur && typeof cur.qty === "number" ? cur.qty : 0;
       if (movement.expectQty != null && curQty !== Number(movement.expectQty)) return undefined;   // moved since the plan — reported below
+      // expectMv: the cell must still carry the movement the caller planned from (a recount that leaves the same
+      // quantity still changes `mv`), else refused as cell_changed.
+      if (movement.expectMv !== undefined && ((cur && cur.mv) ?? null) !== (movement.expectMv ?? null)) return undefined;
       const clearedDebt = curQty < 0 && clampsNegativeBase(movement, d.delta, d.loc) ? curQty : 0;
       const newQty = (curQty - clearedDebt) + d.delta;
       if (d.delta < 0 && newQty < 0 && !movement.allowNegative) return undefined;   // floor — reported below
@@ -189,7 +192,7 @@ async function applyMovementAdmin(db, movement, { nowIso, network: trustNetwork 
         after[d.loc] = curQty;
         continue;
       }
-      refusal = movement.expectQty != null && curQty !== Number(movement.expectQty)
+      refusal = (movement.expectQty != null && curQty !== Number(movement.expectQty)) || (movement.expectMv !== undefined && ((cur && cur.mv) ?? null) !== (movement.expectMv ?? null))
         ? { ok: false, reason: "cell_changed", location: d.loc, available: curQty, expected: Number(movement.expectQty) }
         : { ok: false, reason: "insufficient_stock", location: d.loc, available: curQty, requested: qty };
       break;

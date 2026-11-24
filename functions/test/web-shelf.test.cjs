@@ -136,6 +136,34 @@ test("the reversal is pinned to the shelf it read: a movement landing in between
   assert.equal(root(db).stock.hub1.s1["8"].qty, 2);
 });
 
+test("a Found given BEFORE the write-down (an old confirmation replayed) does not undo it; the sweep only undoes the row it judged", async () => {
+  const db = makeFakeDb({ stock: { trophy: { a: { M: cell(1) } } } });
+  await W.writeDownSingle(db, { ...W1, pid: "a", loc: "trophy" }, { nowIso: iso(NOW) });
+  const early = await W.restoreFound(db, { pid: "a", sizeKey: "M", loc: "trophy", why: "found_on_check", at: NOW - 1 }, { nowIso: iso(NOW + 5) });
+  assert.equal(early.restored, false);
+  assert.equal(root(db).stock.trophy.a.M.qty, 0);
+  const other = await W.restoreFound(db, { pid: "a", sizeKey: "M", loc: "trophy", why: "sold_or_picked", expectMvId: "web_nf_some_other" }, { nowIso: iso(NOW + 5) });
+  assert.equal(other.restored, false);
+  assert.ok(root(db).online_writedowns.a.M.trophy);
+  const later = await W.restoreFound(db, { pid: "a", sizeKey: "M", loc: "trophy", why: "found_on_check", at: NOW + 1 }, { nowIso: iso(NOW + 5) });
+  assert.equal(later.restored, true);
+});
+
+test("a recount that lands between judging the shelf and writing it down keeps the recount (same quantity, newer movement)", async () => {
+  const db = makeFakeDb({ stock: { trophy: { a: { M: cell(1) } } } });
+  const realRef = db.ref.bind(db);
+  let armed = true;
+  db.ref = (p) => {
+    // The ledger look-up inside applyMovementAdmin comes after writeDownSingle judged the shelf: the recount lands here.
+    if (armed && p === "stock/trophy/a/M") { const r = realRef(p); const tx = r.transaction.bind(r); r.transaction = (fn) => { if (armed) { armed = false; root(db).stock.trophy.a.M = { ...root(db).stock.trophy.a.M, qty: 1, mv: "recount-1" }; } return tx(fn); }; return r; }
+    return realRef(p);
+  };
+  const res = await W.writeDownSingle(db, { ...W1, pid: "a", loc: "trophy" }, { nowIso: iso(NOW) });
+  assert.deepEqual({ ok: res.ok, wroteDown: res.wroteDown }, { ok: true, wroteDown: false });
+  assert.equal(root(db).stock.trophy.a.M.qty, 1);
+  assert.equal(root(db).stock_movements, undefined);
+});
+
 test("the sweep: untouched → kept; moved without going below zero → closed with nothing added", async () => {
   const db = makeFakeDb({ stock: { hub1: { s1: { 8: cell(1) } }, hub2: { s1: { 8: cell(1) } } } });
   await W.writeDownSingle(db, { ...W1, pid: "s1", sizeKey: "8", size: "8", loc: "hub1", kind: "hub_out_of_stock" }, { nowIso: iso(NOW) });

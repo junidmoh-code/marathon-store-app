@@ -810,8 +810,9 @@ async function maintainOrder(ctx, id, order) {
     // and out of routing until that shelf moves again (pickableStock.mjs).
     const refused = out.status === LINE_STATUS.NO_STOCK ? records.find((r) => r && r.channel === "online" && r.status === "out_of_stock") : null;
     // A lone piece is written to zero in the app's own count as well (writeDown.mjs, Junid 24 Nov 2026).
+    const refusedAt = refused?.hub ? rejectedAt(refused.outOfStockAt, now) : null;
     if (refused?.hub) {
-      const at = rejectedAt(refused.outOfStockAt, now);
+      const at = refusedAt;
       await holdCell(ctx, { pid: l.pid, sizeKey: l.sizeKey, loc: refused.hub, kind: "hub_out_of_stock", orderId: id, line: i, by: refused.outOfStockByUid, at });
       await writeDownRejected(ctx, { pid: l.pid, size: l.size, sizeKey: l.sizeKey, loc: refused.hub, kind: "hub_out_of_stock", orderId: id, orderNumber: order.orderNumber ?? null, line: i, gen: Number(l.routeGen) || 0, by: refused.outOfStockByUid || null, at });
     }
@@ -824,7 +825,8 @@ async function maintainOrder(ctx, id, order) {
         ...(out.reason ? { reason: out.reason } : {}),
         ...(out.status === LINE_STATUS.HANDED ? { handedAt: now, handedBy: "hub" } : {}),
         // When the hub said no: what the chain move (chainMove.mjs) picks the line up by.
-        ...(refused?.hub ? { failedAt: now } : {}),
+        // The hub's own time, not this tick's: a poller that was away for days must not treat an old rejection as fresh.
+        ...(refused?.hub ? { failedAt: refusedAt } : {}),
       },
     });
   }

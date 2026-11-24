@@ -145,7 +145,7 @@ describe("a hub's Out of Stock moves the line on in the same tick", () => {
     const f = fakeDb(world({ stock: { hub1: { SNK: { 8: cell(1) } } } }));
     await hubSaysNo(f);
     const l = line(f);
-    expect(l.source).toMatchObject({ status: "no_stock", locationId: "hub1", failedAt: NOW });
+    expect(l.source).toMatchObject({ status: "no_stock", locationId: "hub1", failedAt: NOW - 30e3 }); // the hub's own time
     expect(l.chain).toMatchObject({ gen: 0, rid: chainKey(0, 0), at: NOW, result: "nowhere" });
     expect(l.chain.why).toMatch(/Hub 1: skipped, Hub 2: 0 free, Hub 3: 0 free, Central: 0 free/);
     const from = f.writes.length;
@@ -186,6 +186,15 @@ describe("a hub's Out of Stock moves the line on in the same tick", () => {
     // …but one piece + a recent rejection is two points: Hub 2 is asked first, and the line says why.
     expect(line(f).source).toMatchObject({ locationId: "hub2", status: "pick" });
     expect(line(f).source.why).toMatch(/^trusted shelf, ahead of hub1 \(one piece, rejected a website pick \d+ days ago\)$/);
+  });
+
+  it("a hub rejection the poller only sees days later is not treated as fresh: the line is left for a person", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SNK: { 8: cell(2) } }, hub2: { SNK: { 8: cell(3) } } } }));
+    await runOrdersPoll(deps(f, [shopifyOrder(9001, 2501)]));
+    await f.db.ref(`orders/${line(f).source.orderKeys[0]}`).update({ status: "out_of_stock", outOfStockAt: new Date(NOW - 3 * 864e5).toISOString() });
+    await runOrdersPoll(deps(f));
+    expect(line(f).source).toMatchObject({ status: "no_stock", locationId: "hub1", failedAt: NOW - 3 * 864e5 });
+    expect(f.read("online_orders/9001/agentRepicks") ?? null).toBeNull();
   });
 
   it("a doubtful shelf is asked after a trusted one, and before Central", async () => {

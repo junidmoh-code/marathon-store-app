@@ -12,8 +12,9 @@ const NAME = { "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concre
 const cellStyle = { padding: "6px 8px", borderTop: "1px solid rgba(255,255,255,.07)", fontSize: 13, textAlign: "right" };
 
 /** One place's row. PURE. */
-export function progressRow(p) {
-  const today = p.days?.[0] || null;
+export function progressRow(p, saDate = null) {
+  // Today's own record (by date), never simply the newest one.
+  const today = (p.days || []).find((d) => (saDate ? d.day === saDate : false)) || (saDate ? null : p.days?.[0] || null);
   return {
     place: NAME[p.loc] || p.loc, open: p.open, wrongByMoreOpen: p.wrongByMoreOpen || 0,
     today: today ? `${today.checked} of ${Math.max(today.listed, today.checked)}` : "—",
@@ -50,7 +51,7 @@ export default function ShelfProgressCard() {
               </tr>
             </thead>
             <tbody>
-              {state.data.places.map(progressRow).map((r) => (
+              {state.data.places.map((p) => progressRow(p, state.data.saDate)).map((r) => (
                 <tr key={r.place}>
                   <td style={{ ...cellStyle, textAlign: "left", fontWeight: 600 }}>{r.place}</td>
                   <td style={cellStyle}>{r.today}</td><td style={cellStyle}>{r.open}</td><td style={cellStyle}>{r.wrongByMoreOpen}</td>

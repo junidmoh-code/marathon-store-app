@@ -59,8 +59,10 @@ async function writeDownSingle(db, w, { nowIso }) {
   const movementId = `web_nf_${safeId(w.idTag || `${w.orderId}_${w.line}_g${Number(w.gen) || 0}`)}_${safeId(w.loc)}`;
   const cellP = `stock/${w.loc}/${w.pid}/${w.sizeKey}`;
   const existing = await read(db, rowPath(w.pid, w.sizeKey, w.loc));
+  let planned; // the movement the shelf carried when it was judged: the debit is refused if anything lands in between
   if (!(existing && existing.mvId === movementId) && !(await read(db, `stock_movements/${movementId}`))) {
     const cell = await read(db, cellP);
+    planned = { mv: (cell && cell.mv) ?? null };
     const qty = cellQty(cell);
     if (qty !== 1) return { ok: true, wroteDown: false, qty };
     // The shelf moved AFTER the rejection (a delivery, a count): that is newer evidence, leave it.
@@ -70,7 +72,7 @@ async function writeDownSingle(db, w, { nowIso }) {
   const size = w.size != null && w.size !== "" ? String(w.size) : w.sizeKey;
   const label = w.orderNumber != null ? ` #${w.orderNumber}` : "";
   const res = await applyMovementAdmin(db, {
-    type: "web_not_found", productId: w.pid, size, sizeKey: w.sizeKey, qty: 1, from: w.loc, expectQty: 1,
+    type: "web_not_found", productId: w.pid, size, sizeKey: w.sizeKey, qty: 1, from: w.loc, expectQty: 1, ...(planned ? { expectMv: planned.mv } : {}),
     movementId, actor: w.by ? String(w.by) : "system:website-order", actorRole: "admin",
     reason: `website pick not found${label}: the one piece shown is not on the shelf`,
     link: { orderId: w.orderId != null ? String(w.orderId) : null },
@@ -98,6 +100,10 @@ async function restoreFound(db, f, { nowIso }) {
   const path = rowPath(f.pid, f.sizeKey, f.loc);
   const row = await read(db, path);
   if (!row || !row.mvId) return { ok: true, restored: false };
+  // Only the write-down the caller meant (the sweep passes the row it judged), and never on the word of a Found
+  // given BEFORE that write-down (a replayed old confirmation must not undo a newer rejection).
+  if (f.expectMvId && row.mvId !== f.expectMvId) return { ok: true, restored: false };
+  if (Number.isFinite(Number(f.at)) && Number(f.at) > 0 && Number(f.at) < Number(row.at)) return { ok: true, restored: false };
   // THE SHELF AS IT STANDS decides, and the write is pinned to it (expectQty). The piece goes back only when the shelf
   // is still exactly as the write-down left it, or has gone below zero (a sale or pick took a piece the count said
   // was not there). Any other movement since — a delivery, a count — has already settled the count: adding one on
@@ -107,7 +113,7 @@ async function restoreFound(db, f, { nowIso }) {
   const closeRow = () => db.ref(path).transaction((cur) => (cur == null ? null : cur.mvId === row.mvId ? null : undefined));
   if (!cell || !(cell.mv === row.mvId || qtyNow < 0)) { await closeRow(); return { ok: true, restored: false, settled: true }; }
   const res = await applyMovementAdmin(db, {
-    type: "web_found", productId: f.pid, size: row.size != null ? String(row.size) : f.sizeKey, sizeKey: f.sizeKey, qty: Math.max(1, Number(row.qty) || 1), to: f.loc, expectQty: qtyNow,
+    type: "web_found", productId: f.pid, size: row.size != null ? String(row.size) : f.sizeKey, sizeKey: f.sizeKey, qty: Math.max(1, Number(row.qty) || 1), to: f.loc, expectQty: qtyNow, expectMv: cell.mv ?? null,
     movementId: `web_found_${safeId(row.mvId)}`, actor: f.by ? String(f.by) : "system:website-order", actorRole: "admin",
     reason: `found after a website not-found${row.orderNumber != null ? ` #${row.orderNumber}` : ""} (${String(f.why || "found").replace(/_/g, " ")})`,
     link: { orderId: row.orderId ?? null },
@@ -146,7 +152,7 @@ async function sweepWriteDowns(db, { nowIso, nowMs, log = () => {} }) {
       const what = sweepDecision(row, cell, nowMs);
       if (what === "keep") return;
       if (what === "restore") {
-        const r = await restoreFound(db, { pid, sizeKey, loc, why: "sold_or_picked" }, { nowIso });
+        const r = await restoreFound(db, { pid, sizeKey, loc, why: "sold_or_picked", expectMvId: row.mvId }, { nowIso });
         if (r.ok && r.restored) { out.restored += 1; log(`  ↺ write-down undone: ${pid} size ${sizeKey} at ${loc} — a piece was sold or picked there after the website not-found${row.orderNumber != null ? ` #${row.orderNumber}` : ""}`); }
         else if (r.ok && r.settled) out.closed += 1;
         return;

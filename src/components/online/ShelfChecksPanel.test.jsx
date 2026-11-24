@@ -71,6 +71,10 @@ describe("the daily shelf checks", () => {
     expect(byTestId(tree, "shelf-count")).toHaveLength(1);
     expect(countChoices(3)).toEqual([0, 1, 2, 3, 4, 5]);
     expect(countChoices(2)).toEqual([0, 1, 2, 3, 4]);
+    expect(countChoices(29)).toHaveLength(31);            // never past what the server takes
+    expect(countChoices(2, true).at(-1)).toBe(30);        // "More" offers every number the server takes
+    await act(async () => { byTestId(tree, "shelf-count-more")[0].props.onClick(); });
+    expect(byTestId(tree, "shelf-count-8")).toHaveLength(1);
     await act(async () => { byTestId(tree, "shelf-count-1")[0].props.onClick(); });
     expect(calls.at(-1)).toEqual(["webShelfAnswer", { loc: "trophy", id: "w__L", result: "count", count: 1 }]);
     await act(async () => { byTestId(tree, "shelf-count-0")[0].props.onClick(); });
@@ -172,8 +176,11 @@ describe("website orders stand out", () => {
 
 describe("Junid's progress view", () => {
   it("one row per place: today, what is waiting, and how often the shelf was wrong", () => {
-    expect(progressRow({ loc: "marathon-pe", open: 12, wrongByMoreOpen: 3, checked14: 40, wrong14: 10, days: [{ day: "2026-11-24", listed: 20, checked: 8 }] }))
+    const pe = { loc: "marathon-pe", open: 12, wrongByMoreOpen: 3, checked14: 40, wrong14: 10, days: [{ day: "2026-11-24", listed: 20, checked: 8 }] };
+    // Yesterday's record is never shown as today's.
+    expect(progressRow(pe, "2026-11-25").today).toBe("—");
+    expect(progressRow(pe, "2026-11-24"))
       .toEqual({ place: "Marathon PE", open: 12, wrongByMoreOpen: 3, today: "8 of 20", checked14: 40, wrong14: 10, wrongPct: 25 });
-    expect(progressRow({ loc: "hub3", open: 0, checked14: 0, wrong14: 0, days: [] })).toMatchObject({ place: "Hub 3", today: "—", wrongPct: null });
+    expect(progressRow({ loc: "hub3", open: 0, checked14: 0, wrong14: 0, days: [] }, "2026-11-24")).toMatchObject({ place: "Hub 3", today: "—", wrongPct: null });
   });
 });

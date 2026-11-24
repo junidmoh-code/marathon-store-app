@@ -130,7 +130,7 @@ export default function TodayView({ store, active, activeItems, completedItems, 
     <div>
       <WebsiteOrdersStrip store={store} rows={websiteRows} />
       {/* The day's shelf checks for this shop (Junid, 24 Nov 2026): under the website strip, above everything else. */}
-      <ShelfChecksPanel loc={store} />
+      <ShelfChecksPanel loc={store} active={active !== false} />
       <StatStrip stats={feed.stats} />
 
       {!ready && (

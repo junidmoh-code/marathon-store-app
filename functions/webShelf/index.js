@@ -26,6 +26,16 @@ const { saDateStringFromMs } = require("../lib/sa-time.cjs");
 const { applyMovementAdmin } = require("../lib/admin-movement.cjs");
 const { writeDownSingle, restoreFound } = require("../lib/web-writedown.cjs");
 const { DIRTY_PATH, CONCRETE_DIRTY_PATH } = require("../lib/shopify-inventory-dirty.cjs");
+const { readAccountSections, locationInSections } = require("../lib/section-access.cjs");
+const { loadNetwork } = require("../lib/network-load.cjs");
+
+// A person works only the places in the sections their account may act in (the Warehouse screen filters hubs the
+// same way; this is the server's own check). Central is reachable from every section.
+async function inMySection(c, loc) {
+  if (c.isSuper) return true;
+  const network = await loadNetwork(c.db);
+  return locationInSections(network, await readAccountSections(c.db, network, c.uid, { isOwner: false }), loc);
+}
 
 const CELL_HOLDS_PATH = "online_cell_holds";
 const val = async (db, path) => (await db.ref(path).get()).val();
@@ -79,17 +89,17 @@ async function listFor(db, loc, nowMs) {
 exports.webShelfList = onCall({ region: "europe-west1", timeoutSeconds: 30, memory: "256MiB" }, async (request) => {
   const c = await caller(request);
   const loc = request.data && request.data.loc;
-  if (!L.shelfAccess({ isSuper: c.isSuper, perms: c.perms, loc })) throw new HttpsError("permission-denied", "You can't work this place's list.");
+  if (!L.shelfAccess({ isSuper: c.isSuper, perms: c.perms, loc }) || !(await inMySection(c, loc))) throw new HttpsError("permission-denied", "You can't work this place's list.");
   return listFor(c.db, loc, Date.now());
 });
 
 exports.webShelfAnswer = onCall({ region: "europe-west1", timeoutSeconds: 30, memory: "256MiB" }, async (request) => {
   const c = await caller(request);
   const { loc, id, result, count } = request.data || {};
-  if (!L.shelfAccess({ isSuper: c.isSuper, perms: c.perms, loc })) throw new HttpsError("permission-denied", "You can't work this place's list.");
+  if (!L.shelfAccess({ isSuper: c.isSuper, perms: c.perms, loc }) || !(await inMySection(c, loc))) throw new HttpsError("permission-denied", "You can't work this place's list.");
   if (typeof id !== "string" || !id || /[.#$[\]/]/.test(id)) throw new HttpsError("invalid-argument", "id is required.");
   const out = await runAnswer(c.db, { loc, id, result, count, uid: c.uid, name: c.name, nowMs: Date.now() });
-  if (out.error) return { ok: false, reason: out.error, ...(await listFor(c.db, loc, Date.now())) };
+  if (out.error) return { ...(await listFor(c.db, loc, Date.now())), ok: false, reason: out.error };
   return { ...(await listFor(c.db, loc, Date.now())), answered: out.outcome };
 });
 
@@ -148,5 +158,5 @@ exports.webShelfProgress = onCall({ region: "europe-west1", timeoutSeconds: 30, 
     const more = Object.values(open || {}).filter((o) => o && o.why === L.WHY.MORE).length;
     places.push({ loc, ...L.progressOf(days, open), wrongByMoreOpen: more });
   }
-  return { ok: true, perDay: L.configFrom(await val(c.db, L.SHELF_CONFIG_PATH)).perDay, places };
+  return { ok: true, saDate: saDateStringFromMs(Date.now()), perDay: L.configFrom(await val(c.db, L.SHELF_CONFIG_PATH)).perDay, places };
 });

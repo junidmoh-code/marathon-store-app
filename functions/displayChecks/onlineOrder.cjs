@@ -44,7 +44,7 @@ async function applyFoundOnCheck(db, store, record) {
     if (!record || isOnlinePickRecord(record) || isOnlineReturnRecord(record) || record.status !== "completed" || record.result !== "confirmed") return;
     const sizeKey = record.sizeKey != null && record.sizeKey !== "" ? String(record.sizeKey) : null;
     if (!record.productId || !sizeKey || /[.#$[\]/]/.test(`${record.productId}${sizeKey}${store}`)) return;
-    const res = await restoreFound(db, { pid: record.productId, sizeKey, loc: store, why: "found_on_check", by: (record.completedBy && record.completedBy.uid) || null }, { nowIso: new Date().toISOString() });
+    const res = await restoreFound(db, { pid: record.productId, sizeKey, loc: store, why: "found_on_check", at: Number(record.completedAt) || 0, by: (record.completedBy && record.completedBy.uid) || null }, { nowIso: new Date().toISOString() });
     if (res.ok && res.restored) await markWebsiteDirty(db, record.productId);
   } catch (err) {
     console.warn(`display check: found-after-write-down not applied (${err && err.message})`);

@@ -37,8 +37,10 @@ export function whyText(check, now = Date.now()) {
   return d != null ? `One piece, not touched for ${d} days. Is it there?` : "One piece. Is it there?";
 }
 
-/** The numbers offered for a shelf showing several: 0 … shown + 2 (at least 0…4). PURE. */
-export const countChoices = (shown) => Array.from({ length: Math.max(5, Number(shown) + 3) }, (_, n) => n);
+/** The largest count the server takes (functions/webShelf/lib.cjs MAX_COUNT). */
+export const MAX_COUNT = 30;
+/** The numbers offered for a shelf showing several: 0 … shown + 2 (at least 0…4), or every number to 30 after "More". PURE. */
+export const countChoices = (shown, all = false) => Array.from({ length: (all ? MAX_COUNT : Math.min(MAX_COUNT, Math.max(4, Number(shown) + 2))) + 1 }, (_, n) => n);
 
 /** A keyboard-wedge scanner types the code fast and ends with Enter. → the code, or null while typing. */
 export function scanBuffer() {
@@ -54,6 +56,7 @@ export function scanBuffer() {
 
 function CheckRow({ check, busy, onAnswer, now }) {
   const [confirmNo, setConfirmNo] = useState(false);
+  const [allCounts, setAllCounts] = useState(false);
   const several = Number(check.shown) > 1;
   const btn = { fontFamily: FONT, fontWeight: 800, borderRadius: 12, border: "none", cursor: busy ? "default" : "pointer", minHeight: 44 };
   return (
@@ -68,12 +71,13 @@ function CheckRow({ check, busy, onAnswer, now }) {
       </div>
       {several ? (
         <div data-testid="shelf-count" style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: "1 1 220px", justifyContent: "flex-end" }}>
-          {countChoices(check.shown).map((n) => (
+          {countChoices(check.shown, allCounts).map((n) => (
             <button key={n} type="button" disabled={busy} onClick={() => onAnswer(check, "count", n)} data-testid={`shelf-count-${n}`}
                     style={{ ...btn, minWidth: 44, padding: "0 12px", fontSize: 16, background: n === Number(check.shown) ? "rgba(74,202,122,.2)" : "rgba(255,255,255,.08)", color: n === Number(check.shown) ? GREEN : "#fff", border: n === Number(check.shown) ? `1px solid ${GREEN}` : "1px solid rgba(255,255,255,.12)" }}>
               {n}
             </button>
           ))}
+          {!allCounts && <button type="button" disabled={busy} onClick={() => setAllCounts(true)} data-testid="shelf-count-more" style={{ ...btn, padding: "0 12px", fontSize: 13, background: "none", color: "rgba(233,238,255,.7)", border: "1px dashed rgba(255,255,255,.25)" }}>More</button>}
         </div>
       ) : (
         <div style={{ display: "flex", gap: 8, flex: "0 0 auto" }}>
@@ -90,22 +94,25 @@ function CheckRow({ check, busy, onAnswer, now }) {
   );
 }
 
-export default function ShelfChecksPanel({ loc, style = null }) {
+export default function ShelfChecksPanel({ loc, style = null, active = true }) {
   const [data, setData] = useState(null);
   const [hidden, setHidden] = useState(false); // no permission / not a place with a list
   const [busyId, setBusyId] = useState(null);
   const [note, setNote] = useState(null);
   const [open, setOpen] = useState(true);
   const live = useRef(true);
+  // The place the panel is showing NOW: an answer for a place the screen has left is ignored.
+  const locNow = useRef(loc);
+  locNow.current = loc;
   const now = Date.now();
 
   const load = useCallback(async () => {
     if (!loc) return;
     try {
       const res = await webShelfList({ loc });
-      if (live.current) { setData(res.data); setHidden(false); }
+      if (live.current && locNow.current === loc) { setData(res.data); setHidden(false); }
     } catch (err) {
-      if (!live.current) return;
+      if (!live.current || locNow.current !== loc) return;
       if (err?.code === "functions/permission-denied" || err?.code === "functions/unauthenticated") setHidden(true);
       // Any other failure: keep what is on screen; the next refresh tries again.
     }
@@ -123,7 +130,7 @@ export default function ShelfChecksPanel({ loc, style = null }) {
     setBusyId(check.id); setNote(null);
     try {
       const res = await webShelfAnswer({ loc, id: check.id, result, ...(result === "count" ? { count } : {}) });
-      if (!live.current) return;
+      if (!live.current || locNow.current !== loc) return;
       setData(res.data);
       if (res.data?.ok === false) setNote(res.data.reason === "stale" || res.data.reason === "gone" ? "That shelf has changed since this morning, so it is off the list." : "That did not save. Try again.");
     } catch {
@@ -136,7 +143,8 @@ export default function ShelfChecksPanel({ loc, style = null }) {
   // A scan of a listed single piece is "Found". Nothing is typed.
   const checks = useMemo(() => data?.checks || [], [data]);
   useEffect(() => {
-    if (!checks.length) return undefined;
+    // Only while this screen is the one in front (a hidden tab must not answer a scan made on another).
+    if (!checks.length || !active) return undefined;
     const feed = scanBuffer();
     const onKey = (e) => {
       const tag = e.target?.tagName;
@@ -150,7 +158,7 @@ export default function ShelfChecksPanel({ loc, style = null }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [checks, answer]);
+  }, [checks, answer, active]);
 
   if (!loc || hidden || !data) return null;
   const done = (data.today?.found || 0) + (data.today?.notFound || 0) + (data.today?.counted || 0) + (data.today?.corrected || 0);
