@@ -683,6 +683,15 @@ const ONLINE_LINE_NOT_FOUND = "not_found";
 const ONLINE_RETURN_KIND = "online_return";
 const ONLINE_RETURN_PUT_BACK = "put_back";
 
+// A shop's "Not found" on a website pick also leaves a SHELF HOLD beside the
+// cell (never in it — the count is not touched): the pieces the app shows at
+// that product/size/shop come off the website and out of website routing until
+// the cell moves again. Contract and reader: scripts/shopify/pickableStock.mjs
+// (Junid, 24 Nov 2026); path and kind are MIRRORED from it and pinned by test.
+const ONLINE_CELL_HOLDS_PATH = "online_cell_holds";
+const SHOP_NOT_FOUND_HOLD = "shop_not_found";
+const holdKeyOk = (k) => typeof k === "string" && k !== "" && !/[.#$[\]/]/.test(k);
+
 const DISPLAY_RESULTS = Object.freeze(["confirmed", "no_stock"]);
 const ONLINE_PICK_RESULTS = Object.freeze([ONLINE_LINE_HANDED, ONLINE_LINE_NOT_FOUND]);
 const ONLINE_RETURN_RESULTS = Object.freeze([ONLINE_RETURN_PUT_BACK]);
@@ -783,7 +792,17 @@ function onlineOrderOutcomeUpdates({ record, store, storeName, order }) {
   }
   updates[`${base}/attentionOpen`] = true;
   updates[`${base}/status`] = "needs_attention";
-  return { updates };
+  // The shelf hold, in the SAME write as the line: keyed and stamped from the
+  // record alone (completedAt), so a heal re-writes the identical row.
+  const sizeKey = record.sizeKey != null && record.sizeKey !== "" ? String(record.sizeKey) : null;
+  let held = null;
+  if (holdKeyOk(record.productId) && holdKeyOk(sizeKey) && holdKeyOk(store) && Number.isFinite(at) && at > 0) {
+    updates[`${ONLINE_CELL_HOLDS_PATH}/${record.productId}/${sizeKey}/${store}`] = {
+      at, kind: SHOP_NOT_FOUND_HOLD, orderId, line: i, ...(by ? { by } : {}),
+    };
+    held = record.productId;
+  }
+  return { updates, held };
 }
 
 // A completed online_return ("Put back") closes the order's return record —
@@ -813,6 +832,8 @@ module.exports = {
   ONLINE_RETURN_RESULTS,
   isOnlineReturnRecord,
   ONLINE_PICK_KIND,
+  ONLINE_CELL_HOLDS_PATH,
+  SHOP_NOT_FOUND_HOLD,
   ONLINE_PICK_RESULTS,
   DISPLAY_RESULTS,
   isOnlinePickRecord,

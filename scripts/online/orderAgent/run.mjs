@@ -16,6 +16,7 @@
 // NEVER: a stock or refill request created, changed or cancelled; a policy value read or written; a stock movement.
 import { judgeOrder, linesOf, lineIsHere, PLACE } from "./judge.mjs";
 import { dayKey, hhmm, sast, SUMMARY_HOUR } from "./hours.mjs";
+import { CELL_HOLDS_PATH, cellHeld, readPickableRules } from "../../shopify/pickableStock.mjs";
 
 export const AGENT_ROOT = "online_order_agent";
 export const MAX_NUDGES_PER_RUN = 5;
@@ -86,15 +87,21 @@ async function lineFacts(db, id, order, i, line) {
   const sk = stockKey(line);
   if (line?.pid && sk != null) {
     // Exact cells, read side by side: the holds row, each routed place, Central.
-    const [holdsRaw, centralQty, ...cells] = await Promise.all([
+    // …and the shelf holds for this size (pickableStock.mjs): a place that
+    // rejected a website pick and has not moved since is not a place to re-pick
+    // at — the same picture the poller's router has, so the agent never asks for
+    // a re-pick the poller would answer "not in stock".
+    const [holdsRaw, centralQty, shelfHolds, rules, ...cells] = await Promise.all([
       get(db, `online_reservations/${line.pid}/${sk}`),
       get(db, `stock/central/${line.pid}/${sk}/qty`),
+      get(db, `${CELL_HOLDS_PATH}/${line.pid}/${sk}`).catch(() => null),
+      readPickableRules((p) => get(db, p)),
       ...ROUTED.map((loc) => get(db, `stock/${loc}/${line.pid}/${sk}`)),
     ]);
     const holds = holdsRaw || {};
     for (const [n, loc] of ROUTED.entries()) {
       const cell = cells[n];
-      const qty = num(cell?.qty);
+      const qty = cellHeld(shelfHolds, loc, cell, rules) ? 0 : num(cell?.qty);
       let held = 0;
       for (const [oid, row] of Object.entries(holds)) if (oid !== String(id) && row && typeof row === "object") held += num(row.locs?.[loc]);
       facts.free[loc] = Math.max(0, qty - held);

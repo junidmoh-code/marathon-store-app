@@ -318,3 +318,50 @@ test("onClothingSale: a sneaker sale never even reads the channel (the existing 
   await loadOnClothingSale(db)(soldEvt({ productId: "shoe", size: "9" }));
   assert.ok(!reads.some((p) => p.startsWith("pos/")));
 });
+
+// ── SHELF HOLD (Junid, 24 Nov 2026; scripts/shopify/pickableStock.mjs) ────────
+// A shop's Not found leaves a hold beside the cell in the SAME write as the
+// line, so the website and the router stop promising that shelf's pieces until
+// the cell moves. The count itself is never touched.
+test("not_found: a shelf hold is written beside the cell, the website is told, and the stock count is untouched", async () => {
+  const db = world();
+  await call(db, { result: "not_found" });
+  assert.deepEqual(db.state.root.online_cell_holds.p9.M[STORE], { at: NOW, kind: "shop_not_found", orderId: "5550001", line: 1, by: ACTOR.uid });
+  assert.deepEqual(db.state.root.stock[STORE].p9.M, { qty: 3 });
+  assert.ok(db.state.root.shopify_inventory_dirty.p9, "Marathon's pusher is told");
+  assert.ok(db.state.root.shopify_inventory_dirty_concrete.p9, "Concrete's pusher is told");
+  assert.equal(db.state.root.stock_movements, undefined);
+});
+
+test("handed: no shelf hold", async () => {
+  const db = world();
+  await call(db, { result: "handed" });
+  assert.equal(db.state.root.online_cell_holds, undefined);
+});
+
+test("not_found on a line that has moved on writes no hold (the record is not that line's any more)", async () => {
+  const moved = order();
+  moved.lines[1].source = { locationId: "trophy", status: "display", entryKey: "displayChecks_active/trophy/online__5550001__1_r1" };
+  const db = world(pickRecord(), moved);
+  await call(db, { result: "not_found" });
+  assert.equal(db.state.root.online_cell_holds, undefined);
+});
+
+test("a record with no usable size key still flips the line, with no hold", () => {
+  const out = lib.onlineOrderOutcomeUpdates({
+    record: { ...pickRecord({ sizeKey: "5.5" }), status: "completed", result: "not_found", completedAt: NOW, completedBy: ACTOR },
+    store: STORE, storeName: "Marathon PE", order: order(),
+  });
+  assert.equal(out.updates["online_orders/5550001/lines/1/source/status"], "not_found");
+  assert.equal(out.held, null);
+  assert.deepEqual(Object.keys(out.updates).filter((k) => k.startsWith("online_cell_holds")), []);
+});
+
+test("a retry writes the identical hold row (stamped from the record, not from the clock)", () => {
+  const record = { ...pickRecord(), status: "completed", result: "not_found", completedAt: NOW, completedBy: ACTOR };
+  const a = lib.onlineOrderOutcomeUpdates({ record, store: STORE, storeName: "Marathon PE", order: order() });
+  const again = order(); again.lines[1].source.status = "not_found"; again.attention = { kind: "not_found", at: NOW, reason: "x", mailedAt: 5 };
+  const b = lib.onlineOrderOutcomeUpdates({ record, store: STORE, storeName: "Marathon PE", order: again });
+  assert.deepEqual(b.updates["online_cell_holds/p9/M/marathon-pe"], a.updates["online_cell_holds/p9/M/marathon-pe"]);
+  assert.equal(b.updates["online_orders/5550001/attention"], undefined); // the mailed stamp is not stripped
+});
