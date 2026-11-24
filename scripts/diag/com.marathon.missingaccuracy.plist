@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily Missing Products accuracy check (Junid, 24 Nov 2026): 07:15 local
+  time on the Mac mini. Reads only; emails gunidmoh@gmail.com ONLY when a card
+  or "Not listed" number differs from live data. Email only, never WhatsApp.
+  INSTALL (once):
+    git clone ~/marathon-store-app ~/missing-accuracy && cd ~/missing-accuracy && git remote add gh https://github.com/junidmoh-code/marathon-store-app.git
+    cp scripts/diag/com.marathon.missingaccuracy.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.marathon.missingaccuracy.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.missingaccuracy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/marathonclub/missing-accuracy/scripts/diag/missing-accuracy-run.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>15</integer></dict>
+  <key>StandardOutPath</key><string>/Users/marathonclub/missing-accuracy-runs/daily.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/missing-accuracy-runs/daily.err.log</string>
+</dict>
+</plist>
