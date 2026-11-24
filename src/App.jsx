@@ -14438,7 +14438,8 @@ function WarehouseView({ products = [], orders, onExit }) {
                   <ProductPhoto productId={order.productId} product={whProductsById[order.productId]} url={order.productPhotoUrl} photo={order.productPhoto} size={60} radius={10}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
-                      <div style={{ fontSize:13, fontWeight:800, color:"#4A7FFF", letterSpacing:"0.5px" }}>#{order.id}</div>
+                      {/* A website pick's code is the headline inside its red box below (Junid, 24 Nov 2026, 21:05), not repeated here. */}
+                      {!(order.channel === "online" && incoming) && <div style={{ fontSize:13, fontWeight:800, color:"#4A7FFF", letterSpacing:"0.5px" }}>#{order.id}</div>}
                       <div style={{ fontSize:10, fontWeight:600, padding:"2px 8px", borderRadius:10, display:"flex", alignItems:"center", gap:4, background:chipBg, color:chipColor }}>
                         {incoming && <span style={{ width:5, height:5, borderRadius:"50%", background:"#4A7FFF", boxShadow:"0 0 3px #4A7FFF", display:"inline-block" }}/>}
                         {chipLabel}

@@ -23,7 +23,7 @@ vi.mock("firebase/database", () => ({ getDatabase: () => ({}), ref: (_d, p) => (
 
 const { default: ShelfChecksPanel, whyText, countChoices, scanBuffer } = await import("./ShelfChecksPanel.jsx");
 const { default: WebsiteOrdersStrip } = await import("../../pages/DisplayChecks/WebsiteOrdersStrip.jsx");
-const { WebOrderBanner } = await import("./WebOrderBadge.jsx");
+const { WebOrderBanner, WEB_PINK } = await import("./WebOrderBadge.jsx");
 const { progressRow } = await import("./ShelfProgressCard.jsx");
 const { webWaiting, hubQueueDay } = await import("../../utils/onlineOrders.js");
 
@@ -122,7 +122,7 @@ describe("Central's website strip inside Source", () => {
     listAnswer = list({ loc: "central", webRows: [WEB], checks: [] });
     const tree = await mount("central");
     const t = all(tree);
-    for (const s of ["Website orders — pull these first", "Lacoste golf t shirt", "#", "2301", "Pull and put it on the morning stock run to Marathon PE", "waiting 1 h 15 min"]) expect(t).toContain(s);
+    for (const s of ["Website orders", "Lacoste golf t shirt", "#2301", "Pull and put it on the morning stock run to Marathon PE", "waiting 1 h 15 min"]) expect(t).toContain(s);
     expect(t).not.toContain("Handed over");
     const before = calls.filter(([n]) => n === "webShelfList").length;
     await act(async () => { byTestId(tree, "web-handed")[0].props.onClick(); });
@@ -166,10 +166,15 @@ describe("website orders stand out", () => {
     expect(hubQueueDay({ channel: "online", status: "ready", createdAt: "2026-11-20T08:00:00.000Z" }, isWeb, dateOf, now)).toBe("2026-11-20T08:00:00.000Z");
     expect(hubQueueDay({ channel: "walkin", status: "incoming", createdAt: "2026-11-22T08:00:00.000Z" }, isWeb, dateOf, now)).toBe("2026-11-22T08:00:00.000Z");
   });
-  it("a hub's website pick carries its three-letter code and waiting time on its own card (no separate box)", async () => {
+  it("a hub's website pick: the three-letter code is the pink headline with the wait beside it, no other words", async () => {
     let tree;
     await act(async () => { tree = TestRenderer.create(<WebOrderBanner since={new Date(NOW - 5 * 60e3).toISOString()} code="KQZ" />); });
-    expect(all(tree)).toContain("WEBSITE ORDER");
+    expect(all(tree)).not.toContain("WEBSITE ORDER");
+    expect(all(tree)).not.toContain("pull this first");
+    const code = byTestId(tree, "web-order-code")[0];
+    expect(code.props.style.color).toBe(WEB_PINK);
+    expect(code.props.style.whiteSpace).toBe("nowrap");
+    expect(code.props.style.fontSize).toBeGreaterThanOrEqual(26);
     expect(all(tree)).toContain("KQZ");
     expect(all(tree)).toContain("waiting 5 min");
     expect(byTestId(tree, "web-order-code")).toHaveLength(1);
