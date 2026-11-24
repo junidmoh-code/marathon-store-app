@@ -270,7 +270,7 @@ Both switches at once: `/config/onlineOrders/pickable/holdsOff = true` turns the
 
 ## 10. What to expect, and what was not solved
 
-- The repeat failures (18% of all, and rising) should stop, and the Marathon PE stale singles (12%) should stop arriving. Together that is roughly a quarter to a third of the failures seen in the last two weeks.
+- The repeat failures (18% of all, and rising) should stop, and the Marathon PE stale singles (12%) should stop arriving. Together that is roughly a quarter of the failures seen in the last two weeks (the two overlap).
 - The largest cause is only partly dealt with: a last piece still fails about one time in four everywhere else, because the count is wrong and nothing here corrects a count. That is decisions 2, 3 and 5 in section 7.
 - The acceptance figures for alternatives should be read again in two weeks, now that offers go on WhatsApp again and lead with three options. The CSVs and the scripts under `scripts/audit/web-unavailable/` rebuild every number in this report.
 
