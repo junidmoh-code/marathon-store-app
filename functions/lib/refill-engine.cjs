@@ -34,7 +34,7 @@ const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_C
 const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, pickInProgress, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 const { withPolicyTemplates } = require("./policy-template.cjs");
 const { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } = require("./central-fed.cjs");
-const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict, divisionNeverKeeps, hub3Refuses, concreteDivisionPolicy, divisionShopCarries } = require("./concrete-division.cjs");
+const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict, divisionNeverKeeps, hub3Refuses, concreteDivisionPolicy, divisionShopCarries, divisionNotOwner } = require("./concrete-division.cjs");
 const { policyFollowOf, followedTarget } = require("./policy-follow.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
@@ -595,6 +595,13 @@ function resolveTarget({ targets, config, products, stock: baseStock, network, d
       source: "explicit",
     };
   }
+  // ── ONE SHOP PER PRODUCT: PINE OR CONCRETE (Junid, 24 Nov 2026) ──────────
+  // A non-footwear product seated at both shops is supplied to its owner only
+  // (lib/concrete-division.cjs divisionNotOwner): the other shop resolves no
+  // keep, above Pine-follows-Trophy and the division's own numbers. Under the
+  // explicit row (Junid's own number still wins), and never for a size that
+  // already has a request open there (it is left to run its course).
+  if (divisionNotOwner(division, dest, pid, size, products)) return null;
   // ── PINE FOLLOWS TROPHY (Junid, 22 Nov 2026) — lib/policy-follow.cjs ───────
   // With config.policyFollow on, a product Pine CARRIES keeps what Trophy's
   // policy says for it: under Pine's own row (so a switch-off there still
@@ -936,7 +943,7 @@ function computeRefillPlan(snapshot) {
   // untouched: Marathon's dead-size test and pools must never see these cells.
   // "Hub 3 holds this size" is judged on Hub 3's COUNTED view (`stock`, masked),
   // the same view the source gate supplies from (concrete-division.cjs).
-  const division = divisionContext({ config: rawConfig, rawStock, seats: snapshot.seats, openIndex: snapshot.openIndex, heldLines: snapshot.heldLines, refillRequests: snapshot.refillRequests, hub3View: stock[DIVISION_HUB], nowMs });
+  const division = divisionContext({ config: rawConfig, rawStock, seats: snapshot.seats, owners: snapshot.divisionOwners, openIndex: snapshot.openIndex, heldLines: snapshot.heldLines, refillRequests: snapshot.refillRequests, hub3View: stock[DIVISION_HUB], nowMs });
   const seatedHub3Footwear = new Set();
   let seatedStock = stock;
   if (division) {
@@ -3163,8 +3170,12 @@ function computeRefillPlan(snapshot) {
           // policy-follow.cjs) carries that shop's numbers by Junid's decision:
           // correct, whatever the division's own pair says.
           const followed = !!effective && effective.source === "follows";
+          // The other shop owns this product (one shop per product, 24 Nov):
+          // keeping nothing here is the rule working, not a missing keep.
+          const otherShopOwns = !effective && divisionNotOwner(division, loc, pid, size, products);
           const v = unrouted ? { ok: false, reason: "unrouted" }
             : followed ? { ok: true, reason: "follows" }
+            : otherShopOwns ? { ok: true, reason: "other_shop_owns" }
             : divisionAuditVerdict({ expected, effective, explicitZero, deadSize });
           tally.cells += 1;
           if (v.reason === "switched_off") tally.switchedOff += 1;

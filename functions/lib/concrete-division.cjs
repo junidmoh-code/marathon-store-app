@@ -207,10 +207,101 @@ function marathonSolveRefusal(hub) {
 // One scan's context, or null when the key is off. (Extra arguments older
 // callers still pass — stock, locks, held boxes, requests — are not needed:
 // nothing about Hub 3 decides a shop's non-footwear keep or source any more.)
-function divisionContext({ config, seats } = {}) {
+function divisionContext({ config, seats, owners, openIndex } = {}) {
   const policy = concreteDivisionPolicy(config);
   if (!policy) return null;
-  return { policy, seats: seats || {} };
+  return { policy, seats: seats || {}, owners: divisionIsObj(owners) ? owners : {}, openIndex: divisionIsObj(openIndex) ? openIndex : {} };
+}
+
+// ── ONE SHOP PER PRODUCT: PINE OR CONCRETE (Junid, 24 Nov 2026) ──────────────
+// "Make sure Pine and Concrete are not set to request the same product from
+// Central — they sell separate products, like Marathon PE and Trophy."
+//
+// A non-footwear product seated at BOTH shops has ONE owner. Central supplies
+// the owner only: the other shop gets no new request for it. Nothing is
+// unseated, nothing is moved, no target or policy number changes — the other
+// shop simply resolves no keep (HOW MANY, never WHERE: the seats stay as they
+// are, and the Seating tab still switches a shop off, which ends the overlap).
+//
+// The owner is decided ONCE and kept (refill_engine/divisionOwner/{pid}), so it
+// never flips as units sell:
+//   1. the shop holding more units of the product now;
+//   2. a tie → the shop seated there first (the older seat);
+//   3. still a tie → Concrete (the established shop; Pine reopened after its
+//      11 Nov count).
+// The record goes when the product is no longer seated at both shops; if it is
+// seated at both again later, the owner is decided afresh.
+//
+// A REQUEST ALREADY OPEN at the other shop is left alone: for a size with an
+// engine lock there, the shop keeps resolving its keep, so the scan neither
+// withdraws nor starves it (Junid, 24 Nov: "do not cancel real requests"). It
+// is never grown into a second one; when it is fulfilled or closed the size
+// resolves nothing at that shop from then on.
+const DIVISION_OWNER_PATH = "refill_engine/divisionOwner";
+const OWNER_DEFAULT = "concrete";
+
+const shopUnits = (rawStock, loc, pid) => {
+  const node = rawStock?.[loc]?.[pid];
+  if (!divisionIsObj(node)) return 0;
+  let n = 0;
+  for (const [k, c] of Object.entries(node)) if (k !== "_meta" && divisionIsObj(c)) n += Math.max(Number(c.qty) || 0, 0);
+  return n;
+};
+const seatedAtBothShops = (seats, pid) => DIVISION_SHOPS.every((s) => divisionIsObj(seats?.[s]?.[pid]));
+
+/** Who owns a both-seated product, by the rule above. → { shop, why, units }. Pure. */
+function chooseDivisionOwner({ seats, rawStock, pid }) {
+  const [a, b] = DIVISION_SHOPS; // "concrete", "marathon-pine"
+  const units = { [a]: shopUnits(rawStock, a, pid), [b]: shopUnits(rawStock, b, pid) };
+  if (units[a] !== units[b]) return { shop: units[a] > units[b] ? a : b, why: "units", units };
+  const at = (s) => String(seats?.[s]?.[pid]?.at || "");
+  if (at(a) && at(b) && at(a) !== at(b)) return { shop: at(a) < at(b) ? a : b, why: "seated_first", units };
+  return { shop: OWNER_DEFAULT, why: "default", units };
+}
+
+/**
+ * The owners this scan reads, and what to write. Pure.
+ *   seats   the scan's effective seats (planSeats().effective)
+ *   owners  what DIVISION_OWNER_PATH holds now
+ * → { effective: { pid: owner }, writes: { pid: owner | null }, decided, cleared }
+ */
+function planDivisionOwners({ seats, rawStock, owners, products, nowIso }) {
+  const effective = {};
+  const writes = {};
+  let decided = 0, cleared = 0;
+  const kept = divisionIsObj(owners) ? owners : {};
+  const both = new Set(Object.keys(seats?.[DIVISION_SHOPS[0]] || {}).filter((pid) => seatedAtBothShops(seats, pid)));
+  for (const pid of both) {
+    const p = products?.[pid];
+    if (!p || isDivisionFootwear(p) || SEAT_PID_BAD.test(pid)) continue;
+    const have = kept[pid];
+    if (divisionIsObj(have) && DIVISION_SHOPS.includes(have.shop)) { effective[pid] = have; continue; }
+    const c = chooseDivisionOwner({ seats, rawStock, pid });
+    effective[pid] = writes[pid] = { shop: c.shop, why: c.why, units: c.units, at: nowIso };
+    decided++;
+  }
+  for (const pid of Object.keys(kept)) {
+    if (effective[pid] || SEAT_PID_BAD.test(pid)) continue;
+    writes[pid] = null;
+    cleared++;
+  }
+  return { effective, writes, decided, cleared };
+}
+
+/**
+ * Is `dest` the shop that must NOT get a new request for this cell? True only
+ * for a division shop, a non-footwear product with an owner recorded this scan
+ * that is the OTHER shop, and no engine lock already open for this size there.
+ */
+function divisionNotOwner(division, dest, pid, size, products) {
+  if (!division || !DIVISION_SHOPS.includes(dest)) return false;
+  const owner = division.owners?.[pid];
+  if (!divisionIsObj(owner) || !DIVISION_SHOPS.includes(owner.shop) || owner.shop === dest) return false;
+  const p = products?.[pid];
+  if (!p || isDivisionFootwear(p)) return false;
+  const t = String(size == null ? "" : size).trim();
+  const key = t ? t.replace(/[.#$/\[\]\s]/g, "_") : "_"; // the engine's encodeSizeKey
+  return !division.openIndex?.[dest]?.[pid]?.[key];
 }
 
 // Movement types that take units OUT of a location by a person's move. A sale,
@@ -481,5 +572,6 @@ module.exports = {
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
   DIVISION_NEVER_KEEPS, divisionNeverKeeps, hub3Refuses, divisionRefuses, divisionTargetShape, isSeatedAtShop, divisionShopCarries, divisionTarget, divisionSourceFor, divisionManagedPids,
   SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats, divisionKeepCounts,
+  DIVISION_OWNER_PATH, chooseDivisionOwner, planDivisionOwners, divisionNotOwner,
   SEAT_HISTORY_SINCE, SEAT_RELEASES_PATH, seatsBy, seatedIntentTrusted, HUB3_SNEAKER_KEEP, JUNID_DIVISION_KEEPS, divisionExpectedTarget, divisionAuditVerdict,
 };

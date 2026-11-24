@@ -704,6 +704,7 @@ async function runScan(opts) {
     // locations only, and only with the division's key on. Anything holding
     // units there is seated; the plan reads this scan's seats, written below.
     let seatPlan = null;
+    let ownerPlan = null;
     if (concreteDivision.concreteDivisionPolicy(config)) {
       const scoped = (path) => Promise.all(concreteDivision.DIVISION_LOCATIONS.map(
         (l) => db.ref(`${path}/${l}`).once("value").then((s) => [l, s.val() || {}]))).then(Object.fromEntries);
@@ -711,8 +712,13 @@ async function runScan(opts) {
       // leftover zero cells do not seat it again) — three small nodes each.
       const [seats, releases] = await Promise.all([scoped(concreteDivision.SEATS_PATH), scoped(concreteDivision.SEAT_RELEASES_PATH)]);
       seatPlan = concreteDivision.planSeats({ rawStock: stock, seats, movements, releases, products, nowIso: new Date(nowMs).toISOString() });
+      // ONE SHOP PER PRODUCT (Junid, 24 Nov 2026): a non-footwear product seated
+      // at both Pine and Concrete is supplied to one of them. The owners are one
+      // small node (only products seated at both), decided once and kept.
+      const owners = (await db.ref(concreteDivision.DIVISION_OWNER_PATH).once("value")).val() || {};
+      ownerPlan = concreteDivision.planDivisionOwners({ seats: seatPlan.effective, rawStock: stock, owners, products, nowIso: new Date(nowMs).toISOString() });
     }
-    const seatArgs = seatPlan ? { seats: seatPlan.effective } : {};
+    const seatArgs = seatPlan ? { seats: seatPlan.effective, divisionOwners: ownerPlan ? ownerPlan.effective : {} } : {};
     const plan = pausedLocations.withoutPausedDestinations(engine.computeRefillPlan({
       nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines, locations,
       network, ...seatArgs,
@@ -724,6 +730,11 @@ async function runScan(opts) {
       ]);
       if (await safeUpdate(db, seatUpd, "division seats")) counts.seats = { seated: seatPlan.seated, released: seatPlan.released };
     }
+    if (ownerPlan && Object.keys(ownerPlan.writes).length) {
+      const ownerUpd = Object.fromEntries(Object.entries(ownerPlan.writes).map(([pid, v]) => [`${concreteDivision.DIVISION_OWNER_PATH}/${pid}`, v]));
+      if (await safeUpdate(db, ownerUpd, "division owners")) counts.divisionOwners = { decided: ownerPlan.decided, cleared: ownerPlan.cleared };
+    }
+    if (ownerPlan) counts.divisionOwnersHeld = Object.keys(ownerPlan.effective).length;
     if (paused.size) counts.paused = { locations: [...paused].sort(), held: plan.pausedDropped || {} };
     if (divisionOnly) {
       scopePlanToDivision(plan);

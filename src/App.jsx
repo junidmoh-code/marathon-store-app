@@ -119,6 +119,7 @@ import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
 import { countsTowardSourceQueue } from "./components/stock/firstBatchCore";
+import { hubLineCounts as countHubLines } from "./components/stock/hubLineCounts";
 import NotificationSettingsRow from "./push/NotificationSettingsRow";
 import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
@@ -17474,6 +17475,14 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const lineMatches = useCallback((product, size, mode) =>
     mode === "sneakers" ? isFootwearLine(product, size) : !isFootwearLine(product, size),
   []);
+  // How many open requests sit behind each half of Hub 2's / Hub 3's toggle
+  // (Junid, 24 Nov 2026: the tab opens on Sneakers, and 519 Hub 2 clothing
+  // requests waited behind "Clothing" with nothing on the button to say so).
+  // Same count as the tab badge (countsTowardSourceQueue), split by the
+  // toggle's own classifier. Data the screen already holds — no read.
+  const hubLineCounts = useMemo(
+    () => countHubLines(allRefillRequests, (pid) => productsById.get(pid), SOURCE_SHOP_LOCS),
+    [allRefillRequests, productsById]);
   // All Source responses: { date: { productKey: { size: { response, respondedOn } } } }
   // History tab derives its straggler list from this + live orders (5-day window).
   // fulfilProgress carries the partial Transfer & Fulfil leaves (same node).
@@ -17696,12 +17705,12 @@ function SourceView({ onExit, orders, returnsLog, products }) {
             {[["sneakers", "Sneakers"], ["clothing", "Clothing"]].map(([val, label]) => {
               const active = mode === val;
               return (
-                <button key={val} onClick={() => setLineOf(h)(val)} aria-pressed={active}
+                <button key={val} onClick={() => setLineOf(h)(val)} aria-pressed={active} data-hub-line={val}
                         style={{ flex: 1, minHeight: 44, padding: "10px 12px", borderRadius: 14, cursor: "pointer",
                                  border: active ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(255,255,255,.08)",
                                  background: active ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.02)",
                                  color: active ? BLUE_L : "rgba(255,255,255,.55)", fontWeight: 700, fontSize: 13 }}>
-                  {label}
+                  {label}{hubLineCounts[h]?.[val] ? <span style={{ fontVariantNumeric: "tabular-nums" }}>{` · ${hubLineCounts[h][val]}`}</span> : null}
                 </button>
               );
             })}
