@@ -191,3 +191,16 @@ export function webWaiting(since, nowMs) {
   const text = min < 1 ? "just in" : min < 60 ? `waiting ${min} min` : min < 48 * 60 ? `waiting ${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ""}` : `waiting ${Math.floor(min / 1440)} days`;
   return { text, level: ms >= WEB_WAIT_OVERDUE_MS ? "overdue" : ms >= WEB_WAIT_LATE_MS ? "late" : "fresh" };
 }
+
+/**
+ * Which day group a hub queue card sits in (Junid, 24 Nov 2026 evening). A website pick still to be pulled is
+ * placed in TODAY's group whatever day it came in — it leads the list (the queue's sort puts it first) and is
+ * never hidden in a collapsed "Yesterday" group or dropped after two days. Every other card keeps its own day.
+ *   order        the hub order
+ *   isWebPick    (order) => true for a website pick still to be pulled
+ *   dateOf       (order) => the card's own ISO stamp
+ *   nowIso       today, as an ISO stamp
+ */
+export function hubQueueDay(order, isWebPick, dateOf, nowIso) {
+  return isWebPick(order) ? nowIso : dateOf(order);
+}

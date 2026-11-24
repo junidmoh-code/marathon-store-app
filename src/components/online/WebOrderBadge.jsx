@@ -30,43 +30,23 @@ export function WebWaitChip({ since, now }) {
   );
 }
 
-/** The banner on a hub order card (and anywhere a single line is shown on its own). */
-export function WebOrderBanner({ since, orderNumber = null, children = null }) {
+/**
+ * The banner on a hub order card (and anywhere a single line is shown on its own): bold, red, the line's
+ * three-letter code big enough to read across the room, and how long it has been waiting. Since Junid's
+ * 24 Nov evening brief this is the ONLY place a hub sees a website pick: the separate "pull these first" box
+ * repeated the same orders and is gone; the cards themselves lead the queue instead.
+ */
+export function WebOrderBanner({ since, orderNumber = null, code = null, children = null }) {
   const now = useNowTick();
   return (
     <div role="alert" data-testid="web-order-banner"
          style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", margin: "0 0 8px", padding: "7px 10px", borderRadius: 9,
                   background: "rgba(255,69,58,.16)", border: `2px solid ${WEB_RED}`, color: "#fff" }}>
       <span style={{ fontWeight: 900, fontSize: 13, letterSpacing: ".06em", color: WEB_RED }}>WEBSITE ORDER{orderNumber != null ? ` #${orderNumber}` : ""}</span>
+      {code && <span data-testid="web-order-code" style={{ fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 900, fontSize: 18, letterSpacing: ".08em", color: "#fff" }}>{code}</span>}
       <span style={{ fontWeight: 700, fontSize: 12 }}>pull this first</span>
       <span style={{ marginLeft: "auto" }}><WebWaitChip since={since} now={now} /></span>
       {children}
-    </div>
-  );
-}
-
-/**
- * The top of a hub's queue: every website pick still to be pulled, longest-waiting first, in one red block.
- * The cards themselves (with Mark as Sent / Out of Stock) are just below, website picks first.
- *   orders  the hub's incoming website picks: [{ id, productName, size, createdAt }]
- */
-export function HubWebPicksSummary({ orders }) {
-  const now = useNowTick();
-  const list = [...(orders || [])].sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
-  if (!list.length) return null;
-  return (
-    <div data-testid="hub-web-summary" role="alert" style={{ margin: "0 0 12px", borderRadius: 12, border: `2px solid ${WEB_RED}`, background: "rgba(255,69,58,.08)", overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: WEB_RED, color: "#fff" }}>
-        <span style={{ fontWeight: 900, fontSize: 13, letterSpacing: ".08em" }}>WEBSITE ORDERS — PULL THESE FIRST</span>
-        <span style={{ marginLeft: "auto", background: "#fff", color: WEB_RED, fontWeight: 900, fontSize: 13, borderRadius: 999, padding: "1px 9px" }}>{list.length}</span>
-      </div>
-      {list.map((o) => (
-        <div key={o.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderTop: "1px solid rgba(255,69,58,.25)", color: "#fff" }}>
-          <span style={{ fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 900, fontSize: 14, color: WEB_RED, minWidth: 40 }}>{o.id}</span>
-          <span style={{ fontWeight: 700, fontSize: 14, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.productName}{o.size ? ` — Size ${o.size}` : ""}</span>
-          <WebWaitChip since={o.createdAt} now={now} />
-        </div>
-      ))}
     </div>
   );
 }

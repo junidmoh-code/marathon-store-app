@@ -23,9 +23,9 @@ vi.mock("firebase/database", () => ({ getDatabase: () => ({}), ref: (_d, p) => (
 
 const { default: ShelfChecksPanel, whyText, countChoices, scanBuffer } = await import("./ShelfChecksPanel.jsx");
 const { default: WebsiteOrdersStrip } = await import("../../pages/DisplayChecks/WebsiteOrdersStrip.jsx");
-const { WebOrderBanner, HubWebPicksSummary } = await import("./WebOrderBadge.jsx");
+const { WebOrderBanner } = await import("./WebOrderBadge.jsx");
 const { progressRow } = await import("./ShelfProgressCard.jsx");
-const { webWaiting } = await import("../../utils/onlineOrders.js");
+const { webWaiting, hubQueueDay } = await import("../../utils/onlineOrders.js");
 
 const all = (tree) => JSON.stringify(tree.toJSON());
 const byTestId = (tree, id) => tree.root.findAll((n) => n.props?.["data-testid"] === id && typeof n.type === "string");
@@ -158,19 +158,23 @@ describe("website orders stand out", () => {
     expect(webWaiting(null, NOW)).toBeNull();
     expect(webWaiting("nonsense", NOW)).toBeNull();
   });
-  it("a hub's queue is topped by its website picks, longest-waiting first; the card carries the banner", async () => {
+  it("a website pick still to be pulled sits in today's group whatever day it came in; other cards keep their day", () => {
+    const isWeb = (o) => o.channel === "online" && o.status === "incoming";
+    const dateOf = (o) => o.createdAt;
+    const now = "2026-11-24T15:00:00.000Z";
+    expect(hubQueueDay({ channel: "online", status: "incoming", createdAt: "2026-11-20T08:00:00.000Z" }, isWeb, dateOf, now)).toBe(now);
+    expect(hubQueueDay({ channel: "online", status: "ready", createdAt: "2026-11-20T08:00:00.000Z" }, isWeb, dateOf, now)).toBe("2026-11-20T08:00:00.000Z");
+    expect(hubQueueDay({ channel: "walkin", status: "incoming", createdAt: "2026-11-22T08:00:00.000Z" }, isWeb, dateOf, now)).toBe("2026-11-22T08:00:00.000Z");
+  });
+  it("a hub's website pick carries its three-letter code and waiting time on its own card (no separate box)", async () => {
     let tree;
-    const picks = [{ id: "KQZ", productName: "Air Runner", size: "8", createdAt: new Date(NOW - 10 * 60e3).toISOString() }, { id: "ABD", productName: "Shox TL", size: "7", createdAt: new Date(NOW - 90 * 60e3).toISOString() }];
-    await act(async () => { tree = TestRenderer.create(<HubWebPicksSummary orders={picks} />); });
-    const t = all(tree);
-    expect(t.indexOf("ABD")).toBeLessThan(t.indexOf("KQZ"));
-    expect(t).toContain("WEBSITE ORDERS — PULL THESE FIRST");
-    expect(t).toContain("waiting 1 h 30 min");
-    await act(async () => { tree = TestRenderer.create(<HubWebPicksSummary orders={[]} />); });
-    expect(tree.toJSON()).toBeNull();
-    await act(async () => { tree = TestRenderer.create(<WebOrderBanner since={new Date(NOW - 5 * 60e3).toISOString()} />); });
+    await act(async () => { tree = TestRenderer.create(<WebOrderBanner since={new Date(NOW - 5 * 60e3).toISOString()} code="KQZ" />); });
     expect(all(tree)).toContain("WEBSITE ORDER");
+    expect(all(tree)).toContain("KQZ");
     expect(all(tree)).toContain("waiting 5 min");
+    expect(byTestId(tree, "web-order-code")).toHaveLength(1);
+    await act(async () => { tree = TestRenderer.create(<WebOrderBanner since={new Date(NOW - 5 * 60e3).toISOString()} />); });
+    expect(byTestId(tree, "web-order-code")).toHaveLength(0);
   });
 });
 
