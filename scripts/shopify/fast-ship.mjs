@@ -157,6 +157,8 @@ async function bench(key) {
   const d2l = (p.quotes ?? []).filter((q) => q.mode === "door_to_locker").map((q) => `${q.code} R${q.rate}`).join(" | ");
   console.log(lk
     ? `\nplan: DOOR-TO-LOCKER to ${lk.name} (${lk.id}, ${lk.km} km, placed by the ${lk.placedBy}), ${(p.waybills ?? []).length || p.shipments || 1} shipment(s); locker quotes ${d2l || "?"}; door-to-door would be ${p.doorQuote ? `${p.doorQuote.code} R${p.doorQuote.rate}` : "not quoted"}`
+    : p.doorFallback?.reason
+    ? `\nplan: DOOR-TO-DOOR, no locker (${p.doorFallback.reason}); ${p.service ?? p.quote?.code ?? "?"} R${p.cost ?? p.quote?.rate ?? "?"}`
     : `\nplan: NOT door-to-locker (${p.reason ?? p.priced?.mode ?? p.quote?.mode ?? "no booking recorded"})`);
   console.log(`\nbench ${real.shopifyName ?? key} (nothing written, nothing booked):`);
   for (const [what, ms] of marks) console.log(`  ${String(ms).padStart(6)} ms  ${what}`);

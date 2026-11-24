@@ -13,13 +13,36 @@
 //                they have to drop them at a Courier Guy locker, you book the nearest one and give it to them"): their
 //                address geocoded (OpenStreetMap Nominatim, one call, the full address first, then the town), then
 //                GET /pickup-points?type=locker&order_closest=true; the closest one online, not hidden, with a
-//                compartment the parcel fits. Never a door collection.
+//                compartment the parcel fits. No locker for it → a door collection, ONLY when switched on (below).
 //   delivery     the shop: /config/shipping collectionAddress (where outgoing parcels leave from) and returnContact (Junid,
 //                20 Nov 2026: Yusuf takes every incoming exchange, so The Courier Guy's OTPs and calls go to him; never
 //                collectionContact, which stays on outbound parcels only)
 //   parcels      the parcel rule over the exchange's lines (the replacement is the same kind of item as the one coming back)
 //   service      the cheapest LOCKER rate quoted (L2D* - ECO). No locker rate (too big, unplaceable) → refused: a person
-//                books it (the customer was promised a locker drop-off, never a door collection).
+//                books it — unless the door collection below is switched on.
+//
+// NO LOCKER → A COURIER COLLECTS FROM THE CUSTOMER'S DOOR (Junid, 24 Nov 2026, STANDING RULE: "if no Courier Guy locker is
+// near the customer … book DOOR-TO-DOOR delivery to their address automatically instead of failing. Never leave an order
+// unbooked because there's no locker", and "Apply it to exchange returns too (e.g. #1934's refused return)"). For a
+// return the door-to-door equivalent is a normal Courier Guy shipment collected at the customer's own address and
+// delivered to our door: the same /rates and /shipments bodies WITHOUT collection_pickup_point_id, the cheapest door
+// service (excludeServiceCodes left out, never an L2D / D2L locker service), under the same ceiling, the same live
+// switch and the same one-booking claim. It replaces the refusal only when there is NO LOCKER for the parcel:
+//   "none_near"    no fitting locker near, the nearest further than MAX_LOCKER_KM, or (street not on the map) the one
+//                  nearest their town further than MAX_TOWN_LOCKER_KM
+//   "too_big"      the parcel fits no locker (it must still fit a standard box)
+//   "none_priced"  Courier Guy quotes no locker rate for that locker (an answer, not a failed lookup)
+// Everything else is refused or retried exactly as before: an address that cannot be placed on the map, a lookup that
+// failed, missing details, the return contact not set, a quote over the ceiling. The courier's driver has to reach the
+// customer, so a door collection needs their SA mobile number (an email alone is refused).
+// THE SWITCH: /config/shipping/returnDoorCollection === true (or the caller's `doorCollection: true`). It is OFF by
+// default ON PURPOSE: Jimmy (marathon-dm-agent returnBooking.js DROP_OFF_TEXT, courierTools.js RETURN_DROP_OFF_TEXT,
+// boss.js) tells the customer "please drop it at The Courier Guy locker at …" for EVERY booked return. Until he reads
+// `mode: "door_collection"` and says "a courier will collect it from your address", booking a door collection would
+// make him tell the customer something false. Switch it on in the database once that is live there; no deploy here.
+// The record then says so truthfully: returnShipping = { mode: "door_collection", waybill, dropOffRef: null (there is
+// no drop-off), no locker, collection { from: "door", address, contactMobile }, doorFallback { reason, kind, at }, … }.
+// A locker booking now carries mode: "locker_dropoff".
 //   reference    "<n>-EX return" (as the hand-booked #1789: "1789-EX return")
 //
 // The same guards as bookShipment, pinned by bookReturn.test.mjs:
@@ -32,10 +55,10 @@
 //   a return already recorded (incoming/waybill: booked by hand) or the item already back (incoming/arrival) → nothing.
 // The result is written to /online_orders/<key>/returnShipping = { provider, shipmentId, waybill (the short tracking
 // reference, what tracking reads), dropOffRef (the locker reference, e.g. LD-RFR518), locker { id, name, address, hours,
-// km }, service, cost, parcel, bookedAt }.
+// km }, service, cost, parcel, bookedAt, mode: "locker_dropoff" } (a door collection: see above).
 import { estimateParcel } from "../../src/shipping/estimateParcel.js";
 import { mergeShippingConfig } from "../../src/shipping/shippingConfig.js";
-import { normalizeRates } from "../../src/shipping/chooseService.js";
+import { normalizeRates, chooseRate } from "../../src/shipping/chooseService.js";
 import { orderLines, deliveryAddress, deliveryContact } from "../../src/shipping/orderShipment.js";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { tcgParcels, lockerCollection } from "./quote.mjs";
@@ -232,8 +255,19 @@ async function rates(client, body) {
   catch (err) { return { error: String(err?.message || err).slice(0, 300), rates: [] }; }
 }
 
-/** Everything up to (not including) the create call. Rates only (they book nothing). */
-export async function planReturn(order, { db, client, products = null, email = null, key, geocoder = geocode }) {
+export const MODE_LOCKER = "locker_dropoff";
+export const MODE_DOOR = "door_collection";
+/** The customer's address on one line, as the record and Jimmy's message carry it. Pure. */
+export const addressLine = (a) => [a?.street_address, a?.local_area, a?.city, a?.code].map(str).filter((p, i, all) => p && all.indexOf(p) === i).join(", ");
+
+/**
+ * Everything up to (not including) the create call. Rates only (they book nothing).
+ * → { ok: true, payload, parcel, rate, blockers, locker, mode: "locker_dropoff" }
+ *   | { ok: true, payload, parcel, rate, blockers, locker: null, mode: "door_collection", doorFallback: { reason, kind }, collection }
+ *   | { ok: false, reason, transient?, noLockerKind?, parcel }
+ * doorCollection: true / false forces the no-locker door collection on / off; left out, /config/shipping/returnDoorCollection decides (default off).
+ */
+export async function planReturn(order, { db, client, products = null, email = null, key, geocoder = geocode, doorCollection = null }) {
   const raw = (await db.ref("config/shipping").get()).val();
   const cfg = mergeShippingConfig(raw);
   // A return is ALWAYS a locker drop-off, whatever the outgoing drop-box switch says.
@@ -257,19 +291,22 @@ export async function planReturn(order, { db, client, products = null, email = n
   if (!shopContact.name || !SA_MOBILE.test(shopContact.mobile_number.replace(/[\s-]/g, ""))) {
     return { ok: false, transient: true, reason: "the return contact's name and SA mobile are not set (/config/shipping/returnContact)", parcel };
   }
-  if (!parcel.fits || !parcel.dropBoxEligible) return { ok: false, reason: "the parcel fits no Courier Guy locker", parcel };
+  // NO LOCKER for this parcel (Junid, 24 Nov 2026): a door collection instead when it is switched on, else the refusal as before.
+  const doorOn = doorCollection === true || (doorCollection == null && cfg.returnDoorCollection === true);
+  const noLocker = (reason, kind) => (doorOn ? planDoorCollection(reason, kind) : { ok: false, reason, noLockerKind: kind, parcel });
+  if (!parcel.fits || !parcel.dropBoxEligible) return noLocker("the parcel fits no Courier Guy locker", "too_big");
 
   const at = await geocoder(from);
   if (!at) return { ok: false, transient: true, reason: "the customer's address could not be placed on a map (no nearest locker)", parcel };
   let locker;
   try { locker = await nearestLocker(client, at, parcel.lockerSize); }
   catch (err) { return { ok: false, transient: true, reason: `the locker list could not be read (${String(err?.message || err).slice(0, 200)})`, parcel }; }
-  if (!locker) return { ok: false, reason: `no Courier Guy locker near the customer fits a ${parcel.lockerSize} parcel`, parcel };
+  if (!locker) return noLocker(`no Courier Guy locker near the customer fits a ${parcel.lockerSize} parcel`, "none_near");
   // "The nearest one" must be near (architect review 5): further than MAX_LOCKER_KM, a person picks it with the customer.
-  if (locker.km != null && locker.km > MAX_LOCKER_KM) return { ok: false, reason: `the nearest locker (${locker.name}) is ${locker.km} km from the customer's address`, parcel };
+  if (locker.km != null && locker.km > MAX_LOCKER_KM) return noLocker(`the nearest locker (${locker.name}) is ${locker.km} km from the customer's address`, "none_near");
   locker.placedBy = at.from === "address" || at.from === tryLabels(from)[0] ? "street" : "town";
   // Placed only by the town (spec review 4): "nearest" is a guess, so only a close locker is booked.
-  if (locker.placedBy === "town" && locker.km != null && locker.km > MAX_TOWN_LOCKER_KM) return { ok: false, reason: `their street isn't on the map and the locker nearest their town (${locker.name}) is ${locker.km} km away`, parcel };
+  if (locker.placedBy === "town" && locker.km != null && locker.km > MAX_TOWN_LOCKER_KM) return noLocker(`their street isn't on the map and the locker nearest their town (${locker.name}) is ${locker.km} km away`, "none_near");
   const dropBox = { pickupPointId: locker.id, pickupPointProvider: locker.provider };
   const body = (collection) => ({ collection_address: collection, ...lockerCollection(dropBox), delivery_address: shop, parcels: tcgParcels(parcel.parcels) });
   let used = from;
@@ -284,7 +321,8 @@ export async function planReturn(order, { db, client, products = null, email = n
   const exclude = new Set(cfg.excludeServiceCodes ?? []);
   // STRICTLY locker to door (architect review 4): only an L2D service, whatever else TCG quotes.
   const lockers = quoted.rates.filter((r) => !exclude.has(r.code) && (/^L2D/i.test(r.code) || r.group === "L2D"));
-  if (!lockers.length) return { ok: false, ...(quoted.error ? { transient: true } : {}), reason: `no locker rate (${quoted.error ?? "none quoted"})`, parcel };
+  // A lookup that FAILED is tried again later, as before; "none quoted" is Courier Guy's answer: no locker service here.
+  if (!lockers.length) return quoted.error ? { ok: false, transient: true, reason: `no locker rate (${quoted.error})`, parcel } : noLocker("no locker rate (none quoted)", "none_priced");
   const rate = lockers.reduce((best, r) => (!best || r.rate < best.rate ? r : best), null);
 
   const blockers = [];
@@ -303,7 +341,50 @@ export async function planReturn(order, { db, client, products = null, email = n
     customer_reference_name: "Order no.",
     mute_notifications: false,
   };
-  return { ok: true, payload, parcel, rate, blockers, locker };
+  return { ok: true, payload, parcel, rate, blockers, locker, mode: MODE_LOCKER };
+
+  // ── The door collection (header: NO LOCKER → A COURIER COLLECTS FROM THE CUSTOMER'S DOOR). Rates only. ──
+  async function planDoorCollection(why, kind) {
+    const doorFallback = { reason: why, kind };
+    const refuse = (reason, extra = {}) => ({ ok: false, reason: `${why}; a door collection was not booked either: ${reason}`, doorFallback, doorTried: true, parcel, ...extra });
+    if (!parcel.fits) return refuse("no standard box fits the parcel");
+    // The driver phones the customer to collect: an email alone is not enough (a locker drop-off never needed the call).
+    if (!SA_MOBILE.test(str(contact.mobile_number).replace(/[\s-]/g, ""))) return refuse("the customer's SA mobile number is missing (the courier's driver calls them to collect)");
+    const doorBody = (collection) => ({ collection_address: collection, delivery_address: shop, parcels: tcgParcels(parcel.parcels) });
+    let usedDoor = from;
+    let q = await rates(client, doorBody(from));
+    const townName = str(from.city);
+    if (!q.error && !q.rates.length && townName && str(from.local_area) !== townName) {
+      const retry = { ...from, local_area: townName };
+      const again = await rates(client, doorBody(retry));
+      if (again.rates.length) [q, usedDoor] = [again, retry];
+      else if (again.error) q = again;
+    }
+    // A door service only: never a locker service Courier Guy may list beside it (L2D / D2L / L2L).
+    const door = q.rates.filter((r) => !/^(?:L2D|D2L|L2L)/i.test(str(r.code)) && r.group !== "L2D");
+    const chosen = chooseRate({ door, locker: [] }, parcel, cfg);
+    if (!chosen) return refuse(`no door rate (${q.error ?? "none quoted"})`, q.error ? { transient: true } : {});
+    const doorRate = chosen.rate;
+    // THE SAME CEILING (maxChargeRand) as a locker return and as every outbound booking.
+    const doorBlockers = [];
+    const max = Number(cfg.maxChargeRand);
+    if (Number.isFinite(max) && max > 0 && doorRate.rate > max) doorBlockers.push(`quote R${doorRate.rate.toFixed(2)} is over the R${max} ceiling`);
+    const doorPayload = {
+      collection_address: usedDoor,
+      collection_contact: contact,
+      delivery_address: shop,
+      delivery_contact: shopContact,
+      parcels: tcgParcels(parcel.parcels),
+      service_level_code: doorRate.code,
+      customer_reference: `${n}-EX return`,
+      customer_reference_name: "Order no.",
+      mute_notifications: false,
+    };
+    return {
+      ok: true, payload: doorPayload, parcel, rate: doorRate, blockers: doorBlockers, locker: null, mode: MODE_DOOR, doorFallback,
+      collection: { from: "door", address: addressLine(usedDoor), contactMobile: str(contact.mobile_number) },
+    };
+  }
 }
 
 async function productsFor(db, order) {
@@ -320,11 +401,12 @@ async function productsFor(db, order) {
 
 /**
  * @param {string} key      the exchange's /online_orders key (exchange-<n>-<paidAtMs>)
- * @param {object} [deps]   { db, client, products, log, now, email } — email: the customer's, for The Courier Guy's notice
- * → { booked: true, ...returnShipping } | { skipped: true, reason, dryRun? }. Throws on a create that failed or may have run.
+ * @param {object} [deps]   { db, client, products, log, now, email, doorCollection } — email: the customer's, for The Courier
+ *                          Guy's notice; doorCollection: true / false forces the no-locker door collection (planReturn)
+ * → { booked: true, mode, ...returnShipping } | { skipped: true, reason, dryRun?, mode? }. Throws on a create that failed or may have run.
  */
 export async function bookReturn(key, deps = {}) {
-  const { db, client, products, log, now, email = null, geocoder } = await defaultDeps(deps);
+  const { db, client, products, log, now, email = null, geocoder, doorCollection = null } = await defaultDeps(deps);
   if (!isExchangeKey(key)) throw new Error(`bookReturn: "${key}" is not an exchange key (exchange-<n>-<paidAtMs>)`);
   assertSafeSegment(key, "order key");
   const at = (p) => db.ref(`online_orders/${key}/${p}`);
@@ -338,18 +420,27 @@ export async function bookReturn(key, deps = {}) {
   const order = { ...((await db.ref(`online_orders/${key}`).get()).val() || {}), key };
   if (["cancelled", "closed"].includes(str(order.status))) return { skipped: true, reason: `the exchange is ${order.status}` };
 
-  const plan = await planReturn(order, { db, client, products, email, key, ...(geocoder ? { geocoder } : {}) });
+  const plan = await planReturn(order, { db, client, products, email, key, doorCollection, ...(geocoder ? { geocoder } : {}) });
   if (!plan.ok) {
     log(`bookReturn ${key} REFUSED ${plan.reason}`);
-    return { skipped: true, refused: !plan.transient, transient: !!plan.transient, reason: plan.reason };
+    return {
+      skipped: true, refused: !plan.transient, transient: !!plan.transient, reason: plan.reason,
+      // No locker for it (and the door collection is off, or was not possible either): said, so a caller can tell this refusal from the others.
+      ...(plan.noLockerKind ? { noLocker: true, noLockerKind: plan.noLockerKind } : {}),
+      ...(plan.doorTried ? { noLocker: true, doorTried: true, doorFallback: plain(plan.doorFallback) } : {}),
+    };
   }
+  const door = plan.mode === MODE_DOOR;
   if (!(await readLive(db))) {
     log(`bookReturn ${key} DRY RUN (live is off) would POST /shipments ${JSON.stringify(plan.payload)}` + (plan.blockers.length ? ` — live would refuse: ${plan.blockers.join(", ")}` : ""));
-    return { skipped: true, dryRun: plan.payload, locker: plan.locker, quote: { code: plan.rate.code, rate: plan.rate.rate }, blockers: plan.blockers };
+    return {
+      skipped: true, dryRun: plan.payload, locker: plan.locker, quote: { code: plan.rate.code, rate: plan.rate.rate }, blockers: plan.blockers, mode: plan.mode,
+      ...(door ? { doorFallback: plain(plan.doorFallback), collection: plain(plan.collection) } : {}),
+    };
   }
   if (plan.blockers.length) {
-    log(`bookReturn ${key} REFUSED ${plan.blockers.join(", ")}`);
-    return { skipped: true, refused: true, reason: plan.blockers.join(", ") };
+    log(`bookReturn ${key} REFUSED ${plan.blockers.join(", ")}${door ? ` (door collection: ${plan.doorFallback.reason})` : ""}`);
+    return { skipped: true, refused: true, reason: plan.blockers.join(", "), ...(door ? { noLocker: true, doorTried: true, doorFallback: plain(plan.doorFallback) } : {}) };
   }
 
   const claimRef = at("returnShipping/courierBooking");
@@ -383,14 +474,20 @@ export async function bookReturn(key, deps = {}) {
     shipmentId: finiteOrNull(res.id),
     // Tracking reads the short reference (CQMT67); the locker takes the custom one (LD-RFR518).
     waybill: res.short_tracking_reference || res.custom_tracking_reference || null,
-    dropOffRef: res.custom_tracking_reference || null,
+    // A DOOR COLLECTION HAS NO DROP-OFF: no locker reference is written (whatever custom reference Courier Guy gives the
+    // shipment), so nothing downstream can hand the customer a "drop-off code" for a parcel a driver fetches.
+    dropOffRef: door ? null : (res.custom_tracking_reference || null),
     service: res.service_level_code ?? plan.rate.code,
     cost: finiteOrNull(res.charged_amount ?? res.rate ?? plan.rate.rate),
     parcel: plain(plan.parcel.parcels?.[0] ?? null),
     locker: plain(plan.locker),
+    // How the item comes back: "locker_dropoff" (the customer drops it at `locker`) or "door_collection" (a courier
+    // collects it from the customer's address: `collection`, and `doorFallback` says why there was no locker).
+    mode: plan.mode,
+    ...(door ? { collection: plain(plan.collection), doorFallback: plain({ ...plan.doorFallback, at: now() }) } : {}),
     bookedAt: now(),
   };
-  log(`bookReturn ${key} BOOKED ${ship.waybill} (${ship.dropOffRef}) ${ship.service} R${ship.cost}`);
+  log(`bookReturn ${key} BOOKED ${ship.waybill} ${door ? `DOOR COLLECTION from ${plan.collection.address} (${plan.doorFallback.reason})` : `(${ship.dropOffRef})`} ${ship.service} R${ship.cost}`);
   try {
     await at("returnShipping").update({ ...ship, courierBooking: { state: "booked", at: ship.bookedAt } });
   } catch (err) {

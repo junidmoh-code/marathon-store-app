@@ -200,8 +200,8 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
     // order at shipping/adjustment (scripts/shipping/reconcile.mjs).
     parcel: { lengthCm: 34, widthCm: 23, heightCm: 13, kg: 1.5 },
     // The nearest locker must be near enough to be "the customer's locker":
-    // further than this from the address, nothing is booked and Junid decides
-    // (never a silent door-to-door). maxTownKm applies when the street was
+    // further than this from the address, the order goes door-to-door instead
+    // (locker.doorFallback below; Junid, 24 Nov 2026). maxTownKm applies when the street was
     // not found on the map, so "nearest" is measured from the postal code's
     // point (or, failing that, the town centre).
     maxKm: 30,
@@ -215,7 +215,19 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
     // Also ask the door-to-door price (one more /rates call, books nothing)
     // and keep it on the booking as shipping.doorQuote.
     doorQuote: true,
+    // NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026, standing rule: "if no
+    // Courier Guy locker is near the customer … book DOOR-TO-DOOR delivery to
+    // their address automatically instead of failing"). false = the 20 Nov
+    // refusal again ("Packed, courier not booked"), no deploy needed.
+    doorFallback: true,
   },
+
+  // AN EXCHANGE RETURN WITH NO LOCKER NEAR THE CUSTOMER (Junid, 24 Nov 2026:
+  // "Apply it to exchange returns too"): true = a courier collects it from the
+  // customer's door (scripts/shipping/bookReturn.mjs). OFF until Jimmy reads
+  // returnShipping.mode "door_collection" and tells the customer a courier
+  // will collect — today he tells every customer to drop it at a locker.
+  returnDoorCollection: false,
 
   // The service the estimator NAMES for a door collection. bookShipment
   // books the cheapest door service actually quoted, excluding these.

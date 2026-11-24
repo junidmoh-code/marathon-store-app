@@ -78,7 +78,7 @@ const MUTATIONS = [
   // ── DOOR-TO-LOCKER (Junid, 20 Nov 2026) ──────────────────────────────────
   { id: "D1", file: BOOK, guard: "deliveryMode \"door\" restores door-to-door",
     from: "const toLocker = cfg.deliveryMode !== \"door\";", to: "const toLocker = true;" },
-  { id: "D2", file: LOCKER, guard: "a locker beyond the distance limit is never booked (no locker → refused, never door)",
+  { id: "D2", file: LOCKER, guard: "a locker beyond the distance limit is never booked (no locker → door-to-door since 24 Nov 2026, never that locker)",
     from: "l.km <= limit && !avoid.has(l.id)", to: "l.km <= limit * 1000 && !avoid.has(l.id)" },
   { id: "D3", file: LOCKER, guard: "the spend ceiling blocks a door-to-locker booking quoted above it",
     from: "rate.rate > ceiling) {", to: "rate.rate > ceiling * 1000) {" },
@@ -112,6 +112,26 @@ const MUTATIONS = [
     from: "    parcels: [tcgParcel(shoe)],\n    service_level_code: rate.code,", to: "    parcels: (estimate?.parcels ?? []).map((p) => tcgParcel(p)),\n    service_level_code: rate.code," },
   { id: "D14", file: BOOK, guard: "a split interrupted mid-way books only the rest on retry",
     from: "const made = partial ? [...partial.shipments] : [];", to: "const made = [];" },
+
+  // ── NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026) ─────────────────────────
+  { id: "F1", file: BOOK, guard: "only a NO-LOCKER refusal goes door-to-door (an unplaceable address, a failed lookup still refuse)",
+    from: "if (!lockerPlan || lockerPlan.ok || !DOOR_FALLBACK_KINDS.includes(lockerPlan.noLockerKind)) return null;", to: "if (!lockerPlan || lockerPlan.ok) return null;" },
+  { id: "F2", file: BOOK, guard: "a locker a person named / ruled out / split, or a half-booked split, is never swapped for door-to-door",
+    from: "if (cfg?.locker?.doorFallback === false || lockerSteered(order)) return null;", to: "if (cfg?.locker?.doorFallback === false) return null;" },
+  { id: "F3", file: BOOK, guard: "no locker near → the door-to-door plan is booked (never left unbooked)",
+    from: "    if (!fallback) return lockerPlan;", to: "    if (true) return lockerPlan;" },
+  { id: "F4", file: BOOK, guard: "an order refused for no locker is handed back ONCE (shipping/doorRetry)",
+    from: "if (s.shipmentId != null || s.waybill || s.doorRetry || s.booking?.doorTried) return null;", to: "if (s.shipmentId != null || s.waybill || s.booking?.doorTried) return null;" },
+  { id: "F5", file: BOOK, guard: "the door-to-door booking says so on the order (deliveryMode door + doorFallback)",
+    from: "...(plan.doorFallback && !plan.locker ? { deliveryMode: \"door\", doorFallback: plain({ ...plan.doorFallback, at: now() }) } : {}),", to: "" },
+  { id: "F6", file: BRET, guard: "a return's door collection is OFF unless switched on (Jimmy still says \"drop it at the locker\")",
+    from: "const doorOn = doorCollection === true || (doorCollection == null && cfg.returnDoorCollection === true);", to: "const doorOn = doorCollection !== false;" },
+  { id: "F7", file: BRET, guard: "the spend ceiling blocks a door collection quoted above it",
+    from: "doorRate.rate > max) doorBlockers.push(", to: "doorRate.rate > max * 1000) doorBlockers.push(" },
+  { id: "F8", file: BRET, guard: "a door collection carries no drop-off reference",
+    from: "dropOffRef: door ? null : (res.custom_tracking_reference || null),", to: "dropOffRef: res.custom_tracking_reference || null," },
+  { id: "F9", file: BRET, guard: "a locker-rate lookup that FAILED is retried later, never turned into a door collection",
+    from: "if (!lockers.length) return quoted.error ? { ok: false, transient: true, reason: `no locker rate (${quoted.error})`, parcel } : noLocker(", to: "if (!lockers.length) return noLocker(" },
 
   // ── AN "UNKNOWN" BOOKING, CHECKED AT COURIER GUY (#2181, 21 Nov 2026) ─────
   { id: "U1", file: UNK, guard: "the claim moves only while it is the very unknown claim that was checked (never twice)",
@@ -246,8 +266,10 @@ function runVitest(files) {
 
 requireCleanTree([...new Set(MUTATIONS.map((m) => m.file))]);
 
+// --only=F runs just the guards whose id starts with F (the whole list takes minutes).
+const ONLY = (process.argv.find((a) => a.startsWith("--only=")) ?? "").slice(7);
 const results = [];
-for (const m of MUTATIONS) {
+for (const m of MUTATIONS.filter((x) => !ONLY || x.id.startsWith(ONLY))) {
   const original = readFileSync(m.file, "utf8");
   const hits = original.split(m.from).length - 1;
   if (hits !== 1) {

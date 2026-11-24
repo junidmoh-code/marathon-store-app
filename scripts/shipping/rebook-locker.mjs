@@ -34,7 +34,7 @@ import { shipmentsOf } from "./reconcile.mjs";
 export const UNCOLLECTED = /^(submitted|collection-(assigned|unassigned|rejected|exception|failed-attempt))$/;
 // One rebook at a time per order (two at once could each clear the other's new booking and book a second one).
 export const REBOOK_LOCK_MS = 10 * 60_000;
-const BOOKING_FIELDS = ["shipmentId", "waybill", "trackingReference", "waybills", "shipments", "service", "cost", "priced", "quotes", "parcel", "deliveryLocker", "doorQuote", "bookedAt", "cancelledAt", "cancel", "courierBooking", "booking", "partial", "invoiced", "adjustment", "costAlert", "provider", "deliveryMode"];
+const BOOKING_FIELDS = ["shipmentId", "waybill", "trackingReference", "waybills", "shipments", "service", "cost", "priced", "quotes", "parcel", "deliveryLocker", "doorQuote", "bookedAt", "cancelledAt", "cancel", "courierBooking", "booking", "partial", "invoiced", "adjustment", "costAlert", "provider", "deliveryMode", "doorFallback"];
 
 /**
  * @param {string} key   the /online_orders key
@@ -65,6 +65,8 @@ export async function rebookLocker(key, { db, client, lockerId = null, parcels =
     return { ok: true, booked, from, to, resumed: true };
   }
   if (s.provider !== "courier_guy" || !(s.trackingReference || s.waybill)) return { ok: false, reason: "no Courier Guy booking on this order" };
+  // A parcel that went door-to-door because there was no locker (Junid, 24 Nov 2026) has no locker to move from.
+  if (!s.deliveryLocker?.id && s.doorFallback?.reason) return { ok: false, reason: `this booking is door-to-door (${s.doorFallback.reason}): there is no locker to rebook from` };
   if (!s.deliveryLocker?.id) return { ok: false, reason: "this booking is not door-to-locker (no shipping/deliveryLocker)" };
 
   // 1. Still uncollected? Asked of Courier Guy, for every shipment of the booking.

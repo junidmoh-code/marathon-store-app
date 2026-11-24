@@ -435,8 +435,11 @@ would work, logging to logs/fast-ship-concrete.log, but none is installed).
 **Door-to-locker (Junid, 20 Nov 2026).** The booking is door-to-locker for
 every order: the Courier Guy locker nearest the customer, one shoe-sized
 parcel per shipment, the locker written to `shipping/deliveryLocker` for Jamie.
-No locker near the address = "Packed, courier not booked" with the reason,
-never door-to-door. Switch: `/config/shipping/deliveryMode` (`"door"` = the old
+No locker near the address = booked DOOR-TO-DOOR instead (Junid, 24 Nov 2026:
+"Never leave an order unbooked because there's no locker"), written as
+`shipping/deliveryMode: "door"` + `shipping/doorFallback { reason, kind, at }`
+with no `deliveryLocker`; orders already "Packed, courier not booked" for that
+reason are handed back once by the tick. Switch: `/config/shipping/deliveryMode` (`"door"` = the old
 booking). docs/COURIER-GUY.md "Door-to-locker" has the rules; the bench below
 prints the plan (the locker, its quotes, the door-to-door price).
 

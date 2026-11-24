@@ -219,6 +219,8 @@ export async function recheckUnknownBooking(key, order, { db, client, now = () =
       // Found at Courier Guy after the create's answer was lost: no one booked it twice.
       recoveredFromUnknown: { at: t, error: str(claim.error).slice(0, 300) },
       ...(locker ? { deliveryLocker: plain(locker), deliveryMode: "locker", waybills, shipments: plain(made) } : {}),
+      // The attempt was the door-to-door booking made because there was no locker (Junid, 24 Nov 2026; the claim carries why).
+      ...(!locker && claim.doorFallback?.reason ? { deliveryMode: "door", doorFallback: plain({ ...claim.doorFallback, at: t }) } : {}),
       partial: null,
       courierBooking: { state: "booked", at: t, recovered: true, shipmentId: first.shipmentId, waybill: first.waybill },
     };

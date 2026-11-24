@@ -54,7 +54,7 @@ import {
   displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName, shippingOf,
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder, fetchShippingPoint } from "./shopifyOrders.mjs";
-import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey } from "./shipping.mjs";
+import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey, doorRetryDue } from "./shipping.mjs";
 import { sweepUnknownBookings, RELEASED_PATH as UNKNOWN_RELEASED_PATH } from "../../shipping/unknownBooking.mjs";
 // The held-courier text (scripts/shipping/exchangeReturn.mjs releases an order carrying exactly this when Junid says good).
 export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
@@ -309,6 +309,8 @@ export async function runOrdersPoll(deps) {
     // attached, none after 10 minutes is booked once more (scripts/shipping/unknownBooking.mjs). Before the pending
     // query, so an order handed back is shipped on this same tick.
     await recheckUnknownBookings(ctx);
+    // "Packed, courier not booked" because there was no locker: handed back ONCE, to be booked door-to-door (Junid, 24 Nov 2026).
+    await retryNoLockerOrders(ctx);
     const pending = await queryEq(ctx, "fulfilState", "pending");
     for (const [id, order] of Object.entries(pending)) {
       // Under the ship lock, on a FRESH read (fast-ship.mjs may have shipped it since the query): never twice.
@@ -1177,6 +1179,51 @@ export async function recheckUnknownBookings(ctx) {
   }
 }
 
+/**
+ * NO LOCKER → DOOR-TO-DOOR, the orders already refused (Junid, 24 Nov 2026: "Retry every order that's currently
+ * 'courier not booked' for this reason"). An order refused under the 20 Nov rule ("no locker, no booking") sits at
+ * fulfilState "courier_failed" with shipping/booking { noLocker: true } and nothing retries it but a tap on the POS.
+ * Each one whose CURRENT reason is a no-locker one (bookShipment.mjs doorRetryDue) is handed back to the ship step
+ * exactly as the POS Retry does, ONCE: shipping/doorRetry is claimed by transaction first, so a second tick, the other
+ * shipper or retry-no-locker.mjs never hands it back again. The ship step then books it door-to-door under the same
+ * ceiling, claim and live switch; if that fails too (over the ceiling, no rate) the order says why and waits for a
+ * person, as before. Nothing is handed back while /config/shipping/live is off (the try would be spent on a dry run).
+ * Never throws. → the keys handed back.
+ */
+export async function retryNoLockerOrders(ctx) {
+  const { db, log } = ctx;
+  const out = [];
+  try {
+    const failed = await queryEq(ctx, "fulfilState", "courier_failed");
+    const due = Object.entries(failed).filter(([, o]) => doorRetryDue(o));
+    if (!due.length || !(await readLive(db))) return out;
+    for (const [id, order] of due) {
+      try {
+        const t = Date.now();
+        const reason = doorRetryDue(order);
+        const claim = await db.ref(`${ONLINE_ORDERS_PATH}/${assertSafeSegment(id, "order key")}/shipping/doorRetry`)
+          .transaction((cur) => (cur ? undefined : { at: t, by: "tick", reason: String(reason).slice(0, 300) }));
+        if (!claim.committed) continue;
+        // What the POS "Retry courier" writes (as unknownBooking.mjs backToPending).
+        await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
+          fulfilState: "pending",
+          "fulfil/state": "pending",
+          courierError: null,
+          ...(!order.attention || order.attention.kind === ATTENTION_KIND.COURIER_FAILED ? { attention: null, attentionOpen: null } : {}),
+          updatedAt: t,
+        });
+        out.push(id);
+        log(`  ↻ ${orderLabel(order) || id}: no locker (${String(reason).slice(0, 120)}) — handed back once, to be booked door-to-door`);
+      } catch (e) {
+        log(`  ! ${orderLabel(order) || id}: no-locker retry not handed back — ${String(e?.message || e).slice(0, 160)}`);
+      }
+    }
+  } catch (e) {
+    log(`  ! no-locker retry failed — ${String(e?.message || e).slice(0, 200)}`);
+  }
+  return out;
+}
+
 // The Courier Guy's public tracking page for a waybill (the link the customer agent sends too).
 export const courierTrackUrl = (waybill) => `https://portal.thecourierguy.co.za/track?ref=${encodeURIComponent(String(waybill))}`;
 
@@ -1289,13 +1336,17 @@ async function shipOrder(ctx, id, order) {
       log(`  ! ${orderLabel(order)}: courier booking not recorded — ${String(e?.message || e).slice(0, 200)}`);
     }
   }
-  // OVER THE CEILING (Junid, 6 Nov 2026), or NO LOCKER NEAR THE ADDRESS (door-to-locker, 20 Nov 2026: never a
-  // silent door-to-door): not booked; Junid gets ONE WhatsApp line with the cheaper option / the reason. Queued once per order (the first wins);
+  // OVER THE CEILING (Junid, 6 Nov 2026), or a locker refusal that is NOT "no locker near" (door-to-locker, 20 Nov
+  // 2026): not booked; Junid gets ONE WhatsApp line with the cheaper option / the reason. Queued once per order (the first wins);
   // the courier-recon runner sends it through Jamie (scripts/shipping/courier-recon.mjs).
+  // NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026): that booking's line ("booked door-to-door: no Courier Guy locker
+  // within N km …", or why door-to-door was not booked either) has its OWN slot, <id>-door: an order refused under the
+  // old rule already used its one line for "Not booked", and this one must still reach him.
   if (booking?.junidLine) {
     try {
-      // One line per order (a re-quote at another rate does not send a second).
-      const lineRef = db.ref(`shipping_recon/junidLines/${id}`);
+      // One line per order and kind (a re-quote at another rate does not send a second).
+      // <id>-door: booked door-to-door; <id>-door-refused: not booked either (a later Retry that books still sends its line).
+      const lineRef = db.ref(`shipping_recon/junidLines/${booking.doorFallback ? `${id}-door${booking.skipped ? "-refused" : ""}` : id}`);
       if (!(await lineRef.get()).exists()) await lineRef.set({ orderId: id, text: booking.junidLine, at: now });
     } catch (e) {
       log(`  ! ${orderLabel(order)}: ceiling line not queued — ${String(e?.message || e).slice(0, 200)}`);
