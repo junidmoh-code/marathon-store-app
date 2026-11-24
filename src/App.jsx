@@ -14404,6 +14404,8 @@ function WarehouseView({ products = [], orders, onExit }) {
             const incoming = status === STATUS.INCOMING;
             const ready    = status === STATUS.READY;
             const oos      = status === STATUS.OUT_OF_STOCK;
+            // A website pick still to be pulled: its code is the headline of the red box, not the header (Junid, 24 Nov 2026, 21:05).
+            const webPick  = order.channel === "online" && incoming;
             // Card backgrounds + bar by status
             const cardBg = incoming ? "rgba(15,25,60,.5)"
                           : ready   ? "rgba(0,30,15,.4)"
@@ -14438,7 +14440,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                   <ProductPhoto productId={order.productId} product={whProductsById[order.productId]} url={order.productPhotoUrl} photo={order.productPhoto} size={60} radius={10}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
-                      <div style={{ fontSize:13, fontWeight:800, color:"#4A7FFF", letterSpacing:"0.5px" }}>#{order.id}</div>
+                      {!webPick && <div style={{ fontSize:13, fontWeight:800, color:"#4A7FFF", letterSpacing:"0.5px" }}>#{order.id}</div>}
                       <div style={{ fontSize:10, fontWeight:600, padding:"2px 8px", borderRadius:10, display:"flex", alignItems:"center", gap:4, background:chipBg, color:chipColor }}>
                         {incoming && <span style={{ width:5, height:5, borderRadius:"50%", background:"#4A7FFF", boxShadow:"0 0 3px #4A7FFF", display:"inline-block" }}/>}
                         {chipLabel}
@@ -14470,8 +14472,8 @@ function WarehouseView({ products = [], orders, onExit }) {
                       )}
                     </div>
                     {/* A website pick still to be pulled: red, bold, with how long it has waited (Junid, 24 Nov 2026). */}
-                    {order.channel === "online" && incoming && <WebOrderBanner since={order.createdAt} code={order.id} />}
-                    <div style={{ fontSize: order.channel === "online" && incoming ? 17 : 15, fontWeight: order.channel === "online" && incoming ? 800 : 600, color:"#fff" }}>{order.productName}{order.size ? ` — Size ${order.size}` : ""}{order.qty > 1 ? ` × ${order.qty}` : ""}</div>
+                    {webPick && <WebOrderBanner since={order.createdAt} code={order.id} />}
+                    <div style={{ fontSize: webPick ? 17 : 15, fontWeight: webPick ? 800 : 600, color:"#fff" }}>{order.productName}{order.size ? ` — Size ${order.size}` : ""}{order.qty > 1 ? ` × ${order.qty}` : ""}</div>
                     <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginTop:3, display:"flex", alignItems:"center", gap:4 }}>
                       <svg width="10" height="10" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                       {order.customerName}{order.customerPhone ? ` · ${order.customerPhone}` : ""}

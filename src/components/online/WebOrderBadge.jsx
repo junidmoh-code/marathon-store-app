@@ -31,21 +31,40 @@ export function WebWaitChip({ since, now }) {
 }
 
 /**
- * The banner on a hub order card (and anywhere a single line is shown on its own): bold, red, the line's
- * three-letter code big enough to read across the room, and how long it has been waiting. Since Junid's
- * 24 Nov evening brief this is the ONLY place a hub sees a website pick: the separate "pull these first" box
- * repeated the same orders and is gone; the cards themselves lead the queue instead.
+ * One pink for every website order code on every staff screen (Junid, 24 Nov 2026, 21:05): the code is the
+ * headline, large, bold, monospace, never wrapped. #FF5CC8 on the dark card and on the banner's red tint is
+ * above 6:1, and it is not the banner's red, so the code never blends into the border.
+ */
+export const WEB_PINK = "#FF5CC8";
+
+export function WebOrderCode({ code, size = 30 }) {
+  if (code == null || code === "") return null;
+  return (
+    <span data-testid="web-order-code"
+          style={{ fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 900, fontSize: size, lineHeight: 1.05, letterSpacing: ".06em",
+                   color: WEB_PINK, whiteSpace: "nowrap", flex: "0 0 auto" }}>
+      {code}
+    </span>
+  );
+}
+
+/**
+ * The banner on a hub order card (and anywhere a single line is shown on its own). The red box itself says
+ * "website order"; inside it the line's three-letter code is the headline in pink with how long it has been
+ * waiting beside it. No other words (Junid, 24 Nov 2026, 21:05). Since Junid's 24 Nov evening brief this is the
+ * ONLY place a hub sees a website pick: the separate "pull these first" box repeated the same orders and is
+ * gone; the cards themselves lead the queue instead. role="status", not "alert": the wait chip ticks every half
+ * minute and an alert region would make a screen reader re-announce every card each tick.
  */
 export function WebOrderBanner({ since, orderNumber = null, code = null, children = null }) {
   const now = useNowTick();
+  const headline = code || (orderNumber != null ? `#${orderNumber}` : null);
   return (
-    <div role="alert" data-testid="web-order-banner"
-         style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", margin: "0 0 8px", padding: "7px 10px", borderRadius: 9,
+    <div role="status" aria-label={`Website order ${headline || ""}`.trim()} data-testid="web-order-banner"
+         style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "0 0 8px", padding: "8px 12px", borderRadius: 10,
                   background: "rgba(255,69,58,.16)", border: `2px solid ${WEB_RED}`, color: "#fff" }}>
-      <span style={{ fontWeight: 900, fontSize: 13, letterSpacing: ".06em", color: WEB_RED }}>WEBSITE ORDER{orderNumber != null ? ` #${orderNumber}` : ""}</span>
-      {code && <span data-testid="web-order-code" style={{ fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 900, fontSize: 18, letterSpacing: ".08em", color: "#fff" }}>{code}</span>}
-      <span style={{ fontWeight: 700, fontSize: 12 }}>pull this first</span>
-      <span style={{ marginLeft: "auto" }}><WebWaitChip since={since} now={now} /></span>
+      <WebOrderCode code={headline} />
+      <WebWaitChip since={since} now={now} />
       {children}
     </div>
   );

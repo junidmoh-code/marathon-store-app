@@ -16,7 +16,8 @@
 //
 // UNMISSABLE (Junid, 24 Nov 2026): the strip sits at the top of the screen, red
 // and bold, apart from walk-in and refill work, and every row says how long it
-// has been waiting. The same strip is shown inside Source for the lines that
+// has been waiting. The order's code is each row's headline, large and pink (the one website-code style, shared
+// with a hub's order card; Junid, 24 Nov 2026, 21:05), with the wait beside it. The same strip is shown inside Source for the lines that
 // reach CENTRAL, the last stop of every chain (`central`): there the buttons
 // read Found / Not found and a found piece goes on the next morning stock run.
 //
@@ -31,7 +32,7 @@ import { ONLINE_ORDERS_CONFIG_PATH } from "../../utils/onlineOrders";
 import { CheckProperlyBanner } from "./CheckCard";
 import { isOnlineReturn } from "./feedModel";
 import { PrimaryPhoto } from "../../components/shared/PrimaryPhoto.jsx";
-import { WebWaitChip, useNowTick } from "../../components/online/WebOrderBadge.jsx";
+import { WebWaitChip, WebOrderCode, useNowTick } from "../../components/online/WebOrderBadge.jsx";
 
 export const CENTRAL_HANDOVER_TEXT = "Put it on the morning stock run to Marathon PE";
 
@@ -51,6 +52,25 @@ export function useHandoverText() {
     return () => { live = false; };
   }, []);
   return text;
+}
+
+/**
+ * A row's headline code and the small words around it. PURE. The poller names a shop's line by its Shopify
+ * number (`orderNumber`; three-letter codes belong only to hub order units), so "#1768" is the headline and
+ * anything else orderLabel added ("Concrete", "(follow-up)", "(second parcel)") stays small beside it.
+ */
+export function rowCode(row) {
+  const ref = typeof row?.ref === "string" ? row.ref.trim() : "";
+  const num = row?.orderNumber == null ? "" : String(row.orderNumber).trim();
+  if (num) {
+    const code = `#${num}`;
+    // orderLabel's spelling holds "#N": what is around it stays small. Any other ref text is kept as the note.
+    const note = ref.includes(code) ? ref.replace(code, " ").replace(/\s+/g, " ").trim() : (ref === num ? "" : ref);
+    return { code, note };
+  }
+  // An order pulled in before Shopify numbers: its old three-letter code is the headline, any added words stay small.
+  const [code = "—", ...rest] = ref ? ref.split(/\s+/) : [];
+  return { code, note: rest.join(" ") };
 }
 
 function Row({ store, row, handover, now, central = false, onDone = null }) {
@@ -73,16 +93,23 @@ function Row({ store, row, handover, now, central = false, onDone = null }) {
   }
 
   const btn = { fontFamily: FONT, fontWeight: 750, borderRadius: 12, cursor: busy ? "default" : "pointer", border: "none" };
+  const { code, note } = rowCode(row);
   return (
-    <div data-testid="web-row" style={{ display: "flex", gap: 12, alignItems: "center", padding: "10px 0", borderTop: "1px solid rgba(255,255,255,.06)" }}>
+    <div data-testid="web-row" style={{ padding: "10px 0", borderTop: "1px solid rgba(255,255,255,.06)" }}>
+    {/* The headline spans the whole row, so a long code never wraps or is cut beside the photo and buttons. */}
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+      <WebOrderCode code={code} size={26} />
+      {note && <span data-testid="web-code-note" style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: "rgba(233,238,255,.75)", whiteSpace: "nowrap" }}>{note}</span>}
+      {!isReturn && <WebWaitChip since={row.createdAt || row.activatedAt} now={now} />}
+    </div>
+    <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
       {row.photoUrl
         ? <PrimaryPhoto product={{ id: row.productId, photoUrl: row.photoUrl }} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 10, flex: "0 0 56px" }} />
         : <div style={{ width: 56, height: 56, borderRadius: 10, background: "rgba(255,255,255,.05)", flex: "0 0 56px" }} />}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontFamily: FONT, fontSize: 17, fontWeight: 800, color: INK, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.productName || "Item"}</div>
-        <div style={{ fontFamily: MONO, fontSize: 13, fontWeight: 700, color: "rgba(233,238,255,.85)", marginTop: 3, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <span>{size ? `SIZE ${size} · ` : ""}QTY {row.qty || 1} · <span style={{ color: GREEN, fontWeight: 800 }}>{row.orderNumber != null ? `#${row.orderNumber}` : (row.ref || "—")}</span></span>
-          {!isReturn && <WebWaitChip since={row.createdAt || row.activatedAt} now={now} />}
+        <div style={{ fontFamily: MONO, fontSize: 13, fontWeight: 700, color: "rgba(233,238,255,.85)", marginTop: 3 }}>
+          {size ? `SIZE ${size} · ` : ""}QTY {row.qty || 1}
         </div>
         {/* Escalation round 2: this shop answered Not found once already. */}
         {row.checkProperly === true && <div role="alert" data-testid="web-check-properly" style={{ marginTop: 6 }}><CheckProperlyBanner /></div>}
@@ -110,6 +137,7 @@ function Row({ store, row, handover, now, central = false, onDone = null }) {
       </div>
       )}
     </div>
+    </div>
   );
 }
 
@@ -123,7 +151,7 @@ export default function WebsiteOrdersStrip({ store, rows, central = false, onDon
   return (
     <div data-testid="web-strip" style={{ ...PANEL, padding: 0, marginBottom: 18, border: `2px solid ${RED}`, background: "rgba(255,69,58,.07)", overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: RED }}>
-        <div style={{ ...META, fontSize: 14, fontWeight: 900, color: "#fff", letterSpacing: "0.1em" }}>Website orders — pull these first</div>
+        <div style={{ ...META, fontSize: 14, fontWeight: 900, color: "#fff", letterSpacing: "0.1em" }}>Website orders</div>
         <span data-testid="web-count" style={{ marginLeft: "auto", background: "#fff", color: RED, fontFamily: MONO, fontWeight: 900, fontSize: 14, borderRadius: 999, padding: "2px 10px" }}>{rows.length}</span>
       </div>
       <div style={{ padding: "2px 16px 8px" }}>

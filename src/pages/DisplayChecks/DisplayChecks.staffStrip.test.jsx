@@ -34,6 +34,8 @@ vi.mock("../../config/displayChecks", async (orig) => ({
 
 const { default: DisplayChecks } = await import("./index.jsx");
 const { default: CheckCard } = await import("./CheckCard.jsx");
+const { rowCode } = await import("./WebsiteOrdersStrip.jsx");
+const { WEB_PINK } = await import("../../components/online/WebOrderBadge.jsx");
 
 // The live shape: website rows are online__ keys with kind online_pick; the
 // ordinary display checks have no kind at all.
@@ -76,6 +78,22 @@ describe("Display Checks as a plain store user", () => {
     for (const k of WEB.map((r) => r.key)) expect(gridChecks(tree)).not.toContain(k);
   });
 
+  it("each row's order code is the pink headline (one style with the hub card), nothing else shows it", async () => {
+    const tree = await mount(STAFF);
+    const codes = byTestId(tree, "web-order-code");
+    expect(codes.map((n) => n.props.children)).toEqual(["#1772", "#1776"]);
+    for (const n of codes) { expect(n.props.style.color).toBe(WEB_PINK); expect(n.props.style.whiteSpace).toBe("nowrap"); }
+    expect(byTestId(tree, "web-code-note")).toHaveLength(0);
+  });
+  it("rowCode: the Shopify number is the headline; orderLabel's extra words stay small; old orders fall back to ref", () => {
+    expect(rowCode({ orderNumber: 1003, ref: "Concrete #1003 (follow-up)" })).toEqual({ code: "#1003", note: "Concrete (follow-up)" });
+    expect(rowCode({ orderNumber: 1772, ref: "#1772" })).toEqual({ code: "#1772", note: "" });
+    expect(rowCode({ ref: "KQZ" })).toEqual({ code: "KQZ", note: "" });
+    expect(rowCode({ ref: "KQZ (follow-up)" })).toEqual({ code: "KQZ", note: "(follow-up)" });
+    expect(rowCode({})).toEqual({ code: "—", note: "" });
+    expect(rowCode({ orderNumber: 1003, ref: "Concrete" })).toEqual({ code: "#1003", note: "Concrete" });
+    expect(rowCode({ orderNumber: " ", ref: "KQZ" })).toEqual({ code: "KQZ", note: "" });
+  });
   it("gives staff the same Handed over / Not found buttons, through the same locked callable", async () => {
     const tree = await mount(STAFF);
     expect(byTestId(tree, "web-handed")).toHaveLength(2);
