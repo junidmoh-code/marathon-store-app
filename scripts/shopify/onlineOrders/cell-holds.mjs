@@ -4,6 +4,8 @@
 //   node scripts/shopify/onlineOrders/cell-holds.mjs --from <rejections.json> [--commit]
 //   node scripts/shopify/onlineOrders/cell-holds.mjs --prune [--commit]
 //   node scripts/shopify/onlineOrders/cell-holds.mjs --rollback <file> [--commit]
+//   node scripts/shopify/onlineOrders/cell-holds.mjs --stale [--commit]
+//   node scripts/shopify/onlineOrders/cell-holds.mjs --stale-off <file> [--commit]
 //
 // The rule is in ../pickableStock.mjs: a cell (product, size, place) that
 // rejected a website pick is not counted for the website and not routed to
@@ -22,6 +24,15 @@
 //   --rollback  Removes the holds a back-fill wrote, each only if it is still
 //               the row that back-fill wrote, and tells the website.
 //
+//   --stale     THE LONE STALE PIECE (pickableStock.mjs: one piece at Marathon
+//               PE untouched for over 14 days is not counted for the website).
+//               Lists every size that rule takes off the website right now.
+//               With --commit: writes the rollback file and tells the website,
+//               so the sizes go this tick instead of at the 02:30 sweep. The
+//               rule itself lives in code and config, not in rows.
+//   --stale-off Switches that rule off (config .../pickable/staleSingle/off)
+//               and tells the website about every product in the file.
+//
 // DRY RUN unless --commit. NO STOCK IS TOUCHED by any mode: the only writes are
 // rows under /online_cell_holds and the website's dirty counters. Every
 // --from --commit writes a rollback file first (~/marathon-rollbacks/), listing
@@ -35,7 +46,9 @@ import { join } from "path";
 import { fileURLToPath } from "url";
 import { adminRequire } from "../../adminRequire.mjs";
 import { shallowKeys } from "../../lib/rtdbPaged.mjs";
-import { CELL_HOLDS_PATH, cellQty, cellStampMs, holdRow, holdStands } from "../pickableStock.mjs";
+import { CELL_HOLDS_PATH, PICKABLE_CONFIG_PATH, cellQty, cellStampMs, holdRow, holdStands, pickableTree, rulesFrom } from "../pickableStock.mjs";
+import { networkTotals } from "../inventory.mjs";
+import { locationNames } from "../inventorySync.mjs";
 
 const DB_URL = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
 const DIRTY_PATHS = ["shopify_inventory_dirty", "shopify_inventory_dirty_concrete"];
@@ -114,6 +127,68 @@ async function main() {
     process.exit(0);
   }
 
+  if (argv.includes("--stale")) {
+    const rules = rulesFrom(await get(PICKABLE_CONFIG_PATH));
+    if (!rules.staleSingle) { console.log("the lone-stale-piece rule is switched off (config/onlineOrders/pickable/staleSingle/off)"); process.exit(0); }
+    const nowMs = Date.now();
+    const pids = (await shallowKeys(app, "shopify_sync")).filter((k) => !k.startsWith("_"));
+    const locs = await locationNames(db);
+    const items = [];
+    let bytes = 0;
+    for (let i = 0; i < pids.length; i += 20) {
+      await Promise.all(pids.slice(i, i + 20).map(async (pid) => {
+        // The rule's own places first: most products have no lone piece there and cost one small read.
+        const own = {};
+        for (const loc of rules.staleSingle.locations) { const c = await get(`stock/${loc}/${pid}`); bytes += JSON.stringify(c ?? null).length; if (c) own[loc] = { [pid]: c }; }
+        if (!pickableTree(own, pid, null, { holds: false, staleSingle: rules.staleSingle }, nowMs).hidden.length) return;
+        const map = await get(`shopify_sync/${pid}`);
+        if (!map?.variants) return;
+        const tree = { ...own };
+        for (const loc of locs) if (!tree[loc]) { const c = await get(`stock/${loc}/${pid}`); bytes += JSON.stringify(c ?? null).length; if (c) tree[loc] = { [pid]: c }; }
+        const holdsNode = await get(`${CELL_HOLDS_PATH}/${pid}`);
+        const sizes = Object.keys(map.variants);
+        const before = networkTotals(pickableTree(tree, pid, holdsNode, { ...rules, staleSingle: null }, nowMs).tree, pid, sizes);
+        const { tree: after, hidden } = pickableTree(tree, pid, holdsNode, rules, nowMs);
+        const now = networkTotals(after, pid, sizes);
+        const name = (await get(`products/${pid}/name`)) || pid;
+        for (const h of hidden.filter((x) => x.why === "stale_single")) {
+          if (!(h.sizeKey in before)) continue; // a size the listing does not carry
+          items.push({ pid, product: name, size: sizeLabel(h.sizeKey), place: LOC_NAME[h.loc] || h.loc, lastMoved: new Date(h.at).toISOString().slice(0, 10), websiteBefore: before[h.sizeKey], websiteNow: now[h.sizeKey] });
+        }
+      }));
+    }
+    items.sort((a, b) => a.product.localeCompare(b.product) || a.size.localeCompare(b.size));
+    const gone = items.filter((x) => x.websiteNow === 0);
+    console.log(`${pids.length} listed product(s) checked · read ${bytes} bytes of stock`);
+    console.log(`lone stale pieces (one piece at ${rules.staleSingle.locations.map((l) => LOC_NAME[l] || l).join(", ")}, untouched over ${rules.staleSingle.days} days): ${items.length} size(s) on ${new Set(items.map((x) => x.pid)).size} product(s)`);
+    console.log(`  ${gone.length} size(s) are sold out on the website because of it; ${items.length - gone.length} stay on sale from another place`);
+    for (const x of items) console.log(`    ${x.product} · size ${x.size} · last moved ${x.lastMoved} · website ${x.websiteBefore} → ${x.websiteNow}`);
+    if (!COMMIT) { console.log("dry run: nothing written. Add --commit."); process.exit(0); }
+    const dir = join(homedir(), "marathon-rollbacks");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `stale-single-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+    writeFileSync(file, JSON.stringify({
+      what: `Sizes taken off the website by the lone-stale-piece rule (one piece at ${rules.staleSingle.locations.join(", ")} whose count has not moved for over ${rules.staleSingle.days} days). No stock count was changed and no product was unpublished: the size's website quantity is lower by that one piece.`,
+      restore: `node scripts/shopify/onlineOrders/cell-holds.mjs --stale-off ${file} --commit   (switches the rule off and tells the website; every size is back within about two minutes in trading hours). Each size also returns by itself the next time that cell has a sale, a delivery, a transfer or a count.`,
+      writtenAt: new Date().toISOString(), rule: rules.staleSingle, items,
+    }, null, 1));
+    console.log(`rollback file: ${file}`);
+    await markDirty(new Set(items.map((x) => x.pid)));
+    console.log(`the website is told: ${new Set(items.map((x) => x.pid)).size} product(s) marked for the next push`);
+    process.exit(0);
+  }
+
+  const staleOff = opt("--stale-off");
+  if (staleOff) {
+    const file = JSON.parse(readFileSync(staleOff, "utf8"));
+    const pids = new Set((file.items || []).map((x) => x.pid));
+    if (!COMMIT) { console.log(`dry run: would switch the lone-stale-piece rule off and tell the website about ${pids.size} product(s). Add --commit.`); process.exit(0); }
+    await db.ref(`${PICKABLE_CONFIG_PATH}/staleSingle/off`).set(true);
+    await markDirty(pids);
+    console.log(`rule switched off; ${pids.size} product(s) marked for the next push`);
+    process.exit(0);
+  }
+
   const rollbackFile = opt("--rollback");
   if (rollbackFile) {
     const file = JSON.parse(readFileSync(rollbackFile, "utf8"));
@@ -132,7 +207,7 @@ async function main() {
   }
 
   const from = opt("--from");
-  if (!from) { console.error("usage: cell-holds.mjs --list | --from <rejections.json> [--commit] | --prune [--commit] | --rollback <file> [--commit]"); process.exit(2); }
+  if (!from) { console.error("usage: cell-holds.mjs --list | --from <rejections.json> [--commit] | --prune [--commit] | --rollback <file> [--commit] | --stale [--commit] | --stale-off <file> [--commit]"); process.exit(2); }
   const rejections = JSON.parse(readFileSync(from, "utf8"));
   const keys = [...new Set(rejections.map((r) => `${r.pid}|${r.sizeKey}|${r.loc}`))];
   const cells = {};

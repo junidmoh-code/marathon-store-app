@@ -222,6 +222,16 @@ the same size sold again from a shelf that had already rejected it.
 - **No stock is touched.** The count, the refill scan and the Total Stock card
   are unchanged; the card's "online N" is the figure before holds.
 - Kill switch: `/config/onlineOrders/pickable/holdsOff = true`.
+- **The lone stale piece** (same module, same report section 3): a cell at
+  Marathon PE showing exactly one piece whose count has not moved for more than
+  14 days is not counted for the website (54 website lines were sent to such a
+  cell; 31, 57%, were rejected — the only class over Junid's bar of 10 lines
+  with half unavailable). It is still routed to, and it counts again the moment
+  the cell moves. `/config/onlineOrders/pickable/staleSingle = { off?, days?,
+  locations? }`. The nightly stock sweep (02:30) is what notices a piece
+  crossing 14 days. `cell-holds.mjs --stale` lists what the rule hides now
+  (with `--commit`: a rollback file, and the website is told at once);
+  `--stale-off <file> --commit` switches it off.
 - `scripts/shopify/onlineOrders/cell-holds.mjs`: `--list`, `--prune` (run by
   the nightly stock sweep), `--from` (back-fill, writes a rollback file),
   `--rollback`.

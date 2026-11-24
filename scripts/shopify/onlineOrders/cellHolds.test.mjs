@@ -70,6 +70,29 @@ describe("a hub's Out of Stock on a website pick", () => {
     expect(touched.filter((p) => /refill|restock/.test(p))).toEqual([]);
   });
 
+  it("tells the website itself (its own bump of the dirty counter, beside the reservation's)", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, [shopifyOrder(9001, 2501)]));
+    await f.db.ref(`orders/${line(f, "9001").source.orderKeys[0]}`).update({ status: "out_of_stock" });
+    const from = f.writes.length;
+    await runOrdersPoll(deps(f));
+    const paths = f.writes.slice(from).map(([, path]) => String(path));
+    const holdAt = paths.indexOf(`${CELL_HOLDS_PATH}/SNK/8/hub1`);
+    expect(holdAt).toBeGreaterThanOrEqual(0);
+    // Straight after the hold row, before the order itself is committed.
+    expect(paths[holdAt + 1]).toBe("shopify_inventory_dirty/SNK");
+  });
+
+  it("a cell that emptied before the hub answered gets no hold (there is nothing on paper to hide)", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, [shopifyOrder(9001, 2501)]));
+    await f.db.ref("stock/hub1/SNK/8/qty").set(0);
+    await f.db.ref(`orders/${line(f, "9001").source.orderKeys[0]}`).update({ status: "out_of_stock" });
+    await runOrdersPoll(deps(f));
+    expect(line(f, "9001").source.status).toBe("no_stock");
+    expect(f.read(`${CELL_HOLDS_PATH}/SNK`)).toBe(null);
+  });
+
   it("the next order for that size is NOT sent back to the shelf that said no: it goes to the next place", async () => {
     const f = fakeDb(world());
     await rejectedAtHub1(f);

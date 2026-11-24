@@ -104,10 +104,11 @@ export async function desiredFor(db, pid, locNames = null) {
   // Website-order holds for this product: ONE point read of its own
   // reservation node (docs/ONLINE-ORDERS.md), read with the stock it adjusts.
   const holds = await readReservations(db, pid);
-  // Pieces at a shelf that rejected a website pick and has not moved since are
-  // not counted (pickableStock.mjs). `hidden` names them, for the reports.
+  // Pieces at a shelf that rejected a website pick and has not moved since, and
+  // a lone piece at Marathon PE untouched for over 14 days, are not counted
+  // (pickableStock.mjs). `hidden` names them, for the reports.
   const get = (path) => db.ref(path).get().then((x) => x.val());
-  const { tree: pickable, hidden } = pickableTree(tree, pid, await readCellHolds(get, pid), await readPickableRules(get));
+  const { tree: pickable, hidden } = pickableTree(tree, pid, await readCellHolds(get, pid), await readPickableRules(get), Date.now());
   return { map, totals: withoutForeignHolds(networkTotals(pickable, pid, sizes), holds), reserved: reservedBySize(holds), released: releasedBySize(holds), hidden };
 }
 

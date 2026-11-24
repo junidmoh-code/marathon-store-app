@@ -1319,7 +1319,7 @@ for (const { pid, want } of capped) {
     // …and pieces at a shelf that rejected a website pick and has not moved
     // since (pickableStock.mjs) — the same subtraction desiredFor makes.
     const pickGet = (p) => db.ref(p).get().then((x) => x.val());
-    const { tree: pickable } = pickableTree(tree, pid, await readCellHolds(pickGet, pid), await readPickableRules(pickGet));
+    const { tree: pickable } = pickableTree(tree, pid, await readCellHolds(pickGet, pid), await readPickableRules(pickGet), await serverNowMs(db));
     const totals = withoutForeignHolds(networkTotals(pickable, pid, sizes), holdsNode, pendingForeign);
     const heldBySize = reservedBySize(holdsNode);
     const releasedHeld = releasedBySize(holdsNode);

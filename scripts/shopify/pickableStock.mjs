@@ -26,6 +26,18 @@
 //
 // Kill switch: /config/onlineOrders/pickable/holdsOff = true (read every tick).
 //
+// THE LONE STALE PIECE (same report, section 3). The one clearly defined class
+// that fails more often than it succeeds: a cell at Marathon PE showing exactly
+// ONE piece whose count has not moved for more than 14 days — 54 website lines
+// were sent to such a cell and 31 (57%) were rejected. Junid's bar for hiding a
+// class is at least 10 lines with at least half unavailable; no other place
+// reaches it (Hub 1 42%, Trophy 37%, Hub 2 34%), so only Marathon PE is listed.
+// Such a piece is not COUNTED for the website. It is still routed to: when it
+// is the only one on the route, a pick that works 43% of the time is better
+// than a line that waits for nothing. It comes back by itself the moment the
+// cell moves (a sale, a delivery, a count).
+//   /config/onlineOrders/pickable/staleSingle = { off?: true, days?: 14, locations?: ["marathon-pe"] }
+//
 // PURE. The readers are at the bottom; a failed read never stops a push or a
 // route (the hold is then not applied — today's behaviour — and it is logged).
 
@@ -56,9 +68,30 @@ export function holdStands(hold, cell) {
 }
 
 /** /config/onlineOrders/pickable → the rules in force. Absent = the defaults. */
+export const STALE_SINGLE_DEFAULT = Object.freeze({ days: 14, locations: Object.freeze(["marathon-pe"]) });
+
 export function rulesFrom(config) {
   const c = config && typeof config === "object" ? config : {};
-  return { holds: c.holdsOff !== true };
+  const st = c.staleSingle && typeof c.staleSingle === "object" ? c.staleSingle : {};
+  const days = Number(st.days);
+  const locations = Array.isArray(st.locations) ? st.locations.filter((l) => typeof l === "string" && l) : null;
+  return {
+    holds: c.holdsOff !== true,
+    staleSingle: st.off === true ? null : {
+      days: Number.isFinite(days) && days >= 1 ? days : STALE_SINGLE_DEFAULT.days,
+      locations: locations && locations.length ? locations : [...STALE_SINGLE_DEFAULT.locations],
+    },
+  };
+}
+
+/**
+ * Is this cell a lone piece nobody has touched for longer than the rule allows?
+ * Needs a real stamp: a cell with no `updatedAt` gives no evidence of its age and is counted.
+ */
+export function isStaleSingle(cell, loc, rule, nowMs) {
+  if (!rule || !rule.locations.includes(loc) || cellQty(cell) !== 1) return false;
+  const stamp = cellStampMs(cell);
+  return stamp != null && Number.isFinite(nowMs) && nowMs - stamp > rule.days * 864e5;
 }
 
 /**
@@ -68,20 +101,25 @@ export function rulesFrom(config) {
  * → { tree, hidden: [{ loc, sizeKey, qty, why, at }] }. `tree` is a new object
  * (the input is not mutated) and is the input itself when nothing is hidden.
  */
-export function pickableTree(tree, pid, holdsNode, rules = rulesFrom(null)) {
+export function pickableTree(tree, pid, holdsNode, rules = rulesFrom(null), nowMs = Date.now()) {
   const hidden = [];
-  if (!tree || !rules?.holds || !holdsNode || typeof holdsNode !== "object") return { tree, hidden };
+  const holds = rules?.holds && holdsNode && typeof holdsNode === "object" ? holdsNode : null;
+  const stale = rules?.staleSingle || null;
+  if (!tree || (!holds && !stale)) return { tree, hidden };
   const out = {};
   for (const [loc, perProduct] of Object.entries(tree)) {
     const cells = perProduct?.[pid];
     if (!cells || typeof cells !== "object") { out[loc] = perProduct; continue; }
     let next = cells;
     for (const [sizeKey, cell] of Object.entries(cells)) {
-      const hold = holdsNode[sizeKey]?.[loc];
-      if (!hold || !holdStands(hold, cell)) continue;
+      const hold = holds?.[sizeKey]?.[loc];
+      const held = !!hold && holdStands(hold, cell);
+      if (!held && !isStaleSingle(cell, loc, stale, nowMs)) continue;
       if (next === cells) next = { ...cells };
       next[sizeKey] = typeof cell === "object" ? { ...cell, qty: 0 } : 0;
-      hidden.push({ loc, sizeKey, qty: cellQty(cell), why: hold.kind || "rejected", at: Number(hold.at) });
+      hidden.push(held
+        ? { loc, sizeKey, qty: cellQty(cell), why: hold.kind || "rejected", at: Number(hold.at) }
+        : { loc, sizeKey, qty: 1, why: "stale_single", at: cellStampMs(cell) });
     }
     out[loc] = next === cells ? perProduct : { ...perProduct, [pid]: next };
   }
