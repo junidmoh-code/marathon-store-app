@@ -553,8 +553,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // ── CHOOSE, THEN SOLVE (Junid, 22 Nov 2026) ────────────────────────────────
   // A location tap only CHOOSES: it writes nothing. Where the locations are one
   // or the other — Hub 1 / Hub 2, Pine / Concrete — a tap switches the other
-  // off; Hub 3 is the only location on its list; Marathon's shops may both be
-  // chosen and one Solve sends to both (as that list always allowed).
+  // off; Hub 3 is the only location on its list; Marathon's shops are one or
+  // the other too (Junid, 24 Nov 2026).
   // One shop per product in every division (Junid, 24 Nov 2026).
   const exclusiveFor = () => true;
   // The same array while it still applies (so a card does not redraw for
@@ -625,7 +625,16 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     if (!problem && row.kind === "clothing") {
       const shops = shopDestinations(c.network, row.section);
       try {
-        const owners = await shopOwnersNow(row.pid, shops, (d) => !!ctx.current.openAt.get(row.pid)?.has(d));
+        // Requests read LIVE too (one indexed read of this product), so a
+        // request written a moment ago on another device or by the scan is
+        // seen even before this screen's feed delivers it (architect review, #991).
+        let liveAt = new Set();
+        const [liveProduct, ownersFeed] = await Promise.all([
+          readLiveProduct(row.source, row.pid),
+          shopOwnersNow(row.pid, shops, (d) => liveAt.has(d) || !!ctx.current.openAt.get(row.pid)?.has(d)),
+        ]);
+        liveAt = openLocationsByProduct(liveProduct.reqs).get(row.pid) || new Set();
+        const owners = [...new Set([...ownersFeed, ...shops.filter((d) => liveAt.has(d))])];
         // Held by any shop of the division now (another device, a scan): it
         // is that shop's to refill — nothing is sent from here.
         if (owners.length) problem = `${owners.map(c.label).join(" and ")} already ${owners.length > 1 ? "have" : "has"} this — the refill engine tops it up there. Nothing sent.`;
@@ -665,10 +674,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
           // Solve may send ONLY what the card shows: the hooks refuse a plan
           // that differs from this, and plan from these same live requests.
           expect = Object.fromEntries(row.dests.filter((d) => sel.includes(d.id)).map((d) => [d.id, { units: d.units, sizes: d.sizes }]));
-          // Two shops in one Solve (Marathon PE + Trophy): the card's buttons
-          // are each planned alone, the send plans them TOGETHER (the second
-          // gets what the first leaves). What is expected is that joint plan,
-          // worked out here from the same live data the card was checked on.
+          // Two shops in one Solve: no longer reachable for clothing (one shop
+          // per product, Junid 24 Nov 2026 — refused above); kept for safety.
           if (row.kind === "clothing" && sel.length > 1) {
             const joint = apisRef.current[row.section]?.product.planFor(row.card, sel, openRequestsByProduct(live.reqs).get(row.pid) || {});
             for (const l of joint?.lines || []) if (expect[l.store]) expect[l.store] = { units: l.units || 0, sizes: expect[l.store].sizes, joint: true };
