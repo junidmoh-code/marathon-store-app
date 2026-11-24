@@ -257,7 +257,7 @@ export async function runOrdersPoll(deps) {
         // Not found or the packer's Not here goes to the next place on its chain
         // that shows the size — the agent re-pick's own machinery, raised here
         // instead of on the order agent's next round. Nowhere left → the line is
-        // stamped `chain.exhausted` and Jamie offers alternatives.
+        // stamped `chain` (result "nowhere") and Jamie offers alternatives.
         {
           let fresh = after ?? await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
           let again = false;
