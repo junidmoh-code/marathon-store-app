@@ -833,7 +833,8 @@ describe("one product, one shop — Pine or Concrete, never both", () => {
 // nothing else: no stock, no seat, no request.
 describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
   const markBtn = (tree, pid) => card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0];
-  const tapMark = async (tree, pid) => { await act(async () => { await markBtn(tree, pid).props.onClick(); }); await act(async () => {}); await act(async () => {}); };
+  // Two taps on the same button (24 Nov 2026): the first arms, the second marks.
+  const tapMark = async (tree, pid) => { await act(async () => { markBtn(tree, pid).props.onClick(); }); await act(async () => { await markBtn(tree, pid).props.onClick(); }); await act(async () => {}); await act(async () => {}); };
   const allWrites = () => updateMock.mock.calls.flatMap((c) => Object.keys(c[1]));
   const FORBIDDEN = /^(stock|refill_requests|refill_engine|stock_targets|stock_movements|transfers)\//;
   const withProducts = async (over) => {
@@ -842,6 +843,32 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     return tree;
   };
   const listOf = async (tree, sec, k) => { await division(tree, sec); await kind(tree, k); return cardsOf(tree); };
+
+  it("ONE tap does nothing (24 Nov 2026): the button reads 'Tap again to move to Concrete', nothing is written, nothing moves; the window runs out and it is the tag again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const tree = await mount();
+      await kind(tree, "clothing");
+      const before = cardsOf(tree);
+      const shellH = card(tree, TEE).props.style.height;
+      updateMock.mockClear();
+      await act(async () => { markBtn(tree, TEE).props.onClick(); });
+      expect(markBtn(tree, TEE).props["data-armed"]).toBe(true);
+      expect(flat(card(tree, TEE).findAll((n) => typeof n.type === "string" && n.props["data-division-confirm"])[0].children)).toBe("Tap again to move to Concrete");
+      // laid over the name block, absolutely: the card and the list do not move
+      const over = card(tree, TEE).findAll((n) => typeof n.type === "string" && n.props["data-division-confirm"])[0];
+      expect(over.props.style.position).toBe("absolute");
+      expect(card(tree, TEE).props.style.height).toBe(shellH);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(cardsOf(tree)).toEqual(before);
+      await act(async () => { vi.advanceTimersByTime(4100); });
+      expect(markBtn(tree, TEE).props["data-armed"]).toBeUndefined();
+      // a tap after the window only arms again — still nothing written
+      await act(async () => { markBtn(tree, TEE).props.onClick(); });
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(cardsOf(tree)).toEqual(before);
+    } finally { vi.useRealTimers(); }
+  });
 
   it("Marathon card: Concrete marks it Concrete-only — leaves Marathon's list and count; writes the mark only", async () => {
     const tree = await mount();
@@ -1023,7 +1050,9 @@ describe("division Undo that fails (CodeRabbit, PR #967)", () => {
   it("a failed Undo changes nothing and keeps its Undo to retry", async () => {
     const tree = await mount();
     await kind(tree, "clothing");
-    await act(async () => { await card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0].props.onClick(); });
+    const mb = () => card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0];
+    await act(async () => { mb().props.onClick(); });            // arms
+    await act(async () => { await mb().props.onClick(); });      // marks
     await act(async () => {}); await act(async () => {});
     updateMock.mockImplementationOnce(() => Promise.reject(new Error("offline")));
     await act(async () => { await toast(tree).undo.props.onClick(); });

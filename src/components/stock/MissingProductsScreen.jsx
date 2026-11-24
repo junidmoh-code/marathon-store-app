@@ -9,8 +9,8 @@
 // the destinations as buttons. Tapping a destination IS the solve.
 //
 // THE DIVISION BUTTON (Junid, 23 Nov 2026) sits where Hide was: "Concrete" on
-// a Marathon card, "Marathon" on a Concrete card. One tap says the product
-// belongs to that division only (divisionMark.js — the pre-rebuild Concrete
+// a Marathon card, "Marathon" on a Concrete card. Two taps (24 Nov 2026 — the
+// first arms it) say the product belongs to that division only (divisionMark.js — the pre-rebuild Concrete
 // button's own data, plus its mirror). The card leaves this list for good and
 // is never counted here; on the other list it shows only when it is genuinely
 // missing there. Hide left the cards; the hidden tab still works.
@@ -564,8 +564,10 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       },
     });
   };
-  // THE DIVISION BUTTON (Junid, 23 Nov 2026), where Hide was: one tap marks
-  // the product for the OTHER division; the card leaves this list for good.
+  // THE DIVISION BUTTON (Junid, 23 Nov 2026), where Hide was: it marks the
+  // product for the OTHER division; the card leaves this list for good. Since
+  // 24 Nov it takes two taps on the same button (MissingRow arms it, "Tap
+  // again to move to …"); this runs on the second.
   // It writes the mark only (divisionMark.js) — no stock, seat or request.
   act.current.division = async (row) => {
     if (inFlight.current.has(row.pid) || !canMark || gone[row.key]) return;

@@ -14,13 +14,18 @@
 // the left; beside it the name (two lines at most), the stock line, and under
 // them the locations and Solve. Every tap target is still at least 40 px tall
 // — the saving is padding, gaps and font size, never a smaller button.
-import React, { memo, useEffect, useState } from "react";
+import React, { memo, useEffect, useRef, useState } from "react";
 import { FONT, GREEN, BLUE, BLUE_L, AMBER } from "./ui";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 
 export const CARD_H = 94;
 export const CARD_GAP = 4;
 export const LEAVE_MS = 240;
+// THE DIVISION BUTTON TAKES TWO TAPS (Junid, 24 Nov 2026): the first arms it
+// ("Tap again to move to Concrete"), a second on the same button within this
+// window marks the product. Anything else — the window running out — and the
+// first tap did nothing.
+export const DIVISION_CONFIRM_MS = 4000;
 // Inside the 1 px border and 4 px padding: 94 − 2 − 8 = 84.
 const INNER = 84;
 const PHOTO = INNER;
@@ -77,6 +82,16 @@ const divisionTag = (busy) => ({
   fontSize: 11.5, fontWeight: 700, letterSpacing: ".02em", whiteSpace: "nowrap", opacity: busy ? 0.5 : 1,
 });
 
+// The armed state: the same button, its words laid OVER the name + stock block
+// (absolute, inside the 44 px row), so nothing on the card moves. The small tag
+// keeps its place underneath, hidden, holding the button's width.
+const divisionConfirm = {
+  position: "absolute", left: 0, right: 0, top: 0, height: TOP_H, boxSizing: "border-box", zIndex: 1,
+  display: "flex", alignItems: "center", justifyContent: "center", padding: "0 8px", borderRadius: 9,
+  background: "#1a1430", border: "1px dashed rgba(196,160,255,.85)", color: "#e4d4ff",
+  fontSize: 13, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+};
+
 // The slot a card sits in. `leaving` closes it once; `entering` (a card put
 // back by Undo) opens it the same way.
 export function Slot({ leaving = false, entering = false, children, ...rest }) {
@@ -130,6 +145,22 @@ export function SkeletonRow() {
 function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = false, canAct = true, onPick, onSolve, divisionLabel = null, onDivision, onPhoto }) {
   const live = product || { id: row.pid, photoUrl: row.photo };
   const ready = canAct && !busy && selected.length > 0;
+  // Armed = the first tap landed; a second within DIVISION_CONFIRM_MS marks.
+  const [armed, setArmed] = useState(false);
+  const armTimer = useRef(null);
+  useEffect(() => () => clearTimeout(armTimer.current), []);
+  const disarm = () => { clearTimeout(armTimer.current); setArmed(false); };
+  const tapDivision = () => {
+    if (busy) return;
+    if (!armed) {
+      setArmed(true);
+      clearTimeout(armTimer.current);
+      armTimer.current = setTimeout(() => setArmed(false), DIVISION_CONFIRM_MS);
+      return;
+    }
+    disarm();
+    onDivision?.(row);
+  };
   return (
     <div data-card={row.pid} data-card-name={row.name} data-card-kind={row.kind} style={shell}>
       <button type="button" aria-label="Look at the photo" onClick={() => onPhoto?.(live)}
@@ -137,7 +168,7 @@ function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = fals
         <PrimaryPhoto product={live} productId={row.pid} snapshot={row.photo || null} alt="" width={PHOTO} height={PHOTO} style={{ width: PHOTO, height: PHOTO, objectFit: "cover", display: "block" }} />
       </button>
       <div style={{ flex: 1, minWidth: 0, height: INNER, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", height: TOP_H }}>
+        <div style={{ position: "relative", display: "flex", alignItems: "center", height: TOP_H }}>
           <div style={{ flex: 1, minWidth: 0, height: TOP_H, display: "flex", flexDirection: "column", justifyContent: "flex-start" }}>
             {/* Two lines at most, always the same box: a short name and a long one give the same card. */}
             <div data-name style={{ fontWeight: 800, fontSize: 13, lineHeight: "15px", height: 30, color: "#fff", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflowWrap: "anywhere" }}>{String(row.name).replace(/\u00a0/g, " ")}</div>
@@ -153,10 +184,11 @@ function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = fals
             </button>
           )}
           {divisionLabel && (
-            <button type="button" data-action="division" data-division-mark={divisionLabel.toLowerCase()}
-              aria-label={`Belongs to ${divisionLabel} only`} title={`This product belongs to ${divisionLabel} only`}
-              onClick={() => { if (!busy) onDivision?.(row); }} style={divisionHit}>
-              <span style={divisionTag(busy === "division")}>{divisionLabel}</span>
+            <button type="button" data-action="division" data-division-mark={divisionLabel.toLowerCase()} data-armed={armed || undefined}
+              aria-label={armed ? `Tap again to move to ${divisionLabel}` : `Belongs to ${divisionLabel} only`} title={`This product belongs to ${divisionLabel} only`}
+              onClick={tapDivision} style={divisionHit}>
+              <span style={{ ...divisionTag(busy === "division"), visibility: armed ? "hidden" : "visible" }}>{divisionLabel}</span>
+              {armed && <span data-division-confirm style={divisionConfirm}>Tap again to move to {divisionLabel}</span>}
             </button>
           )}
         </div>
