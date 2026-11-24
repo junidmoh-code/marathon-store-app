@@ -214,7 +214,13 @@ function Engine({ section, shared, box, report }) {
 function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, requestsError, seats, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit, onOpenEnginePolicy }) {
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const [pick, setPick] = useState(null);
-  const section = divisions.includes(pick) ? pick : divisions[0];
+  // THE DIVISION THIS PERSON OPENS ON (Junid, 24 Nov 2026): their own
+  // /users/{uid}.missingProductsDivision ("marathon" | "concrete"), read from
+  // the record the app already listens to. No setting → today's default
+  // (Marathon first). A tap on the switch always wins for this visit.
+  const { permRecord, isSuperAdmin } = usePermissions();
+  const homeDivision = divisions.find((s) => listKindOf(network, s) === permRecord?.missingProductsDivision);
+  const section = divisions.includes(pick) ? pick : (homeDivision ?? divisions[0]);
   const [kind, setKind] = useState("sneakers");
   const [view, setView] = useState("list");   // "list" | "hidden" | "notlisted"
   const [lightbox, setLightbox] = useState(null);
@@ -227,7 +233,6 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const canAct = divisions.length ? !!flags[divisions[0]]?.canAct : false;
   // Marking a division is Junid's / Jafer's / a stockRole admin's — the same
   // identities the pre-rebuild Concrete button had (the mark is the brand check).
-  const { permRecord, isSuperAdmin } = usePermissions();
   const canMark = !!isSuperAdmin || permRecord?.stockRole === "admin";
 
   const label = useCallback((loc) => SHORT[loc] || nameOf(loc, network), [network]);

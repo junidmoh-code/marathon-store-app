@@ -1140,3 +1140,32 @@ describe("search (Junid, 23 Nov 2026)", () => {
     for (const n of host(tree, "data-card")) expect(n.props.style.height).toBe(CARD_H);
   });
 });
+
+describe("the division a person opens on (Junid, 24 Nov 2026)", () => {
+  const pressed = (tree) => host(tree, "data-division").filter((b) => b.props["aria-pressed"]).map((b) => b.props["data-division"]);
+  it("no setting → Marathon, as before", async () => {
+    const tree = await mount();
+    expect(pressed(tree)).toEqual([MARATHON]);
+  });
+  it("Junid (missingProductsDivision: marathon) lands on Marathon and can switch with one tap", async () => {
+    perm.permRecord = { stockRole: "admin", displayName: "Junid", missingProductsDivision: "marathon" };
+    const tree = await mount();
+    expect(pressed(tree)).toEqual([MARATHON]);
+    await division(tree, CONCRETE);
+    expect(pressed(tree)).toEqual([CONCRETE]);
+  });
+  it("Jafer (missingProductsDivision: concrete) lands on Concrete, keeps Marathon, and switches with one tap", async () => {
+    perm.permRecord = { stockRole: "admin", displayName: "Jafer", missingProductsDivision: "concrete" };
+    const tree = await mount();
+    expect(pressed(tree)).toEqual([CONCRETE]);
+    expect(host(tree, "data-division").map((b) => b.props["data-division"])).toEqual([MARATHON, CONCRETE]);
+    await division(tree, MARATHON);
+    expect(pressed(tree)).toEqual([MARATHON]);
+    expect(cardsOf(tree).length).toBeGreaterThan(0);
+  });
+  it("a setting naming a division this person cannot open falls back to the first they can", async () => {
+    perm.permRecord = { stockRole: "admin", displayName: "X", missingProductsDivision: "nowhere" };
+    const tree = await mount();
+    expect(pressed(tree)).toEqual([MARATHON]);
+  });
+});
