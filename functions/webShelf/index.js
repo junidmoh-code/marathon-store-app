@@ -78,7 +78,7 @@ async function listFor(db, loc, nowMs) {
   // In the day's order (website rejections, other rejections, wrong by more, not selling, old single pieces), oldest
   // first inside each; never more than the day's number on screen.
   const sortAt = (it) => (Number.isFinite(Number(it.at)) ? Number(it.at) : Number(it.lastMoved) || 0);
-  const ids = Object.keys(open).sort((a, b) => L.rankOf(open[a].why) - L.rankOf(open[b].why) || sortAt(open[a]) - sortAt(open[b])).slice(0, cfg.perDay);
+  const ids = Object.keys(open).sort((a, b) => L.rankOf(open[a].why) - L.rankOf(open[b].why) || sortAt(open[a]) - sortAt(open[b])).slice(0, L.perDayFor(cfg, loc));
   const checks = (await Promise.all(ids.map((id) => showItem(db, loc, id, open[id])))).filter(Boolean);
   const today = (await val(db, `${L.SHELF_CHECKS_PATH}/${loc}/days/${saDate}`)) || {};
   let webRows = [];
@@ -180,7 +180,7 @@ exports.webShelfProgress = onCall({ region: "europe-west1", timeoutSeconds: 30, 
       val(c.db, `${L.SHELF_CHECKS_PATH}/${loc}/open`),
     ]);
     const more = Object.values(open || {}).filter((o) => o && o.why === L.WHY.MORE).length;
-    places.push({ loc, on: L.placeOn(cfg, loc), ...L.progressOf(days, open), wrongByMoreOpen: more });
+    places.push({ loc, on: L.placeOn(cfg, loc), perDay: L.perDayFor(cfg, loc), ...L.progressOf(days, open), wrongByMoreOpen: more });
   }
   return { ok: true, saDate: saDateStringFromMs(Date.now()), perDay: cfg.perDay, places };
 });

@@ -49,6 +49,7 @@ const IDLE_DAYS_DEFAULT = 21;
  * /config/onlineOrders/shelfChecks → the settings in force.
  *   off            the whole routine off
  *   perDay         the day's list per place (20)
+ *   perDayAt.{loc} one place's own number, instead of perDay
  *   recheckDays    a shelf settled by a person is not asked again for this long unless a NEW rejection arrives (30)
  *   idleDays       "not selling": stock on the shelf, no sale or outbound movement for this long (21)
  *   shops.{loc}.on a shop's own Shelf check tab (Display Checks) — OFF until Junid turns it on, shop by shop
@@ -58,14 +59,22 @@ function configFrom(c) {
   const int = (v, d, lo, hi) => { const n = Number(v); return Number.isInteger(n) && n >= lo && n <= hi ? n : d; };
   const shops = {};
   for (const loc of SHOPS) shops[loc] = !!(o.shops && o.shops[loc] && o.shops[loc].on === true);
+  // A place's own number (perDayAt/<place>), else the common one.
+  const perDay = int(o.perDay, PER_DAY_DEFAULT, 1, 200);
+  const perDayAt = {};
+  for (const loc of CHECK_LOCATIONS) if (o.perDayAt && o.perDayAt[loc] != null) perDayAt[loc] = int(o.perDayAt[loc], perDay, 1, 200);
   return {
     on: o.off !== true,
-    perDay: int(o.perDay, PER_DAY_DEFAULT, 1, 200),
+    perDay,
+    perDayAt,
     recheckDays: int(o.recheckDays, RECHECK_DAYS_DEFAULT, 0, 365),
     idleDays: int(o.idleDays, IDLE_DAYS_DEFAULT, 1, 120),
     shops,
   };
 }
+
+/** The day's number at one place. PURE. */
+const perDayFor = (cfg, loc) => (cfg.perDayAt && cfg.perDayAt[loc]) || cfg.perDay;
 
 /** Is the routine running at this place? Hubs and Central always (while on); a shop only once Junid has turned it on. PURE. */
 const placeOn = (cfg, loc) => !!cfg.on && (SHOPS.includes(loc) ? cfg.shops[loc] === true : CHECK_LOCATIONS.includes(loc));
@@ -265,6 +274,6 @@ function progressOf(days, open) {
 }
 
 module.exports = {
-  SHELF_CHECKS_PATH, SHELF_CONFIG_PATH, PER_DAY_DEFAULT, RECHECK_DAYS_DEFAULT, IDLE_DAYS_DEFAULT, SHOPS, HUBS, CHECK_LOCATIONS, WHY, WHY_ORDER, REJECTION_WHYS, rankOf, MAX_COUNT, placeOn, planDay,
+  SHELF_CHECKS_PATH, SHELF_CONFIG_PATH, PER_DAY_DEFAULT, RECHECK_DAYS_DEFAULT, IDLE_DAYS_DEFAULT, SHOPS, HUBS, CHECK_LOCATIONS, WHY, WHY_ORDER, REJECTION_WHYS, rankOf, MAX_COUNT, placeOn, perDayFor, planDay,
   itemId, cellQty, cellStamp, configFrom, shelfAccess, planTopUp, itemStale, answerPlan, progressOf, doneRow, bumpDay,
 };

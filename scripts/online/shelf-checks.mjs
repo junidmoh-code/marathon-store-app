@@ -7,7 +7,8 @@
 // daily routine the same evening: every place heals a few counts every day —
 // never a big count, never "clear everything", a steady rotation. For each place
 // (Hubs 1–3, Central, and each shop Junid has switched on) the list is filled to
-// the day's number (/config/onlineOrders/shelfChecks/perDay, 20) in this order,
+// the day's number (/config/onlineOrders/shelfChecks/perDay, 20; one place's own
+// number at perDayAt/<place>) in this order,
 // oldest first inside each:
 //
 //   1. web_reject    a website rejection wrote the shelf down (/online_writedowns): is it there after all?
@@ -167,10 +168,10 @@ async function main() {
   for (const loc of L.CHECK_LOCATIONS) {
     if (!L.placeOn(cfg, loc)) { console.log(`${NAME[loc] || loc}: switched off (config/onlineOrders/shelfChecks/shops/${loc}/on) · ${by[loc].length} candidates waiting`); continue; }
     const [open, checked] = await Promise.all([rest(`${L.SHELF_CHECKS_PATH}/${loc}/open`), rest(`${L.SHELF_CHECKS_PATH}/${loc}/checked`)]);
-    const plan = L.planDay({ open: open || {}, candidates: by[loc], checked: checked || {}, onTheWay: (id) => { const [pid, sizeKey] = id.split("__"); return otw.get(`${loc}|${pid}|${sizeKey}`) || 0; }, perDay: cfg.perDay, recheckDays: cfg.recheckDays, nowMs, saDate });
+    const plan = L.planDay({ open: open || {}, candidates: by[loc], checked: checked || {}, onTheWay: (id) => { const [pid, sizeKey] = id.split("__"); return otw.get(`${loc}|${pid}|${sizeKey}`) || 0; }, perDay: L.perDayFor(cfg, loc), recheckDays: cfg.recheckDays, nowMs, saDate });
     const addedBy = {};
     for (const id of plan.added) addedBy[plan.open[id].why] = (addedBy[plan.open[id].why] || 0) + 1;
-    console.log(`${NAME[loc] || loc}: ${Object.keys(plan.open).length} of ${cfg.perDay} · ${JSON.stringify(plan.bySource)} · ${plan.added.length} new, ${plan.dropped.length} back to the pool · left off: ${plan.skipped.travelling} on the way, ${plan.skipped.recent} checked recently · ${by[loc].length} candidates`);
+    console.log(`${NAME[loc] || loc}: ${Object.keys(plan.open).length} of ${L.perDayFor(cfg, loc)} · ${JSON.stringify(plan.bySource)} · ${plan.added.length} new, ${plan.dropped.length} back to the pool · left off: ${plan.skipped.travelling} on the way, ${plan.skipped.recent} checked recently · ${by[loc].length} candidates`);
     if (!COMMIT) continue;
     await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/open`).set(plan.open);
     await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/days/${saDate}`).update({ listed: Object.keys(plan.open).length, added: addedBy });

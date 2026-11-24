@@ -243,7 +243,12 @@ test("Found at Central: the line is handed FROM Central (the pack deducts there)
 // ── the daily list (pure) ────────────────────────────────────────────────────
 test("the settings: 20 a day, rechecked after 30 days, not selling after 21, and every shop's own tab OFF until Junid turns it on", () => {
   const shopsOff = { "marathon-pe": false, trophy: false, concrete: false, "marathon-pine": false };
-  assert.deepEqual(L.configFrom(null), { on: true, perDay: 20, recheckDays: 30, idleDays: 21, shops: shopsOff });
+  assert.deepEqual(L.configFrom(null), { on: true, perDay: 20, perDayAt: {}, recheckDays: 30, idleDays: 21, shops: shopsOff });
+  // A place's own number.
+  const own = L.configFrom({ perDay: 20, perDayAt: { hub2: 30, central: "lots", mars: 9 } });
+  assert.deepEqual(own.perDayAt, { hub2: 30, central: 20 });
+  assert.equal(L.perDayFor(own, "hub2"), 30);
+  assert.equal(L.perDayFor(own, "hub1"), 20);
   assert.equal(L.configFrom({ perDay: 35 }).perDay, 35);
   assert.deepEqual(L.configFrom({ perDay: 0, off: true }).on, false);
   assert.equal(L.configFrom({ perDay: "many" }).perDay, 20);
