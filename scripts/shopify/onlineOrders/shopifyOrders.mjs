@@ -5,7 +5,7 @@
 
 const ORDER_FIELDS = `
   id legacyResourceId name number createdAt updatedAt cancelledAt
-  displayFinancialStatus displayFulfillmentStatus email phone
+  displayFinancialStatus displayFulfillmentStatus email phone tags
   customer { firstName lastName defaultEmailAddress { emailAddress } defaultPhoneNumber { phoneNumber } }
   shippingAddress { name firstName lastName address1 address2 city province zip country phone latitude longitude coordinatesValidated }
   currentSubtotalPriceSet { shopMoney { amount currencyCode } }

@@ -54,7 +54,7 @@ import {
   displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName, shippingOf,
 } from "./orderModel.mjs";
 import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder, fetchShippingPoint } from "./shopifyOrders.mjs";
-import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey, doorRetryDue, doorHandBackDue, claimDoorRetry, handBackBooked } from "./shipping.mjs";
+import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey, doorRetryDue, doorHandBackDue, claimDoorRetry, handBackBooked, isOwnCourier } from "./shipping.mjs";
 import { sweepUnknownBookings, RELEASED_PATH as UNKNOWN_RELEASED_PATH } from "../../shipping/unknownBooking.mjs";
 // The held-courier text (scripts/shipping/exchangeReturn.mjs releases an order carrying exactly this when Junid says good).
 export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
@@ -311,6 +311,8 @@ export async function runOrdersPoll(deps) {
     await recheckUnknownBookings(ctx);
     // "Packed, courier not booked" because there was no locker: handed back ONCE, to be booked door-to-door (Junid, 24 Nov 2026).
     await retryNoLockerOrders(ctx);
+    // Own courier: the customer's waybill has arrived (Jamie wrote it) — handed back to ship with it.
+    await handBackOwnCourier(ctx);
     const pending = await queryEq(ctx, "fulfilState", "pending");
     for (const [id, order] of Object.entries(pending)) {
       // Under the ship lock, on a FRESH read (fast-ship.mjs may have shipped it since the query): never twice.
@@ -1233,6 +1235,47 @@ export async function retryNoLockerOrders(ctx) {
   return out;
 }
 
+// ── OWN COURIER (Junid, 24 Nov 2026) ─────────────────────────────────────────
+// A WhatsApp order the customer ships with their OWN courier (Shopify tag "own-courier" → shipping/ownCourier at
+// ingestion). The ship step never books Courier Guy for it: until Jamie writes shipping/ownCourier/waybill
+// ({ waybill, at, by: "jamie", courier? }) it waits as "Packed, courier not booked" with OWN_COURIER_WAIT (no
+// attention, no email: nothing is wrong); once the waybill is there it fulfils Shopify with that waybill as the
+// tracking number (company: ownCourier.courier, else "Other").
+export const OWN_COURIER_WAIT = "own courier: waiting for the customer's waybill (Jamie writes shipping/ownCourier/waybill)";
+export const OWN_COURIER_COMPANY = "Other";
+/** The customer's own waybill and courier, or null while it has not come. Pure. */
+export function ownCourierWaybill(order) {
+  const oc = order?.shipping?.ownCourier;
+  const waybill = String(oc?.waybill ?? "").trim();
+  // It goes into Shopify's customer notification: a plain reference only (no spaces, no link, at most 60 characters).
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{2,59}$/.test(waybill)) return null;
+  return { waybill, company: String(oc?.courier ?? "").trim().slice(0, 60) || OWN_COURIER_COMPANY };
+}
+
+/** Waiting own-courier orders whose waybill has come: handed back to the ship step (a transaction on a fresh read). Never throws. */
+export async function handBackOwnCourier(ctx) {
+  const { db, log } = ctx;
+  const out = [];
+  try {
+    const failed = await queryEq(ctx, "fulfilState", "courier_failed");
+    for (const [id, order] of Object.entries(failed)) {
+      if (!isOwnCourier(order) || order.courierError !== OWN_COURIER_WAIT || !ownCourierWaybill(order)) continue;
+      const at = Date.now();
+      const tx = await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => {
+        if (cur == null) return null;
+        if (cur.fulfilState !== "courier_failed" || cur.courierError !== OWN_COURIER_WAIT || !ownCourierWaybill(cur)) return undefined;
+        const next = { ...cur, fulfilState: "pending", fulfil: { ...(cur.fulfil ?? {}), state: "pending" }, updatedAt: at };
+        delete next.courierError;
+        return next;
+      });
+      if (tx?.committed && tx.snapshot?.val?.()?.updatedAt === at) { out.push(id); log(`  ↻ ${orderLabel(order) || id}: own courier waybill ${ownCourierWaybill(order).waybill} came — handed to the ship step`); }
+    }
+  } catch (e) {
+    log(`  ! own-courier hand-back failed — ${String(e?.message || e).slice(0, 200)}`);
+  }
+  return out;
+}
+
 // The Courier Guy's public tracking page for a waybill (the link the customer agent sends too).
 export const courierTrackUrl = (waybill) => `https://portal.thecourierguy.co.za/track?ref=${encodeURIComponent(String(waybill))}`;
 
@@ -1317,8 +1360,22 @@ async function shipOrder(ctx, id, order) {
   if (!order.shipping?.geo && !order.shipping?.geoAsked && order.shopifyGid && ctx.graphql && order.shipping?.address) {
     order = await backfillShippingGeo(ctx, id, order);
   }
+  // OWN COURIER: never booked. Re-read at the exact path (Jamie may have written the waybill a moment ago).
+  let own = null;
+  if (isOwnCourier(order)) {
+    const fresh = (await db.ref(`${ONLINE_ORDERS_PATH}/${id}/shipping/ownCourier`).get()).val();
+    order = { ...order, shipping: { ...order.shipping, ownCourier: fresh ?? order.shipping?.ownCourier } };
+    own = ownCourierWaybill(order);
+    if (!own) {
+      await closing;
+      await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({ fulfilState: "courier_failed", "fulfil/state": "courier_failed", courierError: OWN_COURIER_WAIT, updatedAt: now });
+      log(`  … ${orderLabel(order)}: own courier — waiting for the customer's waybill; nothing booked, Shopify waits`);
+      return;
+    }
+  }
   let booking;
-  try {
+  if (own) booking = null;
+  else try {
     booking = await bookShipment({ ...order, key: id }, {
       db,
       // A BOUNDED client: the ship sweep is serial and fulfilment waits on
@@ -1383,9 +1440,11 @@ async function shipOrder(ctx, id, order) {
   // ("booked but not recorded") — on the claim, where bookShipment kept it.
   await closing;
   const booked = order.shipping?.waybill ?? (order.shipping?.courierBooking?.state === "booked" ? order.shipping.courierBooking.waybill ?? null : null);
-  const waybill = booking && !booking.skipped
+  const waybill = own ? own.waybill : booking && !booking.skipped
     ? booking.waybill
     : (booking?.reason === "already booked" || /booking already booked/.test(String(booking?.reason)) ? booked : null);
+  // The carrier Shopify names: the customer's own courier, else The Courier Guy.
+  const company = own ? own.company : COURIER_COMPANY;
   let live = false;
   try { live = await readLive(db); } catch (e) { live = true; log(`  ! ${orderLabel(order)}: could not read the live switch — holding (${String(e?.message || e).slice(0, 120)})`); }
   // An exchange (no Shopify order) is finished only on a booking or a recorded dry run (CodeRabbit, #815): a plan that
@@ -1422,7 +1481,7 @@ async function shipOrder(ctx, id, order) {
     // the customer agent tells the customer). With live off there is no waybill: the dry run is recorded, as for any order.
     try {
       out = waybill
-        ? await addTrackingToOrder(ctx.graphql, { orderGid: order.shopifyGid, number: waybill, url: courierTrackUrl(waybill), company: COURIER_COMPANY, fill: courierTrackUrl })
+        ? await addTrackingToOrder(ctx.graphql, { orderGid: order.shopifyGid, number: waybill, url: own ? null : courierTrackUrl(waybill), company, fill: own ? null : courierTrackUrl })
         : { ok: true, reshipNote: "no waybill (the live switch was off) — Shopify not changed" };
       if (out.ok) out = { ...out, reship: true };
     } catch (e) {
@@ -1438,7 +1497,7 @@ async function shipOrder(ctx, id, order) {
       // resolving or this is a follow-up; the whole order otherwise, as before.
       out = await fulfilParcel(ctx, id, order, {
         trackingNumber,
-        trackingCompany: waybill ? COURIER_COMPANY : null,
+        trackingCompany: waybill ? company : null,
       });
     } catch (e) {
       out = { ok: false, error: String(e?.message || e) };
