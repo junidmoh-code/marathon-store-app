@@ -48,6 +48,18 @@ const ITEMS = {
   e: { name: "Cap E", kind: "headwear", qty: 7, arrived: JUN, received: 7, sold: 0, stockPrice: 80, retailPrice: 120 },
 };
 
+test("the row tells the truth (Junid 24 Nov): when the stock on hand came in, its last delivery, the first arrival, old vs fresh", () => {
+  const NOV20 = Date.parse("2026-11-20T10:00:00+02:00"), JUL2 = Date.parse("2026-07-02T10:00:00+02:00");
+  const items = { m: { name: "Mixed tee", kind: "clothing", qty: 59, arrived: JUL, received: 20, sold: 1, firstArrived: JUL2, lastReceived: NOV20, oldQty: 19, freshQty: 40, freshFrom: NOV20 } };
+  const r = core.viewList({ items }, { tab: "clothing", nowMs: NOW }).rows[0];
+  assert.deepEqual(
+    { arrivedOn: r.arrivedOn, lastReceivedOn: r.lastReceivedOn, firstArrivedOn: r.firstArrivedOn, oldQty: r.oldQty, freshQty: r.freshQty, freshFromOn: r.freshFromOn, received: r.received, sold: r.sold },
+    { arrivedOn: "10 Jul 2026", lastReceivedOn: "20 Nov 2026", firstArrivedOn: "2 Jul 2026", oldQty: 19, freshQty: 40, freshFromOn: "20 Nov 2026", received: 20, sold: 1 },
+  );
+  const old = core.viewList({ items: ITEMS }, { tab: "clothing", cutoff: "july", nowMs: NOW }).rows.find((x) => x.pid === "a");
+  assert.deepEqual([old.lastReceivedOn, old.firstArrivedOn, old.freshQty, old.freshFromOn], [null, null, 0, null], "a row written before the fix shows as it did");
+});
+
 test("the list: Clothing | Sneakers (others under Clothing); by quantity on hand, the most first; removed never shown", () => {
   const v = core.viewList({ items: ITEMS, removed: { e: { at: 1 } } }, { tab: "clothing", cutoff: "july", nowMs: NOW });
   assert.deepEqual(v.rows.map((r) => r.pid), ["b", "a"], "90 on hand before 40");

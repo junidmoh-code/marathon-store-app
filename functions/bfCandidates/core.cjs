@@ -1,13 +1,15 @@
 // ─── BF CANDIDATES — stock that isn't moving, and the in-store Black Friday sale (pure) ──
 // Junid, 23 Nov 2026.
 //
-//   • CANDIDATE  = (Junid, 15:44: "new stock is not dead stock") the product FIRST ARRIVED
-//                  anywhere in the network on or before the cut-off (31 Jul 2026; May, June,
-//                  July or August on the card), it still has stock on hand, AND the units sold
-//                  since it arrived are UNDER 10% of the units received (zero sold counts).
-//                  The finder on the Mac mini reads the stock ledger and writes
-//                  candidates/items/{pid} = { arrived, received, sold, qty, … }; nothing here
-//                  reads the catalogue or the ledger.
+//   • CANDIDATE  = (Junid, 15:44: "new stock is not dead stock"; 24 Nov: judged on the stock ON
+//                  HAND, never the product's whole life) the stock on hand ARRIVED on or before
+//                  the cut-off (31 Jul 2026; May, June, July or August on the card), a shop or hub
+//                  has held it for 30 days, AND the units sold since it arrived are UNDER 10% of the
+//                  old stock there to sell (zero sold counts). The finder on the Mac mini
+//                  (marathon-group-poster src/bf/candidates.mjs) reads the stock ledger and writes
+//                  candidates/items/{pid} = { arrived, received, sold, qty, firstArrived,
+//                  lastReceived, oldQty, freshQty, freshFrom, … }; nothing here reads the
+//                  catalogue or the ledger.
 //   • SALE       = ONE price per product, from Junid's tap until Monday 30 Nov 2026 23:59
 //                  Africa/Johannesburg (extendable). Stored on its OWN node, sales/{pid}; the
 //                  product's stock and retail prices are NEVER changed. The till reads the
@@ -86,6 +88,10 @@ function viewRow(pid, row, { sale = null, chosen = null, posted = null, nowMs })
   return {
     pid, name: row.name || pid, tab: tabOf(row), cat: row.cat || null, qty: row.qty === null || row.qty === undefined ? null : Number(row.qty) || 0, // null: not on the finder's list any more (not counted here)
     arrived: Number(row.arrived) || null, arrivedOn: dayLabel(row.arrived), received: Number(row.received) || 0, sold: Number(row.sold) || 0,
+    // When the stock came in, at a glance (Junid 24 Nov): the last delivery and the product's first-ever arrival.
+    // An old unit plus a fresh delivery is judged on the old units: how many of each, and when the fresh ones came.
+    lastReceivedOn: dayLabel(row.lastReceived), firstArrivedOn: dayLabel(row.firstArrived),
+    oldQty: Number(row.oldQty) || 0, freshQty: Number(row.freshQty) || 0, freshFromOn: dayLabel(row.freshFrom),
     stockPrice: Number(row.stockPrice) > 0 ? Number(row.stockPrice) : null,
     retailPrice: Number(row.retailPrice) > 0 ? Number(row.retailPrice) : null,
     locs: row.locs || {}, sizes: row.sizes || "", photo: photoOf(row, chosen), ownPhoto: row.photo || null,
