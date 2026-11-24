@@ -66,15 +66,19 @@ async function showItem(db, loc, id, item) {
     val(db, `products/${item.pid}/name`), val(db, `products/${item.pid}/photoUrl`),
     val(db, `products/${item.pid}/barcodes/${item.sizeKey}`), val(db, `products/${item.pid}/barcode`),
   ]);
-  return { id, pid: item.pid, sizeKey: item.sizeKey, size: item.sizeKey === "_" ? null : String(item.sizeKey).replace(/_/g, "."), shown: Number(item.shown), why: item.why, lastMoved: item.lastMoved ?? null, addedDay: item.addedDay || null, name: name || item.pid, photoUrl: photoUrl || null, barcode: barcodeOfSize || barcode || null };
+  return { id, pid: item.pid, sizeKey: item.sizeKey, size: item.sizeKey === "_" ? null : String(item.sizeKey).replace(/_/g, "."), shown: Number(item.shown), why: item.why, lastMoved: item.lastMoved ?? null, at: item.at ?? null, addedDay: item.addedDay || null, ref: item.ref || null, src: item.src || null, confirm: item.why === L.WHY.WEB && !!item.mvId, name: name || item.pid, photoUrl: photoUrl || null, barcode: barcodeOfSize || barcode || null };
 }
 
 async function listFor(db, loc, nowMs) {
   const cfg = L.configFrom(await val(db, L.SHELF_CONFIG_PATH));
   const saDate = saDateStringFromMs(nowMs);
-  const open = cfg.on ? (await val(db, `${L.SHELF_CHECKS_PATH}/${loc}/open`)) || {} : {};
-  // "wrong by more than one" first, then the oldest single pieces; never more than the day's number on screen.
-  const ids = Object.keys(open).sort((a, b) => (open[a].why === open[b].why ? (Number(open[a].lastMoved) || 0) - (Number(open[b].lastMoved) || 0) : open[a].why === L.WHY.MORE ? -1 : 1)).slice(0, cfg.perDay);
+  // A shop's list shows only once Junid has turned that shop on (/config/onlineOrders/shelfChecks/shops/<loc>/on).
+  const on = L.placeOn(cfg, loc);
+  const open = on ? (await val(db, `${L.SHELF_CHECKS_PATH}/${loc}/open`)) || {} : {};
+  // In the day's order (website rejections, other rejections, wrong by more, not selling, old single pieces), oldest
+  // first inside each; never more than the day's number on screen.
+  const sortAt = (it) => (Number.isFinite(Number(it.at)) ? Number(it.at) : Number(it.lastMoved) || 0);
+  const ids = Object.keys(open).sort((a, b) => L.rankOf(open[a].why) - L.rankOf(open[b].why) || sortAt(open[a]) - sortAt(open[b])).slice(0, cfg.perDay);
   const checks = (await Promise.all(ids.map((id) => showItem(db, loc, id, open[id])))).filter(Boolean);
   const today = (await val(db, `${L.SHELF_CHECKS_PATH}/${loc}/days/${saDate}`)) || {};
   let webRows = [];
@@ -84,7 +88,7 @@ async function listFor(db, loc, nowMs) {
       .map(([key, r]) => ({ key, checkId: r.checkId, kind: r.kind, productId: r.productId, productName: r.productName, size: r.size, qty: r.qty || 1, orderNumber: r.orderNumber ?? null, ref: r.ref || null, photoUrl: r.photoUrl || null, checkProperly: r.checkProperly === true, createdAt: r.createdAt || r.activatedAt || null }))
       .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
   }
-  return { ok: true, loc, saDate, webRows, checks, today: { found: Number(today.found) || 0, notFound: Number(today.notFound) || 0, counted: Number(today.counted) || 0, corrected: Number(today.corrected) || 0, listed: Number(today.listed) || 0 }, left: Object.keys(open).length };
+  return { ok: true, loc, saDate, on, webRows, checks, today: { found: Number(today.found) || 0, notFound: Number(today.notFound) || 0, counted: Number(today.counted) || 0, corrected: Number(today.corrected) || 0, listed: Number(today.listed) || 0, units: Number(today.units) || 0 }, left: Object.keys(open).length };
 }
 
 exports.webShelfList = onCall({ region: "europe-west1", timeoutSeconds: 30, memory: "256MiB" }, async (request) => {
@@ -167,14 +171,16 @@ exports._runAnswer = runAnswer;
 exports.webShelfProgress = onCall({ region: "europe-west1", timeoutSeconds: 30, memory: "256MiB" }, async (request) => {
   const c = await caller(request);
   if (!c.isSuper) throw new HttpsError("permission-denied", "Junid and Jafer only.");
+  const cfg = L.configFrom(await val(c.db, L.SHELF_CONFIG_PATH));
   const places = [];
   for (const loc of L.CHECK_LOCATIONS) {
+    // Eight weeks of day counters (a few hundred bytes each), so the counts can be seen healing week by week.
     const [days, open] = await Promise.all([
-      c.db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/days`).orderByKey().limitToLast(14).get().then((s) => s.val()),
+      c.db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/days`).orderByKey().limitToLast(56).get().then((s) => s.val()),
       val(c.db, `${L.SHELF_CHECKS_PATH}/${loc}/open`),
     ]);
     const more = Object.values(open || {}).filter((o) => o && o.why === L.WHY.MORE).length;
-    places.push({ loc, ...L.progressOf(days, open), wrongByMoreOpen: more });
+    places.push({ loc, on: L.placeOn(cfg, loc), ...L.progressOf(days, open), wrongByMoreOpen: more });
   }
-  return { ok: true, saDate: saDateStringFromMs(Date.now()), perDay: L.configFrom(await val(c.db, L.SHELF_CONFIG_PATH)).perDay, places };
+  return { ok: true, saDate: saDateStringFromMs(Date.now()), perDay: cfg.perDay, places };
 });

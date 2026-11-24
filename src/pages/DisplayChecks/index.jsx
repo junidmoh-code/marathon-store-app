@@ -44,11 +44,15 @@ import TodayView from "./TodayView";
 import AvailabilityView from "./AvailabilityView";
 import AnalyticsView from "./AnalyticsView";
 import SettingsView from "./SettingsView";
+import ShelfChecksPanel from "../../components/online/ShelfChecksPanel.jsx";
 import { useTodayFeedSources } from "./useDisplayChecks";
 import { dcSession, bindDcSession } from "./session";
 
 const TABS = [
   { key: "today", label: "Today", manager: false },
+  // The shop's daily shelf check (Junid, 24 Nov 2026 evening): its own tab, shown once Junid has switched the shop on
+  // (/config/onlineOrders/shelfChecks/shops/<shop>/on). Junid and Jafer see it either way, with a note when off.
+  { key: "shelf", label: "Shelf check", manager: false, shelf: true },
   { key: "availability", label: "Availability", manager: false },
   { key: "analytics", label: "Analytics", manager: true },
   { key: "settings", label: "Settings", manager: true },
@@ -134,7 +138,10 @@ export default function DisplayChecks({ onExit, products }) {
   const store = activeMine || permRecord?.destShop || ENABLED_STORES[0]?.id || PICKER_STORES[0]?.id || null;
   const storeLabel = SHOP_LABELS[store] || store || "—";
   const canManage = canManageDisplayChecks(gateUser, store);
-  const visibleTabs = TABS.filter((t) => !t.manager || canManage);
+  // Whether this shop's Shelf check is switched on: the list's own answer (webShelfList), per shop.
+  const [shelfOnBy, setShelfOnBy] = useState({});
+  const shelfOn = shelfOnBy[store] === true;
+  const visibleTabs = TABS.filter((t) => (!t.manager || canManage) && (!t.shelf || shelfOn || isSuper));
   const displayName = permRecord?.displayName || permRecord?.username || user?.email?.split("@")[0] || "Staff";
   const wide = useIsWide(1024);
 
@@ -155,7 +162,9 @@ export default function DisplayChecks({ onExit, products }) {
   useEffect(() => {
     const t = TABS.find((x) => x.key === tab);
     if (t?.manager && !canManage) setTab("today");
-  }, [tab, canManage, setTab]);
+    // The shelf check tab of a shop that is switched off (moved to another shop, or switched off since).
+    if (t?.shelf && shelfOnBy[store] === false && !isSuper) setTab("today");
+  }, [tab, canManage, setTab, shelfOnBy, store, isSuper]);
 
   // ── ONE lifted feed subscription for the whole module ──
   // Today AND Analytics read from this single listener (props), so a tab switch
@@ -220,6 +229,10 @@ export default function DisplayChecks({ onExit, products }) {
     <>
       <div style={{ display: tab === "today" ? "block" : "none" }}>
         <TodayView store={store} active={tab === "today"} activeItems={feed.activeItems} completedItems={feed.completedItems} ready={feed.ready} error={feed.error} products={products} />
+      </div>
+      {/* Mounted for every shop (it is what says whether the tab shows); polled only while in front. */}
+      <div style={{ display: tab === "shelf" ? "block" : "none" }}>
+        <ShelfChecksPanel loc={store} mode="tab" active={tab === "shelf"} onStatus={({ on }) => setShelfOnBy((m) => (m[store] === on ? m : { ...m, [store]: on }))} />
       </div>
       <div style={{ display: tab === "availability" ? "block" : "none" }}>
         <AvailabilityView store={store} products={products} wide={wide} active={tab === "availability"} />

@@ -179,12 +179,48 @@ describe("website orders stand out", () => {
 });
 
 describe("Junid's progress view", () => {
-  it("one row per place: today, what is waiting, and how often the shelf was wrong", () => {
-    const pe = { loc: "marathon-pe", open: 12, wrongByMoreOpen: 3, checked14: 40, wrong14: 10, days: [{ day: "2026-11-24", listed: 20, checked: 8 }] };
+  it("one row per place: today's list by source, checked today, found against corrected, units, and the weeks", () => {
+    const pe = { loc: "marathon-pe", on: true, open: 12, openBySource: { web_reject: 2, not_selling: 10 }, wrongByMoreOpen: 0, checked14: 40, wrong14: 10,
+      days: [{ day: "2026-11-24", listed: 20, checked: 8, found: 5, fixed: 3, units: 4 }],
+      weeks: [{ week: "2026-11-23", checked: 8, found: 5, fixed: 3, units: 4 }, { week: "2026-11-16", checked: 20, found: 10, fixed: 10, units: 15 }] };
     // Yesterday's record is never shown as today's.
     expect(progressRow(pe, "2026-11-25").today).toBe("—");
-    expect(progressRow(pe, "2026-11-24"))
-      .toEqual({ place: "Marathon PE", open: 12, wrongByMoreOpen: 3, today: "8 of 20", checked14: 40, wrong14: 10, wrongPct: 25 });
-    expect(progressRow({ loc: "hub3", open: 0, checked14: 0, wrong14: 0, days: [] }, "2026-11-24")).toMatchObject({ place: "Hub 3", today: "—", wrongPct: null });
+    expect(progressRow(pe, "2026-11-24")).toMatchObject({ place: "Marathon PE", on: true, open: 12, list: "website 2 · not selling 10", today: "8 of 20", todayFound: 5, todayFixed: 3, todayUnits: 4, checked14: 40, wrong14: 10, wrongPct: 25 });
+    expect(progressRow(pe, "2026-11-24").weeks).toEqual([{ week: "2026-11-23", text: "8 checked · 3 corrected · 4 units", pct: 38 }, { week: "2026-11-16", text: "20 checked · 10 corrected · 15 units", pct: 50 }]);
+    expect(progressRow({ loc: "trophy", on: false, open: 0, checked14: 0, wrong14: 0, days: [] }, "2026-11-24")).toMatchObject({ place: "Trophy", on: false, today: "—", list: "—", wrongPct: null });
+  });
+});
+
+describe("the evening brief: every source, and a shop's own tab", () => {
+  it("the words for each source, with the order or request it came from", () => {
+    expect(whyText({ why: "web_reject", confirm: true, shown: 0, ref: "website order #2301" }, NOW)).toBe("A website order could not find it here (website order #2301), so the app took it off. Is it there after all?");
+    expect(whyText({ why: "store_reject", shown: 3, ref: "hub2 order 187 2026-11-24" }, NOW)).toBe("Someone said this was not here (hub2 order 187 2026-11-24), but the app shows 3. Count the shelf.");
+    expect(whyText({ why: "store_reject", shown: 1 }, NOW)).toMatch(/Is it there\?$/);
+    expect(whyText({ why: "not_selling", shown: 2, at: NOW - 30 * DAY }, NOW)).toBe("The app shows 2, but nothing has sold or left here for 30 days. Count the shelf.");
+  });
+
+  it("a written-down shelf asks only Found / Not found (never a number), and Found is sent as found", async () => {
+    listAnswer = list({ checks: [{ id: "p9__M", pid: "p9", sizeKey: "M", size: "M", shown: 0, why: "web_reject", confirm: true, ref: "website order #2301", name: "Cap", barcode: null }] });
+    const tree = await mount();
+    expect(byTestId(tree, "shelf-count")).toHaveLength(0);
+    const found = byTestId(tree, "shelf-found")[0];
+    await act(async () => { await found.props.onClick(); });
+    expect(calls.at(-1)).toEqual(["webShelfAnswer", { loc: "trophy", id: "p9__M", result: "found" }]);
+  });
+
+  it("a shop's tab: says so plainly when switched off, says when there is nothing today, and tells Display Checks whether it is on", async () => {
+    const seen = [];
+    listAnswer = list({ on: false, checks: [], today: {} });
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<ShelfChecksPanel loc="concrete" mode="tab" onStatus={(s) => seen.push(s)} />); });
+    expect(byTestId(tree, "shelf-off")).toHaveLength(1);
+    expect(seen).toEqual([{ on: false }]);
+    listAnswer = list({ on: true, checks: [], today: {} });
+    await act(async () => { tree = TestRenderer.create(<ShelfChecksPanel loc="trophy" mode="tab" onStatus={(s) => seen.push(s)} />); });
+    expect(byTestId(tree, "shelf-empty")).toHaveLength(1);
+    expect(seen.at(-1)).toEqual({ on: true });
+    // Inline (a hub's queue), nothing to do is nothing at all.
+    await act(async () => { tree = TestRenderer.create(<ShelfChecksPanel loc="hub2" />); });
+    expect(tree.toJSON()).toBeNull();
   });
 });

@@ -43,11 +43,32 @@ const itemId = (pid, sizeKey) => `${pid}__${sizeKey}`;
 const cellQty = (cell) => (cell && typeof cell === "object" ? Number(cell.qty) || 0 : Number(cell) || 0);
 const cellStamp = (cell) => { const t = cell && typeof cell === "object" ? Date.parse(cell.updatedAt) : NaN; return Number.isFinite(t) ? t : null; };
 
+const RECHECK_DAYS_DEFAULT = 30;
+const IDLE_DAYS_DEFAULT = 21;
+/**
+ * /config/onlineOrders/shelfChecks → the settings in force.
+ *   off            the whole routine off
+ *   perDay         the day's list per place (20)
+ *   recheckDays    a shelf settled by a person is not asked again for this long unless a NEW rejection arrives (30)
+ *   idleDays       "not selling": stock on the shelf, no sale or outbound movement for this long (21)
+ *   shops.{loc}.on a shop's own Shelf check tab (Display Checks) — OFF until Junid turns it on, shop by shop
+ */
 function configFrom(c) {
   const o = c && typeof c === "object" ? c : {};
-  const n = Number(o.perDay);
-  return { on: o.off !== true, perDay: Number.isInteger(n) && n >= 1 && n <= 200 ? n : PER_DAY_DEFAULT };
+  const int = (v, d, lo, hi) => { const n = Number(v); return Number.isInteger(n) && n >= lo && n <= hi ? n : d; };
+  const shops = {};
+  for (const loc of SHOPS) shops[loc] = !!(o.shops && o.shops[loc] && o.shops[loc].on === true);
+  return {
+    on: o.off !== true,
+    perDay: int(o.perDay, PER_DAY_DEFAULT, 1, 200),
+    recheckDays: int(o.recheckDays, RECHECK_DAYS_DEFAULT, 0, 365),
+    idleDays: int(o.idleDays, IDLE_DAYS_DEFAULT, 1, 120),
+    shops,
+  };
 }
+
+/** Is the routine running at this place? Hubs and Central always (while on); a shop only once Junid has turned it on. PURE. */
+const placeOn = (cfg, loc) => !!cfg.on && (SHOPS.includes(loc) ? cfg.shops[loc] === true : CHECK_LOCATIONS.includes(loc));
 
 /** Who may work the list of one place: its own screen's permission. */
 function shelfAccess({ isSuper, perms, loc }) {
@@ -83,6 +104,58 @@ function planTopUp({ open = {}, more = [], singles = [], perDay = PER_DAY_DEFAUL
   return { add, listed: have.size };
 }
 
+/** Rejections: a new one re-asks a shelf even inside the recheck window. */
+const REJECTION_WHYS = Object.freeze([WHY.WEB, WHY.STORE, WHY.MORE]);
+
+/**
+ * TONIGHT'S LIST FOR ONE PLACE (Junid, 24 Nov 2026 evening). PURE.
+ * A steady rotation, never a "clear everything": the list is the `perDay` most important shelves, in the order
+ * web_reject → store_reject → wrong_by_more → not_selling → old_single, oldest first inside each. What was not
+ * checked yesterday ROLLS OVER and is ranked again with tonight's candidates (a new rejection can push a quieter
+ * item back into the pool; it comes back when there is room).
+ *   open        { [id]: item }   as stored (rolled over)
+ *   candidates  [{ pid, sizeKey, why, shown, at, ref?, src?, mvId?, lastMoved? }]   `at` orders "oldest first"
+ *   checked     { [id]: ms }     when each shelf was last settled by a person
+ *   onTheWay    (id) => units    a shelf with stock still travelling is left off until its cutoff passes
+ * → { open: { [id]: item }, added: [id], dropped: [id], skipped: { recent, travelling }, bySource }
+ */
+function planDay({ open = {}, candidates = [], checked = {}, onTheWay = () => 0, perDay = PER_DAY_DEFAULT, recheckDays = RECHECK_DAYS_DEFAULT, nowMs, saDate }) {
+  const pool = new Map();
+  const skipped = { recent: 0, travelling: 0 };
+  const better = (a, b) => rankOf(a.why) < rankOf(b.why) || (rankOf(a.why) === rankOf(b.why) && Number(a.at) < Number(b.at));
+  for (const [id, item] of Object.entries(open || {})) {
+    if (!item || !keyOk(item.pid) || !keyOk(item.sizeKey)) continue;
+    pool.set(id, { ...item, at: Number.isFinite(Number(item.at)) ? Number(item.at) : Number(item.lastMoved) || Number(item.addedAt) || 0, rolled: true });
+  }
+  for (const c of candidates || []) {
+    if (!c || !keyOk(c.pid) || !keyOk(c.sizeKey) || !WHY_ORDER.includes(c.why) || !Number.isFinite(Number(c.at))) continue;
+    const id = itemId(c.pid, c.sizeKey);
+    if (onTheWay(id) > 0) { skipped.travelling += 1; continue; }
+    const last = Number(checked && checked[id]);
+    const recent = Number.isFinite(last) && last > 0 && nowMs - last < recheckDays * 864e5;
+    // Inside the recheck window only a rejection that came AFTER the check brings it back.
+    if (recent && !(REJECTION_WHYS.includes(c.why) && Number(c.at) > last)) { skipped.recent += 1; continue; }
+    const item = { pid: c.pid, sizeKey: c.sizeKey, shown: Number(c.shown) || 0, why: c.why, at: Number(c.at), lastMoved: c.lastMoved ?? null, addedAt: nowMs, addedDay: saDate };
+    for (const k of ["ref", "src", "mvId", "holdAt"]) if (c[k] != null && c[k] !== "") item[k] = c[k];
+    const cur = pool.get(id);
+    if (!cur) pool.set(id, item);
+    // The same shelf from a stronger source (or newer evidence for it): the list shows the stronger reason; a rolled
+    // item keeps the day it was first listed.
+    else if (better(item, cur) || (cur.rolled && item.why === cur.why)) pool.set(id, { ...item, addedAt: cur.addedAt ?? nowMs, addedDay: cur.addedDay ?? saDate, rolled: cur.rolled });
+  }
+  const ranked = [...pool.entries()].sort(([, a], [, b]) => rankOf(a.why) - rankOf(b.why) || Number(a.at) - Number(b.at) || 0);
+  const keep = ranked.slice(0, perDay);
+  const out = {}, added = [], bySource = {};
+  for (const [id, item] of keep) {
+    const { rolled, ...stored } = item;
+    out[id] = stored;
+    if (!rolled) added.push(id);
+    bySource[item.why] = (bySource[item.why] || 0) + 1;
+  }
+  const dropped = ranked.slice(perDay).filter(([, it]) => it.rolled).map(([id]) => id);
+  return { open: out, added, dropped, skipped, bySource, candidates: pool.size };
+}
+
 /**
  * Is an open item still the shelf it was listed for? A shelf that moved since
  * (a sale, a delivery, a count) has been touched by a person: it leaves the list.
@@ -107,7 +180,7 @@ function answerPlan({ item, cell, result, count, onTheWay = 0 }) {
   if (itemStale(item, cell)) return { error: "stale" };
   const shown = Number(item.shown);
   const otw = Math.max(0, Number(onTheWay) || 0);
-  if (item.why === WHY.WEB) {
+  if (item.why === WHY.WEB && item.mvId) {
     // A shelf a website rejection already wrote down: the question is only "is it there after all?".
     if (result === "found") return { kind: "restore", outcome: "found", target: shown + 1 };
     if (result === "not_found") return { kind: "touch", outcome: "notFound", target: shown, confirmsWriteDown: true };
@@ -163,17 +236,35 @@ function bumpDay(d, { outcome, why, units = 0 }) {
   return cur;
 }
 
-/** Progress for one place over the days given. PURE. days: { [saDate]: counters } */
+/**
+ * Progress for one place (Junid's view, Settings → Online orders). PURE.
+ *   days  { [saDate]: counters }  (up to eight weeks)
+ *   open  { [id]: item }          today's list
+ * → { open, openBySource, days (last 14, newest first), weeks (last 8, newest first), checked14, wrong14 }
+ */
 function progressOf(days, open) {
-  const rows = Object.entries(days || {}).sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 14).map(([day, d]) => {
+  const dayRow = ([day, d]) => {
     const found = Number(d.found) || 0, notFound = Number(d.notFound) || 0, counted = Number(d.counted) || 0, corrected = Number(d.corrected) || 0;
-    return { day, listed: Number(d.listed) || 0, checked: found + notFound + counted + corrected, found, notFound, counted, corrected };
-  });
-  const sum = (k) => rows.reduce((n, r) => n + r[k], 0);
-  return { open: Object.keys(open || {}).length, days: rows, checked14: sum("checked"), wrong14: sum("notFound") + sum("corrected") };
+    return { day, listed: Number(d.listed) || 0, checked: found + notFound + counted + corrected, found: found + counted, fixed: notFound + corrected, notFound, counted, corrected, units: Number(d.units) || 0, by: d.by && typeof d.by === "object" ? d.by : {}, added: d.added && typeof d.added === "object" ? d.added : {} };
+  };
+  const all = Object.entries(days || {}).filter(([, d]) => d && typeof d === "object").sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(dayRow);
+  const rows = all.slice(0, 14);
+  const sum = (list, k) => list.reduce((n, r) => n + r[k], 0);
+  // Weeks start on Monday (SA calendar days).
+  const weekOf = (day) => { const t = Date.parse(`${day}T12:00:00Z`); const dow = (new Date(t).getUTCDay() + 6) % 7; return new Date(t - dow * 864e5).toISOString().slice(0, 10); };
+  const weeks = new Map();
+  for (const r of all) {
+    const w = weekOf(r.day);
+    const cur = weeks.get(w) || { week: w, checked: 0, found: 0, fixed: 0, units: 0 };
+    cur.checked += r.checked; cur.found += r.found; cur.fixed += r.fixed; cur.units += r.units;
+    weeks.set(w, cur);
+  }
+  const openBySource = {};
+  for (const it of Object.values(open || {})) if (it && it.why) openBySource[it.why] = (openBySource[it.why] || 0) + 1;
+  return { open: Object.keys(open || {}).length, openBySource, days: rows, weeks: [...weeks.values()].slice(0, 8), checked14: sum(rows, "checked"), wrong14: sum(rows, "notFound") + sum(rows, "corrected") };
 }
 
 module.exports = {
-  SHELF_CHECKS_PATH, SHELF_CONFIG_PATH, PER_DAY_DEFAULT, SHOPS, HUBS, CHECK_LOCATIONS, WHY, WHY_ORDER, rankOf, MAX_COUNT,
+  SHELF_CHECKS_PATH, SHELF_CONFIG_PATH, PER_DAY_DEFAULT, RECHECK_DAYS_DEFAULT, IDLE_DAYS_DEFAULT, SHOPS, HUBS, CHECK_LOCATIONS, WHY, WHY_ORDER, REJECTION_WHYS, rankOf, MAX_COUNT, placeOn, planDay,
   itemId, cellQty, cellStamp, configFrom, shelfAccess, planTopUp, itemStale, answerPlan, progressOf, doneRow, bumpDay,
 };
