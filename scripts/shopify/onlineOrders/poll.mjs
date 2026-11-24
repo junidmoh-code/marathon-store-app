@@ -66,6 +66,7 @@ import { applySwapRequests, mailLineMoneyChanges } from "./swapRequests.mjs";
 import { applyOrderNowRequests, clearAttentionIfSettled } from "./orderNowRequests.mjs";
 import { applyWaitingReroutes } from "./waitingReroute.mjs";
 import { applyAgentRepicks } from "./agentRepick.mjs";
+import { CELL_HOLDS_PATH, cellHeld, cellQty, holdRow, readPickableRules } from "../pickableStock.mjs";
 
 // Per store: Marathon keeps /online_orders_meta exactly as before; the
 // Concrete process (SHOPIFY_STORE=concrete) keeps its own cursor and retry
@@ -228,7 +229,7 @@ export async function runOrdersPoll(deps) {
         // The POS "Order it now" (orderNowRequests.mjs): a grey line whose item
         // is back in stock goes to reroute, and maintainOrder below routes and
         // raises it exactly like a new order's line.
-        if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor, resolveVariant })) {
+        if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor: (c, i, list, own) => availabilityFor(c, i, list, own, { trustCells: true }), resolveVariant })) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
         // The order agent's re-pick (agentRepick.mjs, Junid 14 Nov 2026): a line a
@@ -403,13 +404,29 @@ async function resolveVariant(ctx, variantGid, productGid, variantTitle) {
 }
 
 /** { "pid|sizeKey": { loc: free units } } for the given resolved lines. */
-async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}) {
+//
+// SHELF HOLDS (pickableStock.mjs, Junid 24 Nov 2026): a cell that rejected a
+// website pick and has not moved since counts as empty here, so no line is
+// sent back to a shelf that already said "not here". `trustCells` is for the
+// POS "Order it now": a person who has the item in their hand is the newer
+// evidence, so that one re-route reads the cells as they are.
+async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}, { trustCells = false } = {}) {
   const out = {};
+  const rules = trustCells ? null : await readPickableRules(ctx.get, ctx.now);
   for (const r of resolvedList) {
     const key = `${r.pid}|${r.sizeKey}`;
     if (out[key]) continue;
     const stockQty = {};
     for (const loc of ROUTED_LOCATIONS) stockQty[loc] = Number(await ctx.get(`stock/${loc}/${r.pid}/${r.sizeKey}/qty`)) || 0;
+    if (rules?.holds) {
+      let holds = null;
+      try { holds = await ctx.get(`${CELL_HOLDS_PATH}/${r.pid}/${r.sizeKey}`); } catch (e) { ctx.log?.(`  ⚠ shelf holds for ${key} unreadable (${String(e?.message || e)}) — routed without them`); }
+      for (const loc of holds ? ROUTED_LOCATIONS : []) {
+        if (!holds[loc] || stockQty[loc] <= 0) continue;
+        const updatedAt = await ctx.get(`stock/${loc}/${r.pid}/${r.sizeKey}/updatedAt`);
+        if (cellHeld(holds, loc, { qty: stockQty[loc], updatedAt }, rules)) stockQty[loc] = 0;
+      }
+    }
     const holdsCell = await ctx.get(`${ONLINE_RESERVATIONS_PATH}/${r.pid}/${r.sizeKey}`);
     const free = availableAt({ stockQty, holdsCell, orderId });
     // A shop whose Display Checks are switched off has no feed to show the
@@ -702,6 +719,10 @@ async function maintainOrder(ctx, id, order) {
     }
     const out = hubOutcome(l, records);
     if (!out) continue;
+    // The hub said Out of Stock: its pieces of this size come off the website
+    // and out of routing until that shelf moves again (pickableStock.mjs).
+    const refused = out.status === LINE_STATUS.NO_STOCK ? records.find((r) => r && r.channel === "online" && r.status === "out_of_stock") : null;
+    if (refused?.hub) await holdCell(ctx, { pid: l.pid, sizeKey: l.sizeKey, loc: refused.hub, kind: "hub_out_of_stock", orderId: id, line: i, by: refused.outOfStockByUid });
     changed.set(i, {
       ...l,
       source: {
@@ -775,6 +796,27 @@ async function maintainOrder(ctx, id, order) {
   // The order as this pass left it, for the caller's escalation check. null
   // when the order is gone (the caller then reads exactly, as it always did).
   return committed ?? null;
+}
+
+// A place rejected a website pick: note it beside the cell (never IN it — the
+// count is not touched) and tell every store's pusher, so the website drops
+// those pieces on this same tick's reconcile. Best-effort: a failure here is
+// logged and never stops the order being kept; the nightly sweep re-checks.
+async function holdCell(ctx, { pid, sizeKey, loc, kind, orderId, line, by = null }) {
+  const { db, now } = ctx;
+  try {
+    const qty = cellQty(await ctx.get(`stock/${loc}/${pid}/${sizeKey}`));
+    if (qty <= 0) return false; // nothing on paper there: nothing to hide
+    const row = holdRow({ pid, sizeKey, loc, at: now, kind, orderId, line, qty, by });
+    if (!row) return false;
+    await db.ref(row.path).set(row.value);
+    for (const dirty of ALL_DIRTY_PATHS) await db.ref(`${dirty}/${pid}`).set(ctx.increment(1));
+    ctx.log?.(`  ~ shelf hold: ${pid} size ${sizeKey} at ${loc} (${kind}, ${qty} on paper) — off the website until that shelf moves`);
+    return true;
+  } catch (e) {
+    ctx.log?.(`  ⚠ shelf hold for ${pid}/${sizeKey} at ${loc} not written (${String(e?.message || e)})`);
+    return false;
+  }
 }
 
 // → { entryKey, orderKeys? } — what the line's source records about its entry.

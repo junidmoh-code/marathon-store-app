@@ -587,6 +587,8 @@ const tables = [
   md(["Times", "Product", "Size", "Orders", "Picked successfully since?"], repeats.map((r) => [r.timesFailed, r.product, r.size, r.orders.join(" "), r.fulfilledSince ? "yes" : "no"])),
 ].join("\n");
 writeFileSync(join(OUT, "tables.md"), tables + "\n");
+// Every place-rejection as data (cell-holds.mjs --from reads this to hold the shelves that are still untouched).
+writeFileSync(join(OUT, "rejections.json"), JSON.stringify([...episodes.values()].flatMap((e) => e.fails.filter((f) => f.loc && f.at && ["hub_out_of_stock", "shop_not_found"].includes(f.kind)).map((f) => ({ pid: e.pid, sizeKey: e.size, loc: f.loc, at: f.at, kind: f.kind, order: e.row.order, orderId: e.orderId, line: e.line, product: e.row.product }))).sort((a, b) => a.at - b.at), null, 0) + "\n");
 writeFileSync(join(OUT, "stats.json"), JSON.stringify(stats, null, 1));
 writeFileSync(join(OUT, "episodes.json"), JSON.stringify([...episodes.values()].map((e) => ({ key: e.key, isFootwear: e.isFootwear, routedTo: e.routedToKey, orderAt: e.orderAt, priceCents: e.priceCents, firstFailAt: e.firstFail?.at ?? null, swapAt: e.swapAt ?? null, fails: e.fails, row: e.row })), null, 0));
 console.log(JSON.stringify({ ...stats, repeats: stats.repeats.length, repeatProducts: stats.repeatProducts.length, jamie: jamieStats ? { ...jamieStats, declinedWords: jamieStats.declinedWords.length, noReply: jamieStats.noReply.length } : null }, null, 1));

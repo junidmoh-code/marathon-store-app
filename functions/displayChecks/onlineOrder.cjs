@@ -15,6 +15,18 @@
 
 const { isOnlinePickRecord, isOnlineReturnRecord, onlineOrderOutcomeUpdates } = require("./lib.cjs");
 
+// A shelf hold changes what the website may sell of that product, so every
+// store's pusher is told now (the same two counters the stock trigger bumps);
+// each pusher ignores a product that is not live in its store. Best-effort: the
+// hold itself has landed, and the nightly stock sweep re-checks every listing.
+const { DIRTY_PATH, CONCRETE_DIRTY_PATH } = require("../lib/shopify-inventory-dirty.cjs");
+async function markWebsiteDirty(db, pid) {
+  for (const node of [DIRTY_PATH, CONCRETE_DIRTY_PATH]) {
+    try { await db.ref(`${node}/${pid}`).set({ ".sv": { increment: 1 } }); }
+    catch (err) { console.warn(`online_pick: ${node}/${pid} not marked (${err && err.message})`); }
+  }
+}
+
 async function applyOnlineOrderOutcome(db, store, record, { storeName } = {}) {
   if (!isOnlinePickRecord(record) && !isOnlineReturnRecord(record)) return true;
   const orderId = record.orderId;
@@ -31,6 +43,7 @@ async function applyOnlineOrderOutcome(db, store, record, { storeName } = {}) {
         return true;
       }
       if (Object.keys(out.updates).length) await db.ref().update(out.updates);
+      if (out.held) await markWebsiteDirty(db, out.held);
       return true;
     } catch (err) {
       if (i === 2) { console.error("online_pick: order write failed after retries:", err && err.message); return false; }

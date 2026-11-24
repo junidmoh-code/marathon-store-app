@@ -195,6 +195,37 @@ Every unit is its own line (above): qty 2 with one at PE becomes two lines
 A shop whose own Display Checks switch is off is never routed to: it could
 neither see nor close the entry.
 
+## Shelf holds — a rejection takes that shelf off the website (Junid, 24 Nov 2026)
+
+Why: docs/audits/web-unavailable-2026-11-24/REPORT.md. A hub's Out of Stock or a
+shop's Not found on a website pick used to change nothing, so the app kept
+showing the piece and the website kept selling it: 46 of 261 failed lines were
+the same size sold again from a shelf that had already rejected it.
+
+```
+/online_cell_holds/{pid}/{sizeKey}/{locationId} =
+    { at, kind: "hub_out_of_stock" | "shop_not_found", orderId, line, qty?, by? }
+```
+
+- **Written** by the poller when a hub order comes back `out_of_stock`
+  (`poll.mjs holdCell`), and by the Display Checks function in the same write
+  that flips the line to `not_found` (`functions/displayChecks/lib.cjs`). Both
+  bump the website's dirty counters.
+- **It stands** while the cell still shows a piece and the cell's own
+  `updatedAt` is not later than `at`. Any stock movement on that cell (a sale,
+  a delivery, a transfer, a count) ends it. Nothing has to clear it.
+- **Read** by the website quantity (`desiredFor` in `inventorySync.mjs` and the
+  publish path in `reconcile.mjs`: a held cell counts 0) and by the router
+  (`availabilityFor`: a held cell is not a place a line can be sent). The POS
+  "Order it now" reads the cells as they are: a person holding the item is the
+  newer evidence.
+- **No stock is touched.** The count, the refill scan and the Total Stock card
+  are unchanged; the card's "online N" is the figure before holds.
+- Kill switch: `/config/onlineOrders/pickable/holdsOff = true`.
+- `scripts/shopify/onlineOrders/cell-holds.mjs`: `--list`, `--prune` (run by
+  the nightly stock sweep), `--from` (back-fill, writes a rollback file),
+  `--rollback`.
+
 ## Settings → Online orders: "Rung by hand at a till"
 
 Every open order is listed with a release. It writes `status: release_requested`;
