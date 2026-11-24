@@ -609,7 +609,11 @@ function resolveTarget({ targets, config, products, stock: baseStock, network, d
   // has no policy for the cell. Never a product Pine does not carry, never
   // footwear, and nothing about where the stock comes from.
   if (policyFollowOf(config, dest) && followCarries({ config, products, division }, stock, dest, pid, size)) {
-    const ft = followedTarget(resolveTarget, { targets, config, products, stock, network }, dest, pid, size);
+    // Per category (Junid, 24 Nov 2026): a category only Marathon PE has a
+    // policy for is PE's at the follower, never Trophy's generic size run.
+    const catKey = policyCategoryKey(products?.[pid]);
+    const categoryHas = (loc) => !!catKey && !!locationPolicyFor(config, catKey, loc);
+    const ft = followedTarget(resolveTarget, { targets, config, products, stock, network, categoryHas }, dest, pid, size);
     if (ft !== undefined) return ft;
   }
   // ── THE CONCRETE DIVISION (Junid, 9 Nov 2026) — lib/concrete-division.cjs ──

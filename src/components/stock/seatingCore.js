@@ -337,7 +337,9 @@ export function resolveTarget({ targets, config, products, stock, network }, des
   // own row, above the division's numbers. Never footwear. This screen has no
   // seats node, so a shop's own cell stands in for its seat.
   if (policyFollowOf(config, dest) && followCarries({ config, products }, stock, dest, pid, size)) {
-    const ft = followedTarget(resolveTarget, { targets, config, products, stock, network }, dest, pid, size);
+    const catKey = effectiveCategoryKey(products?.[pid]);
+    const categoryHas = (loc) => !!catKey && !!locationPolicyFor(config, catKey, loc);
+    const ft = followedTarget(resolveTarget, { targets, config, products, stock, network, categoryHas }, dest, pid, size);
     if (ft !== undefined) return ft;
   }
   // CENTRAL-FED CLOTHING (centralFed.js; engine twin refill-engine.cjs): a

@@ -717,6 +717,12 @@ describe("one product, one shop — Pine or Concrete, never both", () => {
     emit("refill_engine/seats/marathon-pine", { [TEE]: { at: "2026-11-22T09:00:00.000Z", via: "cell" } });
     const tree = await conc();
     expect(offered(tree, TEE)).toEqual(["marathon-pine"]);
+    // …and the card says why: "Pine's" in Concrete's place, as text, not a button.
+    const note = card(tree, TEE).findAll((n) => n.props && n.props["data-held-at"] === "concrete");
+    expect(note.length).toBe(1);
+    expect(note[0].type).toBe("span");
+    expect(note[0].props["data-held-for"]).toBe("marathon-pine");
+    expect(note[0].children.join("")).toBe("Pine\u2019s");
   });
 
   it("owned by Concrete with nothing to send there → not on the list at all, and never offered to Pine instead", async () => {

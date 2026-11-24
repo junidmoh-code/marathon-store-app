@@ -64,6 +64,19 @@ describe("productRow — a card is a row only if a tap would send something", ()
     // owned by Concrete, and a Concrete solve would send nothing → not on the list at all (never Pine instead)
     expect(productRow({ ...base, allStock, planFor: directPlan({ concrete: [], "marathon-pine": ["L"] }, { L: 3 }), owners: ["concrete"] })).toBe(null);
   });
+  it("ONE OWNER, SAID ON THE CARD (Junid, 24 Nov 2026): the held-back shop is a note naming the owner, in its button's place", () => {
+    const allStock = { central: { p1: { L: cell(3) } } };
+    const plan = directPlan({ concrete: ["L"], "marathon-pine": ["L"] }, { L: 3 });
+    const pine = productRow({ ...base, dests: ["concrete", "marathon-pine"], tickable: ["concrete", "marathon-pine"], allStock, planFor: plan, owners: ["marathon-pine"] });
+    expect(pine.held).toEqual([{ id: "concrete", owner: "marathon-pine", note: "Pine\u2019s" }]);
+    expect(pine.order).toEqual(["concrete", "marathon-pine"]);   // the note sits where Concrete's button would be
+    const conc = productRow({ ...base, dests: ["concrete", "marathon-pine"], tickable: ["concrete", "marathon-pine"], allStock, planFor: plan, owners: ["concrete"] });
+    expect(conc.held).toEqual([{ id: "marathon-pine", owner: "concrete", note: "Concrete\u2019s" }]);
+    // nobody owns it → nothing held, both offered
+    const free = productRow({ ...base, dests: ["concrete", "marathon-pine"], tickable: ["concrete", "marathon-pine"], allStock, planFor: plan, owners: [] });
+    expect(free.held).toEqual([]);
+    expect(free.order).toEqual(["concrete", "marathon-pine"]);
+  });
   it("a shop behind a hub: the row needs the source to hold a size the policy covers; reservations are netted off Central", () => {
     const hubPlan = (_c, [store]) => ({ lines: [{ store, hub: "hub2", sizes: ["M", "L"], firstBatch: false, units: 0, got: [] }] });
     const m = { ...base, section: 2, dests: ["marathon-pe", "trophy"], tickable: ["marathon-pe", "trophy"], planFor: hubPlan, routes: { hub2: "central" } };

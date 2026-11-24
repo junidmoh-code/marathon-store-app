@@ -1928,7 +1928,7 @@ export function policyFollowHistoryLine(h) {
   return `${side(h?.before)} -> ${side(h?.after)}`;
 }
 
-const SHORT_LOC = { "marathon-pine": "Pine" };
+const SHORT_LOC = { "marathon-pine": "Pine", concrete: "Concrete" };
 export function PolicyFollowPanel({ location, follows, options = [], busy, onSave }) {
   const name = SHORT_LOC[location] || locLabel(location);
   const leader = follows || options[0] || null;
@@ -1940,7 +1940,7 @@ export function PolicyFollowPanel({ location, follows, options = [], busy, onSav
       </div>
       <div style={{ color: GRAY, fontSize: ".85rem", lineHeight: 1.5 }}>
         {follows
-          ? <>Every product {name} already carries keeps what {locLabel(follows)}'s policy says for it: the same keep, minimum and ask-at, by category, by size and by product. Change {locLabel(follows)}'s numbers and {name} follows at the next scan. Nothing is added to {name}, a product switched off at {name} stays off, and its stock still comes from Central (sneakers from Hub 3). Where {locLabel(follows)} has no policy, {name} keeps the Concrete division numbers.</>
+          ? <>Every product {name} already carries keeps what {locLabel(follows)}'s policy says for it: the same keep, minimum and ask-at, by category, by size and by product. Change {locLabel(follows)}'s numbers and {name} follows at the next scan. Nothing is added to {name}, a product switched off at {name} stays off, and its stock still comes from Central (sneakers from Hub 3). Where {locLabel(follows)} has no policy for a category, Marathon PE's applies; where neither has one, {name} keeps the Concrete division numbers.{location === "concrete" ? " Concrete never keeps perfumes." : ""}</>
           : <>{name} is on its own numbers. Switch this on and every product {name} already carries keeps what {locLabel(leader)}'s policy says for it.</>}
       </div>
       <div style={{ marginTop: ".6rem" }}>

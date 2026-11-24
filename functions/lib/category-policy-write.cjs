@@ -68,7 +68,7 @@ const { CENTRAL_FED_KEY, CENTRAL_FED_MAX, centralFedPerSize } = require("./centr
 const CENTRAL_FED_PATH = `config/refillEngine/${CENTRAL_FED_KEY}`;
 const { CONCRETE_DIVISION_KEY, concreteDivisionPolicy, divisionContext, divisionKeepCounts, DIVISION_LOCATIONS, SEATS_PATH } = require("./concrete-division.cjs");
 const CONCRETE_DIVISION_PATH = `config/refillEngine/${CONCRETE_DIVISION_KEY}`;
-const { POLICY_FOLLOW_KEY, POLICY_FOLLOW_ALLOWED, policyFollowMap, validatePolicyFollow } = require("./policy-follow.cjs");
+const { POLICY_FOLLOW_KEY, POLICY_FOLLOW_ALLOWED, policyFollowMap, policyFollowChain, validatePolicyFollow } = require("./policy-follow.cjs");
 const POLICY_FOLLOW_PATH = `config/refillEngine/${POLICY_FOLLOW_KEY}`;
 
 // PINE FOLLOWS TROPHY on the card (lib/policy-follow.cjs): which location a
@@ -76,11 +76,16 @@ const POLICY_FOLLOW_PATH = `config/refillEngine/${POLICY_FOLLOW_KEY}`;
 // on, a non-footwear category that Trophy has numbers for is Trophy's at Pine;
 // one Trophy has none for is the Concrete division's own keep there — never
 // Marathon PE's, whatever the older template says. Display only.
+// Universal policy (Junid, 24 Nov 2026): Trophy's entry, else Marathon PE's
+// (policyFollowChain), else the division's own keep. Concrete never keeps
+// perfumes, so it follows nobody's perfume row.
 function linkedFollows(cfg, categoryKey, effEntry, base) {
   const out = { ...(base || {}) };
   if (FOOTWEAR_CATEGORY_KEYS.includes(categoryKey)) return out;
-  for (const [loc, leader] of Object.entries(policyFollowMap(cfg))) {
-    if (isPlainObject(effEntry) && locationEntryMode(effEntry[leader]) !== "invalid") out[loc] = leader;
+  for (const loc of Object.keys(policyFollowMap(cfg))) {
+    const from = policyFollowChain(cfg, loc).find((l) => isPlainObject(effEntry) && locationEntryMode(effEntry[l]) !== "invalid");
+    if (loc === "concrete" && categoryKey === "perfumes") delete out[loc];
+    else if (from) out[loc] = from;
     else if (concreteDivisionPolicy(cfg)) delete out[loc];
   }
   return out;

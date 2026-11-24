@@ -64,6 +64,7 @@ const CONFIGS = [
   config(), config({ policyFollow: { [PINE]: "trophy" } }),
   config({ policyFollow: { [PINE]: "marathon-pe", concrete: "trophy" } }), config({ policyFollow: "trophy" }),
   config({ policyFollow: { [PINE]: "trophy" }, concreteDivision: undefined }),
+  config({ policyFollow: { [PINE]: "trophy", concrete: "trophy" } }),
 ];
 
 describe("policyFollow.js is functions/lib/policy-follow.cjs", () => {
@@ -73,7 +74,8 @@ describe("policyFollow.js is functions/lib/policy-follow.cjs", () => {
   it("the exports agree", () => {
     expect(Object.keys(browser).sort()).toEqual(Object.keys(server).sort());
     expect(browser.POLICY_FOLLOW_ALLOWED).toEqual(server.POLICY_FOLLOW_ALLOWED);
-    expect(browser.POLICY_FOLLOW_ALLOWED).toEqual({ "marathon-pine": ["trophy"] });
+    expect(browser.POLICY_FOLLOW_ALLOWED).toEqual({ "marathon-pine": ["trophy"], concrete: ["trophy"] });
+    expect(browser.POLICY_FOLLOW_FALLBACK).toEqual(server.POLICY_FOLLOW_FALLBACK);
     for (const c of CONFIGS) for (const loc of [PINE, "concrete", "trophy", "hub3"]) {
       expect(browser.policyFollowOf(c, loc)).toBe(server.policyFollowOf(c, loc));
     }
@@ -107,7 +109,7 @@ describe("the Seating tab resolves a followed cell exactly as the engine does", 
     expect(three(seatingResolve(ctx, PINE, "sun", ""))).toEqual([5, 3, 3]);
     expect(three(seatingResolve(ctx, PINE, "bag", ""))).toEqual([2, 1, 0]);
     expect(three(seatingResolve(ctx, PINE, "tee", "XL"))).toEqual([1, 1, null]);
-    expect(three(seatingResolve(ctx, PINE, "perf", ""))).toEqual([5, 4, null]);   // Trophy has no perfume policy
+    expect(three(seatingResolve(ctx, PINE, "perf", ""))).toEqual([8, 4, 3]);      // Trophy has no perfume policy: Marathon PE's
     expect(seatingResolve(ctx, PINE, "gone", "")).toBe(null);                     // Pine does not carry it
     expect(seatingResolve(ctx, PINE, "shoe", "8")).toBe(null);                    // footwear is left out
     expect(three(seatingResolve(ctx, "concrete", "sun", ""))).toEqual([5, 4, null]);   // Concrete is untouched
