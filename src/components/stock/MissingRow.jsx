@@ -50,13 +50,6 @@ const chip = (on) => ({
   border: `1px solid ${on ? BLUE : "rgba(255,255,255,.2)"}`,
   color: on ? "#fff" : "rgba(255,255,255,.88)",
 });
-// A shop held back by the one-owner rule: the chip's box, no border, muted
-// italic text — plainly not a button.
-const heldNote = {
-  flex: 1, minWidth: 0, height: BTN_H, boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center",
-  fontFamily: FONT, fontSize: 12, fontWeight: 600, fontStyle: "italic", color: "rgba(255,255,255,.42)",
-  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", padding: "0 4px",
-};
 // Solve: the main action. Green and solid only once a location is chosen.
 const solveBtn = (ready, busy) => ({
   width: 56, flexShrink: 0, height: BTN_H, borderRadius: 11, fontFamily: FONT, fontSize: 14.5, fontWeight: 800, padding: 0,
@@ -194,18 +187,7 @@ function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = fals
           )}
         </div>
         <div style={{ display: "flex", gap: 6, height: BTN_H }}>
-          {canAct && (Array.isArray(row.order) && row.order.length ? row.order : row.dests.map((d) => d.id)).map((id) => {
-            const d = row.dests.find((x) => x.id === id);
-            // ONE OWNER (Junid, 24 Nov 2026): where another shop owns the
-            // product, a quiet note in the missing button's place — text, not
-            // a button, so nothing on the card is ever disabled.
-            if (!d) {
-              const h = (row.held || []).find((x) => x.id === id);
-              return h ? (
-                <span key={id} data-held-for={h.owner} data-held-at={id} title={`One shop per product: this one is ${h.note}`}
-                  style={heldNote}>{h.note}</span>
-              ) : null;
-            }
+          {canAct && row.dests.map((d) => {
             const on = selected.includes(d.id);
             return (
               <button key={d.id} type="button" data-dest={d.id} aria-pressed={on} aria-label={d.name}

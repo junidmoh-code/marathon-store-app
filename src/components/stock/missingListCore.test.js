@@ -54,28 +54,17 @@ describe("productRow — a card is a row only if a tap would send something", ()
     const row = productRow({ ...base, tickable: ["concrete"], allStock, planFor: directPlan({ concrete: ["L"], "marathon-pine": ["L"] }, { L: 3 }) });
     expect(row.dests.map((d) => d.id)).toEqual(["concrete"]);
   });
-  it("ONE OWNER: owned by Concrete → Pine is never offered; owned by Pine → Concrete never; owned by both → not listed; neither → both", () => {
+  it("HELD IN THE DIVISION (Junid, 24 Nov 2026): held by any shop of the division → not listed, why heldInDivision; held by none → both offered", () => {
     const allStock = { central: { p1: { L: cell(3) } } };
     const plan = directPlan({ concrete: ["L"], "marathon-pine": ["L"] }, { L: 3 });
-    expect(productRow({ ...base, allStock, planFor: plan, owners: ["concrete"] }).dests.map((d) => d.id)).toEqual(["concrete"]);
-    expect(productRow({ ...base, allStock, planFor: plan, owners: ["marathon-pine"] }).dests.map((d) => d.id)).toEqual(["marathon-pine"]);
-    expect(productRow({ ...base, allStock, planFor: plan, owners: ["marathon-pine", "concrete"] })).toBe(null);
-    expect(productRow({ ...base, allStock, planFor: plan, owners: [] }).dests.map((d) => d.id)).toEqual(["marathon-pine", "concrete"]);
-    // owned by Concrete, and a Concrete solve would send nothing → not on the list at all (never Pine instead)
-    expect(productRow({ ...base, allStock, planFor: directPlan({ concrete: [], "marathon-pine": ["L"] }, { L: 3 }), owners: ["concrete"] })).toBe(null);
-  });
-  it("ONE OWNER, SAID ON THE CARD (Junid, 24 Nov 2026): the held-back shop is a note naming the owner, in its button's place", () => {
-    const allStock = { central: { p1: { L: cell(3) } } };
-    const plan = directPlan({ concrete: ["L"], "marathon-pine": ["L"] }, { L: 3 });
-    const pine = productRow({ ...base, dests: ["concrete", "marathon-pine"], tickable: ["concrete", "marathon-pine"], allStock, planFor: plan, owners: ["marathon-pine"] });
-    expect(pine.held).toEqual([{ id: "concrete", owner: "marathon-pine", note: "Pine\u2019s" }]);
-    expect(pine.order).toEqual(["concrete", "marathon-pine"]);   // the note sits where Concrete's button would be
-    const conc = productRow({ ...base, dests: ["concrete", "marathon-pine"], tickable: ["concrete", "marathon-pine"], allStock, planFor: plan, owners: ["concrete"] });
-    expect(conc.held).toEqual([{ id: "marathon-pine", owner: "concrete", note: "Concrete\u2019s" }]);
-    // nobody owns it → nothing held, both offered
-    const free = productRow({ ...base, dests: ["concrete", "marathon-pine"], tickable: ["concrete", "marathon-pine"], allStock, planFor: plan, owners: [] });
-    expect(free.held).toEqual([]);
-    expect(free.order).toEqual(["concrete", "marathon-pine"]);
+    for (const owners of [["concrete"], ["marathon-pine"], ["marathon-pine", "concrete"]]) {
+      const d = decideProductRow({ ...base, allStock, planFor: plan, owners });
+      expect(d.row).toBe(null);
+      expect(d.why).toBe("heldInDivision");
+    }
+    const free = productRow({ ...base, allStock, planFor: plan, owners: [] });
+    expect(free.dests.map((d) => d.id)).toEqual(["marathon-pine", "concrete"]);
+    expect(free.held).toBeUndefined();
   });
   it("a shop behind a hub: the row needs the source to hold a size the policy covers; reservations are netted off Central", () => {
     const hubPlan = (_c, [store]) => ({ lines: [{ store, hub: "hub2", sizes: ["M", "L"], firstBatch: false, units: 0, got: [] }] });
@@ -196,10 +185,10 @@ describe("decideProductRow / decideSneakerRow — the same row, and why when the
   it("Central's units are all in sizes the product's own list does not name → undeclaredSize", () => {
     expect(why({ allStock: { central: { p1: { XL: cell(3) } } }, planFor: directPlan({ concrete: ["S", "M", "L"] }, {}) })).toBe("undeclaredSize");
   });
-  it("owned by both Pine and Concrete → bothShops; a sneaker or slide on this list → noView; no record → noRecord", () => {
+  it("owned by both Pine and Concrete → heldInDivision; a sneaker or slide on this list → noView; no record → noRecord", () => {
     const allStock = { central: { p1: { L: cell(3) } } };
     const planFor = directPlan({ concrete: ["L"], "marathon-pine": ["L"] }, { L: 3 });
-    expect(why({ allStock, planFor, owners: ["marathon-pine", "concrete"] })).toBe("bothShops");
+    expect(why({ allStock, planFor, owners: ["marathon-pine", "concrete"] })).toBe("heldInDivision");
     expect(why({ allStock, planFor, product: { ...tee, categoryKey: "slides" } })).toBe("noView");
     expect(why({ allStock, planFor, product: null })).toBe("noRecord");
   });

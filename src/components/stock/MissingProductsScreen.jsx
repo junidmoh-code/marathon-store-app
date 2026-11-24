@@ -359,11 +359,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
         const dests = shopDestinations(c.network, sec);
         const open = c.reqByPid.get(card.pid) || NONE;
         const openAt = c.openAt;
-        // ONE-OR-THE-OTHER SHOPS (Pine / Concrete): who already owns it.
-        // Marathon's shops are not one-or-the-other and are left as they were.
-        const owners = shopsAreExclusive(c.network, sec)
-          ? shopOwners({ shops: dests, cells: Object.fromEntries(dests.map((d) => [d, c.allStock?.[d]?.[card.pid]])), seated: (d) => isSeat(c.seats?.[d]?.[card.pid]), queued: (d) => !!openAt.get(card.pid)?.has(d) })
-          : null;
+        // HELD IN THE DIVISION (Junid, 24 Nov 2026), both divisions: a shop
+        // with stock, a seat or an open request holds it, and it is not listed.
+        const owners = shopOwners({ shops: dests, cells: Object.fromEntries(dests.map((d) => [d, c.allStock?.[d]?.[card.pid]])), seated: (d) => isSeat(c.seats?.[d]?.[card.pid]), queued: (d) => !!openAt.get(card.pid)?.has(d) });
         const d = decideProductRow({
           card, section: sec, product: c.byId.get(card.pid), dests, tickable: api.tickableStores(card),
           planFor: api.planFor, openByLoc: open, allStock: c.allStock, central: c.central,
@@ -557,7 +555,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // or the other — Hub 1 / Hub 2, Pine / Concrete — a tap switches the other
   // off; Hub 3 is the only location on its list; Marathon's shops may both be
   // chosen and one Solve sends to both (as that list always allowed).
-  const exclusiveFor = (row) => row.kind === "sneakers" || shopsAreExclusive(ctx.current.network, row.section);
+  // One shop per product in every division (Junid, 24 Nov 2026).
+  const exclusiveFor = () => true;
   // The same array while it still applies (so a card does not redraw for
   // nothing); filtered only when a chosen location has left the card.
   const chosen = (row) => {
@@ -621,12 +620,15 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
         problem = `Couldn't check which division this belongs to — nothing sent, retry. (${e?.message || "error"})`;
       }
     }
-    if (!problem && row.kind === "clothing" && shopsAreExclusive(c.network, row.section)) {
+    // One shop per product in every division (Junid, 24 Nov 2026).
+    if (!problem && row.kind === "clothing" && sel.length > 1) problem = `${sel.map(c.label).join(" and ")} cannot both be solved for the same product — pick one.`;
+    if (!problem && row.kind === "clothing") {
       const shops = shopDestinations(c.network, row.section);
       try {
         const owners = await shopOwnersNow(row.pid, shops, (d) => !!ctx.current.openAt.get(row.pid)?.has(d));
-        const other = owners.find((o) => !sel.includes(o));
-        if (other) problem = `${c.label(other)} already has this — it is not sent to ${sel.map(c.label).join(" or ")} as well.`;
+        // Held by any shop of the division now (another device, a scan): it
+        // is that shop's to refill — nothing is sent from here.
+        if (owners.length) problem = `${owners.map(c.label).join(" and ")} already ${owners.length > 1 ? "have" : "has"} this — the refill engine tops it up there. Nothing sent.`;
       } catch (e) {
         problem = `Couldn't check where this belongs — nothing sent, retry. (${e?.message || "error"})`;
       }

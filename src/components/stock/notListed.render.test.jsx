@@ -288,14 +288,14 @@ describe("every reason, with the product off the main list and in Not listed", (
     expect((await reasonOf(tree, MARATHON, X))?.reason).toBe("undeclaredSize");
   });
 
-  it("at both Pine and Concrete", async () => {
+  it("held by a shop of the division (here both Pine and Concrete)", async () => {
     const X = "p1790000000009";
     emit("stock", withStock({ central: { [X]: { S: cell(2), M: cell(2) } } }));
     emit("refill_engine/seats/concrete", { [X]: { at: 1 } });
     emit("refill_engine/seats/marathon-pine", { [X]: { at: 1 } });
     const tree = await mount([...PRODUCTS, P(X)]);
     expect((await listedPids(tree, CONCRETE)).has(X)).toBe(false);
-    expect((await reasonOf(tree, CONCRETE, X))?.reason).toBe("bothShops");
+    expect((await reasonOf(tree, CONCRETE, X))?.reason).toBe("heldInDivision");
   });
 });
 

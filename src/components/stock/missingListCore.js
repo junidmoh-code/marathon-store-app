@@ -69,12 +69,6 @@ const qtyIn = (cells, size) => Math.max(Number(cells?.[decodedCellKey(size)]?.qt
  */
 export function productRow(args) { return decideProductRow(args).row; }
 
-// "Pine's" / "Concrete's" — the owner's short name, possessive.
-const OWNER_SHORT = Object.freeze({ "marathon-pine": "Pine", concrete: "Concrete" });
-export function ownerNote(owner, nameOf = (x) => x) {
-  const n = OWNER_SHORT[owner] || nameOf(owner) || owner;
-  return `${n}\u2019s`;
-}
 
 // The same decision, with WHY when there is no row (notListedCore.REASONS —
 // "Nothing disappears silently", Junid 23 Nov 2026). The row is exactly
@@ -84,19 +78,11 @@ export function decideProductRow({ card, section, product, dests = [], tickable 
   if (!card) return none("unknown");
   if (!product) return none("noRecord");
   if (isSneakerOrSlide(product)) return none("noView");
-  // ONE OWNER (Pine / Concrete — Junid, 22 Nov 2026): a product that already
-  // belongs to one shop is offered to that shop only; one that belongs to
-  // both (a data question for Junid) is offered to neither, so never to both.
-  if (Array.isArray(owners) && owners.length > 1) return none("bothShops");
-  // The shops held back by the one-owner rule, in button order, so the card
-  // can say WHOSE the product is where the missing button would be (Junid,
-  // 24 Nov 2026: a small "Pine's" note — nobody should have to guess).
-  const allDests = dests;
-  let heldFor = null;
-  if (Array.isArray(owners) && owners.length === 1) {
-    heldFor = owners[0];
-    dests = dests.filter((d) => d === owners[0]);
-  }
+  // HELD IN THE DIVISION (Junid, 24 Nov 2026): Missing Products lists only
+  // products that NO shop of the division holds — stock, a seat or an open
+  // request. A shop that holds it keeps it topped up through the refill
+  // engine; it is never re-solved from here, and never shown with a button.
+  if (Array.isArray(owners) && owners.length > 0) return none("heldInDivision");
   const can = new Set(tickable);
   const reserved = centralReservedBySize({ openByLoc, routes });
   const sourceCells = allStock?.[card.source]?.[card.pid];
@@ -145,10 +131,6 @@ export function decideProductRow({ card, section, product, dests = [], tickable 
     stock: [...counted.values()].reduce((t, n) => t + n, 0),
     // A location is OFFERED or ABSENT — never a dead button on the card.
     dests: out.filter((d) => d.ok), twin: null,
-    // Shops left off because another shop owns the product: a note, never a
-    // button. `order` is every location in button order (offered + held).
-    held: heldFor ? allDests.filter((d) => d !== heldFor).map((id) => ({ id, owner: heldFor, note: ownerNote(heldFor, nameOf) })) : [],
-    order: allDests.filter((id) => out.some((d) => d.ok && d.id === id) || (heldFor && id !== heldFor)),
   } };
 }
 
