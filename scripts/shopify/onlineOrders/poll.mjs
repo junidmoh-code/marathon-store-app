@@ -673,7 +673,14 @@ async function maintainOrder(ctx, id, order) {
     });
     const available = await availabilityFor(ctx, id, resolvedList.filter((r) => r.pid), ownOther);
     const routable = reroute.map((i, j) => ({ i, r: resolvedList[j] })).filter((x) => x.r.pid);
+    // A line a person has JUST sent back with "Order it now" is routed on the
+    // cells as they are, shelf holds or not: the person who found the item is
+    // newer evidence than the rejection (orderNowRequests.mjs checked it the
+    // same way a moment ago). The hold it lands on is lifted below.
+    const found = routable.filter((x) => foundJustNow(before[x.i], now));
+    if (found.length) Object.assign(available, await availabilityFor(ctx, id, found.map((x) => x.r), ownOther, { trustCells: true }));
     const routed = routeLines(routable.map((x) => ({ key: `${x.r.pid}|${x.r.sizeKey}`, qty: Number(before[x.i].qty) || 1, isFootwear: x.r.isFootwear })), available);
+    const holdsToLift = [];
     let k = 0;
     reroute.forEach((i, j) => {
       const old = before[i];
@@ -691,6 +698,7 @@ async function maintainOrder(ctx, id, order) {
       // 20 Nov 2026) comes back as qty-1 lines, the extra units appended.
       const pieces = unitPieces(routed[k++]);
       const total = pieces.length;
+      if (foundJustNow(old, now)) holdsToLift.push(...pieces.filter((p) => p.locationId).map((p) => ({ pid: r.pid, sizeKey: r.sizeKey, loc: p.locationId })));
       pieces.forEach((piece, n) => {
         const unitOf = n === 0
           ? (old.units > 1 ? { unit: old.unit, units: old.units } : total > 1 ? { unit: 1, units: total } : {})
@@ -702,6 +710,7 @@ async function maintainOrder(ctx, id, order) {
     });
     // The rerouted lines' old entries (a walk-in override leaves one open).
     for (const i of reroute) await cancelLineEntries(ctx, before[i]);
+    for (const cell of holdsToLift) await liftCellHold(ctx, cell);
   }
 
   // (a2) WHAT THE HUB DID — a line on a hub order follows its /orders record(s):
@@ -722,7 +731,7 @@ async function maintainOrder(ctx, id, order) {
     // The hub said Out of Stock: its pieces of this size come off the website
     // and out of routing until that shelf moves again (pickableStock.mjs).
     const refused = out.status === LINE_STATUS.NO_STOCK ? records.find((r) => r && r.channel === "online" && r.status === "out_of_stock") : null;
-    if (refused?.hub) await holdCell(ctx, { pid: l.pid, sizeKey: l.sizeKey, loc: refused.hub, kind: "hub_out_of_stock", orderId: id, line: i, by: refused.outOfStockByUid });
+    if (refused?.hub) await holdCell(ctx, { pid: l.pid, sizeKey: l.sizeKey, loc: refused.hub, kind: "hub_out_of_stock", orderId: id, line: i, by: refused.outOfStockByUid, at: rejectedAt(refused.outOfStockAt, now) });
     changed.set(i, {
       ...l,
       source: {
@@ -802,12 +811,49 @@ async function maintainOrder(ctx, id, order) {
 // count is not touched) and tell every store's pusher, so the website drops
 // those pieces on this same tick's reconcile. Best-effort: a failure here is
 // logged and never stops the order being kept; the nightly sweep re-checks.
-async function holdCell(ctx, { pid, sizeKey, loc, kind, orderId, line, by = null }) {
+//
+// `at` is WHEN THE PLACE SAID NO, not when this tick noticed: a delivery or a
+// count that reached the cell in between (the poller can be minutes or, after
+// an outage, hours behind) must end the hold, and it can only do that if the
+// hold is stamped before it. The same stamp on every retry, so a tick that
+// repeats this never moves a hold forward over a movement.
+const HOLD_STAMP_MAX_AGE_MS = 7 * 864e5;
+export function rejectedAt(iso, now) {
+  const t = Date.parse(iso);
+  // A device clock ahead of the server, an unreadable stamp, or one from long ago: the tick's own time.
+  return Number.isFinite(t) && t <= now && now - t <= HOLD_STAMP_MAX_AGE_MS ? t : now;
+}
+
+/** Did a person send this line back with "Order it now" in the last quarter of an hour? */
+const ORDER_NOW_TRUST_MS = 15 * 60e3;
+const foundJustNow = (line, now) => {
+  const at = Number(line?.orderNow?.appliedAt);
+  return Number.isFinite(at) && at > 0 && now - at >= 0 && now - at <= ORDER_NOW_TRUST_MS;
+};
+
+// "Order it now" routed a line to a held cell: the hold goes (a person found
+// the piece there), and the website is told so it counts the piece again.
+async function liftCellHold(ctx, { pid, sizeKey, loc }) {
+  const { db } = ctx;
+  try {
+    const path = `${CELL_HOLDS_PATH}/${pid}/${sizeKey}/${loc}`;
+    if (!(await ctx.get(path))) return false;
+    await db.ref(path).set(null);
+    for (const dirty of ALL_DIRTY_PATHS) await db.ref(`${dirty}/${pid}`).set(ctx.increment(1));
+    ctx.log?.(`  ~ shelf hold lifted: ${pid} size ${sizeKey} at ${loc} (found: Order it now)`);
+    return true;
+  } catch (e) {
+    ctx.log?.(`  ⚠ shelf hold for ${pid}/${sizeKey} at ${loc} not lifted (${String(e?.message || e)})`);
+    return false;
+  }
+}
+
+async function holdCell(ctx, { pid, sizeKey, loc, kind, orderId, line, by = null, at = null }) {
   const { db, now } = ctx;
   try {
     const qty = cellQty(await ctx.get(`stock/${loc}/${pid}/${sizeKey}`));
     if (qty <= 0) return false; // nothing on paper there: nothing to hide
-    const row = holdRow({ pid, sizeKey, loc, at: now, kind, orderId, line, qty, by });
+    const row = holdRow({ pid, sizeKey, loc, at: at ?? now, kind, orderId, line, qty, by });
     if (!row) return false;
     await db.ref(row.path).set(row.value);
     for (const dirty of ALL_DIRTY_PATHS) await db.ref(`${dirty}/${pid}`).set(ctx.increment(1));

@@ -131,26 +131,38 @@ async function main() {
     const rules = rulesFrom(await get(PICKABLE_CONFIG_PATH));
     if (!rules.staleSingle) { console.log("the lone-stale-piece rule is switched off (config/onlineOrders/pickable/staleSingle/off)"); process.exit(0); }
     const nowMs = Date.now();
-    const pids = (await shallowKeys(app, "shopify_sync")).filter((k) => !k.startsWith("_"));
+    // Exact-path reads over REST: thousands of them, and the Admin SDK answers
+    // one-off reads one at a time (about 0.2 s each from here).
+    const token = (await app.options.credential.getAccessToken()).access_token;
+    const rest = async (path) => {
+      const res = await fetch(`${DB_URL}/${path}.json`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(`read of /${path} failed: ${res.status}`);
+      return res.json();
+    };
+    // Only products that are listed AND have a cell node at one of the rule's places.
+    const listed = new Set((await shallowKeys(app, "shopify_sync")).filter((k) => !k.startsWith("_")));
+    const atPlace = new Set();
+    for (const loc of rules.staleSingle.locations) for (const pid of await shallowKeys(app, `stock/${loc}`)) if (listed.has(pid)) atPlace.add(pid);
+    const pids = [...atPlace];
     const locs = await locationNames(db);
     const items = [];
     let bytes = 0;
-    for (let i = 0; i < pids.length; i += 20) {
-      await Promise.all(pids.slice(i, i + 20).map(async (pid) => {
+    for (let i = 0; i < pids.length; i += 24) {
+      await Promise.all(pids.slice(i, i + 24).map(async (pid) => {
         // The rule's own places first: most products have no lone piece there and cost one small read.
         const own = {};
-        for (const loc of rules.staleSingle.locations) { const c = await get(`stock/${loc}/${pid}`); bytes += JSON.stringify(c ?? null).length; if (c) own[loc] = { [pid]: c }; }
+        for (const loc of rules.staleSingle.locations) { const c = await rest(`stock/${loc}/${pid}`); bytes += JSON.stringify(c ?? null).length; if (c) own[loc] = { [pid]: c }; }
         if (!pickableTree(own, pid, null, { holds: false, staleSingle: rules.staleSingle }, nowMs).hidden.length) return;
-        const map = await get(`shopify_sync/${pid}`);
+        const map = await rest(`shopify_sync/${pid}`);
         if (!map?.variants) return;
         const tree = { ...own };
-        for (const loc of locs) if (!tree[loc]) { const c = await get(`stock/${loc}/${pid}`); bytes += JSON.stringify(c ?? null).length; if (c) tree[loc] = { [pid]: c }; }
-        const holdsNode = await get(`${CELL_HOLDS_PATH}/${pid}`);
+        await Promise.all(locs.filter((loc) => !tree[loc]).map(async (loc) => { const c = await rest(`stock/${loc}/${pid}`); bytes += JSON.stringify(c ?? null).length; if (c) tree[loc] = { [pid]: c }; }));
+        const holdsNode = await rest(`${CELL_HOLDS_PATH}/${pid}`);
         const sizes = Object.keys(map.variants);
         const before = networkTotals(pickableTree(tree, pid, holdsNode, { ...rules, staleSingle: null }, nowMs).tree, pid, sizes);
         const { tree: after, hidden } = pickableTree(tree, pid, holdsNode, rules, nowMs);
         const now = networkTotals(after, pid, sizes);
-        const name = (await get(`products/${pid}/name`)) || pid;
+        const name = (await rest(`products/${pid}/name`)) || pid;
         for (const h of hidden.filter((x) => x.why === "stale_single")) {
           if (!(h.sizeKey in before)) continue; // a size the listing does not carry
           items.push({ pid, product: name, size: sizeLabel(h.sizeKey), place: LOC_NAME[h.loc] || h.loc, lastMoved: new Date(h.at).toISOString().slice(0, 10), websiteBefore: before[h.sizeKey], websiteNow: now[h.sizeKey] });
@@ -159,7 +171,7 @@ async function main() {
     }
     items.sort((a, b) => a.product.localeCompare(b.product) || a.size.localeCompare(b.size));
     const gone = items.filter((x) => x.websiteNow === 0);
-    console.log(`${pids.length} listed product(s) checked · read ${bytes} bytes of stock`);
+    console.log(`${pids.length} listed product(s) with stock cells at ${rules.staleSingle.locations.join(", ")} checked · read ${bytes} bytes of stock`);
     console.log(`lone stale pieces (one piece at ${rules.staleSingle.locations.map((l) => LOC_NAME[l] || l).join(", ")}, untouched over ${rules.staleSingle.days} days): ${items.length} size(s) on ${new Set(items.map((x) => x.pid)).size} product(s)`);
     console.log(`  ${gone.length} size(s) are sold out on the website because of it; ${items.length - gone.length} stay on sale from another place`);
     for (const x of items) console.log(`    ${x.product} · size ${x.size} · last moved ${x.lastMoved} · website ${x.websiteBefore} → ${x.websiteNow}`);
@@ -195,11 +207,11 @@ async function main() {
     let removed = 0, kept = 0;
     const pids = new Set();
     for (const h of file.holds) {
-      const cur = await get(h.path);
-      const same = cur && Number(cur.at) === Number(h.value.at) && cur.by === h.value.by;
-      if (!same) { kept += 1; continue; }
-      if (COMMIT) { await db.ref(h.path).set(null); pids.add(h.pid); }
-      removed += 1;
+      const mine = (cur) => cur && Number(cur.at) === Number(h.value.at) && cur.by === h.value.by;
+      if (!COMMIT) { if (mine(await get(h.path))) removed += 1; else kept += 1; continue; }
+      // Only the row this back-fill wrote, judged and removed in one step.
+      const res = await db.ref(h.path).transaction((cur) => (cur == null ? null : mine(cur) ? null : undefined));
+      if (res.committed && !res.snapshot.exists() && (await get(h.path)) == null) { removed += 1; pids.add(h.pid); } else kept += 1;
     }
     if (COMMIT) await markDirty(pids);
     console.log(`${COMMIT ? "removed" : "dry run: would remove"} ${removed} hold(s); ${kept} left alone (gone already, or replaced by a newer rejection)`);

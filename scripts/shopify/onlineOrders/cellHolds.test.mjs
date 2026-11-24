@@ -2,7 +2,7 @@
 // of Stock on a website pick takes that cell off the website and out of
 // routing until the cell moves — and moves no stock, raises no request.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { runOrdersPoll } from "./poll.mjs";
+import { runOrdersPoll, rejectedAt } from "./poll.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
 import { CELL_HOLDS_PATH, forgetPickableRules } from "../pickableStock.mjs";
 
@@ -132,3 +132,62 @@ describe("a hub's Out of Stock on a website pick", () => {
     expect(f.read("online_orders/9001/status")).toBe("needs_attention");
   });
 });
+
+describe("the hold is stamped with when the hub said no, not when the tick noticed", () => {
+  it("a delivery that reached the shelf between the rejection and the tick ends the hold (the poller can be hours behind)", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, [shopifyOrder(9001, 2501)]));
+    await f.db.ref(`orders/${line(f, "9001").source.orderKeys[0]}`).update({ status: "out_of_stock", outOfStockAt: new Date(NOW - 3 * 3600e3).toISOString() });
+    await f.db.ref("stock/hub1/SNK/8").set({ qty: 4, updatedAt: new Date(NOW - 3600e3).toISOString() }); // delivered an hour ago
+    await runOrdersPoll(deps(f));
+    expect(f.read(`${CELL_HOLDS_PATH}/SNK/8/hub1/at`)).toBe(NOW - 3 * 3600e3);
+    await runOrdersPoll(deps(f, [shopifyOrder(9002, 2502)]));
+    expect(line(f, "9002").source).toMatchObject({ locationId: "hub1", status: "pick" });
+  });
+  it("rejectedAt: the hub's own time when it is sane; the tick's time for a clock ahead, an old stamp or no stamp", () => {
+    expect(rejectedAt(new Date(NOW - 60e3).toISOString(), NOW)).toBe(NOW - 60e3);
+    expect(rejectedAt(new Date(NOW + 60e3).toISOString(), NOW)).toBe(NOW);
+    expect(rejectedAt(new Date(NOW - 8 * 864e5).toISOString(), NOW)).toBe(NOW);
+    expect(rejectedAt(undefined, NOW)).toBe(NOW);
+    expect(rejectedAt("yesterday-ish", NOW)).toBe(NOW);
+  });
+});
+
+describe("a held shelf and the lines that are waiting", () => {
+  it("a line that waited because the only shelf was held routes itself once that shelf moves", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SNK: { 8: { qty: 2, updatedAt: "2026-11-01T08:00:00.000Z" } } } } }));
+    await rejectedAtHub1(f);
+    await runOrdersPoll(deps(f, [shopifyOrder(9002, 2502)]));
+    expect(line(f, "9002").source.status).toBe("no_stock");
+    await runOrdersPoll(deps(f)); // nothing moved: still waiting, not bounced back to Hub 1
+    expect(line(f, "9002").source.status).toBe("no_stock");
+    await f.db.ref("stock/hub1/SNK/8").set({ qty: 3, updatedAt: new Date(NOW + 60e3).toISOString() });
+    await runOrdersPoll(deps(f, [], { nowMs: async () => NOW + 120e3 }));
+    expect(line(f, "9002").source).toMatchObject({ locationId: "hub1", status: "pick" });
+  });
+
+  it("Order it now on the held shelf: the person who found it wins — the line is picked there and the hold is lifted", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SNK: { 8: { qty: 2, updatedAt: "2026-11-01T08:00:00.000Z" } } } } }));
+    await rejectedAtHub1(f);
+    expect(f.read(`${CELL_HOLDS_PATH}/SNK/8/hub1`)).not.toBe(null);
+    const l = line(f, "9001");
+    await f.db.ref("online_orders/9001/orderNowRequests/0_0").set({ lineIndex: 0, expectPid: "SNK", expectSizeKey: "8", expectStatus: l.source.status, expectRouteGen: l.routeGen || 0, by: { uid: "u-yasmin", name: "Yasmin" }, at: NOW, state: "pending" });
+    await runOrdersPoll(deps(f));
+    expect(f.read("online_orders/9001/orderNowRequests/0_0/state")).toBe("ordered");
+    expect(line(f, "9001").source).toMatchObject({ locationId: "hub1", status: "pick" });
+    expect(line(f, "9001").routeGen).toBe(1);
+    expect(f.read(`${CELL_HOLDS_PATH}/SNK`)).toBe(null);
+    expect(f.read("stock/hub1/SNK/8/qty")).toBe(2); // and still no stock moved
+  });
+
+  it("a line sent back by Settings → Resolve (no Order it now) does NOT get past the hold", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SNK: { 8: { qty: 2, updatedAt: "2026-11-01T08:00:00.000Z" } } } } }));
+    await rejectedAtHub1(f);
+    await f.db.ref("online_orders/9001/lines/0/source/status").set("reroute");
+    await runOrdersPoll(deps(f));
+    expect(line(f, "9001").source.status).toBe("no_stock");
+    expect(line(f, "9001").source.locationId).toBeUndefined();
+    expect(f.read(`${CELL_HOLDS_PATH}/SNK/8/hub1`)).not.toBe(null);
+  });
+});
+

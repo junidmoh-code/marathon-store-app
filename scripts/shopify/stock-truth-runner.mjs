@@ -91,6 +91,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
       cwd: REPO, env: process.env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60e3,
     });
     for (const l of `${h.stdout || ""}${h.stderr || ""}`.split("\n")) if (l.trim()) log(`   holds: ${l}`);
+    if (h.status !== 0) log(`   holds: the tidy-up did not finish (exit ${h.status ?? "none"}${h.error ? `, ${h.error.message}` : ""}); ended holds hide nothing, it runs again tomorrow`);
     // Stamped only when the sweep got as far as its REPORT ("rtdb read:" is
     // printed just before it is written): a sweep that refused or could not
     // correct something has said so at /shopify_inventory_health and the
