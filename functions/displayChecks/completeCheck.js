@@ -226,7 +226,8 @@ function displayCheckAllowed({ email, emailVerified, userRec, store }) {
   const perms = Array.isArray(userRec?.permissions) ? userRec.permissions : [];
   const isSuper = isSuperAdmin(email) && emailVerified === true;
   // Central's website strip lives inside Source (Junid, 24 Nov 2026): whoever may work Source may answer it.
-  if (store === "central" && perms.includes("source")) return true;
+  // Central is not a shop: display_checks does not reach it.
+  if (store === "central") return isSuper || perms.includes("source");
   return isSuper || (perms.includes("display_checks") && typeof store === "string" && store.length > 0);
 }
 

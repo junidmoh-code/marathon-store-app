@@ -2,7 +2,7 @@
 // counts for nothing on the website until it moves again — and nothing else changes.
 import { describe, it, expect, beforeEach } from "vitest";
 import {
-  CELL_HOLDS_PATH, PICKABLE_CONFIG_PATH, cellQty, cellStampMs, holdStands, rulesFrom, pickableTree, cellHeld, holdRow, oldSingleSizes, OLD_SINGLE_DEFAULT, SHOP_LOCATIONS,
+  CELL_HOLDS_PATH, PICKABLE_CONFIG_PATH, cellQty, cellStampMs, holdStands, rulesFrom, pickableTree, cellHeld, holdRow, oldSingleSizes, OLD_SINGLE_DEFAULT, SHOP_LOCATIONS, PIPELINE_UNKNOWN, readPipeline,
   readPickableRules, readCellHolds, forgetPickableRules,
 } from "./pickableStock.mjs";
 import { networkTotals } from "./inventory.mjs";
@@ -131,6 +131,22 @@ describe("the old single piece with nothing behind it (Junid's rule, 24 Nov 2026
     expect(networkTotals(pickableTree(touched, "P", null, rulesFrom(null), T).tree, "P", ["M", "L"])).toEqual({ M: 2, L: 2 });
     const arrived = { ...tree, central: { P: { M: cell(3, T - 1) } } };
     expect(networkTotals(pickableTree(arrived, "P", null, rulesFrom(null), T).tree, "P", ["M", "L"])).toEqual({ M: 5, L: 2 });
+  });
+  it("stock in transit or in a stockroom is a pipeline too, though the website never counts it", async () => {
+    const tree = { "marathon-pe": { P: { M: cell(1, T - 90 * DAY), L: cell(1, T - 90 * DAY) } } };
+    const pipeline = { in_transit: { P: { M: cell(2, T - DAY) } } };
+    const { tree: out, hidden } = pickableTree(tree, "P", null, rulesFrom(null), T, pipeline);
+    expect(hidden.map((h) => h.sizeKey)).toEqual(["L"]);               // M has a box on its way: it stays on sale
+    expect(networkTotals(out, "P", ["M", "L"])).toEqual({ M: 1, L: 0 }); // …and the box itself is not counted
+    expect(out.in_transit).toBeUndefined();
+    // Unreadable is not "nothing behind it": the rule is left off for the product.
+    expect(pickableTree(tree, "P", null, rulesFrom(null), T, PIPELINE_UNKNOWN).hidden).toEqual([]);
+    const reads = [];
+    const get = async (p) => { reads.push(p); return p.endsWith("in_transit/P") ? { M: cell(1, T) } : null; };
+    expect(await readPipeline(get, "P", rulesFrom(null))).toEqual({ in_transit: { P: { M: cell(1, T) } } });
+    expect(reads).toEqual(["stock/in_transit/P", "stock/concrete-stockroom/P"]);
+    expect(await readPipeline(get, "P", rulesFrom({ oldSingle: { off: true } }))).toBeNull();
+    expect(await readPipeline(async () => { throw new Error("down"); }, "P", rulesFrom(null))).toBe(PIPELINE_UNKNOWN);
   });
   it("Junid's switches: off, other days", () => {
     expect(rulesFrom({ oldSingle: { off: true } }).oldSingle).toBe(null);

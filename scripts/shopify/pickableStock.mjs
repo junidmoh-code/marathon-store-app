@@ -130,10 +130,12 @@ export function oldSingleSizes(tree, pid, rule, nowMs) {
  * → { tree, hidden: [{ loc, sizeKey, qty, why, at }] }. `tree` is a new object
  * (the input is not mutated) and is the input itself when nothing is hidden.
  */
-export function pickableTree(tree, pid, holdsNode, rules = rulesFrom(null), nowMs = Date.now()) {
+export function pickableTree(tree, pid, holdsNode, rules = rulesFrom(null), nowMs = Date.now(), pipeline = null) {
   const hidden = [];
   const holds = rules?.holds && holdsNode && typeof holdsNode === "object" ? holdsNode : null;
-  const old = oldSingleSizes(tree, pid, rules?.oldSingle || null, nowMs);
+  // `pipeline`: the cells the website never counts (in transit, a stockroom) — read only to answer "is anything
+  // behind this size?". They are judged with the tree and never returned in it.
+  const old = pipeline === PIPELINE_UNKNOWN ? new Map() : oldSingleSizes(pipeline ? { ...pipeline, ...tree } : tree, pid, rules?.oldSingle || null, nowMs);
   if (!tree || (!holds && !old.size)) return { tree, hidden };
   const out = {};
   for (const [loc, perProduct] of Object.entries(tree)) {
@@ -216,6 +218,25 @@ export async function readPickableRules(get, nowMs = Date.now()) {
 
 /** Test seam: forget the cached rules. */
 export function forgetPickableRules() { rulesCache = null; }
+
+/** The places the website never counts but that ARE a refill pipeline (inventory.mjs UNSELLABLE_LOCATIONS). */
+export const PIPELINE_ONLY_LOCATIONS = Object.freeze(["in_transit", "concrete-stockroom"]);
+
+/**
+ * { [loc]: { [pid]: cells } } for the pipeline-only places: two exact reads per product, only while the old-single
+ * rule is on. A failed read counts as "something is behind it" for every size (the rule then hides nothing).
+ */
+export async function readPipeline(get, pid, rules) {
+  if (!rules?.oldSingle) return null;
+  const out = {};
+  for (const loc of PIPELINE_ONLY_LOCATIONS) {
+    try { const cells = await get(`stock/${loc}/${pid}`); if (cells) out[loc] = { [pid]: cells }; }
+    catch (e) { console.error(`  ⚠ ${pid}: ${loc} unreadable (${String(e?.message || e)}) — the old-single rule is not applied to it`); return PIPELINE_UNKNOWN; }
+  }
+  return out;
+}
+/** Passed as `pipeline` when it could not be read: pickableTree then leaves the old-single rule off for the product. */
+export const PIPELINE_UNKNOWN = Object.freeze({ unknown: true });
 
 /** /online_cell_holds/{pid}; null when there are none or the read failed (logged). */
 export async function readCellHolds(get, pid) {

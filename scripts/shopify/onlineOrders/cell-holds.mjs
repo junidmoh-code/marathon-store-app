@@ -60,7 +60,7 @@ import { join } from "path";
 import { fileURLToPath } from "url";
 import { adminRequire } from "../../adminRequire.mjs";
 import { shallowKeys } from "../../lib/rtdbPaged.mjs";
-import { CELL_HOLDS_PATH, PICKABLE_CONFIG_PATH, SHOP_LOCATIONS, cellQty, cellStampMs, holdRow, holdStands, pickableTree, rulesFrom } from "../pickableStock.mjs";
+import { CELL_HOLDS_PATH, PICKABLE_CONFIG_PATH, SHOP_LOCATIONS, PIPELINE_ONLY_LOCATIONS, cellQty, cellStampMs, holdRow, holdStands, pickableTree, rulesFrom } from "../pickableStock.mjs";
 import { networkTotals } from "../inventory.mjs";
 import { locationNames } from "../inventorySync.mjs";
 import { serverNowMs } from "../publishNode.mjs";
@@ -186,10 +186,14 @@ async function main() {
         if (!map?.variants) return;
         const tree = { ...own };
         await Promise.all(locs.filter((loc) => !SHOP_LOCATIONS.includes(loc)).map(async (loc) => { const c = await rest(`stock/${loc}/${pid}`); bytes += JSON.stringify(c ?? null).length; if (c) tree[loc] = { [pid]: c }; }));
+        // In transit and the stockroom: never counted for the website, but they ARE a pipeline behind a size.
+        const pipe = {};
+        for (const loc of PIPELINE_ONLY_LOCATIONS) { const c = await rest(`stock/${loc}/${pid}`); bytes += JSON.stringify(c ?? null).length; if (c) pipe[loc] = { [pid]: c }; }
+        for (const loc of PIPELINE_ONLY_LOCATIONS) delete tree[loc];
         const holdsNode = await rest(`${CELL_HOLDS_PATH}/${pid}`);
         const sizes = Object.keys(map.variants);
         const before = networkTotals(pickableTree(tree, pid, holdsNode, { ...rules, oldSingle: null }, nowMs).tree, pid, sizes);
-        const { tree: after, hidden } = pickableTree(tree, pid, holdsNode, rules, nowMs);
+        const { tree: after, hidden } = pickableTree(tree, pid, holdsNode, rules, nowMs, pipe);
         const now = networkTotals(after, pid, sizes);
         const p = (await rest(`products/${pid}`)) || {};
         bytes += JSON.stringify(p).length;

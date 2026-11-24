@@ -115,7 +115,7 @@ async function lineFacts(db, id, order, i, line) {
     }
     // CENTRAL IS THE LAST STOP OF THE CHAIN (Junid, 24 Nov 2026): once Central itself said Not found (its shelf is held)
     // or the poller stamped the chain as run out for this route, "coming from Central" is no longer true of this line.
-    const chainOut = line.chain?.result === "nowhere" && num(line.chain.gen) === num(line.routeGen);
+    const chainOut = !!line.chain && num(line.chain.gen) === num(line.routeGen); // "nowhere" or "blocked": either way Central is not bringing it
     facts.central = chainOut || cellHeld(shelfHolds, "central", centralCell, rules) ? 0 : num(centralCell?.qty);
   }
   const st = line?.source?.status;

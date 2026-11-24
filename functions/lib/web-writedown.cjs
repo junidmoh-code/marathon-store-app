@@ -26,7 +26,9 @@
 //   • a person taps Found on a check, or sends the line back with Order it now
 //     — restoreFound, at once.
 // Any OTHER movement on the shelf (a delivery, a transfer in, a count) settles
-// the question by itself: the row is simply closed.
+// the question by itself: the row is simply closed. A row lives 60 days at most.
+// /online_writedowns is a WORKING SET (a row exists only until its shelf next
+// moves), read whole by the sweep every ten minutes; it is not a history.
 //
 // `db` is injected (firebase-admin Database or a test fake).
 "use strict";
@@ -34,7 +36,7 @@ const { applyMovementAdmin } = require("./admin-movement.cjs");
 
 const WRITEDOWNS_PATH = "online_writedowns";
 const WRITEDOWN_KINDS = Object.freeze(["hub_out_of_stock", "shop_not_found", "central_not_found", "shelf_check_not_found", "backfill"]);
-const ROW_MAX_AGE_MS = 120 * 864e5;
+const ROW_MAX_AGE_MS = 60 * 864e5;
 
 const keyOk = (k) => typeof k === "string" && k !== "" && !/[.#$[\]/]/.test(k);
 const safeId = (s) => String(s ?? "").replace(/[.#$/\[\]\s]/g, "_");
@@ -76,9 +78,13 @@ async function writeDownSingle(db, w, { nowIso }) {
   }, { nowIso });
   if (!res.ok) return res.reason === "cell_changed" ? { ok: true, wroteDown: false, qty: res.available } : res;
   // The row is what makes it undo itself. Create-once: a retry never moves `at`.
-  await db.ref(rowPath(w.pid, w.sizeKey, w.loc)).transaction((cur) => (cur != null && cur.mvId === movementId ? undefined : clean({
-    at, mvId: movementId, qty: 1, kind: w.kind, size, orderId: w.orderId != null ? String(w.orderId) : null, orderNumber: w.orderNumber ?? null, line: w.line ?? null, by: w.by ?? null,
-  })));
+  // …and only when THIS call moved the stock: a heal that finds the movement already made must not bring back a row
+  // the sweep or a Found has since closed (it would later undo a write-down that was already settled).
+  if (!res.idempotent) {
+    await db.ref(rowPath(w.pid, w.sizeKey, w.loc)).transaction((cur) => (cur != null && cur.mvId === movementId ? undefined : clean({
+      at, mvId: movementId, qty: 1, kind: w.kind, size, orderId: w.orderId != null ? String(w.orderId) : null, orderNumber: w.orderNumber ?? null, line: w.line ?? null, by: w.by ?? null,
+    })));
+  }
   return { ok: true, wroteDown: true, movementId, idempotent: !!res.idempotent };
 }
 
@@ -92,16 +98,25 @@ async function restoreFound(db, f, { nowIso }) {
   const path = rowPath(f.pid, f.sizeKey, f.loc);
   const row = await read(db, path);
   if (!row || !row.mvId) return { ok: true, restored: false };
+  // THE SHELF AS IT STANDS decides, and the write is pinned to it (expectQty). The piece goes back only when the shelf
+  // is still exactly as the write-down left it, or has gone below zero (a sale or pick took a piece the count said
+  // was not there). Any other movement since — a delivery, a count — has already settled the count: adding one on
+  // top would leave a unit too many, so the row is simply closed.
+  const cell = await read(db, `stock/${f.loc}/${f.pid}/${f.sizeKey}`);
+  const qtyNow = cellQty(cell);
+  const closeRow = () => db.ref(path).transaction((cur) => (cur == null ? null : cur.mvId === row.mvId ? null : undefined));
+  if (!cell || !(cell.mv === row.mvId || qtyNow < 0)) { await closeRow(); return { ok: true, restored: false, settled: true }; }
   const res = await applyMovementAdmin(db, {
-    type: "web_found", productId: f.pid, size: row.size != null ? String(row.size) : f.sizeKey, sizeKey: f.sizeKey, qty: Math.max(1, Number(row.qty) || 1), to: f.loc,
+    type: "web_found", productId: f.pid, size: row.size != null ? String(row.size) : f.sizeKey, sizeKey: f.sizeKey, qty: Math.max(1, Number(row.qty) || 1), to: f.loc, expectQty: qtyNow,
     movementId: `web_found_${safeId(row.mvId)}`, actor: f.by ? String(f.by) : "system:website-order", actorRole: "admin",
     reason: `found after a website not-found${row.orderNumber != null ? ` #${row.orderNumber}` : ""} (${String(f.why || "found").replace(/_/g, " ")})`,
     link: { orderId: row.orderId ?? null },
     web: clean({ kind: f.why || "found", undoes: row.mvId, orderId: row.orderId ?? null, orderNumber: row.orderNumber ?? null, by: f.by ?? null }),
   }, { nowIso });
-  if (!res.ok) return res;
+  // The shelf moved between the read and the write: nothing was added; the next look decides again.
+  if (!res.ok) return res.reason === "cell_changed" ? { ok: true, restored: false, retry: true } : res;
   // Only the row this reversal answered: a NEW write-down on the same shelf stays.
-  await db.ref(path).transaction((cur) => (cur == null ? null : cur.mvId === row.mvId ? null : undefined));
+  await closeRow();
   return { ok: true, restored: true, movementId: res.movementId };
 }
 
@@ -122,27 +137,28 @@ function sweepDecision(row, cell, nowMs) {
 async function sweepWriteDowns(db, { nowIso, nowMs, log = () => {} }) {
   const all = (await read(db, WRITEDOWNS_PATH)) || {};
   const out = { rows: 0, restored: 0, closed: 0 };
-  for (const [pid, bySize] of Object.entries(all)) {
-    for (const [sizeKey, byLoc] of Object.entries(bySize || {})) {
-      for (const [loc, row] of Object.entries(byLoc || {})) {
-        out.rows += 1;
-        try {
-          const cell = await read(db, `stock/${loc}/${pid}/${sizeKey}`);
-          const what = sweepDecision(row, cell, nowMs);
-          if (what === "keep") continue;
-          if (what === "restore") {
-            const r = await restoreFound(db, { pid, sizeKey, loc, why: "sold_or_picked" }, { nowIso });
-            if (r.ok && r.restored) { out.restored += 1; log(`  ↺ write-down undone: ${pid} size ${sizeKey} at ${loc} — a piece was sold or picked there after the website not-found${row.orderNumber != null ? ` #${row.orderNumber}` : ""}`); }
-            continue;
-          }
-          await db.ref(rowPath(pid, sizeKey, loc)).transaction((cur) => (cur == null ? null : cur.mvId === row.mvId ? null : undefined));
-          out.closed += 1;
-        } catch (e) {
-          log(`  ⚠ write-down ${pid}/${sizeKey}/${loc} not swept (${String((e && e.message) || e)})`);
-        }
+  const rows = [];
+  for (const [pid, bySize] of Object.entries(all)) for (const [sizeKey, byLoc] of Object.entries(bySize || {})) for (const [loc, row] of Object.entries(byLoc || {})) rows.push({ pid, sizeKey, loc, row });
+  out.rows = rows.length;
+  const one = async ({ pid, sizeKey, loc, row }) => {
+    try {
+      const cell = await read(db, `stock/${loc}/${pid}/${sizeKey}`);
+      const what = sweepDecision(row, cell, nowMs);
+      if (what === "keep") return;
+      if (what === "restore") {
+        const r = await restoreFound(db, { pid, sizeKey, loc, why: "sold_or_picked" }, { nowIso });
+        if (r.ok && r.restored) { out.restored += 1; log(`  ↺ write-down undone: ${pid} size ${sizeKey} at ${loc} — a piece was sold or picked there after the website not-found${row.orderNumber != null ? ` #${row.orderNumber}` : ""}`); }
+        else if (r.ok && r.settled) out.closed += 1;
+        return;
       }
+      await db.ref(rowPath(pid, sizeKey, loc)).transaction((cur) => (cur == null ? null : cur.mvId === row.mvId ? null : undefined));
+      out.closed += 1;
+    } catch (e) {
+      log(`  ⚠ write-down ${pid}/${sizeKey}/${loc} not swept (${String((e && e.message) || e)})`);
     }
-  }
+  };
+  // Side by side, a dozen at a time: one small read per row, never one after another for the whole list.
+  for (let i = 0; i < rows.length; i += 12) await Promise.all(rows.slice(i, i + 12).map(one));
   return out;
 }
 

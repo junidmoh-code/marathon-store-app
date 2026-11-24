@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runOrdersPoll } from "./poll.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
 import { CELL_HOLDS_PATH, forgetPickableRules } from "../pickableStock.mjs";
-import { chainCandidate, chainKey, CHAIN_MAX_AGE_MS } from "./chainMove.mjs";
+import { chainCandidate, chainKey, CHAIN_MAX_AGE_MS, transientRefusal } from "./chainMove.mjs";
 import { WRITEDOWNS_PATH, sweepDecision, SWEEP_EVERY_MS } from "./writeDown.mjs";
 
 let fetchGuard;
@@ -244,6 +244,21 @@ describe("a shop's Not found and the packer's Not here move on the same way", ()
     expect(line(f).chain.why).toMatch(/customer/);
   });
 
+  it("a refusal that passes by itself (the order is being packed) is not stamped and is asked again; a lasting one is stamped", async () => {
+    const f = fakeDb(world({ stock: { "marathon-pe": { TEE: { M: cell(1) } }, hub2: { TEE: { M: cell(2) } } } }));
+    await runOrdersPoll(deps(f, [shopifyOrder(9001, 2501, { tee: true })]));
+    await f.db.ref("online_orders/9001/lines/0").update({ source: notFoundAtPe() });
+    await f.db.ref("online_orders/9001/status").set("needs_attention");
+    await f.db.ref(`online_orders/9001/agentRepicks/${chainKey(0, 0)}`).set({ lineIndex: 0, expectPid: "TEE", expectSizeKey: "M", expectStatus: "not_found", expectRouteGen: 0, exclude: ["marathon-pe"], by: "chain", at: NOW - 500, state: "refused", why: "the order is being packed", answeredAt: NOW - 400 });
+    await runOrdersPoll(deps(f));
+    // Asked again in this tick, and this time nothing is in the way.
+    expect(line(f).source).toMatchObject({ locationId: "hub2", status: "pick" });
+    expect(f.read(`online_orders/9001/agentRepicks/${chainKey(0, 0)}`)).toMatchObject({ state: "ordered", retriedAt: NOW });
+    expect(transientRefusal({ state: "refused", why: "money is recorded on this line" })).toBe(false);
+    expect(transientRefusal({ state: "refused", why: "part of this line is already in the basket" })).toBe(true);
+    expect(transientRefusal({ state: "not_in_stock", why: "the order is being packed" })).toBe(false);
+  });
+
   it("Junid's switch /config/onlineOrders/routing/chainOff leaves the line where it failed", async () => {
     const f = fakeDb(world({ stock: { "marathon-pe": { TEE: { M: cell(1) } }, hub2: { TEE: { M: cell(2) } } }, config: { routing: { chainOff: true } } }));
     await teeOrder(f, notFoundAtPe());
@@ -288,6 +303,19 @@ describe("a write-down undoes itself", () => {
     expect(f.read("stock/hub1/SNK/8/qty")).toBe(-1);
     await runOrdersPoll(deps(f, [], LATER));
     expect(f.read("stock/hub1/SNK/8/qty")).toBe(0);
+  });
+
+  it("Order it now on the line that was rejected: this order's own write-down is undone first, so the piece can be sent from that shelf", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SNK: { 8: cell(1) } } } }));
+    await hubSaysNo(f); // nowhere else: the line stays no_stock at Hub 1, Hub 1's one piece written to zero
+    expect(f.read("stock/hub1/SNK/8/qty")).toBe(0);
+    const l = line(f);
+    await f.db.ref("online_orders/9001/orderNowRequests/0_0").set({ lineIndex: 0, expectPid: "SNK", expectSizeKey: "8", expectStatus: l.source.status, expectRouteGen: l.routeGen || 0, by: "u-yasmin", byName: "Yasmin", at: NOW + 60e3, state: "pending" });
+    await runOrdersPoll(deps(f, [], NOW + 120e3));
+    expect(f.read("stock/hub1/SNK/8/qty")).toBe(1);
+    expect(movementsOf(f, "web_found")[0][1].web.kind).toBe("order_it_now");
+    expect(f.read(WRITEDOWNS_PATH) ?? null).toBeNull();
+    expect(line(f).source).toMatchObject({ locationId: "hub1", status: "pick" });
   });
 
   it("sweepDecision (pure)", () => {

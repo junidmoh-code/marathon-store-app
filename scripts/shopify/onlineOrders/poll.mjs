@@ -48,7 +48,7 @@ import { stockSizeKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from ".
 import { productIsFootwear } from "../../../src/utils/footwearLine.js";
 import { availableAt, routeLines, shelfRisk, routingRulesFrom, ROUTED_LOCATIONS, STRIP_SHOPS, ROUTING_CONFIG_PATH, CENTRAL } from "./routing.mjs";
 import { raiseChainMoves, stampChainResults } from "./chainMove.mjs";
-import { writeDownRejected, sweepWriteDowns } from "./writeDown.mjs";
+import { writeDownRejected, sweepWriteDowns, restoreFound, WRITEDOWNS_PATH } from "./writeDown.mjs";
 import {
   isIngestible, buildLine, buildItemLines, unitPieces, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
   displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName, shippingOf,
@@ -231,7 +231,7 @@ export async function runOrdersPoll(deps) {
         // The POS "Order it now" (orderNowRequests.mjs): a grey line whose item
         // is back in stock goes to reroute, and maintainOrder below routes and
         // raises it exactly like a new order's line.
-        if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor: (c, i, list, own) => availabilityFor(c, i, list, own, { trustBefore: c.now }), resolveVariant })) {
+        if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor: async (c, i, list, own) => { await undoOwnWriteDowns(c, i, list); return availabilityFor(c, i, list, own, { trustBefore: c.now }); }, resolveVariant })) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
         // The order agent's re-pick (agentRepick.mjs, Junid 14 Nov 2026): a line a
@@ -320,9 +320,6 @@ export async function runOrdersPoll(deps) {
     }
   }
 
-  // A written-down shelf whose piece was sold or picked after all puts itself back (writeDown.mjs).
-  if (IS_MARATHON) await sweepWriteDowns(ctx, META_PATH);
-
   // ── 4. TELL ────────────────────────────────────────────────────────────────
   await mailAttention(ctx);
   await mailCostAlerts(ctx);
@@ -331,6 +328,9 @@ export async function runOrdersPoll(deps) {
     log(`  ⚠ /online_orders has no index on ${[...ctx.summary.missingIndex].join(", ")} — the rules block in docs/ONLINE-ORDERS.md is not pasted yet; open orders are not swept, fulfilled or emailed until it is (new orders are still pulled in and held)`);
   }
   await db.ref(`${META_PATH}/lastRunAt`).set(now);
+  // LAST, after every order is kept, shipped and told: a written-down shelf whose piece was sold or picked after
+  // all puts itself back (writeDown.mjs). Housekeeping never stands in front of a parcel.
+  if (IS_MARATHON) await sweepWriteDowns(ctx, META_PATH);
   return ctx.summary;
 }
 
@@ -487,6 +487,22 @@ async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}, { trus
     ctx.shelfRisk[key] = risk;
   }
   return out;
+}
+
+// "Order it now": a person has the item in their hand. A shelf THIS ORDER's own rejection wrote to zero is put back
+// first (web_found), so the line can be sent there — the count's version of lifting the shelf hold. Only this
+// order's write-downs: another order's rejection of the same shelf is not this person's to overturn.
+async function undoOwnWriteDowns(ctx, orderId, resolvedList) {
+  for (const r of resolvedList) {
+    try {
+      const rows = (await ctx.get(`${WRITEDOWNS_PATH}/${r.pid}/${r.sizeKey}`)) || {};
+      for (const [loc, row] of Object.entries(rows)) {
+        if (!row || String(row.orderId) !== String(orderId)) continue;
+        const res = await restoreFound(ctx.db, { pid: r.pid, sizeKey: r.sizeKey, loc, why: "order_it_now" }, { nowIso: new Date(ctx.now).toISOString() });
+        if (res.ok && res.restored) { for (const dirty of ALL_DIRTY_PATHS) await ctx.db.ref(`${dirty}/${r.pid}`).set(ctx.increment(1)); ctx.log?.(`  ↺ write-down undone: ${r.pid} size ${r.sizeKey} at ${loc} (found: Order it now)`); }
+      }
+    } catch (e) { ctx.log?.(`  ⚠ write-down for ${r.pid}/${r.sizeKey} not undone (${String(e?.message || e)})`); }
+  }
 }
 
 /** /config/onlineOrders/routing, read once per tick. A failed read routes on the defaults (logged). */

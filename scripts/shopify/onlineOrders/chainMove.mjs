@@ -33,6 +33,10 @@ export const CHAIN_CONFIG_PATH = "config/onlineOrders/routing";
 // A rejection older than this is not picked up by itself (it is a person's or Jamie's by now).
 export const CHAIN_MAX_AGE_MS = 24 * 3600e3;
 const PACKER_REASONS = new Set(["not_here", "damaged"]);
+// Refusals that pass by themselves (repickBlocker's words): the move is asked again next tick, and Jamie is not told
+// the chain is blocked while it merely has to wait a moment.
+export const TRANSIENT_REFUSAL = /being packed|still being applied|already in the basket|was scanned in|changed since the agent looked|routed again since/;
+export const transientRefusal = (req) => req?.state === REPICK.REFUSED && TRANSIENT_REFUSAL.test(String(req.why || ""));
 
 export const chainKey = (i, gen) => `chain_${i}_${Number(gen) || 0}`;
 
@@ -81,7 +85,14 @@ export async function raiseChainMoves(ctx, id, order) {
     if (!cand) continue;
     const gen = Number(line.routeGen) || 0;
     const rid = chainKey(i, gen);
-    if (reqs[rid]) continue;
+    if (reqs[rid]) {
+      // A refusal that passes by itself is asked again (the line is still a fresh rejection: chainCandidate said so).
+      if (transientRefusal(reqs[rid])) {
+        const again = await ctx.db.ref(`${ONLINE_ORDERS_PATH}/${id}/${REPICK_PATH}/${rid}`).transaction((cur) => (cur == null ? null : transientRefusal(cur) ? { ...cur, state: REPICK.PENDING, why: null, answeredAt: null, retriedAt: ctx.now } : undefined));
+        if (again.committed && again.snapshot.val()) raised = true;
+      }
+      continue;
+    }
     const req = {
       lineIndex: i, expectPid: String(line.pid), expectSizeKey: String(line.sizeKey), expectStatus: cand.status, expectRouteGen: gen,
       exclude: cand.exclude, by: CHAIN_BY, at: ctx.now, state: REPICK.PENDING,
@@ -102,7 +113,7 @@ export async function stampChainResults(ctx, id, order) {
   const lines = linesOf(order);
   let n = 0;
   for (const [rid, req] of Object.entries(reqs)) {
-    if (!req || req.by !== CHAIN_BY || (req.state !== REPICK.NOT_IN_STOCK && req.state !== REPICK.REFUSED)) continue;
+    if (!req || req.by !== CHAIN_BY || (req.state !== REPICK.NOT_IN_STOCK && req.state !== REPICK.REFUSED) || transientRefusal(req)) continue;
     const i = Number(req.lineIndex);
     const line = lines[i];
     const gen = Number(req.expectRouteGen) || 0;

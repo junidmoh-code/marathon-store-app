@@ -96,6 +96,46 @@ test("restoreFound: puts the piece back as web_found, closes the row; a shelf a 
   assert.equal(root(sold).stock.hub1.s1["8"].qty, 0);
 });
 
+test("Found after a delivery already landed on the shelf adds NOTHING (the count is settled); the row just closes", async () => {
+  const db = makeFakeDb({ stock: { trophy: { a: { M: cell(1) } } } });
+  await W.writeDownSingle(db, { ...W1, pid: "a", loc: "trophy" }, { nowIso: iso(NOW) });
+  root(db).stock.trophy.a.M = { ...root(db).stock.trophy.a.M, qty: 1, mv: "refill-7", lastType: "transfer_in" };
+  const r = await W.restoreFound(db, { pid: "a", sizeKey: "M", loc: "trophy", why: "found_on_check" }, { nowIso: iso(NOW + 5) });
+  assert.deepEqual({ ok: r.ok, restored: r.restored, settled: r.settled }, { ok: true, restored: false, settled: true });
+  assert.equal(root(db).stock.trophy.a.M.qty, 1);
+  assert.equal(moves(db, "web_found").length, 0);
+  assert.equal(root(db).online_writedowns, undefined);
+});
+
+test("a heal of the same rejection after the row was closed does NOT bring the row back", async () => {
+  const db = makeFakeDb({ stock: { trophy: { a: { M: cell(1) } } } });
+  const w = { ...W1, pid: "a", loc: "trophy" };
+  await W.writeDownSingle(db, w, { nowIso: iso(NOW) });
+  await W.restoreFound(db, { pid: "a", sizeKey: "M", loc: "trophy", why: "found_on_check" }, { nowIso: iso(NOW + 1) });
+  assert.equal(root(db).stock.trophy.a.M.qty, 1);
+  const again = await W.writeDownSingle(db, w, { nowIso: iso(NOW + 2) });
+  assert.equal(again.ok, true);
+  assert.equal(root(db).online_writedowns, undefined);
+  assert.equal(root(db).stock.trophy.a.M.qty, 1);
+});
+
+test("the reversal is pinned to the shelf it read: a movement landing in between adds nothing", async () => {
+  const db = makeFakeDb({ stock: { hub1: { s1: { 8: cell(1) } } } });
+  await W.writeDownSingle(db, { ...W1, pid: "s1", sizeKey: "8", size: "8", loc: "hub1", kind: "hub_out_of_stock" }, { nowIso: iso(NOW) });
+  root(db).stock.hub1.s1["8"] = { ...root(db).stock.hub1.s1["8"], qty: -1, mv: "sale-1", lastType: "sold" };
+  // Between restoreFound's read of the shelf and its write, a delivery lands (the fake's read hook simulates it).
+  const realRef = db.ref.bind(db);
+  let armed = true;
+  db.ref = (p) => {
+    const r = realRef(p);
+    if (p === "stock_movements/web_found_web_nf_5550001_1_g0_hub1" && armed) { armed = false; root(db).stock.hub1.s1["8"] = { ...root(db).stock.hub1.s1["8"], qty: 2, mv: "refill-2", lastType: "transfer_in" }; }
+    return r;
+  };
+  const r = await W.restoreFound(db, { pid: "s1", sizeKey: "8", loc: "hub1", why: "sold_or_picked" }, { nowIso: iso(NOW + 5) });
+  assert.equal(r.restored, false);
+  assert.equal(root(db).stock.hub1.s1["8"].qty, 2);
+});
+
 test("the sweep: untouched → kept; moved without going below zero → closed with nothing added", async () => {
   const db = makeFakeDb({ stock: { hub1: { s1: { 8: cell(1) } }, hub2: { s1: { 8: cell(1) } } } });
   await W.writeDownSingle(db, { ...W1, pid: "s1", sizeKey: "8", size: "8", loc: "hub1", kind: "hub_out_of_stock" }, { nowIso: iso(NOW) });
@@ -155,7 +195,7 @@ test("who may answer Central's strip: whoever may work Source; a shop's strip st
   const allowed = (permissions, store) => _displayCheckAllowed({ email: "s@marathon.internal", emailVerified: false, userRec: { permissions }, store });
   assert.equal(allowed(["source"], "central"), true);
   assert.equal(allowed(["source"], "marathon-pe"), false);
-  assert.equal(allowed(["display_checks"], "central"), true);
+  assert.equal(allowed(["display_checks"], "central"), false); // Central is not a shop
   assert.equal(allowed([], "central"), false);
 });
 
