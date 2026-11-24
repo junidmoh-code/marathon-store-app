@@ -280,13 +280,13 @@ test("what an answer does", () => {
   const one = { pid: "a", sizeKey: "M", shown: 1, lastMoved: NOW - 40 * DAY };
   const three = { pid: "a", sizeKey: "M", shown: 3, lastMoved: NOW - 40 * DAY };
   const plan = (item, c, result, count) => L.answerPlan({ item, cell: c, result, count });
-  assert.deepEqual(plan(one, cell(1), "found"), { kind: "touch", outcome: "found" });
-  assert.deepEqual(plan(one, cell(1), "not_found"), { kind: "write_down", outcome: "notFound" });
-  assert.deepEqual(plan(one, cell(1), "count", 0), { kind: "write_down", outcome: "notFound" });
-  assert.deepEqual(plan(one, cell(1), "count", 2), { kind: "adjust", delta: 1, outcome: "corrected" });
-  assert.deepEqual(plan(three, cell(3), "count", 3), { kind: "touch", outcome: "counted" });
-  assert.deepEqual(plan(three, cell(3), "count", 1), { kind: "adjust", delta: -2, outcome: "corrected" });
-  assert.deepEqual(plan(three, cell(3), "count", 0), { kind: "adjust", delta: -3, outcome: "corrected" });
+  assert.deepEqual(plan(one, cell(1), "found"), { kind: "touch", outcome: "found", target: 1 });
+  assert.deepEqual(plan(one, cell(1), "not_found"), { kind: "write_down", outcome: "notFound", target: 0 });
+  assert.deepEqual(plan(one, cell(1), "count", 0), { kind: "write_down", outcome: "notFound", target: 0 });
+  assert.deepEqual(plan(one, cell(1), "count", 2), { kind: "adjust", delta: 1, outcome: "corrected", target: 2 });
+  assert.deepEqual(plan(three, cell(3), "count", 3), { kind: "touch", outcome: "counted", target: 3 });
+  assert.deepEqual(plan(three, cell(3), "count", 1), { kind: "adjust", delta: -2, outcome: "corrected", target: 1 });
+  assert.deepEqual(plan(three, cell(3), "count", 0), { kind: "adjust", delta: -3, outcome: "corrected", target: 0 });
   // Several on the shelf: Found / Not found is not an answer — the number is.
   assert.deepEqual(plan(three, cell(3), "found"), { error: "pick_a_number" });
   assert.deepEqual(plan(three, cell(3), "not_found"), { error: "pick_a_number" });
@@ -305,7 +305,7 @@ const answer = (db, loc, id, result, count) => runAnswer(db, { loc, id, result, 
 test("Found on a single piece: the count stays, the shelf is stamped touched, a standing hold is lifted, the website is told", async () => {
   const item = { pid: "a", sizeKey: "M", shown: 1, why: "old_single", lastMoved: NOW - 40 * DAY };
   const db = listed("trophy", item, cell(1), { online_cell_holds: { a: { M: { trophy: { at: NOW - 3 * DAY, kind: "shop_not_found" } } } } });
-  assert.deepEqual(await answer(db, "trophy", "a__M", "found"), { outcome: "found" });
+  assert.deepEqual(await answer(db, "trophy", "a__M", "found"), { outcome: "found", unitsCorrected: 0 });
   const c = root(db).stock.trophy.a.M;
   assert.deepEqual({ qty: c.qty, updatedAt: c.updatedAt, checkedAt: c.checkedAt, checkedBy: c.checkedBy, mv: c.mv }, { qty: 1, updatedAt: iso(NOW), checkedAt: iso(NOW), checkedBy: "u-staff", mv: "seed" });
   assert.equal(root(db).stock_movements, undefined);
@@ -319,7 +319,7 @@ test("Found on a single piece: the count stays, the shelf is stamped touched, a 
 test("Not found on a single piece follows the write-down: zero, own movement, a row that undoes itself", async () => {
   const item = { pid: "a", sizeKey: "M", shown: 1, why: "old_single", lastMoved: NOW - 40 * DAY };
   const db = listed("trophy", item, cell(1));
-  assert.deepEqual(await answer(db, "trophy", "a__M", "not_found"), { outcome: "notFound" });
+  assert.deepEqual(await answer(db, "trophy", "a__M", "not_found"), { outcome: "notFound", unitsCorrected: 1 });
   assert.equal(root(db).stock.trophy.a.M.qty, 0);
   const [[id, mv]] = moves(db, "web_not_found");
   assert.equal(id, "web_nf_check_trophy_a__M_2026-11-24_trophy");
@@ -331,18 +331,21 @@ test("Not found on a single piece follows the write-down: zero, own movement, a 
 test("a shelf showing several: the number tapped becomes the count, as an adjustment that says so; the hold ends", async () => {
   const item = { pid: "w", sizeKey: "L", shown: 3, why: "wrong_by_more", lastMoved: NOW - 40 * DAY, holdAt: NOW - 2 * DAY };
   const db = listed("hub2", item, cell(3), { online_cell_holds: { w: { L: { hub2: { at: NOW - 2 * DAY, kind: "hub_out_of_stock" } } } } });
-  assert.deepEqual(await answer(db, "hub2", "w__L", "count", 1), { outcome: "corrected" });
+  assert.deepEqual(await answer(db, "hub2", "w__L", "count", 1), { outcome: "corrected", unitsCorrected: 2 });
   assert.equal(root(db).stock.hub2.w.L.qty, 1);
   const [[, mv]] = moves(db, "adjustment");
   assert.deepEqual({ from: mv.from, qty: mv.qty, reason: mv.reason, before: mv.before, after: mv.after }, { from: "hub2", qty: 2, reason: "shelf check: counted 1, the app showed 3", before: { hub2: 3 }, after: { hub2: 1 } });
   assert.equal(root(db).online_cell_holds, undefined);
-  assert.deepEqual(root(db).shelf_checks.hub2.done["2026-11-24"].w__L, { result: "corrected", shown: 3, counted: 1, by: "u-staff", byName: "Staff", at: NOW, why: "wrong_by_more" });
+  assert.deepEqual(root(db).shelf_checks.hub2.done["2026-11-24"].w__L, { result: "corrected", shown: 3, counted: 1, setTo: 1, units: 2, by: "u-staff", byName: "Staff", at: NOW, why: "wrong_by_more" });
+  // When the shelf was settled (the recheck window) and the day's counters by source and units.
+  assert.equal(root(db).shelf_checks.hub2.checked.w__L, NOW);
+  assert.deepEqual(root(db).shelf_checks.hub2.days["2026-11-24"], { corrected: 1, units: 2, by: { wrong_by_more: 1 } });
 
   const up = listed("hub2", item, cell(3));
   await answer(up, "hub2", "w__L", "count", 5);
   assert.equal(root(up).stock.hub2.w.L.qty, 5);
   const same = listed("hub2", item, cell(3));
-  assert.deepEqual(await answer(same, "hub2", "w__L", "count", 3), { outcome: "counted" });
+  assert.deepEqual(await answer(same, "hub2", "w__L", "count", 3), { outcome: "counted", unitsCorrected: 0 });
   assert.equal(root(same).stock_movements, undefined);
   assert.equal(root(same).stock.hub2.w.L.updatedAt, iso(NOW));
 });

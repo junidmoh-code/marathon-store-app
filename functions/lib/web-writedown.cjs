@@ -30,9 +30,21 @@
 // /online_writedowns is a WORKING SET (a row exists only until its shelf next
 // moves), read whole by the sweep every ten minutes; it is not a history.
 //
+// STOCK ON THE WAY (Junid, 24 Nov 2026 evening; functions/lib/on-the-way.cjs). A
+// shelf credited by a refill or transfer that has not landed yet shows pieces
+// that are still on the road. The single-piece rule is judged on what should be
+// ON the shelf — what it shows minus what is on the way:
+//   • shows − on the way = 1 → written down by ONE, to the on-the-way number
+//     (never to zero); the row carries `otw` so the reversal knows its floor;
+//   • shows − on the way ≤ 0 → nothing changes: the rejection agrees with the
+//     count (the piece is still travelling);
+//   • 2 or more → as before: count untouched, the shelf is held.
+// The line still moves on its chain at once either way (the callers do that).
+//
 // `db` is injected (firebase-admin Database or a test fake).
 "use strict";
 const { applyMovementAdmin } = require("./admin-movement.cjs");
+const { readOnTheWay } = require("./on-the-way.cjs");
 
 const WRITEDOWNS_PATH = "online_writedowns";
 const WRITEDOWN_KINDS = Object.freeze(["hub_out_of_stock", "shop_not_found", "central_not_found", "shelf_check_not_found", "backfill"]);
@@ -45,10 +57,10 @@ const rowPath = (pid, sizeKey, loc) => `${WRITEDOWNS_PATH}/${pid}/${sizeKey}/${l
 const cellQty = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : Number(cell) || 0);
 
 /**
- * Write a rejecting shelf to zero when it shows exactly one piece.
+ * Write a rejecting shelf down by one when, less what is on the way, it shows exactly one piece.
  *   { pid, size, sizeKey, loc, kind, orderId?, orderNumber?, line?, gen?, by?, at, idTag? }
- * → { ok: true, wroteDown: true, movementId }      the shelf is now zero
- *   { ok: true, wroteDown: false, qty }             not a single piece: nothing changed
+ * → { ok: true, wroteDown: true, movementId, onTheWay }   the shelf now shows only what is on the way
+ *   { ok: true, wroteDown: false, qty, onTheWay }          not a single piece: nothing changed
  *   { ok: false, reason }
  * Idempotent: the movement id is fixed by (order, line, route generation, place).
  */
@@ -60,23 +72,27 @@ async function writeDownSingle(db, w, { nowIso }) {
   const cellP = `stock/${w.loc}/${w.pid}/${w.sizeKey}`;
   const existing = await read(db, rowPath(w.pid, w.sizeKey, w.loc));
   let planned; // the movement the shelf carried when it was judged: the debit is refused if anything lands in between
+  let otw = Number(existing && existing.mvId === movementId ? existing.otw : 0) || 0;
   if (!(existing && existing.mvId === movementId) && !(await read(db, `stock_movements/${movementId}`))) {
     const cell = await read(db, cellP);
-    planned = { mv: (cell && cell.mv) ?? null };
+    planned = { mv: (cell && cell.mv) ?? null, qty: cellQty(cell) };
     const qty = cellQty(cell);
-    if (qty !== 1) return { ok: true, wroteDown: false, qty };
+    otw = w.onTheWay != null ? Math.max(0, Number(w.onTheWay) || 0) : (await readOnTheWay(db, { loc: w.loc, pid: w.pid, sizeKey: w.sizeKey, cell, nowMs: Date.parse(nowIso) })).qty;
+    if (qty - otw !== 1) return { ok: true, wroteDown: false, qty, onTheWay: otw };
     // The shelf moved AFTER the rejection (a delivery, a count): that is newer evidence, leave it.
     const stamp = Date.parse(cell && cell.updatedAt);
-    if (Number.isFinite(stamp) && stamp > at) return { ok: true, wroteDown: false, qty, movedSince: true };
+    if (Number.isFinite(stamp) && stamp > at) return { ok: true, wroteDown: false, qty, onTheWay: otw, movedSince: true };
   }
   const size = w.size != null && w.size !== "" ? String(w.size) : w.sizeKey;
   const label = w.orderNumber != null ? ` #${w.orderNumber}` : "";
   const res = await applyMovementAdmin(db, {
-    type: "web_not_found", productId: w.pid, size, sizeKey: w.sizeKey, qty: 1, from: w.loc, expectQty: 1, ...(planned ? { expectMv: planned.mv } : {}),
+    type: "web_not_found", productId: w.pid, size, sizeKey: w.sizeKey, qty: 1, from: w.loc, expectQty: planned ? planned.qty : 1 + otw, ...(planned ? { expectMv: planned.mv } : {}),
     movementId, actor: w.by ? String(w.by) : "system:website-order", actorRole: "admin",
-    reason: `website pick not found${label}: the one piece shown is not on the shelf`,
+    reason: otw > 0
+      ? `website pick not found${label}: the one piece that should be on the shelf is not there (${otw} more on the way, left on the count)`
+      : `website pick not found${label}: the one piece shown is not on the shelf`,
     link: { orderId: w.orderId != null ? String(w.orderId) : null },
-    web: clean({ kind: w.kind, orderId: w.orderId != null ? String(w.orderId) : null, orderNumber: w.orderNumber ?? null, line: w.line ?? null, by: w.by ?? null, rejectedAt: at }),
+    web: clean({ kind: w.kind, orderId: w.orderId != null ? String(w.orderId) : null, orderNumber: w.orderNumber ?? null, line: w.line ?? null, by: w.by ?? null, rejectedAt: at, onTheWay: otw || null }),
   }, { nowIso });
   if (!res.ok) return res.reason === "cell_changed" ? { ok: true, wroteDown: false, qty: res.available } : res;
   // The row is what makes it undo itself. Create-once: a retry never moves `at`.
@@ -84,10 +100,10 @@ async function writeDownSingle(db, w, { nowIso }) {
   // the sweep or a Found has since closed (it would later undo a write-down that was already settled).
   if (!res.idempotent) {
     await db.ref(rowPath(w.pid, w.sizeKey, w.loc)).transaction((cur) => (cur != null && cur.mvId === movementId ? undefined : clean({
-      at, mvId: movementId, qty: 1, kind: w.kind, size, orderId: w.orderId != null ? String(w.orderId) : null, orderNumber: w.orderNumber ?? null, line: w.line ?? null, by: w.by ?? null,
+      at, mvId: movementId, qty: 1, kind: w.kind, size, orderId: w.orderId != null ? String(w.orderId) : null, orderNumber: w.orderNumber ?? null, line: w.line ?? null, by: w.by ?? null, otw: otw || null,
     })));
   }
-  return { ok: true, wroteDown: true, movementId, idempotent: !!res.idempotent };
+  return { ok: true, wroteDown: true, movementId, idempotent: !!res.idempotent, onTheWay: otw };
 }
 
 /**
@@ -129,10 +145,16 @@ async function restoreFound(db, f, { nowIso }) {
 /** What the sweep does with one row, from the shelf as it stands. PURE. → "keep" | "restore" | "close" */
 function sweepDecision(row, cell, nowMs) {
   if (!row || !row.mvId) return "close";
-  if (!cell) return nowMs - Number(row.at) > ROW_MAX_AGE_MS ? "close" : "keep";
-  if (cell.mv === row.mvId) return nowMs - Number(row.at) > ROW_MAX_AGE_MS ? "close" : "keep";
+  const tooOld = nowMs - Number(row.at) > ROW_MAX_AGE_MS;
+  if (!cell) return tooOld ? "close" : "keep";
+  if (cell.mv === row.mvId) return tooOld ? "close" : "keep";
   // The shelf moved since. Below zero = a sale or a pick took a piece the count said was not there.
-  return cellQty(cell) < 0 ? "restore" : "close";
+  if (cellQty(cell) < 0) return "restore";
+  // Written down to what was on the way: the pieces that land are sold off the same shelf, and only a sale BEYOND
+  // them proves the missing piece was there. So while the shelf has only been sold from (never filled or counted),
+  // the row waits for that.
+  if (Number(row.otw) > 0 && cell.lastType === "sold" && cellQty(cell) <= Number(row.otw) && !tooOld) return "keep";
+  return "close";
 }
 
 /**

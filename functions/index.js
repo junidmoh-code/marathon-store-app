@@ -4025,6 +4025,10 @@ exports.completeDisplayCheck = require("./displayChecks/completeCheck.js").compl
 exports.webShelfList = require("./webShelf/index.js").webShelfList;
 exports.webShelfAnswer = require("./webShelf/index.js").webShelfAnswer;
 exports.webShelfProgress = require("./webShelf/index.js").webShelfProgress;
+// Every ten minutes: stock on the way (a refill credited but not landed is never counted as missing) and, from
+// commit 3, the rejections that are not website orders (Junid, 24 Nov 2026 evening).
+//   firebase deploy --only functions:shelfChecksTick
+exports.shelfChecksTick = require("./webShelf/tick.js").shelfChecksTick;
 
 // ─── ALL-STORE ACCESS — logStoreSwitch (audit of every active-shop switch) ─────
 // Junid, 20 Nov 2026. Append-only /store_switch_log/{saDate}/{pushId}; the

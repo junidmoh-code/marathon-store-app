@@ -23,22 +23,28 @@ import { CELL_HOLDS_PATH, holdStands, cellQty, cellStampMs } from "../shopify/pi
 import { serverNowMs } from "../shopify/publishNode.mjs";
 
 const L = createRequire(import.meta.url)("../../functions/webShelf/lib.cjs");
+const O = createRequire(import.meta.url)("../../functions/lib/on-the-way.cjs");
 const { saDateStringFromMs } = createRequire(import.meta.url)("../../functions/lib/sa-time.cjs");
 const DB_URL = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
 const SINGLES_DEFAULT = fileURLToPath(new URL("../../logs/shelf-singles.json", import.meta.url));
 const SINGLES_MAX_AGE_MS = 12 * 3600e3;
 const NAME = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concrete", "marathon-pine": "Pine", central: "Central" };
 
-/** PURE. The candidates per place from the sweep's lone pieces and the standing holds. */
-export function candidatesByPlace(singles, holds) {
+/**
+ * PURE. The candidates per place from the sweep's lone pieces and the standing holds.
+ *   onTheWay  Map("loc|pid|sizeKey" → units) — a shelf with stock still travelling is left off until its cutoff
+ *             has passed (functions/lib/on-the-way.cjs, Junid 24 Nov 2026 evening).
+ */
+export function candidatesByPlace(singles, holds, onTheWay = new Map()) {
   const out = Object.fromEntries(L.CHECK_LOCATIONS.map((loc) => [loc, { more: [], singles: [] }]));
+  const travelling = (loc, pid, sizeKey) => (onTheWay.get(`${loc}|${pid}|${sizeKey}`) || 0) > 0;
   for (const h of holds || []) {
-    if (!out[h.loc] || !holdStands(h.hold, h.cell)) continue;
+    if (!out[h.loc] || !holdStands(h.hold, h.cell) || travelling(h.loc, h.pid, h.sizeKey)) continue;
     const shown = cellQty(h.cell);
     if (shown > 1) out[h.loc].more.push({ pid: h.pid, sizeKey: h.sizeKey, shown, holdAt: Number(h.hold.at), lastMoved: cellStampMs(h.cell) });
   }
   // Central's own lone pieces are not listed (stock on its way out); its "wrong by more" shelves are.
-  for (const s of singles || []) if (out[s.loc] && s.loc !== "central") out[s.loc].singles.push({ pid: s.pid, sizeKey: s.sizeKey, at: Number(s.at) });
+  for (const s of singles || []) if (out[s.loc] && s.loc !== "central" && !travelling(s.loc, s.pid, s.sizeKey)) out[s.loc].singles.push({ pid: s.pid, sizeKey: s.sizeKey, at: Number(s.at) });
   return out;
 }
 
@@ -73,7 +79,7 @@ async function main() {
   }
   const nowMs = await serverNowMs(db);
   const saDate = saDateStringFromMs(nowMs);
-  const by = candidatesByPlace(singles, holds);
+  const by = candidatesByPlace(singles, holds, await O.readAllOnTheWay(db, nowMs));
   for (const loc of L.CHECK_LOCATIONS) {
     const open = (await get(`${L.SHELF_CHECKS_PATH}/${loc}/open`)) || {};
     const plan = L.planTopUp({ open, more: by[loc].more, singles: by[loc].singles, perDay: cfg.perDay, nowMs, saDate });

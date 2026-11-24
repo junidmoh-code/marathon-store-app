@@ -31,10 +31,15 @@ export async function writeDownRejected(ctx, w) {
     if (!(await writeDownOn(ctx))) return false;
     const res = await lib.writeDownSingle(ctx.db, w, { nowIso: new Date(ctx.now).toISOString() });
     if (!res.ok) { ctx.log?.(`  ⚠ write-down for ${w.pid}/${w.sizeKey} at ${w.loc} refused (${res.reason})`); return false; }
-    if (!res.wroteDown) { if (res.qty > 1) ctx.log?.(`  ~ ${w.pid} size ${w.sizeKey} at ${w.loc} shows ${res.qty}: count NOT changed — held off the website, on the "wrong by more than one" list`); return false; }
+    if (!res.wroteDown) {
+      const otw = Number(res.onTheWay) || 0;
+      if (otw > 0 && res.qty - otw <= 0) ctx.log?.(`  ~ ${w.pid} size ${w.sizeKey} at ${w.loc} shows ${res.qty}, all of it still on the way: count NOT changed`);
+      else if (res.qty - otw > 1) ctx.log?.(`  ~ ${w.pid} size ${w.sizeKey} at ${w.loc} shows ${res.qty}${otw ? ` (${otw} on the way)` : ""}: count NOT changed — held off the website, on the "wrong by more than one" list`);
+      return false;
+    }
     if (!res.idempotent) {
       await markDirty(ctx, w.pid);
-      ctx.log?.(`  ↓ written to zero: ${w.pid} size ${w.sizeKey} at ${w.loc} (${w.kind}, the one piece shown; undoes itself if it is sold, picked or found there)`);
+      ctx.log?.(`  ↓ written ${res.onTheWay ? `down to the ${res.onTheWay} on the way` : "to zero"}: ${w.pid} size ${w.sizeKey} at ${w.loc} (${w.kind}, the one piece that should be there; undoes itself if it is sold, picked or found there)`);
     }
     return true;
   } catch (e) {

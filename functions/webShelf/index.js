@@ -25,6 +25,7 @@ const { isSuperAdmin } = require("../lib/super-admins.cjs");
 const { saDateStringFromMs } = require("../lib/sa-time.cjs");
 const { applyMovementAdmin } = require("../lib/admin-movement.cjs");
 const { writeDownSingle, restoreFound } = require("../lib/web-writedown.cjs");
+const { readOnTheWay } = require("../lib/on-the-way.cjs");
 const { DIRTY_PATH, CONCRETE_DIRTY_PATH } = require("../lib/shopify-inventory-dirty.cjs");
 const { readAccountSections, locationInSections } = require("../lib/section-access.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
@@ -110,22 +111,35 @@ async function runAnswer(db, { loc, id, result, count, uid, name, nowMs }) {
   if (!item) return { error: "gone" };
   const cellPath = `stock/${loc}/${item.pid}/${item.sizeKey}`;
   const cell = await val(db, cellPath);
-  const plan = L.answerPlan({ item, cell, result, count });
+  // Stock sent here that has not landed yet: a person counts only what is ON the shelf (functions/lib/on-the-way.cjs).
+  const otw = (await readOnTheWay(db, { loc, pid: item.pid, sizeKey: item.sizeKey, cell, nowMs })).qty;
+  const plan = L.answerPlan({ item, cell, result, count, onTheWay: otw });
   if (plan.error) { if (plan.error === "stale") await db.ref(openPath).remove(); return { error: plan.error }; }
   const nowIso = new Date(nowMs).toISOString();
   const saDate = saDateStringFromMs(nowMs);
   const shown = Number(item.shown);
+  let unitsCorrected = 0;
   if (plan.kind === "write_down") {
-    const res = await writeDownSingle(db, { pid: item.pid, sizeKey: item.sizeKey, size: item.sizeKey, loc, kind: "shelf_check_not_found", by: uid, at: nowMs, idTag: `check_${loc}_${id}_${saDate}` }, { nowIso });
+    const res = await writeDownSingle(db, { pid: item.pid, sizeKey: item.sizeKey, size: item.sizeKey, loc, kind: "shelf_check_not_found", by: uid, at: nowMs, idTag: `check_${loc}_${id}_${saDate}`, onTheWay: otw }, { nowIso });
     if (!res.ok) return { error: res.reason || "not_written" };
     if (!res.wroteDown) { await db.ref(openPath).remove(); return { error: "stale" }; }
+    unitsCorrected = 1;
   } else if (plan.kind === "adjust") {
     const res = await applyMovementAdmin(db, {
       type: "adjustment", productId: item.pid, size: item.sizeKey, sizeKey: item.sizeKey, qty: Math.abs(plan.delta), ...(plan.delta < 0 ? { from: loc } : { to: loc }), expectQty: shown,
       movementId: `shelf_check_${loc}_${id}_${saDate}`.replace(/[.#$/\[\]\s]/g, "_"), actor: uid, actorRole: "admin",
-      reason: `shelf check: counted ${Number(count)}, the app showed ${shown}`, link: {},
+      reason: otw > 0
+        ? `shelf check: counted ${Number(count)} + ${otw} on the way = ${plan.target}, the app showed ${shown}`
+        : `shelf check: counted ${Number(count)}, the app showed ${shown}`, link: {},
     }, { nowIso });
     if (!res.ok) { if (res.reason === "cell_changed") { await db.ref(openPath).remove(); return { error: "stale" }; } return { error: res.reason || "not_written" }; }
+    unitsCorrected = Math.abs(plan.delta);
+  } else if (plan.kind === "restore") {
+    // A website write-down, and the piece is there after all: put it back (only the write-down this item was listed for).
+    const r = await restoreFound(db, { pid: item.pid, sizeKey: item.sizeKey, loc, why: "found_on_check", by: uid, expectMvId: item.mvId || undefined }, { nowIso });
+    if (!r.ok) return { error: r.reason || "not_written" };
+    if (!r.restored) { await db.ref(openPath).remove(); return { error: "stale" }; }
+    unitsCorrected = 1;
   } else {
     // Found / counted right: the shelf has been looked at by a person. Only if it still is the shelf that was listed.
     const touched = await db.ref(cellPath).transaction((cur) => {
@@ -134,15 +148,19 @@ async function runAnswer(db, { loc, id, result, count, uid, name, nowMs }) {
       return { ...(typeof cur === "object" ? cur : { qty: Number(cur) || 0 }), updatedAt: nowIso, checkedAt: nowIso, checkedBy: uid };
     });
     if (!touched.committed || !touched.snapshot.val()) { await db.ref(openPath).remove(); return { error: "stale" }; }
-    await restoreFound(db, { pid: item.pid, sizeKey: item.sizeKey, loc, why: "found_on_check", by: uid }, { nowIso });
+    // Found (or counted right): a write-down still open on the shelf was wrong, so it is undone. A "not found" that
+    // agrees with the count (a confirmed write-down, or a shelf whose pieces are all still on the way) undoes nothing.
+    if (plan.outcome !== "notFound") await restoreFound(db, { pid: item.pid, sizeKey: item.sizeKey, loc, why: "found_on_check", by: uid }, { nowIso });
   }
   // The shelf has been settled by a person: a hold on it from an older rejection ends here.
   await db.ref(`${CELL_HOLDS_PATH}/${item.pid}/${item.sizeKey}/${loc}`).transaction((cur) => (cur == null ? null : Number(cur.at) <= nowMs ? null : undefined));
   await markDirty(db, item.pid);
-  await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/done/${saDate}/${id}`).set({ result: plan.outcome, shown, ...(result === "count" ? { counted: Number(count) } : {}), by: uid, byName: name || null, at: nowMs, why: item.why || null });
+  await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/done/${saDate}/${id}`).set(L.doneRow({ item, plan, result, count, otw, uid, name, nowMs, unitsCorrected }));
+  // When this shelf was last settled by a person: it is not asked again for the recheck window unless a NEW rejection arrives.
+  await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/checked/${id}`).set(nowMs);
   await db.ref(openPath).remove();
-  await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/days/${saDate}/${plan.outcome}`).transaction((n) => (Number(n) || 0) + 1);
-  return { outcome: plan.outcome };
+  await db.ref(`${L.SHELF_CHECKS_PATH}/${loc}/days/${saDate}`).transaction((d) => L.bumpDay(d, { outcome: plan.outcome, why: item.why, units: unitsCorrected }));
+  return { outcome: plan.outcome, unitsCorrected };
 }
 exports._runAnswer = runAnswer;
 
