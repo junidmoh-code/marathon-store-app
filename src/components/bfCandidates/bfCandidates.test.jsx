@@ -40,6 +40,22 @@ describe("BF Candidates card", () => {
   beforeEach(() => forgetKept());
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+  it("the row tells the truth (Junid 24 Nov): when the stock on hand came in, its last delivery, the first arrival, and old vs fresh", async () => {
+    const api = fakeApi([
+      row({ arrivedOn: "10 Jul 2026", received: 20, sold: 1, qty: 59, lastReceivedOn: "20 Nov 2026", firstArrivedOn: "2 Jul 2026", oldQty: 19, freshQty: 40, freshFromOn: "20 Nov 2026" }),
+      row({ pid: "b", name: "Tee B", qty: 12, arrivedOn: "20 Jun 2026", received: 12, sold: 0, lastReceivedOn: "20 Jun 2026", firstArrivedOn: "20 Jun 2026", oldQty: 12, freshQty: 0 }),
+    ]);
+    const r = await mount(api);
+    const t = all(r);
+    for (const want of [
+      "59 on hand · in since 10 Jul 2026 · sold 1 of 20", "Last received 20 Nov 2026 · first arrived 2 Jul 2026",
+      "Judged on the 19 older units; 40 more arrived 20 Nov 2026.", "12 on hand · in since 20 Jun 2026 · sold 0 of 12",
+    ]) expect(t).toContain(want);
+    expect(t).toContain("Last received 20 Jun 2026");
+    expect(t).not.toContain("first arrived 20 Jun 2026"); // the same day as the stock on hand: said once
+    expect(r.root.findAll((n) => n.props && n.props["data-mixed"] !== undefined).length).toBe(1);
+  });
+
   it("shows quantity, arrival date, units received and sold, both prices and the locations; tabs carry counts", async () => {
     const api = fakeApi([row(), row({ pid: "b", name: "Tee B", qty: 12, arrivedOn: "20 Jun 2026", received: 100, sold: 6 })]);
     const r = await mount(api);

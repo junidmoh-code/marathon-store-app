@@ -1,9 +1,11 @@
 // ─── BF CANDIDATES — Junid's card (23 Nov 2026) ──────────────────────────────
-// Old stock that isn't selling (Junid, 15:44: "new stock is not dead stock"): the
-// product first arrived in the network on or before the cut-off ("In store since":
-// May, June, July (default) or August), still has stock on hand, and has sold
-// under 10% of the units received. Tabs: Clothing, Sneakers (by quantity on hand,
-// the most first; every row shows its arrival date) and On sale (everything on sale).
+// Old stock that isn't selling (Junid, 15:44: "new stock is not dead stock"; 24 Nov:
+// judged on the stock ON HAND, not the product's whole life): the stock on hand
+// arrived on or before the cut-off ("In store since": May, June, July (default) or
+// August), a shop or hub has had it on a shelf for 30 days, and under 10% of it has
+// sold since. Tabs: Clothing, Sneakers (by quantity on hand, the most first; every row
+// shows when its stock came in, its last delivery and the product's first arrival)
+// and On sale (everything on sale).
 // FAST: the last answer for each tab is kept (memory + this device) and shown at
 // once while the fresh one is fetched; the other tabs are fetched ahead.
 //   Put on sale   every row has a PRICE BOX: type the sale price, tap Put on sale
@@ -109,8 +111,20 @@ function Row({ r, names, thumb, waiting, selecting, ticked, onTick, onSale, onEx
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 700, color: "#fff", fontSize: "0.92rem", overflowWrap: "anywhere" }}>{r.name}</div>
         <div style={{ color: "#dfe7ff", fontSize: "0.82rem", marginTop: 3 }}>
-          {r.qty === null ? "Not on the candidates list any more" : <><b>{r.qty}</b> on hand</>}{r.arrivedOn ? <> · arrived {r.arrivedOn} · received {r.received} · sold {r.sold}</> : null}
+          {r.qty === null ? "Not on the candidates list any more" : <><b>{r.qty}</b> on hand</>}{r.arrivedOn ? (r.lastReceivedOn
+            ? <> · in since {r.arrivedOn} · sold {r.sold} of {r.received}</>
+            : <> · arrived {r.arrivedOn} · received {r.received} · sold {r.sold}</>) : null}
         </div>
+        {r.lastReceivedOn && (
+          <div style={{ color: GRAY, fontSize: "0.78rem", marginTop: 2 }}>
+            Last received {r.lastReceivedOn}{r.firstArrivedOn && r.firstArrivedOn !== r.arrivedOn ? <> · first arrived {r.firstArrivedOn}</> : null}
+          </div>
+        )}
+        {r.freshQty > 0 && (
+          <div data-mixed style={{ color: AMBER, fontSize: "0.78rem", marginTop: 2 }}>
+            Judged on the {r.oldQty} older unit{r.oldQty === 1 ? "" : "s"}; {r.freshQty} more arrived {r.freshFromOn || "since"}.
+          </div>
+        )}
         <div style={{ color: GRAY, fontSize: "0.8rem", marginTop: 2 }}>
           Stock {r.stockPrice ? price(r.stockPrice) : "not set"} · Retail {r.retailPrice ? price(r.retailPrice) : "not set"}
         </div>
@@ -168,7 +182,7 @@ function Sheet({ title, children, onClose }) {
 
 export default function BfCandidatesScreen({ api, onExit }) {
   const [tab, setTab] = useState("clothing");
-  const [cutoff, setCutoff] = useState("july");   // "In store since": arrived by the end of that month
+  const [cutoff, setCutoff] = useState("july");   // "In store since": the stock on hand arrived by the end of that month
   const [newEnd, setNewEnd] = useState("");       // only once the default end has passed: the end Junid picks for new sales
   const [bulkText, setBulkText] = useState("");   // the Select bar's one price for every ticked item
   const [view, setView] = useState(null);      // the server's answer for this tab + window
@@ -502,7 +516,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
         {!loading && !error && !rows.length && (
           <div style={{ color: GRAY, fontSize: "0.9rem" }}>
             {tab === "onsale" ? "Nothing is on sale. Type a price on a row and tap Put on sale."
-              : view && view.meta ? `Nothing in ${TAB_LABEL[tab]} arrived by the end of ${cutoffLabel}, is still in stock and has sold under 10% of what was received.${view.meta.ledgerFirst ? ` The stock records start on ${new Date(view.meta.ledgerFirst).toLocaleDateString("en-ZA", { timeZone: "Africa/Johannesburg", day: "numeric", month: "short", year: "numeric" })}.` : ""}`
+              : view && view.meta ? `Nothing in ${TAB_LABEL[tab]} has stock on hand that arrived by the end of ${cutoffLabel}, has been on a shop or hub shelf for 30 days and has sold under 10% of it.${view.meta.ledgerFirst ? ` The stock records start on ${new Date(view.meta.ledgerFirst).toLocaleDateString("en-ZA", { timeZone: "Africa/Johannesburg", day: "numeric", month: "short", year: "numeric" })}.` : ""}`
                 : "The list has not been built yet. It is built every night; the first one is on its way."}
           </div>
         )}
