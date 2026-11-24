@@ -66,7 +66,9 @@ export function rowCode(row) {
     const note = ref.includes(code) ? ref.replace(code, " ").replace(/\s+/g, " ").trim() : "";
     return { code, note };
   }
-  return { code: ref || null, note: "" };
+  // An order pulled in before Shopify numbers: its old three-letter code is the headline, any added words stay small.
+  const [code = null, ...rest] = ref ? ref.split(/\s+/) : [];
+  return { code, note: rest.join(" ") };
 }
 
 function Row({ store, row, handover, now, central = false, onDone = null }) {

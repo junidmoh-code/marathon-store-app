@@ -53,13 +53,14 @@ export function WebOrderCode({ code, size = 30 }) {
  * "website order"; inside it the line's three-letter code is the headline in pink with how long it has been
  * waiting beside it. No other words (Junid, 24 Nov 2026, 21:05). Since Junid's 24 Nov evening brief this is the
  * ONLY place a hub sees a website pick: the separate "pull these first" box repeated the same orders and is
- * gone; the cards themselves lead the queue instead.
+ * gone; the cards themselves lead the queue instead. role="status", not "alert": the wait chip ticks every half
+ * minute and an alert region would make a screen reader re-announce every card each tick.
  */
 export function WebOrderBanner({ since, orderNumber = null, code = null, children = null }) {
   const now = useNowTick();
   const headline = code || (orderNumber != null ? `#${orderNumber}` : null);
   return (
-    <div role="alert" aria-label={`Website order ${headline || ""}`.trim()} data-testid="web-order-banner"
+    <div role="status" aria-label={`Website order ${headline || ""}`.trim()} data-testid="web-order-banner"
          style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "0 0 8px", padding: "8px 12px", borderRadius: 10,
                   background: "rgba(255,69,58,.16)", border: `2px solid ${WEB_RED}`, color: "#fff" }}>
       <WebOrderCode code={headline} />
