@@ -1519,3 +1519,87 @@ describe("one three-letter code per hub order UNIT (owner decision 2026-10-21)",
     expect(f.read(`online_order_refs/${C(0)}/orderId`)).toBe("7777:0:0:0");
   });
 });
+
+describe("own courier and the address gate in the ship step (Junid, 24 Nov 2026)", () => {
+  const fos = [{ id: "gid://shopify/FulfillmentOrder/7", status: "OPEN", lineItems: { nodes: [{ remainingQuantity: 1 }] } }];
+  const liveWorld = (shipping = {}, cfg = {}) => world({
+    config: { onlineOrders: { enabled: false }, shipping: { deliveryMode: "door", live: true, collectionContact: { name: "The Marathon", mobile_number: "0310000000" }, ...cfg } },
+    online_orders: { 9001: {
+      ref: "KQZ", orderNumber: 1801, shopifyGid: "gid://shopify/Order/9001", status: "packed", fulfilState: "pending", fulfil: { state: "pending", attempts: 0 },
+      lines: [{ pid: "TEE", sizeKey: "M", qty: 1, source: { status: "handed" } }],
+      customer: { name: "Nick B", phone: "+27791332206", email: "nick@example.com" },
+      shipping: { address: { address1: "5 Esplanade Road", address2: "Century City", city: "Cape Town", province: "Western Cape", zip: "7441", country: "South Africa" }, ...shipping },
+    } },
+  });
+  const noCreate = (creates) => ({ ...fakeCourier(), createShipment: async (b) => { creates.push(b); return { id: 1, short_tracking_reference: "TCG1", charged_amount: 99 }; } });
+
+  it("ingestion marks an order tagged own-courier (shipping/ownCourier), and nothing else", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder({ tags: ["whatsapp-order", "own-courier", "jamie"] })] })).deps);
+    expect(order(f).shipping.ownCourier).toMatchObject({ at: NOW, tag: "own-courier" });
+    const g = fakeDb(world());
+    await runOrdersPoll(deps(g, shopify({ orders: [shopifyOrder({ tags: ["whatsapp-order"] })] })).deps);
+    expect(order(g).shipping.ownCourier).toBeUndefined();
+  });
+
+  it("own courier, no waybill yet: never booked, waits as 'courier not booked' with no attention, Shopify untouched", async () => {
+    const f = fakeDb(liveWorld({ ownCourier: { at: NOW - 10 } }));
+    const creates = [];
+    const sh = shopify({ fos });
+    const d = deps(f, sh, { courier: noCreate(creates) });
+    await runOrdersPoll(d.deps);
+    expect(creates).toEqual([]);
+    expect(d.deps.courier.calls.filter((c) => c[0] === "getRates")).toEqual([]);
+    expect(sh.calls.some((c) => c.query.includes("fulfillmentCreate"))).toBe(false);
+    expect(order(f)).toMatchObject({ fulfilState: "courier_failed", courierError: expect.stringMatching(/^own courier: waiting/) });
+    expect(order(f).attention).toBeUndefined();
+    expect(d.mails).toHaveLength(0);
+  });
+
+  it("own courier: once Jamie writes the waybill, the tick hands it back and Shopify is fulfilled with it (company from ownCourier, else Other); nothing booked", async () => {
+    const f = fakeDb(liveWorld({ ownCourier: { at: NOW - 10 } }));
+    const creates = [];
+    await runOrdersPoll(deps(f, shopify({ fos }), { courier: noCreate(creates) }).deps);
+    expect(order(f).fulfilState).toBe("courier_failed");
+    await f.db.ref("online_orders/9001/shipping/ownCourier").update({ waybill: "PAXI123", at: NOW, by: "jamie", courier: "Paxi" });
+    const sh = shopify({ fos });
+    await runOrdersPoll(deps(f, sh, { courier: noCreate(creates) }).deps);
+    expect(creates).toEqual([]);
+    expect(sh.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "PAXI123", company: "Paxi" });
+    expect(order(f)).toMatchObject({ fulfilState: "done" });
+
+    const g = fakeDb(liveWorld({ ownCourier: { at: NOW - 10, waybill: "W77", by: "jamie" } }));
+    const sh2 = shopify({ fos });
+    await runOrdersPoll(deps(g, sh2, { courier: noCreate(creates) }).deps);
+    expect(creates).toEqual([]);
+    expect(sh2.calls.find((c) => c.query.includes("fulfillmentCreate")).vars.fulfillment.trackingInfo).toEqual({ number: "W77", company: "Other" });
+  });
+
+  it("an address whose postal code is another province's town (#2316: Umlazi with Vosloorus's 1475) is held: no quote, no booking, the hold written once", async () => {
+    const f = fakeDb(liveWorld({ address: { address1: "BB 1112 Zibhebhu Avenue", address2: "Umlazi", city: "Umlazi BB, eThekwini", province: "KwaZulu-Natal", zip: "1475", country: "South Africa" } }));
+    const creates = [];
+    const d = deps(f, shopify({ fos }), { courier: noCreate(creates) });
+    await runOrdersPoll(d.deps);
+    expect(creates).toEqual([]);
+    expect(d.deps.courier.calls.filter((c) => c[0] === "getRates")).toEqual([]);
+    expect(order(f)).toMatchObject({ fulfilState: "courier_failed", courierError: expect.stringMatching(/^address check: the address says Umlazi but postal code 1475 \(Vosloorus, Gauteng\)/) });
+    expect(order(f).shipping.addressHold).toMatchObject({ state: "asking", kind: "mismatch", code: "1475", addressPlace: "Umlazi", zipPlace: "Vosloorus" });
+    expect(f.read("shipping_recon/addressHolds/9001")).toMatchObject({ state: "asking" });
+    // The POS Retry re-asks the gate: held again, the hold untouched (asked once).
+    const at = order(f).shipping.addressHold.at;
+    await f.db.ref("online_orders/9001").update({ fulfilState: "pending", "fulfil/state": "pending" });
+    await runOrdersPoll(deps(f, shopify({ fos }), { courier: noCreate(creates) }).deps);
+    expect(creates).toEqual([]);
+    expect(order(f).shipping.addressHold.at).toBe(at);
+  });
+
+  it("a consistent address books as before", async () => {
+    const f = fakeDb(liveWorld());
+    const creates = [];
+    const sh = shopify({ fos });
+    await runOrdersPoll(deps(f, sh, { courier: noCreate(creates) }).deps);
+    expect(creates).toHaveLength(1);
+    expect(order(f)).toMatchObject({ fulfilState: "done", shipping: { waybill: "TCG1" } });
+    expect(order(f).shipping.addressHold).toBeUndefined();
+  });
+});

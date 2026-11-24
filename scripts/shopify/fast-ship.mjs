@@ -32,6 +32,7 @@ import { recordingDb } from "./onlineOrders/recordingDb.mjs";
 import { ONLINE_ORDERS_PATH, ORDER_STATUS } from "../../src/utils/onlineOrders.js";
 import { createCourierClient } from "../shipping/courier-client.mjs";
 import { sweepUnknownBookings } from "../shipping/unknownBooking.mjs";
+import { sweepAddressHolds } from "../shipping/addressHold.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = join(resolve(HERE, "../.."), "logs");
@@ -97,6 +98,20 @@ if (BENCH) {
   };
   setTimeout(sweepUnknown, 30_000);
   setInterval(sweepUnknown, 5 * 60_000);
+  // THE ADDRESS GATE's question (addressHold.mjs, Junid 24 Nov 2026): every order the gate held and nobody has asked
+  // yet — ONE WhatsApp to the customer through Jamie (kind lifecycle, sub order_first, ref address:<key>) and ONE line
+  // to Junid. Every 5 minutes; a refused send (quiet hours, the gate) is asked again on the next pass.
+  let asking = false;
+  const sweepHolds = async () => {
+    if (asking || stopping) return;
+    asking = true;
+    try {
+      for (const r of await sweepAddressHolds({ db: liveDb, log, now: () => Date.now() })) log(`  ? ${r.key}: address hold — customer ${r.asked ? `asked (outbox #${r.outboxId})` : r.error ? `not asked (${r.error})` : "not asked yet (refused, next pass)"}; Junid ${r.junid ? "told" : "line kept"}`);
+    } catch (e) { log(`  ! address-hold sweep failed — ${String(e?.message || e).slice(0, 200)}`); }
+    finally { asking = false; }
+  };
+  setTimeout(sweepHolds, 45_000);
+  setInterval(sweepHolds, 5 * 60_000);
   let stopping = false;
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(sig, async () => {

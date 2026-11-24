@@ -61,6 +61,16 @@
 // "Packed, courier not booked" for this reason are handed back ONCE
 // (doorRetryDue; poll.mjs retryNoLockerOrders, retry-no-locker.mjs).
 //
+// THE ADDRESS SAFETY GATE (Junid, 24 Nov 2026, STANDING RULE: "No Courier Guy booking unless the waybill's suburb,
+// town and postal code match the customer's address. On a mismatch, hold and confirm on WhatsApp."; #2316's Umlazi
+// order typed Vosloorus's 1475 and went to a Vosloorus locker). planShipment asks addressHold.mjs addressGate before
+// anything is priced, and lockerGate once the locker is chosen (it must be in the customer's AREA, not merely near
+// the postal code's point). A failing order books nothing: bookShipment writes shipping/addressHold (live only) and
+// refuses with "address check: …"; the fast-ship sweep asks the customer once on WhatsApp.
+//
+// OWN COURIER (Junid, 24 Nov 2026: WhatsApp orders through Jamie, tag "own-courier"): the customer books their own
+// courier and sends the waybill. Such an order (shipping/ownCourier, set at ingestion) is NEVER booked here.
+//
 // No waybill printing: waybills stay handwritten. `waybill` is returned for
 // that, and a later label-print step can open TCG's label PDF
 // (GET /shipments/label?id=) with window.print — never WebUSB.
@@ -72,6 +82,7 @@ import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { quoteParcel, tcgParcels, lockerCollection } from "./quote.mjs";
 import { fileLogger } from "./courier-client.mjs";
 import { planLockerDelivery, lockerAddressPayload } from "./lockerDelivery.mjs";
+import { addressGate, lockerGate, raiseHold } from "./addressHold.mjs";
 
 export const LIVE_PATH = "config/shipping/live";
 
@@ -180,6 +191,9 @@ export async function planShipment(order, { db, client, products = null, geocode
   // The customer's side must be complete before anything is even priced.
   const missing = [...addrMissing, ...contactMissing, ...(!ref ? ["order_ref"] : [])];
   if (missing.length) return { ok: false, reason: `missing: ${missing.join(", ")}`, missing, parcel };
+  // THE ADDRESS SAFETY GATE: postal code, suburb/town must describe the same place, before anything is priced.
+  const gate = addressGate(order, cfg);
+  if (gate) return { ok: false, reason: gate.reason, addressHold: gate.hold, parcel };
   // Our own side only has to be complete to BOOK: a dry run still shows the
   // whole payload, with the gap named, so the card/log is useful before
   // Junid has filled the collection contact in.
@@ -193,6 +207,9 @@ export async function planShipment(order, { db, client, products = null, geocode
     const lockerPlan = await planLockerDelivery({ order, key: keyOf(order), cfg, client, estimate: parcel, address, contact, ref, liveBlockers, ...(geocoder ? { geocoder } : {}) });
     // NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026): only for a no-locker reason, never for any other failure.
     const fallback = doorFallbackFor(order, lockerPlan, cfg);
+    // The locker must be in the customer's area, not merely near whatever point the postal code gave (#2316).
+    const far = lockerPlan.ok ? lockerGate(order, lockerPlan.locker, cfg) : null;
+    if (far) return { ok: false, reason: far.reason, addressHold: far.hold, parcel: lockerPlan.parcel ?? parcel };
     if (!fallback) return lockerPlan;
     // The door plan's own blockers: the box list matters again (a locker booking never asked it).
     const door = await planDoor([...liveBlockers, ...(!parcel.fits ? ["no standard box fits"] : [])], { noDropBox: true });
@@ -254,6 +271,15 @@ export async function planShipment(order, { db, client, products = null, geocode
     };
     return { ok: true, payload, parcel, chosen, quoted, ref, liveBlockers, overCeiling, quotes: quoteList(quoted) };
   }
+}
+
+// ── OWN COURIER (Junid, 24 Nov 2026) ─────────────────────────────────────────
+export const OWN_COURIER_TAG = "own-courier";
+export const OWN_COURIER_REASON = "own courier: the customer books their own courier and sends the waybill — never booked with Courier Guy";
+/** Does the customer bring their own courier (shipping/ownCourier, written at ingestion from the Shopify tag)? Pure. */
+export function isOwnCourier(order) {
+  const oc = order?.shipping?.ownCourier;
+  return (!!oc && typeof oc === "object") || (Array.isArray(order?.tags) && order.tags.some((t) => String(t).trim().toLowerCase() === OWN_COURIER_TAG));
 }
 
 // ── NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026) ────────────────────────────
@@ -419,6 +445,11 @@ export async function bookShipment(order, deps = {}) {
   if (order?.shipping?.shipmentId) {
     return { skipped: true, reason: "already booked", shipping: order.shipping };
   }
+  // OWN COURIER: the customer books their own courier; nothing is ever booked with Courier Guy for it.
+  if (isOwnCourier(order)) {
+    log(`bookShipment ${key} REFUSED own courier (the customer books their own)`);
+    return { skipped: true, ownCourier: true, reason: OWN_COURIER_REASON };
+  }
 
   // A split whose later parcel failed: the parcels already booked are kept on
   // shipping/partial, and the retry books only the rest, to the SAME locker.
@@ -429,6 +460,15 @@ export async function bookShipment(order, deps = {}) {
   const plan = await planShipment(planOrder, { db, client, products, geocoder });
   if (!plan.ok) {
     log(`bookShipment ${key} REFUSED ${plan.reason}`);
+    // THE ADDRESS GATE: the hold goes on the order (live only: a dry run asks nobody), once per address.
+    if (plan.addressHold) {
+      let held = null;
+      if (await readLive(db).catch(() => false)) {
+        try { held = (await raiseHold(db, key, plan.addressHold, { now: now() })).hold; }
+        catch (e) { log(`bookShipment ${key} address hold NOT RECORDED: ${e?.message || e}`); }
+      }
+      return { skipped: true, reason: plan.reason, addressHold: plain(held ?? plan.addressHold), parcel: plan.parcel ?? null };
+    }
     // No locker for this address: the reason goes on the order, and (live only) one line to Junid.
     const line = plan.attention && plan.junidLine && (await readLive(db).catch(() => false)) ? plan.junidLine : null;
     return {

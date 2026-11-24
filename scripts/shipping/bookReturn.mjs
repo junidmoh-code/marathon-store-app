@@ -64,6 +64,7 @@ import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { tcgParcels, lockerCollection } from "./quote.mjs";
 import { readLive, isExchangeKey } from "./bookShipment.mjs";
 import { fileLogger } from "./courier-client.mjs";
+import { addressGate } from "./addressHold.mjs";
 
 // The parcel's locker size → the compartment names TCG lists on a locker (available_compartment_sizes "V4-M").
 const SIZES = ["XS", "S", "M", "L", "XL"];
@@ -293,6 +294,10 @@ export async function planReturn(order, { db, client, products = null, email = n
     ...(!n ? ["order number"] : []),
   ];
   if (missing.length) return { ok: false, reason: `missing: ${missing.join(", ")}`, parcel };
+  // THE ADDRESS SAFETY GATE (Junid, 24 Nov 2026; addressHold.mjs): the collection address's postal code and
+  // suburb/town must describe the same place, or nothing is booked (Jamie's return tool reads the refusal).
+  const gate = addressGate(order, cfg);
+  if (gate) return { ok: false, reason: gate.reason, addressHold: gate.hold, parcel };
   // The mobile is what The Courier Guy calls and sends the OTP to: an email alone is not enough on a return. A config
   // gap, not the exchange's: transient, so the booking retries once /config/shipping/returnContact is fixed.
   if (!shopContact.name || !SA_MOBILE.test(shopContact.mobile_number.replace(/[\s-]/g, ""))) {

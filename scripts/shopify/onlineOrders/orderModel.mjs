@@ -184,6 +184,12 @@ export function buildItemLines({ startIndex, item, resolved, pieces }) {
   }));
 }
 
+/** Does the Shopify order carry this tag (any case)? GraphQL gives tags as a list. Pure. */
+export function hasTag(node, tag) {
+  const tags = Array.isArray(node?.tags) ? node.tags : typeof node?.tags === "string" ? node.tags.split(",") : [];
+  return tags.some((t) => String(t).trim().toLowerCase() === String(tag).toLowerCase());
+}
+
 export function buildOrder({ node, lines, nowMs, store = "marathon" }) {
   const order = {
     // The order's NAME is its Shopify number (orderLabel → "#1768"); the
@@ -204,6 +210,10 @@ export function buildOrder({ node, lines, nowMs, store = "marathon" }) {
   // is every order before 2026-11-15) — the POS, the labels and each store's
   // poller tell the two apart by this field.
   if (store && store !== "marathon") order.sourceStore = store;
+  // OWN COURIER (Junid, 24 Nov 2026): a WhatsApp order Jamie created with the Shopify tag "own-courier" — the customer
+  // books their own courier and sends the waybill. Marked on the order so nothing ever books Courier Guy for it
+  // (bookShipment.mjs isOwnCourier); the ship step waits for shipping/ownCourier/waybill (Jamie writes it).
+  if (hasTag(node, "own-courier")) order.shipping = { ...order.shipping, ownCourier: { at: nowMs, tag: "own-courier" } };
   if (!Object.keys(order.shipping).length) delete order.shipping;
   if (!Object.keys(order.customer).length) delete order.customer;
   return order;
