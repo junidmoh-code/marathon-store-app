@@ -59,7 +59,7 @@ const {
   MAX_TARGET, MAX_REORDER_POINT, policyRouting,
 } = require("./category-policy.cjs");
 const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
-const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf,
+const { effectivePolicyFor, locationEntryMode, locationPolicyFor, armedGroupForCategory, carriedOnlyOf,
   FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, FOOTWEAR_OWN_NUMBERS_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
 const { normaliseEmail } = require("./super-admins.cjs");
 const { encodeSizeKey, resolveTarget, policyCategoryKey, maskUntrustedStock } = require("./refill-engine.cjs");
@@ -71,19 +71,18 @@ const CONCRETE_DIVISION_PATH = `config/refillEngine/${CONCRETE_DIVISION_KEY}`;
 const { POLICY_FOLLOW_KEY, POLICY_FOLLOW_ALLOWED, policyFollowMap, policyFollowChain, validatePolicyFollow } = require("./policy-follow.cjs");
 const POLICY_FOLLOW_PATH = `config/refillEngine/${POLICY_FOLLOW_KEY}`;
 
-// PINE FOLLOWS TROPHY on the card (lib/policy-follow.cjs): which location a
-// row's numbers are read from, for the "follows Trophy" chip. With the link
-// on, a non-footwear category that Trophy has numbers for is Trophy's at Pine;
-// one Trophy has none for is the Concrete division's own keep there — never
-// Marathon PE's, whatever the older template says. Display only.
-// Universal policy (Junid, 24 Nov 2026): Trophy's entry, else Marathon PE's
-// (policyFollowChain), else the division's own keep. Concrete never keeps
-// perfumes, so it follows nobody's perfume row.
+// PINE / CONCRETE FOLLOW TROPHY on the card (lib/policy-follow.cjs): which
+// location a row's numbers are read from, for the "follows …" chip. Universal
+// policy (Junid, 24 Nov 2026): Trophy's category entry, else Marathon PE's
+// (policyFollowChain), else the division's own keep — asked with the engine's
+// own test (locationPolicyFor: a usable entry, positive target), so the chip
+// names the shop the scan reads. Concrete never keeps perfumes, so it follows
+// nobody's perfume row. Display only.
 function linkedFollows(cfg, categoryKey, effEntry, base) {
   const out = { ...(base || {}) };
   if (FOOTWEAR_CATEGORY_KEYS.includes(categoryKey)) return out;
   for (const loc of Object.keys(policyFollowMap(cfg))) {
-    const from = policyFollowChain(cfg, loc).find((l) => isPlainObject(effEntry) && locationEntryMode(effEntry[l]) !== "invalid");
+    const from = isPlainObject(effEntry) ? policyFollowChain(cfg, loc).find((l) => !!locationPolicyFor(cfg, categoryKey, l)) : undefined;
     if (loc === "concrete" && categoryKey === "perfumes") delete out[loc];
     else if (from) out[loc] = from;
     else if (concreteDivisionPolicy(cfg)) delete out[loc];
