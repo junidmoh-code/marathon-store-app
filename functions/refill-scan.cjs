@@ -725,7 +725,12 @@ async function runScan(opts) {
         if (await safeUpdate(db, ownerUpd, "division owners")) {
           counts.divisionOwners = { decided: ownerPlan.decided, cleared: ownerPlan.cleared };
         } else {
-          ownerPlan = { ...ownerPlan, effective: Object.fromEntries(Object.entries(owners).filter(([, v]) => v && typeof v === "object")) };
+          // Stored owners stand; a product decided only now is HELD at both shops
+          // (no new request at either) until a later scan saves its owner.
+          const stored = Object.fromEntries(Object.entries(owners).filter(([, v]) => v && typeof v === "object"));
+          for (const [pid, v] of Object.entries(ownerPlan.writes)) if (v && !stored[pid]) stored[pid] = { hold: true };
+          ownerPlan = { ...ownerPlan, effective: stored };
+          counts.divisionOwnersHeldUnsaved = Object.values(stored).filter((v) => v.hold === true).length;
         }
       }
     }

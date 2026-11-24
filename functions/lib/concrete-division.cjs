@@ -326,7 +326,10 @@ function planDivisionOwners({ seats, rawStock, openIndex = {}, refillRequests = 
 function divisionNotOwner(division, dest, pid, size, products, { ignoreLocks = false } = {}) {
   if (!division || !DIVISION_SHOPS.includes(dest)) return false;
   const owner = division.owners?.[pid];
-  if (!divisionIsObj(owner) || !DIVISION_SHOPS.includes(owner.shop) || owner.shop === dest) return false;
+  // HELD: a fresh owner decision the scan could not save — neither shop gets a
+  // new request for it until a scan saves one (the scan sets { hold: true }).
+  const held = divisionIsObj(owner) && owner.hold === true;
+  if (!held && (!divisionIsObj(owner) || !DIVISION_SHOPS.includes(owner.shop) || owner.shop === dest)) return false;
   // Only while the product really is seated at both (a stale record never gates).
   if (!seatedAtBothShops(division.seats, pid)) return false;
   const p = products?.[pid];

@@ -95,6 +95,12 @@ test("a stale owner record never gates a product seated at one shop only", () =>
   assert.equal(dv.divisionNotOwner(division, "marathon-pine", "t1", "S", products), false);
 });
 
+test("an owner the scan could not save holds BOTH shops: no new request at either (substitute review)", () => {
+  const p = plan({ stock: {}, seats: bothSeated(), owners: { t1: { hold: true } } });
+  assert.deepEqual(lines(p, "concrete"), []);
+  assert.deepEqual(lines(p, "marathon-pine"), []);
+});
+
 test("a product row missing for one scan keeps its owner and the gate (review)", () => {
   const kept = { t1: { shop: "concrete", why: "units", at: ISO } };
   const own = dv.planDivisionOwners({ seats: bothSeated(), rawStock: {}, owners: kept, products: {}, nowIso: ISO });
