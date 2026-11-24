@@ -169,7 +169,7 @@ describe("the screen Junid asked for", () => {
     }
     expect(count(tree, MARATHON)).toBe(String(n[MARATHON]));
     expect(count(tree, CONCRETE)).toBe(String(n[CONCRETE]));
-    expect(n).toEqual({ [MARATHON]: 6, [CONCRETE]: 8 });
+    expect(n).toEqual({ [MARATHON]: 6, [CONCRETE]: 7 });   // the hoodie Concrete holds is not listed (Junid, 24 Nov 2026)
   });
 
   it("every card is the same fixed box: photo, name, one stock line, its destinations and the division button", async () => {
@@ -205,7 +205,7 @@ describe("destinations follow the division — on the card, and in what is writt
     expect(updateMock).toHaveBeenCalledTimes(1);          // one tap, one hub, one write
     await division(tree, CONCRETE);
     expect(cardsOf(tree)).toContain("Gazelle Bold");
-    expect(count(tree, CONCRETE)).toBe("8");
+    expect(count(tree, CONCRETE)).toBe("7");
   });
 
   it("Concrete sneakers: one button, Hub 3", async () => {
@@ -260,23 +260,16 @@ describe("only what a solve would send is on the list", () => {
     await division(tree, CONCRETE); await kind(tree, "clothing");
     // Concrete has M of the white tee and is short of S and L; Central has none of it.
     expect(cardsOf(tree)).not.toContain("T shirt white 70740");
-    expect(cardsOf(tree)).toEqual(["Essentials Tee Olive", "Varsity Jacket", "Box Hoodie"]);
+    expect(cardsOf(tree)).toEqual(["Essentials Tee Olive", "Varsity Jacket"]);   // Box Hoodie: Concrete holds it
     expect(textOf(tree)).not.toMatch(/has none/i);
   });
 
-  it("a product short of sizes where one is available is listed, and sends only that size; the stock line is that size's stock", async () => {
+  it("HELD IN THE DIVISION (Junid, 24 Nov 2026): a product a shop of the division holds is not listed — the refill engine tops it up there", async () => {
     const tree = await mount();
     await division(tree, CONCRETE); await kind(tree, "clothing");
-    // Concrete keeps M of the hoodie and is short of S and L; Central has only L (3).
-    expect(stockLine(tree, HOODIE)).toBe("Central 3");
-    expect(live(tree, HOODIE)).toContain("concrete");
-    await tapDest(tree, HOODIE, "concrete");
-    const reqs = requestsIn(lastUpdate());
-    expect(reqs.map((r) => r.size)).toEqual(["L"]);
-    expect(reqs[0].requestingLocation).toBe("concrete");
-    expect(reqs[0].qty).toBeLessThanOrEqual(3);
-    // nothing is written for the size Central does not have
-    expect(Object.keys(lastUpdate()).some((k) => /\/S$/.test(k))).toBe(false);
+    // Concrete keeps M of the hoodie (short of S and L): Concrete holds it, so it is Concrete's to refill.
+    expect(cardsOf(tree)).not.toContain("Box Hoodie");
+    expect(card(tree, HOODIE)).toBeFalsy();
   });
 
   it("the stock line agrees with the payload: every size sent is one it counted, and never more than it counted", async () => {
@@ -692,17 +685,24 @@ describe("choose, then Solve (Junid, 22 Nov 2026)", () => {
     expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
   });
 
-  it("Marathon's shops may both be chosen, and one Solve sends to both (as that list always allowed)", async () => {
+  it("Marathon's shops are one or the other, like Pine and Concrete (Junid, 24 Nov 2026): choosing Trophy switches Marathon PE off", async () => {
     const tree = await mount();
     await kind(tree, "clothing");
     await pick(tree, TEE, "marathon-pe");
     await pick(tree, TEE, "trophy");
-    expect(picked(tree, TEE)).toEqual(["marathon-pe", "trophy"]);
+    expect(picked(tree, TEE)).toEqual(["trophy"]);
     await solve(tree, TEE);
     expect(updateMock).toHaveBeenCalledTimes(1);
     const locs = stockLocs(lastUpdate());
-    expect(locs).toContain("marathon-pe"); expect(locs).toContain("trophy");
-    expect(toast(tree).text).toMatch(/Marathon PE \+ Trophy/);
+    expect(locs).toContain("trophy"); expect(locs).not.toContain("marathon-pe");
+  });
+
+  it("a Marathon product a Marathon shop holds is not on Marathon's list", async () => {
+    const st = baseStock(); st["marathon-pe"] = { ...(st["marathon-pe"] || {}), [TEE]: { S: cell(1) } };
+    emit("stock", st);
+    const tree = await mount();
+    await kind(tree, "clothing");
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
   });
 
   it("a choice on one card touches no other card", async () => {
@@ -756,23 +756,18 @@ describe("one product, one shop — Pine or Concrete, never both", () => {
     expect(picked(tree, TEE)).toEqual([]);
   });
 
-  it("owned by Concrete (stock there) → Pine is not offered at all", async () => {
+  it("held by Concrete (stock there) → not listed at all (Junid, 24 Nov 2026)", async () => {
     const st = baseStock(); st.concrete[TEE] = { S: cell(2) };     // Concrete keeps S; Central has M and L for it
     emit("stock", st);
     const tree = await conc();
-    expect(offered(tree, TEE)).toEqual(["concrete"]);
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
   });
 
-  it("owned by Pine (seated there, no units) → Concrete is not offered at all", async () => {
+  it("held by Pine (seated there, no units) → not listed at all", async () => {
     emit("refill_engine/seats/marathon-pine", { [TEE]: { at: "2026-11-22T09:00:00.000Z", via: "cell" } });
     const tree = await conc();
-    expect(offered(tree, TEE)).toEqual(["marathon-pine"]);
-    // …and the card says why: "Pine's" in Concrete's place, as text, not a button.
-    const note = card(tree, TEE).findAll((n) => n.props && n.props["data-held-at"] === "concrete");
-    expect(note.length).toBe(1);
-    expect(note[0].type).toBe("span");
-    expect(note[0].props["data-held-for"]).toBe("marathon-pine");
-    expect(note[0].children.join("")).toBe("Pine\u2019s");
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
+    expect(host(tree, "data-held-at").length).toBe(0);   // no ownership note any more
   });
 
   it("owned by Concrete with nothing to send there → not on the list at all, and never offered to Pine instead", async () => {
@@ -801,14 +796,13 @@ describe("one product, one shop — Pine or Concrete, never both", () => {
     emit("refill_requests", reqs);
     const second = await conc();                                 // a reload, or another phone
     // still missing at Concrete's end? never offered there: Pine owns it now
-    if (card(second, TEE)) expect(offered(second, TEE)).toEqual(["marathon-pine"]);
-    else expect(cardsOf(second)).not.toContain("Essentials Tee Olive");
+    expect(cardsOf(second)).not.toContain("Essentials Tee Olive");
   });
 
-  it("a request to Pine that is fully sent but still open (units on the way) keeps it Pine's", async () => {
+  it("a request to Pine that is fully sent but still open (units on the way) keeps it Pine's: not listed", async () => {
     emit("refill_requests", { r1: { productId: TEE, size: "M", qty: 2, sentQty: 2, requestingLocation: "marathon-pine", status: "open", createdFrom: { source: "central" } } });
     const tree = await conc();
-    expect(offered(tree, TEE)).toEqual(["marathon-pine"]);
+    expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
   });
 
   it("a choice that stops applying (the product became the other shop's) never leaves Solve green", async () => {
@@ -816,11 +810,9 @@ describe("one product, one shop — Pine or Concrete, never both", () => {
     await pick(tree, TEE, "concrete");
     expect(solveBtn(tree, TEE).props["aria-disabled"]).toBe(false);
     await act(async () => { emit("refill_engine/seats/marathon-pine", { [TEE]: { at: "2026-11-22T10:00:00.000Z" } }); });
-    for (let i = 0; i < 40 && offered(tree, TEE).includes("concrete"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
-    expect(offered(tree, TEE)).toEqual(["marathon-pine"]);
-    expect(picked(tree, TEE)).toEqual([]);
-    expect(solveBtn(tree, TEE).props["aria-disabled"]).toBe(true);
-    await solve(tree, TEE);
+    for (let i = 0; i < 40 && card(tree, TEE) && cardsOf(tree).includes("Essentials Tee Olive") && offered(tree, TEE).includes("concrete"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+    // Pine holds it now: the card leaves (it may still be closing), and nothing is ever sent
+    if (card(tree, TEE) && solveBtn(tree, TEE)) await solve(tree, TEE);
     expect(updateMock).not.toHaveBeenCalled();
   });
 

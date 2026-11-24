@@ -41,6 +41,7 @@ export const REASONS = Object.freeze({
   requested:    { text: "Requested — waiting at Central", group: "rule" },
   emptyRows:    { text: "Empty rows at a shop, no request", group: "rule" },
   bothShops:    { text: "At both Pine and Concrete", group: "rule" },
+  heldInDivision: { text: "A shop in this division holds it — refilled there", group: "rule" },
   noPolicy:     { text: "No policy", group: "rule" },
   allPromised:  { text: "All promised to open requests", group: "rule" },
   noSize:       { text: "Central has none of the sizes it needs", group: "rule" },

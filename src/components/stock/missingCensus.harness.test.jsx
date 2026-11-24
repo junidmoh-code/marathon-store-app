@@ -46,6 +46,9 @@ vi.mock("./missingListCore", async () => {
     ...real,
     productRow: (a) => { const row = real.productRow(a); seen.push({ kind: "clothing", a, row }); return row; },
     sneakerRow: (a) => { const row = real.sneakerRow(a); seen.push({ kind: "sneakers", a, row }); return row; },
+    // The screen asks the decide* forms (with the reason); record those too.
+    decideProductRow: (a) => { const d = real.decideProductRow(a); seen.push({ kind: "clothing", a, row: d.row, why: d.why }); return d; },
+    decideSneakerRow: (a) => { const d = real.decideSneakerRow(a); seen.push({ kind: "sneakers", a, row: d.row, why: d.why }); return d; },
   };
 });
 
@@ -150,6 +153,16 @@ describe.skipIf(!SNAP)("census of the real Missing Products lists", () => {
       else own.both += 1;
     }
     out.concreteOwnership = own;
+    // Every clothing decision, for before/after comparisons (CENSUS_ROWS_OUT).
+    if (process.env.CENSUS_ROWS_OUT) {
+      const rows = {};
+      for (const [k, s2] of last) {
+        if (!k.includes(":clothing:")) continue;
+        const [sec] = k.split(":");
+        (rows[sec] ||= []).push({ pid: s2.a.card.pid, name: s2.a.card.name, owners: s2.a.owners || null, dests: s2.row ? s2.row.dests.map((x) => x.id) : null });
+      }
+      writeFileSync(process.env.CENSUS_ROWS_OUT, JSON.stringify(rows));
+    }
     console.log("OWNERSHIP", JSON.stringify(own));
     if (process.env.CENSUS_OUT) writeFileSync(process.env.CENSUS_OUT, JSON.stringify(out, null, 1));
     console.log(JSON.stringify({ ...out, divisions: Object.fromEntries(Object.entries(out.divisions).map(([k, v]) => [k, { ...v, needsPolicy: v.needsPolicy.length }])) }, null, 1));
