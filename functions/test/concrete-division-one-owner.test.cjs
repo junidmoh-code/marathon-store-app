@@ -54,9 +54,45 @@ test("the owner: more units wins; a tie goes to the older seat; still a tie → 
 test("units already on their way count: a shop whose open request is about to land is not handed to the other (review)", () => {
   const rawStock = { concrete: { t1: { S: shelf(1) } }, "marathon-pine": {} };
   const openIndex = { "marathon-pine": { t1: { S: { refillId: "r1", qty: 2 }, M: { refillId: "r2", qty: 2 } } } };
-  const c = dv.chooseDivisionOwner({ seats: bothSeated(), rawStock, openIndex, pid: "t1" });
+  const refillRequests = { r1: { status: "open" }, r2: { status: "open" } };
+  const c = dv.chooseDivisionOwner({ seats: bothSeated(), rawStock, openIndex, refillRequests, pid: "t1" });
   assert.equal(c.shop, "marathon-pine");
   assert.deepEqual(c.inbound, { concrete: 0, "marathon-pine": 4 });
+});
+
+test("a lock whose request was already fulfilled is not 'on its way' (CodeRabbit)", () => {
+  const rawStock = { concrete: { t1: { S: shelf(3) } }, "marathon-pine": { t1: { S: shelf(2) } } };
+  const openIndex = { "marathon-pine": { t1: { S: { refillId: "r1", qty: 2 } } } };
+  const fulfilled = { r1: { status: "fulfilled" } };
+  assert.equal(dv.chooseDivisionOwner({ seats: bothSeated(), rawStock, openIndex, refillRequests: fulfilled, pid: "t1" }).shop, "concrete");
+  const open = { r1: { status: "open" } };
+  assert.equal(dv.chooseDivisionOwner({ seats: bothSeated(), rawStock, openIndex, refillRequests: open, pid: "t1" }).shop, "marathon-pine");
+});
+
+test("a non-owner lock closed in the same plan never lets the deficit loop raise a NEW request there (CodeRabbit)", () => {
+  const owners = { t1: { shop: "concrete", why: "units", at: ISO } };
+  // Pine's request was fulfilled and the units sold before this scan: the lock is still in the snapshot.
+  const openIndex = { "marathon-pine": { t1: { S: { refillId: "r1", qty: 2, source: "central", createdAt: ISO } } } };
+  const refillRequests = { r1: { productId: "t1", size: "S", qty: 2, status: "fulfilled", requestingLocation: "marathon-pine", createdAt: ISO, createdFrom: { engine: true, source: "central" } } };
+  const p = plan({ stock: { "marathon-pine": { t1: { S: shelf(0) } } }, seats: bothSeated(), owners, openIndex, refillRequests });
+  assert.ok(p.closes.some((c) => c.dest === "marathon-pine" && c.refillId === "r1"), "the stale lock is reconciled");
+  assert.deepEqual(lines(p, "marathon-pine"), [], "…and nothing new is raised at Pine");
+});
+
+test("the Decision Queue does not ask about a stocked product at the shop that does not own it (CodeRabbit)", () => {
+  // Pine owns it; Concrete still holds COUNTED (trusted) units — the cells the queue reads.
+  const owners = { t1: { shop: "marathon-pine", why: "units", at: ISO } };
+  const cfg = { ...config(), concreteDivision: { shopOnly: { perSize: 2, oneSize: 5 } } };
+  const trustedCell = (qty) => ({ ...counted(qty), trusted: true, trustedVia: "refill", trustedAt: ISO });
+  const stock = { central: CENTRAL, hub3: {}, concrete: { t1: { S: trustedCell(3), M: trustedCell(1) } }, "marathon-pine": { t1: { S: trustedCell(5) } } };
+  const p = computeRefillPlan({ nowMs: NOW, config: cfg, targets: {}, products, openIndex: {}, refillRequests: {}, orders: {}, movements: [], stock, network: reg.SEED_REGISTRY, seats: bothSeated(), divisionOwners: owners });
+  const asked = (p.exceptions.noTarget?.items || []).filter((x) => x.pid === "t1");
+  assert.deepEqual(asked, []);
+});
+
+test("a stale owner record never gates a product seated at one shop only", () => {
+  const division = { owners: { t1: { shop: "concrete" } }, openIndex: {}, seats: { concrete: {}, "marathon-pine": { t1: seatAt(ISO) } } };
+  assert.equal(dv.divisionNotOwner(division, "marathon-pine", "t1", "S", products), false);
 });
 
 test("a product row missing for one scan keeps its owner and the gate (review)", () => {

@@ -252,20 +252,28 @@ const shopUnits = (rawStock, loc, pid) => {
   return n;
 };
 const seatedAtBothShops = (seats, pid) => DIVISION_SHOPS.every((s) => divisionIsObj(seats?.[s]?.[pid]));
-// Units already on their way to a shop: the open engine locks for the product there.
-const shopInbound = (openIndex, loc, pid) => {
+// Units already on their way to a shop: the open engine locks for the product
+// there whose request is still OPEN. A lock left behind by a request that was
+// fulfilled (or closed) since — the scan reconciles it later — is not inbound:
+// those units are already on the shelf, or never coming (CodeRabbit, #978).
+const shopInbound = (openIndex, loc, pid, refillRequests) => {
   const bySize = openIndex?.[loc]?.[pid];
   if (!divisionIsObj(bySize)) return 0;
   let n = 0;
-  for (const e of Object.values(bySize)) if (divisionIsObj(e)) n += Math.max(Number(e.qty) || 0, 0);
+  for (const e of Object.values(bySize)) {
+    if (!divisionIsObj(e) || !e.refillId) continue;
+    const rr = refillRequests?.[e.refillId];
+    if (!divisionIsObj(rr) || rr.status !== "open") continue;
+    n += Math.max(Number(e.qty) || 0, 0);
+  }
   return n;
 };
 
 /** Who owns a both-seated product, by the rule above. → { shop, why, units, inbound }. Pure. */
-function chooseDivisionOwner({ seats, rawStock, openIndex, pid }) {
+function chooseDivisionOwner({ seats, rawStock, openIndex, refillRequests, pid }) {
   const [a, b] = DIVISION_SHOPS; // "concrete", "marathon-pine"
   const units = { [a]: shopUnits(rawStock, a, pid), [b]: shopUnits(rawStock, b, pid) };
-  const inbound = { [a]: shopInbound(openIndex, a, pid), [b]: shopInbound(openIndex, b, pid) };
+  const inbound = { [a]: shopInbound(openIndex, a, pid, refillRequests), [b]: shopInbound(openIndex, b, pid, refillRequests) };
   const held = (s) => units[s] + inbound[s];
   if (held(a) !== held(b)) return { shop: held(a) > held(b) ? a : b, why: "units", units, inbound };
   const at = (s) => String(seats?.[s]?.[pid]?.at || "");
@@ -279,7 +287,7 @@ function chooseDivisionOwner({ seats, rawStock, openIndex, pid }) {
  *   owners  what DIVISION_OWNER_PATH holds now
  * → { effective: { pid: owner }, writes: { pid: owner | null }, decided, cleared }
  */
-function planDivisionOwners({ seats, rawStock, openIndex = {}, owners, products, nowIso }) {
+function planDivisionOwners({ seats, rawStock, openIndex = {}, refillRequests = {}, owners, products, nowIso }) {
   const effective = {};
   const writes = {};
   let decided = 0, cleared = 0;
@@ -290,7 +298,7 @@ function planDivisionOwners({ seats, rawStock, openIndex = {}, owners, products,
     if (!p || isDivisionFootwear(p) || SEAT_PID_BAD.test(pid)) continue;
     const have = kept[pid];
     if (divisionIsObj(have) && DIVISION_SHOPS.includes(have.shop)) { effective[pid] = have; continue; }
-    const c = chooseDivisionOwner({ seats, rawStock, openIndex, pid });
+    const c = chooseDivisionOwner({ seats, rawStock, openIndex, refillRequests, pid });
     effective[pid] = writes[pid] = { shop: c.shop, why: c.why, units: c.units, inbound: c.inbound, at: nowIso };
     decided++;
   }
@@ -315,15 +323,35 @@ function planDivisionOwners({ seats, rawStock, openIndex = {}, owners, products,
  * for a division shop, a non-footwear product with an owner recorded this scan
  * that is the OTHER shop, and no engine lock already open for this size there.
  */
-function divisionNotOwner(division, dest, pid, size, products) {
+function divisionNotOwner(division, dest, pid, size, products, { ignoreLocks = false } = {}) {
   if (!division || !DIVISION_SHOPS.includes(dest)) return false;
   const owner = division.owners?.[pid];
   if (!divisionIsObj(owner) || !DIVISION_SHOPS.includes(owner.shop) || owner.shop === dest) return false;
+  // Only while the product really is seated at both (a stale record never gates).
+  if (!seatedAtBothShops(division.seats, pid)) return false;
   const p = products?.[pid];
   if (!p || isDivisionFootwear(p)) return false;
   const t = String(size == null ? "" : size).trim();
   const key = t ? t.replace(/[.#$/\[\]\s]/g, "_") : "_"; // the engine's encodeSizeKey
+  if (ignoreLocks) return true;
   return !division.openIndex?.[dest]?.[pid]?.[key];
+}
+
+/**
+ * THE BACKSTOP for new requests (CodeRabbit, #978). A lock in the scan's
+ * snapshot keeps the other shop's keep alive so its open request reconciles
+ * and resizes as usual — but if that lock is closed in the same plan (its
+ * request was fulfilled and the stock sold, say), the deficit loop must not
+ * read the same snapshot lock and raise a NEW request there. Every engine
+ * intent passes this: refused at a non-owner shop whatever the locks say,
+ * unless Junid's own explicit row covers the cell (explicit still wins).
+ */
+function divisionRefusesNewRequest(division, intent, products, targets) {
+  if (!intent || !divisionNotOwner(division, intent.dest, intent.productId, intent.size, products, { ignoreLocks: true })) return false;
+  const t = String(intent.size == null ? "" : intent.size).trim();
+  const key = t ? t.replace(/[.#$/\[\]\s]/g, "_") : "_";
+  const row = targets?.[intent.dest]?.[intent.productId]?.[key];
+  return !(divisionIsObj(row) && typeof row.target === "number");
 }
 
 // Movement types that take units OUT of a location by a person's move. A sale,
@@ -594,6 +622,6 @@ module.exports = {
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
   DIVISION_NEVER_KEEPS, divisionNeverKeeps, hub3Refuses, divisionRefuses, divisionTargetShape, isSeatedAtShop, divisionShopCarries, divisionTarget, divisionSourceFor, divisionManagedPids,
   SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats, divisionKeepCounts,
-  DIVISION_OWNER_PATH, chooseDivisionOwner, planDivisionOwners, divisionNotOwner,
+  DIVISION_OWNER_PATH, chooseDivisionOwner, planDivisionOwners, divisionNotOwner, divisionRefusesNewRequest,
   SEAT_HISTORY_SINCE, SEAT_RELEASES_PATH, seatsBy, seatedIntentTrusted, HUB3_SNEAKER_KEEP, JUNID_DIVISION_KEEPS, divisionExpectedTarget, divisionAuditVerdict,
 };

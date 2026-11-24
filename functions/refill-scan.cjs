@@ -716,7 +716,18 @@ async function runScan(opts) {
       // at both Pine and Concrete is supplied to one of them. The owners are one
       // small node (only products seated at both), decided once and kept.
       const owners = (await db.ref(concreteDivision.DIVISION_OWNER_PATH).once("value")).val() || {};
-      ownerPlan = concreteDivision.planDivisionOwners({ seats: seatPlan.effective, rawStock: stock, openIndex, owners, products, nowIso: new Date(nowMs).toISOString() });
+      ownerPlan = concreteDivision.planDivisionOwners({ seats: seatPlan.effective, rawStock: stock, openIndex, refillRequests, owners, products, nowIso: new Date(nowMs).toISOString() });
+      // PERSIST FIRST (CodeRabbit, #978): an owner the plan acts on must be the
+      // one the next scan reads. If the write fails, this scan plans with the
+      // owners already stored only — a new decision waits for a scan that saves it.
+      if (Object.keys(ownerPlan.writes).length) {
+        const ownerUpd = Object.fromEntries(Object.entries(ownerPlan.writes).map(([pid, v]) => [`${concreteDivision.DIVISION_OWNER_PATH}/${pid}`, v]));
+        if (await safeUpdate(db, ownerUpd, "division owners")) {
+          counts.divisionOwners = { decided: ownerPlan.decided, cleared: ownerPlan.cleared };
+        } else {
+          ownerPlan = { ...ownerPlan, effective: Object.fromEntries(Object.entries(owners).filter(([, v]) => v && typeof v === "object")) };
+        }
+      }
     }
     const seatArgs = seatPlan ? { seats: seatPlan.effective, divisionOwners: ownerPlan ? ownerPlan.effective : {} } : {};
     const plan = pausedLocations.withoutPausedDestinations(engine.computeRefillPlan({
@@ -729,10 +740,6 @@ async function runScan(opts) {
         ...Object.entries(seatPlan.releaseWrites || {}).map(([k, v]) => [`${concreteDivision.SEAT_RELEASES_PATH}/${k}`, v]),
       ]);
       if (await safeUpdate(db, seatUpd, "division seats")) counts.seats = { seated: seatPlan.seated, released: seatPlan.released };
-    }
-    if (ownerPlan && Object.keys(ownerPlan.writes).length) {
-      const ownerUpd = Object.fromEntries(Object.entries(ownerPlan.writes).map(([pid, v]) => [`${concreteDivision.DIVISION_OWNER_PATH}/${pid}`, v]));
-      if (await safeUpdate(db, ownerUpd, "division owners")) counts.divisionOwners = { decided: ownerPlan.decided, cleared: ownerPlan.cleared };
     }
     if (ownerPlan) counts.divisionOwnersHeld = Object.keys(ownerPlan.effective).length;
     if (paused.size) counts.paused = { locations: [...paused].sort(), held: plan.pausedDropped || {} };

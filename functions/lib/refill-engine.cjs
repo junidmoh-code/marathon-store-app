@@ -34,7 +34,7 @@ const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_C
 const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, pickInProgress, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 const { withPolicyTemplates } = require("./policy-template.cjs");
 const { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } = require("./central-fed.cjs");
-const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict, divisionNeverKeeps, hub3Refuses, concreteDivisionPolicy, divisionShopCarries, divisionNotOwner } = require("./concrete-division.cjs");
+const { DIVISION_HUB, DIVISION_SHOPS, DIVISION_LOCATIONS, divisionContext, divisionTarget, divisionSourceFor, divisionManagedPids, divisionSizes, isDivisionFootwear, isSeatedAtShop, divisionExpectedTarget, divisionAuditVerdict, divisionNeverKeeps, hub3Refuses, concreteDivisionPolicy, divisionShopCarries, divisionNotOwner, divisionRefusesNewRequest } = require("./concrete-division.cjs");
 const { policyFollowOf, followedTarget } = require("./policy-follow.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
@@ -2510,8 +2510,12 @@ function computeRefillPlan(snapshot) {
   // The scan drops the paused location's closes/resizes/retries as well
   // (lib/paused-locations.cjs withoutPausedDestinations).
   const pausedDests = pausedLocationSet(rawConfig);
+  // ONE SHOP PER PRODUCT (Pine / Concrete, Junid 24 Nov 2026): no NEW request
+  // at the shop that does not own a both-seated product, whatever the snapshot
+  // locks say (lib/concrete-division.cjs divisionRefusesNewRequest).
   const routedIntents = intents.filter((i) => {
     if (pausedDests.size && pausedDests.has(i.dest)) return false;
+    if (division && divisionRefusesNewRequest(division, i, products, targets)) return false;
     if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations, routing, product: products?.[i.productId], pid: i.productId, size: i.size })) return true;
     errors.push(`intent refused: ${i.dest} ← ${i.source} for ${i.productId} ${i.size} — a shop refills from its hub`);
     return false;
@@ -2836,15 +2840,21 @@ function computeRefillPlan(snapshot) {
   // blind spot even though no target resolves. Collapsing those two states was
   // the v5 three-state rule's whole point ("no target" ≠ "target 0"), and the
   // suite caught it: using targetResolves here re-flagged every excluded cell.
+  // ONE SHOP PER PRODUCT (Pine / Concrete, 24 Nov 2026): at the shop that does
+  // not own a both-seated product, "no target" IS the decision — the rule made
+  // it. Neither queue may ask staff to decide it again (CodeRabbit, #978).
+  const ownedElsewhere = (loc, pid) => !!division && divisionNotOwner(division, loc, pid, "", products, { ignoreLocks: true });
   const sizeDecided = (loc, pid, sizeKey) => {
     const explicit = targets?.[loc]?.[pid]?.[sizeKey];
     if (explicit && typeof explicit.target === "number") return true;   // incl. 0
+    if (ownedElsewhere(loc, pid)) return true;
     return targetResolves(loc, pid, rawSize(pid, sizeKey));
   };
   // Explicit rows (INCLUDING an explicit 0 = "deliberately excluded here") count
   // as managed — a human already decided. Otherwise fall back to the rule.
   const managedHere = (loc, pid) => {
     if (targets?.[loc]?.[pid]) return true;
+    if (ownedElsewhere(loc, pid)) return true;
     // The category policy is a decision too — and it survives the kill switch
     // (resolveTarget's branch order), so it must be consulted BEFORE the
     // switch return below. Skipping this had the Decision Queue calling a
