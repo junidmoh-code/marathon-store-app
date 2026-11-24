@@ -24,7 +24,8 @@
 // than `at`. It needs no clean-up to stop applying: the next movement on the
 // cell ends it by itself. cell-holds.mjs --prune removes the dead rows.
 //
-// Kill switch: /config/onlineOrders/pickable/holdsOff = true (read every tick).
+// Kill switch: /config/onlineOrders/pickable/holdsOff = true (read by every
+// tick; a long-running process picks it up within a minute).
 //
 // THE LONE STALE PIECE (same report, section 3). The one clearly defined class
 // that fails more often than it succeeds: a cell at Marathon PE showing exactly

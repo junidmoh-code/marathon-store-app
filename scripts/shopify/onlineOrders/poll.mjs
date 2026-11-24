@@ -229,7 +229,7 @@ export async function runOrdersPoll(deps) {
         // The POS "Order it now" (orderNowRequests.mjs): a grey line whose item
         // is back in stock goes to reroute, and maintainOrder below routes and
         // raises it exactly like a new order's line.
-        if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor: (c, i, list, own) => availabilityFor(c, i, list, own, { trustCells: true }), resolveVariant })) {
+        if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor: (c, i, list, own) => availabilityFor(c, i, list, own, { trustBefore: c.now }), resolveVariant })) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
         // The order agent's re-pick (agentRepick.mjs, Junid 14 Nov 2026): a line a
@@ -407,12 +407,13 @@ async function resolveVariant(ctx, variantGid, productGid, variantTitle) {
 //
 // SHELF HOLDS (pickableStock.mjs, Junid 24 Nov 2026): a cell that rejected a
 // website pick and has not moved since counts as empty here, so no line is
-// sent back to a shelf that already said "not here". `trustCells` is for the
-// POS "Order it now": a person who has the item in their hand is the newer
-// evidence, so that one re-route reads the cells as they are.
-async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}, { trustCells = false } = {}) {
+// sent back to a shelf that already said "not here". `trustBefore` is for the
+// POS "Order it now": a person who has the item in their hand is newer
+// evidence than a rejection made BEFORE they said so, so holds stamped up to
+// that moment are not applied. A rejection made after it still is.
+async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}, { trustBefore = null } = {}) {
   const out = {};
-  const rules = trustCells ? null : await readPickableRules(ctx.get, ctx.now);
+  const rules = await readPickableRules(ctx.get, ctx.now);
   for (const r of resolvedList) {
     const key = `${r.pid}|${r.sizeKey}`;
     if (out[key]) continue;
@@ -423,6 +424,7 @@ async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}, { trus
       try { holds = await ctx.get(`${CELL_HOLDS_PATH}/${r.pid}/${r.sizeKey}`); } catch (e) { ctx.log?.(`  ⚠ shelf holds for ${key} unreadable (${String(e?.message || e)}) — routed without them`); }
       for (const loc of holds ? ROUTED_LOCATIONS : []) {
         if (!holds[loc] || stockQty[loc] <= 0) continue;
+        if (trustBefore != null && Number(holds[loc].at) <= trustBefore) continue;
         const updatedAt = await ctx.get(`stock/${loc}/${r.pid}/${r.sizeKey}/updatedAt`);
         if (cellHeld(holds, loc, { qty: stockQty[loc], updatedAt }, rules)) stockQty[loc] = 0;
       }
@@ -677,8 +679,13 @@ async function maintainOrder(ctx, id, order) {
     // cells as they are, shelf holds or not: the person who found the item is
     // newer evidence than the rejection (orderNowRequests.mjs checked it the
     // same way a moment ago). The hold it lands on is lifted below.
-    const found = routable.filter((x) => foundJustNow(before[x.i], now));
-    if (found.length) Object.assign(available, await availabilityFor(ctx, id, found.map((x) => x.r), ownOther, { trustCells: true }));
+    // Only for a size no other line of this batch is being re-routed for: one
+    // availability picture serves a whole size, and a line sent back another
+    // way (Resolve, the agent) must not ride past a hold on this one's word.
+    const keyOf = (x) => `${x.r.pid}|${x.r.sizeKey}`;
+    const found = routable.filter((x) => foundJustNow(before[x.i], now) && !routable.some((y) => keyOf(y) === keyOf(x) && !foundJustNow(before[y.i], now)));
+    for (const x of found) Object.assign(available, await availabilityFor(ctx, id, [x.r], ownOther, { trustBefore: Number(before[x.i].orderNow.appliedAt) }));
+    const foundLines = new Set(found.map((x) => x.i));
     const routed = routeLines(routable.map((x) => ({ key: `${x.r.pid}|${x.r.sizeKey}`, qty: Number(before[x.i].qty) || 1, isFootwear: x.r.isFootwear })), available);
     const holdsToLift = [];
     let k = 0;
@@ -698,7 +705,7 @@ async function maintainOrder(ctx, id, order) {
       // 20 Nov 2026) comes back as qty-1 lines, the extra units appended.
       const pieces = unitPieces(routed[k++]);
       const total = pieces.length;
-      if (foundJustNow(old, now)) holdsToLift.push(...pieces.filter((p) => p.locationId).map((p) => ({ pid: r.pid, sizeKey: r.sizeKey, loc: p.locationId })));
+      if (foundLines.has(i)) holdsToLift.push(...pieces.filter((p) => p.locationId).map((p) => ({ pid: r.pid, sizeKey: r.sizeKey, loc: p.locationId, before: Number(old.orderNow.appliedAt) })));
       pieces.forEach((piece, n) => {
         const unitOf = n === 0
           ? (old.units > 1 ? { unit: old.unit, units: old.units } : total > 1 ? { unit: 1, units: total } : {})
@@ -833,12 +840,14 @@ const foundJustNow = (line, now) => {
 
 // "Order it now" routed a line to a held cell: the hold goes (a person found
 // the piece there), and the website is told so it counts the piece again.
-async function liftCellHold(ctx, { pid, sizeKey, loc }) {
+// Only a hold stamped up to the moment the person said so: a rejection made
+// after that is newer evidence again and stays.
+async function liftCellHold(ctx, { pid, sizeKey, loc, before }) {
   const { db } = ctx;
   try {
     const path = `${CELL_HOLDS_PATH}/${pid}/${sizeKey}/${loc}`;
-    if (!(await ctx.get(path))) return false;
-    await db.ref(path).set(null);
+    const res = await db.ref(path).transaction((cur) => (cur == null ? null : Number(cur.at) <= before ? null : undefined));
+    if (!res.committed || res.snapshot.exists()) return false;
     for (const dirty of ALL_DIRTY_PATHS) await db.ref(`${dirty}/${pid}`).set(ctx.increment(1));
     ctx.log?.(`  ~ shelf hold lifted: ${pid} size ${sizeKey} at ${loc} (found: Order it now)`);
     return true;
@@ -855,7 +864,9 @@ async function holdCell(ctx, { pid, sizeKey, loc, kind, orderId, line, by = null
     if (qty <= 0) return false; // nothing on paper there: nothing to hide
     const row = holdRow({ pid, sizeKey, loc, at: at ?? now, kind, orderId, line, qty, by });
     if (!row) return false;
-    await db.ref(row.path).set(row.value);
+    // Never backwards: a late retry carrying an older rejection leaves a newer hold as it is.
+    const res = await db.ref(row.path).transaction((cur) => (cur != null && Number(cur.at) > row.value.at ? undefined : row.value));
+    if (!res.committed) return false;
     for (const dirty of ALL_DIRTY_PATHS) await db.ref(`${dirty}/${pid}`).set(ctx.increment(1));
     ctx.log?.(`  ~ shelf hold: ${pid} size ${sizeKey} at ${loc} (${kind}, ${qty} on paper) — off the website until that shelf moves`);
     return true;

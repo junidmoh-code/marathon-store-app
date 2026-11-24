@@ -189,5 +189,25 @@ describe("a held shelf and the lines that are waiting", () => {
     expect(line(f, "9001").source.locationId).toBeUndefined();
     expect(f.read(`${CELL_HOLDS_PATH}/SNK/8/hub1`)).not.toBe(null);
   });
-});
 
+  it("Order it now does not excuse a rejection made AFTER it: the newer hold stands and the line is not sent back", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SNK: { 8: { qty: 2, updatedAt: "2026-11-01T08:00:00.000Z" } } } } }));
+    await rejectedAtHub1(f);
+    // Found and ordered five minutes ago, picked, then the hub said Out of Stock again two minutes ago.
+    await f.db.ref("online_orders/9001/lines/0/orderNow").set({ rid: "0_0", appliedAt: NOW - 5 * 60e3, at: NOW - 6 * 60e3 });
+    await f.db.ref(`${CELL_HOLDS_PATH}/SNK/8/hub1`).set({ at: NOW - 2 * 60e3, kind: "hub_out_of_stock", orderId: "9001", line: 0 });
+    await f.db.ref("online_orders/9001/lines/0/source/status").set("reroute"); // Settings → Resolve
+    await runOrdersPoll(deps(f));
+    expect(line(f, "9001").source.status).toBe("no_stock");
+    expect(f.read(`${CELL_HOLDS_PATH}/SNK/8/hub1/at`)).toBe(NOW - 2 * 60e3);
+  });
+
+  it("a late retry of an older rejection never moves a newer hold backwards", async () => {
+    const f = fakeDb(world());
+    await runOrdersPoll(deps(f, [shopifyOrder(9001, 2501)]));
+    await f.db.ref(`${CELL_HOLDS_PATH}/SNK/8/hub1`).set({ at: NOW - 60e3, kind: "shop_not_found", orderId: "8000", line: 0 });
+    await f.db.ref(`orders/${line(f, "9001").source.orderKeys[0]}`).update({ status: "out_of_stock", outOfStockAt: new Date(NOW - 3600e3).toISOString() });
+    await runOrdersPoll(deps(f));
+    expect(f.read(`${CELL_HOLDS_PATH}/SNK/8/hub1`)).toMatchObject({ at: NOW - 60e3, orderId: "8000" });
+  });
+});

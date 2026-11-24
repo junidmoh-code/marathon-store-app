@@ -118,8 +118,8 @@ async function main() {
         let removed = 0;
         for (const h of dead) {
           // Only the row that was judged: a fresh rejection written meanwhile is kept.
-          const res = await db.ref(`${CELL_HOLDS_PATH}/${h.pid}/${h.sizeKey}/${h.loc}`).transaction((cur) => (cur && Number(cur.at) === Number(h.hold.at) ? null : undefined));
-          if (res.committed) removed += 1;
+          const res = await db.ref(`${CELL_HOLDS_PATH}/${h.pid}/${h.sizeKey}/${h.loc}`).transaction((cur) => (cur == null ? null : Number(cur.at) === Number(h.hold.at) ? null : undefined));
+          if (res.committed && !res.snapshot.exists()) removed += 1;
         }
         console.log(`removed ${removed} ended row(s)`);
       }
@@ -210,8 +210,9 @@ async function main() {
       const mine = (cur) => cur && Number(cur.at) === Number(h.value.at) && cur.by === h.value.by;
       if (!COMMIT) { if (mine(await get(h.path))) removed += 1; else kept += 1; continue; }
       // Only the row this back-fill wrote, judged and removed in one step.
-      const res = await db.ref(h.path).transaction((cur) => (cur == null ? null : mine(cur) ? null : undefined));
-      if (res.committed && !res.snapshot.exists() && (await get(h.path)) == null) { removed += 1; pids.add(h.pid); } else kept += 1;
+      let wasMine = false;
+      const res = await db.ref(h.path).transaction((cur) => { wasMine = !!cur && mine(cur); return cur == null ? null : wasMine ? null : undefined; });
+      if (res.committed && wasMine) { removed += 1; pids.add(h.pid); } else kept += 1;
     }
     if (COMMIT) await markDirty(pids);
     console.log(`${COMMIT ? "removed" : "dry run: would remove"} ${removed} hold(s); ${kept} left alone (gone already, or replaced by a newer rejection)`);
