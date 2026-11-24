@@ -90,7 +90,9 @@ describe("Display Checks as a plain store user", () => {
     expect(rowCode({ orderNumber: 1772, ref: "#1772" })).toEqual({ code: "#1772", note: "" });
     expect(rowCode({ ref: "KQZ" })).toEqual({ code: "KQZ", note: "" });
     expect(rowCode({ ref: "KQZ (follow-up)" })).toEqual({ code: "KQZ", note: "(follow-up)" });
-    expect(rowCode({})).toEqual({ code: null, note: "" });
+    expect(rowCode({})).toEqual({ code: "—", note: "" });
+    expect(rowCode({ orderNumber: 1003, ref: "Concrete" })).toEqual({ code: "#1003", note: "Concrete" });
+    expect(rowCode({ orderNumber: " ", ref: "KQZ" })).toEqual({ code: "KQZ", note: "" });
   });
   it("gives staff the same Handed over / Not found buttons, through the same locked callable", async () => {
     const tree = await mount(STAFF);

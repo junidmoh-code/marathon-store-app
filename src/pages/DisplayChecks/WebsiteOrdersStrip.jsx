@@ -61,13 +61,15 @@ export function useHandoverText() {
  */
 export function rowCode(row) {
   const ref = typeof row?.ref === "string" ? row.ref.trim() : "";
-  if (row?.orderNumber != null && String(row.orderNumber) !== "") {
-    const code = `#${row.orderNumber}`;
-    const note = ref.includes(code) ? ref.replace(code, " ").replace(/\s+/g, " ").trim() : "";
+  const num = row?.orderNumber == null ? "" : String(row.orderNumber).trim();
+  if (num) {
+    const code = `#${num}`;
+    // orderLabel's spelling holds "#N": what is around it stays small. Any other ref text is kept as the note.
+    const note = ref.includes(code) ? ref.replace(code, " ").replace(/\s+/g, " ").trim() : (ref === num ? "" : ref);
     return { code, note };
   }
   // An order pulled in before Shopify numbers: its old three-letter code is the headline, any added words stay small.
-  const [code = null, ...rest] = ref ? ref.split(/\s+/) : [];
+  const [code = "—", ...rest] = ref ? ref.split(/\s+/) : [];
   return { code, note: rest.join(" ") };
 }
 
