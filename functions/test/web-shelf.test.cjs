@@ -184,6 +184,10 @@ test("who may work a place's list: its own screen's permission", () => {
   const can = (perms, loc, isSuper = false) => L.shelfAccess({ isSuper, perms, loc });
   assert.equal(can(["display_checks"], "trophy"), true);
   assert.equal(can(["display_checks"], "hub1"), false);
+  assert.equal(can(["warehouse"], "trophy"), false);
+  assert.equal(can(["source"], "trophy"), false);
+  assert.equal(can(["source"], "hub2"), false);
+  assert.equal(can(["display_checks"], "central"), false);
   assert.equal(can(["warehouse"], "hub1"), true);
   assert.equal(can(["warehouse"], "central"), false);
   assert.equal(can(["source"], "central"), true);

@@ -153,6 +153,30 @@ describe("a hub's Out of Stock moves the line on in the same tick", () => {
     expect(f.writes.slice(from).filter(([, p]) => /agentRepicks|\/chain/.test(String(p)))).toEqual([]);
   });
 
+  it("a chain move still being applied stamps nothing: Jamie is not told the chain ran out while it has not", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SNK: { 8: cell(1) } }, hub2: { SNK: { 8: cell(3) } } } }));
+    await runOrdersPoll(deps(f, [shopifyOrder(9001, 2501)]));
+    await f.db.ref("online_orders/9001/lines/0/source").update({ status: "no_stock", failedAt: NOW - 1000 });
+    await f.db.ref("online_orders/9001/status").set("needs_attention");
+    // Another process claimed the move a moment ago and has not finished it.
+    await f.db.ref(`online_orders/9001/agentRepicks/${chainKey(0, 0)}`).set({ lineIndex: 0, expectPid: "SNK", expectSizeKey: "8", expectStatus: "no_stock", expectRouteGen: 0, exclude: ["hub1"], by: "chain", at: NOW - 500, state: "applying", claimedAt: NOW - 400 });
+    await runOrdersPoll(deps(f));
+    expect(line(f).chain ?? null).toBeNull();
+    expect(f.read(`online_orders/9001/agentRepicks/${chainKey(0, 0)}`).state).toBe("applying");
+  });
+
+  it("a shelf that rejected a website pick lately is doubtful even after it moved: a new order goes to the trusted shelf first", async () => {
+    const f = fakeDb(world({
+      stock: { hub1: { SNK: { 8: cell(1) } }, hub2: { SNK: { 8: cell(3) } } },
+      // Hub 1 said no three days ago; its shelf has moved since (FRESH is later), so the hold no longer stands…
+      over: { online_cell_holds: { SNK: { 8: { hub1: { at: Date.parse(FRESH) - 864e5, kind: "hub_out_of_stock", orderId: "8000", line: 0 } } } } },
+    }));
+    await runOrdersPoll(deps(f, [shopifyOrder(9001, 2501)]));
+    // …but one piece + a recent rejection is two points: Hub 2 is asked first, and the line says why.
+    expect(line(f).source).toMatchObject({ locationId: "hub2", status: "pick" });
+    expect(line(f).source.why).toMatch(/^trusted shelf, ahead of hub1 \(one piece, rejected a website pick \d+ days ago\)$/);
+  });
+
   it("a doubtful shelf is asked after a trusted one, and before Central", async () => {
     const stale = "2026-10-01T08:00:00.000Z";
     const f = fakeDb(world({ stock: { hub1: { SNK: { 8: cell(1) } }, hub2: { SNK: { 8: cell(1, stale) } }, hub3: { SNK: { 8: cell(2) } }, central: { SNK: { 8: cell(9) } } } }));

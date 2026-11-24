@@ -1,7 +1,7 @@
 // The back-fill plan (cell-holds.mjs): only shelves still exactly as they were
 // when they rejected a website pick are held.
 import { describe, it, expect } from "vitest";
-import { planBackfill, deadHolds } from "./cell-holds.mjs";
+import { planBackfill, deadHolds, prunableHolds, KEEP_DEAD_HOLD_MS } from "./cell-holds.mjs";
 
 const T = Date.parse("2026-11-10T09:00:00Z");
 const rej = (over = {}) => ({ pid: "P", sizeKey: "8", loc: "hub1", at: T, kind: "hub_out_of_stock", orderId: "9001", line: 0, order: "#2001", product: "Air Runner", ...over });
@@ -43,5 +43,16 @@ describe("deadHolds", () => {
       { pid: "P", sizeKey: "7", loc: "hub1", hold: { at: T }, cell: null },
     ];
     expect(deadHolds(rows).map((r) => r.sizeKey)).toEqual(["9", "7"]);
+  });
+});
+
+describe("the nightly tidy-up keeps a dead hold for a while: it is the router's note that the shelf rejected a website pick lately", () => {
+  const NOW = Date.parse("2026-11-24T10:00:00Z");
+  const moved = (at) => ({ pid: "p", sizeKey: "M", loc: "hub1", hold: { at }, cell: { qty: 1, updatedAt: new Date(at + 1000).toISOString() } });
+  it("ended rows older than 45 days go; newer ended rows and standing rows stay", () => {
+    const old = moved(NOW - KEEP_DEAD_HOLD_MS - 1), recent = moved(NOW - 3 * 864e5), edge = moved(NOW - KEEP_DEAD_HOLD_MS);
+    const standing = { pid: "p", sizeKey: "L", loc: "hub1", hold: { at: NOW - 90 * 864e5 }, cell: { qty: 2, updatedAt: new Date(NOW - 100 * 864e5).toISOString() } };
+    expect(prunableHolds([old, recent, edge, standing], NOW)).toEqual([old, edge]);
+    expect(KEEP_DEAD_HOLD_MS).toBe(45 * 864e5);
   });
 });
