@@ -14,7 +14,7 @@ Since order #1768, **231 of 1,285 website lines (18%) were rejected, not found, 
 - **Jamie**: Jamie's own offer, send, delivery and message tables, read from its database file with no write access.
 - **Shopify**: note, cancellation and refund records for the 191 affected orders (queries only).
 - One row per line and product that failed: 261 rows, because 30 lines failed a second time with the alternative that replaced the first product. The dataset is `unavailable-lines.csv`; Jamie's offers are `jamie-offers.csv`; every number below is in `stats.json`.
-- Database cost of the whole investigation: about 51 MB downloaded, once, kept in a local cache. The movement ledger was read twice (17.6 MB each) because the first pass left out products that only appeared on old pick records.
+- Database cost of the whole investigation: about 51 MB downloaded, once, kept in a local cache. The movement ledger was read twice (17.6 MB each) because the first pass left out products that only appeared on old pick records. Listing the Marathon PE single pieces for section 9 read a further 1.7 MB, twice (the trial run and the real one).
 
 What could not be measured: who was at fault on 130 lines (50%) where nothing happened to that shelf afterwards, so there is no proof either way; and how long a shelf had gone untouched before 18 October for lines that were picked successfully.
 
@@ -233,6 +233,47 @@ These need one of Junid's standing rules changed, so nothing was built for them.
 3. **Last pieces in general.** Hiding every last piece would have avoided 109 failures and cost 310 good sales, so it was not done. Only the class that fails more often than it succeeds was hidden (section 9).
 4. **Walk-in sales over a website hold.** 7 lines were lost because a manager PIN let a till sale take a unit a website order was holding. The hold worked; the override was used.
 5. **Marathon PE's counts.** PE rejects one website pick in five and its untouched last pieces fail 57% of the time. A count of PE's clothing would do more than any code here. Concrete, counted on 11 November, rejects 1.6%.
+## 8. What was shipped (24 November 2026, live from about 12:10)
+
+**A shelf that says "not here" comes off the website until it is touched again** (store app PR #980).
+When a hub marks a website pick Out of Stock or a shop presses Not found, the pieces the app shows at that one shelf (product, size, place) are no longer counted for the website and no new line is sent there. The moment that shelf has a sale, a delivery, a transfer or a count, it counts again by itself. If the packer finds the item and presses "Order it now", the line goes back to that shelf and the hold is lifted. No stock count is changed, nothing is requested, nothing is picked from Central, and stock still leaves only at the Pack. This is the cause that made 46 of the 261 failures, and 21 of the 80 in the week of 15 to 21 November.
+
+**The nightly check.** The 02:30 stock sweep already compares every listing with the app. It now uses the same rule, so every night each listing is re-checked against stock a shop or hub can actually pick, and holds whose shelf has moved are tidied away.
+
+**The automatic second look** was not built, because it is already running: since 14 November the order agent and Jamie try the other places on the route before the customer hears anything, and "found at a different place" went from 3 lines in four weeks to 16 in six days. A second look at the *same* shelf found the item once in the six times it was tried, so that was not built either. The order agent now reads the same held shelves as the router, so it does not ask for a re-pick at a shelf that has already said no.
+
+**Jamie** (dm-agent PR #202, live 12:16, WhatsApp reconnected in 40 seconds).
+- The finding that mattered most was already fixed but not running: the WhatsApp-first change Junid asked for on 22 November (PR #200) had been merged and never pulled onto the Mac mini, so offers were still going out mostly by email (21 November: 39 by email, 7 by WhatsApp; 22 November: 34 and 0; today before the deploy: 9 and 1). It is live now, together with two other merged changes that were waiting (#201, #203).
+- The option picker is now told to return three options whenever three are fair swaps, and to make one of them cost exactly what the customer paid when a fair one exists. None of Jamie's standing rules changed: WhatsApp first, no refund offered by Jamie, at least two pieces in the customer's size, never an unavailable or declined product, and a pick that is not a fair swap is still left out.
+
+Reviews: CodeRabbit did not review either pull request (it answered with a spending-cap notice), so a substitute Sonnet line review was run beside the Sonnet architect review, and a third Sonnet pass re-checked the fixes. Each PR carries a comment saying so. The reviews found one blocking fault (a hold would have defeated "Order it now") and five smaller ones; all were fixed and tested before the merge.
+
+## 9. What was hidden, and how to bring it back
+
+Nothing was deleted, unpublished or set to draft. A size's website quantity is lower by the pieces below; where that was the only piece, the size shows sold out.
+
+**1. Shelves that rejected a website pick and have not been touched since: 95 shelves, 161 pieces.**
+The bar: every product, size and place where a hub said Out of Stock or a shop said Not found on a website order since #1768, and where the count has not moved since that rejection. This covers every size that failed twice or more and was not picked successfully since. Of the 161 shelves that ever rejected a pick, 19 were left alone because they have moved since (trusted again) and 47 already showed zero.
+- List and rollback: `~/marathon-rollbacks/cell-holds-2026-11-24T10-09-08-954Z.json` on the Mac mini.
+- Restore all: `node scripts/shopify/onlineOrders/cell-holds.mjs --rollback <that file> --commit`
+- Returns by itself: the next sale, delivery, transfer or count on that shelf.
+
+**2. A single piece at Marathon PE that has not moved for more than 14 days: 514 sizes on 355 products.**
+The bar: the one clearly defined class with at least 10 lines and at least half of them unavailable. 54 website lines were sent to such a piece and 31 (57%) were rejected. No other place reaches the bar (Hub 1 42%, Trophy 37%, Hub 2 34%), so only Marathon PE is included. 249 of the 514 sizes are sold out online because that was the only piece; the other 265 are still on sale from another place.
+- List and rollback: `~/marathon-rollbacks/stale-single-2026-11-24T10-11-24-984Z.json` on the Mac mini.
+- Restore all: `node scripts/shopify/onlineOrders/cell-holds.mjs --stale-off <that file> --commit` (or set `/config/onlineOrders/pickable/staleSingle/off` to true).
+- Returns by itself: the next sale, delivery, transfer or count on that piece. The days and the places are settings (`staleSingle/days`, `staleSingle/locations`).
+
+What this costs, said plainly: over the five weeks, 23 of the 54 lines sent to such a piece were picked without trouble (about R7,600), against 31 that failed (about R9,900). Hiding them gives up the first to avoid the second. With Black Friday this week, 249 sizes showing sold out is a real number; one command above brings them back.
+
+Both switches at once: `/config/onlineOrders/pickable/holdsOff = true` turns the first rule off.
+
+## 10. What to expect, and what was not solved
+
+- The repeat failures (18% of all, and rising) should stop, and the Marathon PE stale singles (12%) should stop arriving. Together that is roughly a quarter to a third of the failures seen in the last two weeks.
+- The largest cause is only partly dealt with: a last piece still fails about one time in four everywhere else, because the count is wrong and nothing here corrects a count. That is decisions 2, 3 and 5 in section 7.
+- The acceptance figures for alternatives should be read again in two weeks, now that offers go on WhatsApp again and lead with three options. The CSVs and the scripts under `scripts/audit/web-unavailable/` rebuild every number in this report.
+
 ## Appendix A: every unavailable line and its reason
 
 | Order | Product | Size | Sent to | What happened | Shown there then | Outcome |
