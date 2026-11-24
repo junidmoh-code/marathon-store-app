@@ -273,6 +273,39 @@ describe("no locker → booked DOOR-TO-DOOR with the reason on the order; every 
     expect((await bookShipment(ORDER(), deps(db(true), fakeClient({ points: [mid] })))).deliveryLocker.id).toBe("CG777");
   });
 
+  it("only the town placed because the postal-code lookup FAILED (429, timeout): tried again later, never door-to-door (architect review, #984)", async () => {
+    const mid = point("CG777", "Twenty-five away", -26.541, 26.8227); // ~25 km: inside 30, outside the town's 20
+    const client = fakeClient({ points: [mid] });
+    const d = db(true);
+    const failedLookup = vi.fn(async () => ({ ...AT, from: "Ventersdorp, 2710", by: "town", postcodeFailed: "HTTP 429" }));
+    const res = await bookShipment(ORDER(), deps(d, client, { geocoder: failedLookup }));
+    expect(res).toMatchObject({ skipped: true, reason: expect.stringMatching(/postal code lookup failed \(HTTP 429\): tried again later/) });
+    expect(res.noLocker).toBeUndefined();
+    expect(res.doorFallback).toBeUndefined();
+    expect(client.shipmentCalls()).toEqual([]);
+    // a genuine no-match (the town point, nothing failed) still goes door-to-door
+    const noMatch = fakeClient({ points: [mid] });
+    const d2 = db(true);
+    const res2 = await bookShipment(ORDER(), deps(d2, noMatch, { geocoder: vi.fn(async () => ({ ...AT, from: "Ventersdorp, 2710", by: "town" })) }));
+    expect(res2.doorFallback.reason).toMatch(/within 20 km/);
+    expectDoorBooking(noMatch, d2, res2);
+  });
+
+  it("the drop box switched on: the no-locker fallback is still collected at our door, never a drop-box rate (architect review, #984)", async () => {
+    const L2D = { rates: [{ rate: 40, service_level: { code: "L2DM - ECO" } }] };
+    const withDropBox = () => { const c = fakeClient({ points: [FAR] }); const base = c.getRates; c.getRates = async (b) => (b.collection_pickup_point_id ? (c.calls.push(["getRates", b]), L2D) : base(b)); return c; };
+    const client = withDropBox();
+    const d = db(true, { dropBox: { enabled: true } });
+    const res = await bookShipment(ORDER(), deps(d, client));
+    expect(res).toMatchObject({ waybill: "WB1", deliveryMode: "door", service: "ECO" });
+    expect(client.of("getRates").some((b) => b.collection_pickup_point_id)).toBe(false);
+    expect(client.of("createShipment")[0]).not.toHaveProperty("collection_pickup_point_id");
+    // an explicit deliveryMode "door" keeps the drop box exactly as before
+    const explicit = withDropBox();
+    await bookShipment(ORDER(), deps(db(false, { dropBox: { enabled: true }, deliveryMode: "door" }), explicit));
+    expect(explicit.of("getRates").some((b) => b.collection_pickup_point_id)).toBe(true);
+  });
+
   it("no locker at all near the address: door-to-door", async () => {
     const client = fakeClient({ points: [] });
     const d = db(true);
@@ -859,7 +892,11 @@ describe("placeAddress: the street, else the postal code's own point, else the t
   it("no postal-code point (or the lookup fails): the town's; nothing at all: null", async () => {
     const town = async () => ({ lat: -26.223, lng: 27.89, from: "Soweto, 1804" });
     expect(await placeAddress(ADDRESS, { fetchImpl: async () => ({ ok: true, json: async () => [] }), wait, base: town })).toMatchObject({ lat: -26.223, by: "town" });
-    expect(await placeAddress(ADDRESS, { fetchImpl: async () => { throw new Error("down"); }, wait, base: town })).toMatchObject({ by: "town" });
+    const noMatch = await placeAddress(ADDRESS, { fetchImpl: async () => ({ ok: true, json: async () => [] }), wait, base: town });
+    expect(noMatch).not.toHaveProperty("postcodeFailed");
+    // a lookup that FAILED is marked, so it is never read as "no locker near" (architect review, #984)
+    expect(await placeAddress(ADDRESS, { fetchImpl: async () => { throw new Error("down"); }, wait, base: town })).toMatchObject({ by: "town", postcodeFailed: "down" });
+    expect(await placeAddress(ADDRESS, { fetchImpl: async () => ({ ok: false, status: 429 }), wait, base: town })).toMatchObject({ by: "town", postcodeFailed: "HTTP 429" });
     expect(await placeAddress({ ...ADDRESS, code: "" }, { fetchImpl: async () => { throw new Error("never"); }, wait, base: async () => null })).toBe(null);
   });
 

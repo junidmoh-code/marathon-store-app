@@ -93,6 +93,10 @@ export async function placeAddress(address, { fetchImpl = globalThis.fetch, base
   const at = await base(address, { fetchImpl });
   if (at && placedByStreet(address, at)) return { ...at, by: "street" };
   const code = str(address?.code);
+  // A postal-code lookup that FAILED (an error, a timeout, a 429) is not "no match" (architect review, #984): the town's
+  // point is still returned, marked `postcodeFailed`, so planLockerDelivery never reads the tighter town limit as "no
+  // locker near" — since 24 Nov 2026 that books a paid door-to-door parcel a locker 21–30 km away would have served.
+  let postcodeFailed = null;
   if (/^\d{4}$/.test(code)) {
     try {
       await wait(1100); // Nominatim's policy: at most one request a second
@@ -100,12 +104,13 @@ export async function placeAddress(address, { fetchImpl = globalThis.fetch, base
         headers: { "User-Agent": "marathon-club-shipping/1.0", Accept: "application/json" },
         signal: AbortSignal.timeout(10000),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       // Only a point in the order's own province (bookReturn inProvince).
-      const hit = res.ok ? nominatimHit(await res.json(), address) : null;
+      const hit = nominatimHit(await res.json(), address);
       if (hit) return { lat: Number(hit.lat), lng: Number(hit.lon), from: `postal code ${code}`, by: "postcode" };
-    } catch { /* the town's point, below */ }
+    } catch (err) { postcodeFailed = str(err?.message || err).slice(0, 120) || "failed"; /* the town's point, below */ }
   }
-  return at ? { ...at, by: "town" } : null;
+  return at ? { ...at, by: "town", ...(postcodeFailed ? { postcodeFailed } : {}) } : null;
 }
 
 /** Shopify's point for the order's CURRENT address (shipping/geo), or null. Pure. */
@@ -338,6 +343,11 @@ export async function planLockerDelivery({ order, key = "<orderKey>", cfg, clien
     const avoid = new Set((Array.isArray(order?.shipping?.lockerAvoid) ? order.shipping.lockerAvoid : []).map(str));
     candidates = lockers.filter((l) => l.km != null && l.km <= limit && !avoid.has(l.id)).slice(0, pos(lk.tryLockers, 3));
     if (!candidates.length) {
+      // Only the town placed because the postal-code lookup FAILED: tried again later, never "no locker" (so never a
+      // door-to-door booking on a lookup that did not answer; architect review, #984).
+      if (!byStreet && at.postcodeFailed) {
+        return { ok: false, transient: true, parcel, reason: `no Courier Guy locker within ${limit} km of the centre of ${town}, but the postal code lookup failed (${at.postcodeFailed}): tried again later` };
+      }
       const nearest = lockers[0];
       return refuse(`no Courier Guy locker within ${limit} km of ${town}` +
         (nearest ? ` (the nearest, ${nearest.name}, is ${nearest.km ?? "?"} km away)` : "") +

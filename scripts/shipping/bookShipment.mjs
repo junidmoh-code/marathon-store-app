@@ -195,7 +195,7 @@ export async function planShipment(order, { db, client, products = null, geocode
     const fallback = doorFallbackFor(order, lockerPlan, cfg);
     if (!fallback) return lockerPlan;
     // The door plan's own blockers: the box list matters again (a locker booking never asked it).
-    const door = await planDoor([...liveBlockers, ...(!parcel.fits ? ["no standard box fits"] : [])]);
+    const door = await planDoor([...liveBlockers, ...(!parcel.fits ? ["no standard box fits"] : [])], { noDropBox: true });
     if (door.ok) return { ...door, doorFallback: fallback };
     // No locker AND no door price: refused with the door plan's own reason (what the POS reads), the locker's kept beside it.
     return {
@@ -206,9 +206,11 @@ export async function planShipment(order, { db, client, products = null, geocode
   return planDoor(liveBlockers);
 
   // The door-to-door plan: /config/shipping/deliveryMode "door", and the fallback when there is no locker.
-  async function planDoor(liveBlockers) {
-    // The locker is only asked when the drop box is ON (door-to-door otherwise).
-    const dropBox = cfg.dropBox?.enabled
+  async function planDoor(liveBlockers, { noDropBox = false } = {}) {
+    // The locker is only asked when the drop box is ON (door-to-door otherwise). The no-locker fallback is ALWAYS
+    // collected at our door (architect review, #984): it is recorded as deliveryMode "door", so it never books a
+    // drop-box (collection_pickup_point_id) rate.
+    const dropBox = !noDropBox && cfg.dropBox?.enabled
       ? { pickupPointId: cfg.dropBox.pickupPointId, pickupPointProvider: cfg.dropBox.pickupPointProvider }
       : null;
     const quoted = await quoteParcel(client, { collectionAddress: cfg.collectionAddress, deliveryAddress: address, parcels: parcel.parcels, dropBox });

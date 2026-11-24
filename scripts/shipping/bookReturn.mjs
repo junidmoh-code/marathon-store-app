@@ -301,10 +301,11 @@ export async function planReturn(order, { db, client, products = null, email = n
   // NO LOCKER for this parcel (Junid, 24 Nov 2026): a door collection instead when it is switched on, else the refusal as before.
   const doorOn = doorCollection === true || (doorCollection == null && cfg.returnDoorCollection === true);
   const noLocker = (reason, kind) => (doorOn ? planDoorCollection(reason, kind) : { ok: false, reason, noLockerKind: kind, parcel });
-  if (!parcel.fits || !parcel.dropBoxEligible) return noLocker("the parcel fits no Courier Guy locker", "too_big");
-
+  // The address is placed FIRST (architect review, #984): an address that cannot be placed stays refused (retried
+  // later), even for a parcel no locker takes, so it never gets a door collection.
   const at = await geocoder(from);
   if (!at) return { ok: false, transient: true, reason: "the customer's address could not be placed on a map (no nearest locker)", parcel };
+  if (!parcel.fits || !parcel.dropBoxEligible) return noLocker("the parcel fits no Courier Guy locker", "too_big");
   let locker;
   try { locker = await nearestLocker(client, at, parcel.lockerSize); }
   catch (err) { return { ok: false, transient: true, reason: `the locker list could not be read (${String(err?.message || err).slice(0, 200)})`, parcel }; }

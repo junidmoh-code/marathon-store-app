@@ -272,6 +272,10 @@ describe("no locker for the return → a door collection from the customer's add
     const plan = (o = {}) => planReturn({ ...EXCHANGE(o.exchange ?? {}), key: KEY }, { db: o.db ?? db(ON), client: o.client ?? noLockers(), geocoder: o.geocoder ?? geocoder, key: KEY, products: {} });
     // the address cannot be placed on the map
     expect(await plan({ geocoder: async () => null })).toMatchObject({ ok: false, transient: true, reason: expect.stringMatching(/could not be placed/) });
+    // …even for a parcel no locker takes: placed first, so an unplaceable address never gets a door collection (architect review, #984)
+    const bulky = await plan({ geocoder: async () => null, exchange: { lines: [{ pid: "p1", category: "Footwear", isFootwear: true, title: "Diesel", size: "7", qty: 10 }] } });
+    expect(bulky).toMatchObject({ ok: false, transient: true, reason: expect.stringMatching(/could not be placed/) });
+    expect(bulky.doorFallback).toBeUndefined();
     // the locker list could not be read
     const down = noLockers(); down.getPickupPoints = async () => { throw new Error("HTTP 503"); };
     expect(await plan({ client: down })).toMatchObject({ ok: false, transient: true, reason: expect.stringMatching(/locker list could not be read/) });
