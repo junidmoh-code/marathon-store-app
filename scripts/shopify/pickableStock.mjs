@@ -182,6 +182,26 @@ export function loneCells(tree, pid, sizes) {
   return out;
 }
 
+/** Where the daily shelf check looks for shelves that hold stock but are not selling: the floors, the hubs and Central. */
+export const CHECK_HELD_LOCATIONS = Object.freeze([...CHECK_SINGLE_LOCATIONS, "central"]);
+
+/**
+ * Every shelf of one product showing stock, for the "not selling" source of the daily shelf check (Junid, 24 Nov
+ * 2026 evening). PURE. → [{ loc, sizeKey, qty, at }]
+ */
+export function heldCells(tree, pid) {
+  const out = [];
+  for (const loc of CHECK_HELD_LOCATIONS) {
+    const cells = tree?.[loc]?.[pid];
+    if (!cells || typeof cells !== "object") continue;
+    for (const [sizeKey, cell] of Object.entries(cells)) {
+      const qty = cellQty(cell);
+      if (qty > 0 && keyOk(sizeKey)) out.push({ loc, sizeKey, qty, at: cellStampMs(cell) });
+    }
+  }
+  return out;
+}
+
 /** Is one cell under a standing hold? (the router's question, one size at a time) */
 export function cellHeld(holdsForSize, loc, cell, rules = rulesFrom(null)) {
   if (!rules?.holds) return false;

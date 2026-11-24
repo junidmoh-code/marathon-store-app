@@ -295,11 +295,15 @@ function buildOutOfStock({ hub, nowMs, cfg, stock, products, orders }) {
 // TIE-BREAK BY PRODUCT ID. Every never-checked product shares one sort value,
 // so without a deterministic second key the batch would depend on object key
 // order and two runs of the same day could disagree about what to check.
-function rotationUniverse({ store, stock, products, soldPids = null }) {
+function rotationUniverse({ store, stock, products, soldPids = null, skipPids = null }) {
   const out = [];
   const byPid = stock?.[store] || {};
   for (const pid of Object.keys(byPid)) {
     if (!isClothing(products?.[pid])) continue;
+    // ONE ROTATION, NOT TWO (Junid, 24 Nov 2026 evening): a product the daily shelf check has on today's list, or
+    // settled within its recheck window, at this shop is not asked here as well. The shelf check skips this card's
+    // batch the same way (scripts/online/shelf-checks.mjs), so a shelf is never asked twice.
+    if (skipPids && skipPids.has(pid)) continue;
     // NOT SOLD IN THE WINDOW is part of the UNIVERSE, not a badge on the row.
     // The tab is "not selling": a line that sold last week is not what anyone
     // is looking for, and leaving it in the rotation spends batches on
@@ -352,9 +356,9 @@ function soldIndex({ store, nowMs, movements, soldWindowDays }) {
   return { byPid, bySize };
 }
 
-function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, prevBatchPids, prevBatchAt }) {
+function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, prevBatchPids, prevBatchAt, skipPids = null }) {
   const sold = soldIndex({ store, nowMs, movements, soldWindowDays: cfg.soldWindowDays });
-  const universe = rotationUniverse({ store, stock, products, soldPids: sold.byPid });
+  const universe = rotationUniverse({ store, stock, products, soldPids: sold.byPid, skipPids });
   const fresh = isRotationDay(saDate, cfg.rotationDays);
   // On a rotation day a new batch is minted. On every other day the batch that
   // is already up stays up — staff finish the one they were given rather than
@@ -448,8 +452,8 @@ function buildHubSnapshot({ hub, nowMs, cfg, saDate, stock, products, orders }) 
   };
 }
 
-function buildStoreSnapshot({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, prevBatchPids, prevBatchAt }) {
-  const rot = buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, prevBatchPids, prevBatchAt });
+function buildStoreSnapshot({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, prevBatchPids, prevBatchAt, skipPids = null }) {
+  const rot = buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, prevBatchPids, prevBatchAt, skipPids });
   const snap = {
     computedAt: new Date(nowMs).toISOString(),
     saDate,
@@ -476,7 +480,21 @@ function buildStoreSnapshot({ store, nowMs, cfg, saDate, stock, products, moveme
   return snap;
 }
 
+/**
+ * The products the daily shelf check is asking about, or settled within its recheck window, at one shop. PURE.
+ *   open     /shelf_checks/{store}/open      { [pid__sizeKey]: item }
+ *   checked  /shelf_checks/{store}/checked   { [pid__sizeKey]: ms }
+ */
+function shelfCheckPids({ open, checked, nowMs, recheckDays = 30 }) {
+  const out = new Set();
+  const pidOf = (id) => String(id).split("__")[0];
+  for (const id of Object.keys(open || {})) out.add(pidOf(id));
+  for (const [id, t] of Object.entries(checked || {})) if (Number.isFinite(Number(t)) && nowMs - Number(t) < recheckDays * 864e5) out.add(pidOf(id));
+  return out;
+}
+
 module.exports = {
+  shelfCheckPids,
   AUDIT_STORES, AUDIT_HUBS, auditStores, auditHubs, UNAVAILABLE_ANSWERS, WEEKDAYS, DEFAULTS,
   auditConfig, saHour, saWeekday, shouldRunDailyPass, isRotationDay,
   cellKey, sizeLabel, stockSizeKey,

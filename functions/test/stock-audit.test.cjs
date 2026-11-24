@@ -585,3 +585,17 @@ test("neither snapshot lets an undefined reach an RTDB write", () => {
   assert.equal(hub.oos.rows[0].n, "z", "a nameless product falls back to its id, never undefined");
   assert.equal(hub.oos.rows[0].sk, "_", "and a sizeless order folds to the one-size sentinel");
 });
+
+// ── ONE ROTATION WITH THE DAILY SHELF CHECK (Junid, 24 Nov 2026 evening) ─────
+test("one rotation: a product the shelf check has listed, or settled inside its window, at the shop is left out of the card's universe", () => {
+  const A = require("../lib/stock-audit.cjs");
+  const NOWX = Date.parse("2026-11-24T10:00:00Z");
+  const skip = A.shelfCheckPids({ open: { "pA__M": {}, "pB__L": {} }, checked: { "pC__S": NOWX - 5 * 864e5, "pD__M": NOWX - 40 * 864e5 }, nowMs: NOWX, recheckDays: 30 });
+  assert.deepEqual([...skip].sort(), ["pA", "pB", "pC"]);
+  const stockX = { trophy: { pA: { M: { qty: 2 } }, pC: { S: { qty: 1 } }, pD: { M: { qty: 1 } }, pE: { L: { qty: 3 } } } };
+  const productsX = Object.fromEntries(["pA", "pC", "pD", "pE"].map((p) => [p, { id: p, categoryKey: "tshirts", category: "T-Shirts", productType: "clothing" }]));
+  const u = A.rotationUniverse({ store: "trophy", stock: stockX, products: productsX, skipPids: skip }).map((x) => x.pid);
+  assert.deepEqual(u.sort(), ["pD", "pE"]);
+  // Without the shelf check's list, exactly as before.
+  assert.equal(A.rotationUniverse({ store: "trophy", stock: stockX, products: productsX }).length, 4);
+});
