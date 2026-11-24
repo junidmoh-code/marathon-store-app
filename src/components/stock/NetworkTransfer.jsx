@@ -35,7 +35,7 @@ import { SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import MissingCard, { primaryBtn } from "./MissingCard";
 import { whyProduct, brandOf, categoryLabelOf } from "./missingScreenCore";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
-import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
+import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor, categoryPolicyLocs } from "./solvePlan";
 import { computeMissingProducts, isClothing, cardSection } from "./missingProductsCore";
 import { useMySections } from "../../utils/useMySections";
 import { solveOn, sectionName, trustedCellsOnly } from "../../utils/networkRegistry";
@@ -48,10 +48,10 @@ import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenPr
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
 import { isCentralFedProduct, centralFedPerSize, centralFedSizes } from "./centralFed";
-import { concreteDivisionPolicy, isDivisionFootwear, isDivisionOneSize } from "./concreteDivision";
+import { concreteDivisionPolicy, isDivisionFootwear, isDivisionOneSize, divisionNeverKeeps } from "./concreteDivision";
 import { firstBatchEligible, buildFirstBatchSolveUpdate, trustExistingEmptyUpdates, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, firstBatchSizeHints, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason, centralFedNoPlanReason, centralFedNothingSentReason } from "./actionReasons";
-import { policyFollowOf, followRows } from "./policyFollow";
+import { policyFollowChain, followOrder, followRows } from "./policyFollow";
 import { setUpdateBusy } from "../../update/updateChecker";
 import { stampRecord, stampTxn } from "../../device/deviceStamp";
 // CONCRETE-ONLY + THE SOLVED TAB (Junid, 20 Nov 2026).
@@ -674,27 +674,37 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
   // it (the division's own keep then stands). The engine's own answer
   // (refill-engine.cjs resolveTarget → followedTarget), mirrored on the run
   // map this screen already builds.
-  const followedKeep = (card, st, sz) => {
-    const leader = divisionCard(card, st) ? policyFollowOf(cfg, st) : null;
-    if (!leader) return null;
-    const rows = followRows(targetRows?.[leader]?.[card.pid]);
-    const rowMap = { [leader]: rows ? { [card.pid]: rows } : {} };
+  // POLICIES ARE UNIVERSAL (Junid, 24 Nov 2026): Trophy first, Marathon PE
+  // where Trophy has no policy — per category (policyFollow.js followOrder).
+  const followedAnswer = (card, st, sz) => {
+    const chain = divisionCard(card, st) ? policyFollowChain(cfg, st) : [];
+    if (!chain.length) return null;
+    const catLocs = categoryPolicyLocs(pcfg?.categoryPolicy, effectiveCategoryKey(byId.get(card.pid)), pcfg?.policyGroups);
     const sizes = centralFedSizes(byId.get(card.pid));
     // The engine applies the size run and the subcategory rule only to a size
     // the product's catalogue DECLARES (resolveTarget: productSizes). A product
     // declaring none is answered "_" here, so for it only the category policy
     // and rows count — never Trophy's subcategory run.
     const declared = (byId.get(card.pid)?.sizes || []).map(String).includes(String(sz));
-    const run = runWith(card.pid, rowMap, sizes, { rules: declared })[leader] || {};
-    const t = run[String(sz).toUpperCase()];
-    return typeof t === "number" ? t : null;
+    for (const leader of followOrder(chain, (loc) => catLocs.includes(loc))) {
+      const rows = followRows(targetRows?.[leader]?.[card.pid]);
+      const rowMap = { [leader]: rows ? { [card.pid]: rows } : {} };
+      const run = runWith(card.pid, rowMap, sizes, { rules: declared })[leader] || {};
+      const t = run[String(sz).toUpperCase()];
+      if (typeof t === "number") return { target: t, leader };
+    }
+    return null;
   };
+  const followedKeep = (card, st, sz) => { const a = followedAnswer(card, st, sz); return a ? a.target : null; };
   // The run a store's lines are planned from: the policy run, with a
   // central-fed store's row replaced by N per declared size.
   // An explicit /stock_targets row for the size wins (0 = excluded) — the
   // engine's own precedence (resolveTarget: explicit row, then the followed
   // policy, then the division's keep).
   const cfTargetAt = (card, st, sz) => {
+    // A category the shop NEVER keeps (Concrete: perfume) keeps nothing, above
+    // every row and policy — the engine's own first gate (resolveTarget).
+    if (divisionNeverKeeps(st, byId.get(card.pid))) return 0;
     const row = targetRows?.[st]?.[card.pid]?.[encodeSizeKey(sz)];
     if (row && typeof row.target === "number") return row.target;
     const followed = followedKeep(card, st, sz);
@@ -706,7 +716,7 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
   const cfKeepLine = (card, st) => {
     const sizes = centralFedSizes(byId.get(card.pid));
     const keeps = sizes.map((sz) => [sz, cfTargetAt(card, st, sz)]);
-    const leader = sizes.some((sz) => followedKeep(card, st, sz) !== null) ? policyFollowOf(cfg, st) : null;
+    const leader = sizes.map((sz) => followedAnswer(card, st, sz)).find(Boolean)?.leader || null;
     const same = keeps.every(([, n]) => n === keeps[0][1]);
     const numbers = same
       ? `${keeps[0][1]} ${sizes[0] === "_" ? "per design" : "of every size"}`

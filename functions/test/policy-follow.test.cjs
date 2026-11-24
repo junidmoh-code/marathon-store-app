@@ -108,18 +108,29 @@ const atTrophy = (config, pid, size, t = targets()) => {
 };
 const linesOf = (p, dest) => p.intents.filter((i) => i.dest === dest).map((i) => `${i.productId}:${i.sizeKey}:${i.qty}<-${i.source}`).sort();
 
-test("the link: only Pine may follow, only Trophy may be followed; anything else is off", () => {
+test("the link: only Pine and Concrete may follow, only Trophy may be followed; anything else is off", () => {
   assert.equal(pf.policyFollowOf({ policyFollow: LINK }, PINE), "trophy");
   assert.equal(pf.policyFollowOf({}, PINE), null);
   assert.equal(pf.policyFollowOf({ policyFollow: { [PINE]: "marathon-pe" } }, PINE), null);
-  assert.equal(pf.policyFollowOf({ policyFollow: { concrete: "trophy", hub3: "hub2", trophy: PINE } }, "concrete"), null);
+  assert.equal(pf.policyFollowOf({ policyFollow: { concrete: "trophy", hub3: "hub2", trophy: PINE } }, "concrete"), "trophy");
+  assert.equal(pf.policyFollowOf({ policyFollow: { concrete: "marathon-pe" } }, "concrete"), null);
+  assert.equal(pf.policyFollowOf({ policyFollow: { hub3: "hub2" } }, "hub3"), null);
   assert.equal(pf.policyFollowOf({ policyFollow: { trophy: PINE } }, "trophy"), null);
   assert.equal(pf.policyFollowOf({ policyFollow: "trophy" }, PINE), null);
-  assert.deepEqual(pf.policyFollowMap({ policyFollow: { ...LINK, concrete: "trophy" } }), LINK);
+  assert.deepEqual(pf.policyFollowMap({ policyFollow: { ...LINK, concrete: "trophy", hub3: "hub2" } }), { ...LINK, concrete: "trophy" });
   assert.equal(pf.validatePolicyFollow(PINE, "trophy"), null);
   assert.equal(pf.validatePolicyFollow(PINE, null), null);
+  assert.equal(pf.validatePolicyFollow("concrete", "trophy"), null);
   assert.match(pf.validatePolicyFollow(PINE, "marathon-pe"), /Trophy only/);
-  assert.match(pf.validatePolicyFollow("concrete", "trophy"), /Only Marathon Pine/);
+  assert.match(pf.validatePolicyFollow("concrete", "marathon-pe"), /Concrete can follow Trophy only/);
+  assert.match(pf.validatePolicyFollow("hub3", "trophy"), /Only Marathon Pine and Concrete/);
+  // The chain: Trophy, then Marathon PE.
+  assert.deepEqual(pf.policyFollowChain({ policyFollow: LINK }, PINE), ["trophy", "marathon-pe"]);
+  assert.deepEqual(pf.policyFollowChain({}, PINE), []);
+  // Per category: the fallback first only where the leader has no category policy and it has one.
+  assert.deepEqual(pf.followOrder(["trophy", "marathon-pe"], (l) => l === "marathon-pe"), ["marathon-pe", "trophy"]);
+  assert.deepEqual(pf.followOrder(["trophy", "marathon-pe"], () => true), ["trophy", "marathon-pe"]);
+  assert.deepEqual(pf.followOrder(["trophy", "marathon-pe"], () => false), ["trophy", "marathon-pe"]);
 });
 
 test("Pine resolves the same keep, minimum and ask-at as Trophy for every category and size row", () => {
@@ -176,12 +187,17 @@ test("editing Trophy's policy changes Pine's resolved policy, with no second ste
   assert.deepEqual(three(ask(after, PINE, "sun", "")), [5, 4, null]);
 });
 
-test("where Trophy has no policy Pine keeps its own; a Trophy switch-off is Trophy's alone", () => {
+test("where Trophy has no policy Marathon PE's applies, then Pine's own; a Trophy switch-off is Trophy's alone", () => {
   const config = cfg({ policyFollow: LINK });
-  // Perfume: Marathon PE and Hub 2 only. Pine's 5 per design stands.
+  // Perfume: Marathon PE and Hub 2 only. Pine follows Marathon PE's 8/4/3
+  // (policies are universal, Junid 24 Nov 2026).
   assert.equal(atTrophy(config, "perf", ""), null);
-  assert.deepEqual(three(ask(config, PINE, "perf", "")), [5, 4, null]);
-  assert.equal(ask(config, PINE, "perf", "").source, "concrete_division");
+  assert.deepEqual(three(ask(config, PINE, "perf", "")), [8, 4, 3]);
+  assert.equal(ask(config, PINE, "perf", "").follows, "marathon-pe");
+  // With Marathon PE's perfume entry gone too, Pine's own 5 per design stands.
+  const noPe = cfg({ policyFollow: LINK });
+  delete noPe.categoryPolicy.perfumes["marathon-pe"];
+  assert.equal(ask(noPe, PINE, "perf", "").source, "concrete_division");
   // The jersey is switched off AT TROPHY (target 0 rows). Pine carries it and
   // keeps Trophy's size-by-size numbers; the size Trophy's map does not name
   // (L) is Trophy's size run, as it is for a jersey Trophy carries.
@@ -190,9 +206,13 @@ test("where Trophy has no policy Pine keeps its own; a Trophy switch-off is Trop
   assert.deepEqual(three(ask(config, PINE, "jersey", "M")), [2, 1, 0]);
   assert.deepEqual(three(ask(config, PINE, "jersey", "L")), [2, 1, null]);
   assert.equal(ask(config, PINE, "jersey", "L").followedSource, "default");
-  // With Trophy's size run gone too, nothing of Trophy's speaks for L: Pine's own.
+  // With Trophy's size run gone too, Marathon PE's run speaks for L…
   const noRun = cfg({ policyFollow: LINK });
   delete noRun.defaultRunByStore.trophy;
+  assert.equal(ask(noRun, PINE, "jersey", "L").follows, "marathon-pe");
+  assert.deepEqual(three(ask(noRun, PINE, "tee", "XL")), [1, 1, null]);
+  // …and with PE's gone as well, nothing speaks for it: Pine's own.
+  delete noRun.defaultRunByStore["marathon-pe"];
   assert.equal(ask(noRun, PINE, "jersey", "L").source, "concrete_division");
   assert.deepEqual(three(ask(noRun, PINE, "tee", "XL")), [2, 1, null]);
 });
@@ -222,8 +242,8 @@ test("a hand-made Pine row above zero still outranks the link (an explicit row i
 
 test("an inherited object key is never an allowed pair", () => {
   for (const loc of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
-    assert.equal(pf.validatePolicyFollow(loc, "trophy"), "Only Marathon Pine can follow another shop's policy.");
-    assert.equal(pf.validatePolicyFollow(loc, null), "Only Marathon Pine can follow another shop's policy.");
+    assert.equal(pf.validatePolicyFollow(loc, "trophy"), "Only Marathon Pine and Concrete can follow another shop's policy.");
+    assert.equal(pf.validatePolicyFollow(loc, null), "Only Marathon Pine and Concrete can follow another shop's policy.");
     assert.equal(pf.policyFollowOf({ policyFollow: { [loc]: "trophy" } }, loc), null);
   }
 });
@@ -251,7 +271,7 @@ test("the requests Pine raises carry Trophy's numbers", () => {
   assert.ok(pine.includes("bag:_:2<-central"));              // 2, not the division's 5
   assert.ok(pine.includes("tee:XL:1<-central"));             // 1, not 2
   assert.ok(pine.includes("tee2:S:4<-central"));             // Trophy's product row
-  assert.ok(pine.includes("perf:_:5<-central"));             // no Trophy policy: Pine's own
+  assert.ok(pine.includes("perf:_:8<-central"));             // no Trophy policy: Marathon PE's
   const off = linesOf(plan({ config: cfg() }), PINE);
   assert.ok(off.includes("bag:_:5<-central") && off.includes("tee:XL:2<-central"));
 });
@@ -348,7 +368,8 @@ test("setPolicyFollow: switches the link on with a history entry, and the entry'
 
 test("setPolicyFollow: any other pair, a stale screen and a missing field are refused; nothing is written", async () => {
   const db = world();
-  await assert.rejects(call(db, { action: "setPolicyFollow", location: "concrete", follows: "trophy" }), /Only Marathon Pine/);
+  await assert.rejects(call(db, { action: "setPolicyFollow", location: "hub3", follows: "trophy" }), /Only Marathon Pine and Concrete/);
+  await assert.rejects(call(db, { action: "setPolicyFollow", location: "concrete", follows: "marathon-pe" }), /Trophy only/);
   await assert.rejects(call(db, { action: "setPolicyFollow", location: PINE, follows: "marathon-pe" }), /Trophy only/);
   await assert.rejects(call(db, { action: "setPolicyFollow", location: "trophy", follows: PINE }), /Only Marathon Pine/);
   await assert.rejects(call(db, { action: "setPolicyFollow", location: PINE }), /follows is required/);
@@ -410,6 +431,73 @@ test("the census says which links are on and which are possible", async () => {
   const db = world({ policyFollow: LINK });
   const r = await call(db, { action: "census", refresh: true });
   assert.deepEqual(r.policyFollow, LINK);
-  assert.deepEqual(Object.keys(r.policyFollowAllowed), [PINE]);
+  assert.deepEqual(Object.keys(r.policyFollowAllowed), [PINE, "concrete"]);
   assert.deepEqual((await call(world(), { action: "census", refresh: true })).policyFollow, {});
+});
+
+// ── CONCRETE FOLLOWS TROPHY (Junid, 24 Nov 2026: policies are universal) ─────
+const BOTH = { [PINE]: "trophy", concrete: "trophy" };
+
+test("Concrete resolves Trophy's numbers for what it carries; Marathon PE's where Trophy has none", () => {
+  const config = cfg({ policyFollow: BOTH });
+  for (const [pid, size] of [["sun", ""], ["bag", ""], ["tee", "S"], ["tee", "XL"]]) {
+    assert.deepEqual(three(ask(config, "concrete", pid, size)), three(atTrophy(config, pid, size)), `${pid} ${size}`);
+    assert.equal(ask(config, "concrete", pid, size).follows, "trophy");
+  }
+  // Without the link: the division's own 2 per size / 5 per design.
+  assert.deepEqual(three(ask(cfg({ policyFollow: LINK }), "concrete", "sun", "")), [5, 4, null]);
+  assert.deepEqual(three(ask(cfg({ policyFollow: LINK }), "concrete", "bag", "")), [5, 4, null]);
+});
+
+test("Concrete never keeps perfume, link or no link", () => {
+  const st = stock();
+  st.concrete.perf = full("perf", 0, shelf);
+  const config = cfg({ policyFollow: BOTH });
+  assert.equal(ask(config, "concrete", "perf", "", { st }), null);
+  const p = plan({ config, st });
+  assert.equal(p.intents.some((i) => i.dest === "concrete" && i.productId === "perf"), false);
+});
+
+test("a category only Marathon PE has a policy for is PE's at the follower, not Trophy's size run", () => {
+  // Underwear: PE has a size-by-size map; Trophy has only its garment run.
+  const config = cfg({ policyFollow: BOTH, categoryPolicy: { ...cfg().categoryPolicy,
+    underwear: { perSize: true, "marathon-pe": { sizes: { XL: { target: 3, minQty: 1, reorderPoint: 1 } } } } } });
+  const prods = { ...products, pants: { id: "pants", name: "Boxer", category: "Clothing", categoryKey: "underwear", productType: "clothing", sizes: ["S", "XL"] } };
+  const st = stock();
+  st.central.pants = { S: c(40), XL: c(40) };
+  st.concrete.pants = { S: shelf(0), XL: shelf(0) };
+  const { stock: view } = maskUntrustedStock(st, reg.SEED_REGISTRY);
+  const at = (loc, size) => resolveTarget({ targets: targets(), config, products: prods, stock: view, network: reg.SEED_REGISTRY, division: dv.divisionContext({ config, seats: seatsOf(st) }) }, loc, "pants", size);
+  assert.deepEqual(three(at("concrete", "XL")), [3, 1, 1]);
+  assert.equal(at("concrete", "XL").follows, "marathon-pe");
+  // A size PE's map does not name falls through to PE's run, never skipping to Trophy first.
+  assert.equal(at("concrete", "S").follows, "marathon-pe");
+});
+
+test("with Concrete linked, Trophy, Marathon PE and every hub resolve exactly as before", () => {
+  for (const loc of ["trophy", "marathon-pe", "hub1", "hub2", "hub3"]) {
+    for (const pid of Object.keys(products)) for (const size of sizesOf(pid)) {
+      assert.deepEqual(ask(cfg({ policyFollow: BOTH }), loc, pid, size), ask(cfg({ policyFollow: LINK }), loc, pid, size), `${loc} ${pid} ${size}`);
+    }
+  }
+});
+
+test("a product carried at Trophy and not at Concrete raises nothing for Concrete", () => {
+  const config = cfg({ policyFollow: BOTH });
+  assert.equal(ask(config, "concrete", "trophyOnly", ""), null);
+  const p = plan({ config });
+  const seated = new Set(Object.keys(stock().concrete));
+  assert.deepEqual(p.intents.filter((i) => i.dest === "concrete" && !seated.has(i.productId)), []);
+});
+
+test("setPolicyFollow: Concrete follows Trophy with a history entry; Revert sends it back", async () => {
+  const db = world();
+  const r = await call(db, { action: "setPolicyFollow", location: "concrete", follows: "trophy", expectedBefore: null });
+  assert.equal(r.after, "trophy");
+  assert.equal(stored(db).concrete, "trophy");
+  const h = db.state.root.engine_policy_history[r.historyId];
+  assert.equal(h.kind, "policyFollow");
+  assert.equal(h.before ?? null, null);
+  await call(db, { action: "setPolicyFollow", location: "concrete", follows: h.before ?? null, expectedBefore: "trophy" });
+  assert.equal(stored(db)?.concrete ?? null, null);
 });
