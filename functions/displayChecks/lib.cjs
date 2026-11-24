@@ -102,10 +102,14 @@ function isTriggerStoreEnabled(storeId, network, settings) {
 // its Display Checks are switched OFF explicitly (/displayChecks_settings/
 // {store}/enabled === false). Unlike the sale-driven display checks it does NOT
 // need the store to be fully live: Pine (not live, switch unset) has a working
-// strip without its till sales raising display checks. A hub, Central or an
-// unknown id is not a store → off.
+// strip without its till sales raising display checks. A hub or an unknown id
+// is not a store → off.
+// CENTRAL HAS A STRIP TOO (Junid, 24 Nov 2026): Central is the last stop of
+// every website line's chain, and its strip is shown inside Source. On unless
+// /displayChecks_settings/central/enabled === false.
+const WEBSITE_STRIP_CENTRAL = "central";
 function isWebsiteStripEnabled(storeId, network, settings) {
-  if (!isRegistryStore(storeId, network)) return false;
+  if (storeId !== WEBSITE_STRIP_CENTRAL && !isRegistryStore(storeId, network)) return false;
   const s = settings ? normStoreSettings(settings) : null;
   return !(s && s.enabled === false);
 }

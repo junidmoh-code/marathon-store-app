@@ -32,7 +32,24 @@ async function markWebsiteDirty(db, pid) {
 // Idempotent by its movement id, so a heal re-applies nothing. Best-effort: the
 // shelf hold in the write above already keeps the piece off the website.
 // Kill switch: /config/onlineOrders/writeDown/off = true.
-const { writeDownSingle } = require("../lib/web-writedown.cjs");
+const { writeDownSingle, restoreFound } = require("../lib/web-writedown.cjs");
+
+// A DISPLAY CHECK ANSWERED "it is on display" (result "confirmed") is a person
+// saying that size is on that shop's floor. If that shelf was written to zero
+// after a website not-found, the piece is put back (web_found) and the
+// write-down is closed. Best-effort and idempotent; one exact read when there
+// is nothing to undo.
+async function applyFoundOnCheck(db, store, record) {
+  try {
+    if (!record || isOnlinePickRecord(record) || isOnlineReturnRecord(record) || record.status !== "completed" || record.result !== "confirmed") return;
+    const sizeKey = record.sizeKey != null && record.sizeKey !== "" ? String(record.sizeKey) : null;
+    if (!record.productId || !sizeKey || /[.#$[\]/]/.test(`${record.productId}${sizeKey}${store}`)) return;
+    const res = await restoreFound(db, { pid: record.productId, sizeKey, loc: store, why: "found_on_check", by: (record.completedBy && record.completedBy.uid) || null }, { nowIso: new Date().toISOString() });
+    if (res.ok && res.restored) await markWebsiteDirty(db, record.productId);
+  } catch (err) {
+    console.warn(`display check: found-after-write-down not applied (${err && err.message})`);
+  }
+}
 async function applyWriteDown(db, w) {
   try {
     if ((await db.ref("config/onlineOrders/writeDown/off").get()).val() === true) return;
@@ -69,4 +86,4 @@ async function applyOnlineOrderOutcome(db, store, record, { storeName } = {}) {
   return false;
 }
 
-module.exports = { applyOnlineOrderOutcome };
+module.exports = { applyOnlineOrderOutcome, applyFoundOnCheck };

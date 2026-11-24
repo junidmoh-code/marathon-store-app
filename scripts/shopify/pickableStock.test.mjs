@@ -2,7 +2,7 @@
 // counts for nothing on the website until it moves again — and nothing else changes.
 import { describe, it, expect, beforeEach } from "vitest";
 import {
-  CELL_HOLDS_PATH, PICKABLE_CONFIG_PATH, cellQty, cellStampMs, holdStands, rulesFrom, pickableTree, cellHeld, holdRow, isStaleSingle, STALE_SINGLE_DEFAULT,
+  CELL_HOLDS_PATH, PICKABLE_CONFIG_PATH, cellQty, cellStampMs, holdStands, rulesFrom, pickableTree, cellHeld, holdRow, oldSingleSizes, OLD_SINGLE_DEFAULT, SHOP_LOCATIONS,
   readPickableRules, readCellHolds, forgetPickableRules,
 } from "./pickableStock.mjs";
 import { networkTotals } from "./inventory.mjs";
@@ -83,48 +83,66 @@ describe("pickableTree", () => {
   });
 });
 
-describe("the lone stale piece (Marathon PE, untouched over 14 days: 31 of 54 website lines rejected)", () => {
-  const rule = rulesFrom(null).staleSingle;
+describe("the old single piece with nothing behind it (Junid's rule, 24 Nov 2026 — replaces the 14-day Marathon PE rule)", () => {
+  const rule = rulesFrom(null).oldSingle;
   const DAY = 864e5;
-  it("the default is Marathon PE at 14 days, and only that", () => {
-    expect(rule).toEqual({ days: 14, locations: ["marathon-pe"] });
-    expect(STALE_SINGLE_DEFAULT.locations).toEqual(["marathon-pe"]);
+  const caught = (tree) => [...oldSingleSizes(tree, "P", rule, T).keys()];
+  it("the default is 60 days; the retired 14-day rule is gone whatever the config says", () => {
+    expect(rule).toEqual({ days: 60 });
+    expect(OLD_SINGLE_DEFAULT.days).toBe(60);
+    expect(rulesFrom(null).staleSingle).toBe(null);
+    expect(rulesFrom({ staleSingle: { days: 14, locations: ["marathon-pe"] } }).staleSingle).toBe(null);
+    expect(SHOP_LOCATIONS).toEqual(["marathon-pe", "trophy", "concrete", "marathon-pine"]);
   });
-  it("exactly one piece, at a listed place, with a stamp older than the limit", () => {
-    expect(isStaleSingle(cell(1, T - 15 * DAY), "marathon-pe", rule, T)).toBe(true);
-    expect(isStaleSingle(cell(1, T - 14 * DAY), "marathon-pe", rule, T)).toBe(false); // 14 days exactly is not OVER 14
-    expect(isStaleSingle(cell(1, T - 14 * DAY - 1), "marathon-pe", rule, T)).toBe(true);
-    expect(isStaleSingle(cell(2, T - 40 * DAY), "marathon-pe", rule, T)).toBe(false); // two pieces: counted
-    expect(isStaleSingle(cell(0, T - 40 * DAY), "marathon-pe", rule, T)).toBe(false);
-    expect(isStaleSingle(cell(1, T - 40 * DAY), "trophy", rule, T)).toBe(false);      // below the bar: not listed
-    expect(isStaleSingle(cell(1, T - 40 * DAY), "hub1", rule, T)).toBe(false);
+  it("ALL three: every holder a single piece, each untouched 60 days or more, nothing behind it", () => {
+    expect(caught({ "marathon-pe": { P: { M: cell(1, T - 60 * DAY) } } })).toEqual(["M"]);       // 60 days exactly counts ("60 days or more")
+    expect(caught({ "marathon-pe": { P: { M: cell(1, T - 60 * DAY + 1) } } })).toEqual([]);
+    expect(caught({ "marathon-pe": { P: { M: cell(1, T - 90 * DAY) } }, trophy: { P: { M: cell(1, T - 61 * DAY) } } })).toEqual(["M"]);
+  });
+  it("one holder that is not a lone old piece keeps the size on sale", () => {
+    expect(caught({ "marathon-pe": { P: { M: cell(1, T - 90 * DAY) } }, trophy: { P: { M: cell(1, T - 5 * DAY) } } })).toEqual([]);  // one was touched lately
+    expect(caught({ "marathon-pe": { P: { M: cell(1, T - 90 * DAY) } }, trophy: { P: { M: cell(2, T - 90 * DAY) } } })).toEqual([]); // one shows two
+    expect(caught({ "marathon-pe": { P: { M: cell(2, T - 90 * DAY) } } })).toEqual([]);
+  });
+  it("a refill pipeline behind it keeps it on sale: anything at Central, a hub, a stockroom or in transit", () => {
+    const pe = { "marathon-pe": { P: { M: cell(1, T - 90 * DAY) } } };
+    for (const loc of ["central", "hub1", "hub2", "hub3", "in_transit", "concrete-stockroom"]) {
+      expect(caught({ ...pe, [loc]: { P: { M: cell(1, T - 90 * DAY) } } })).toEqual([]);
+    }
+    // …of THAT size: another size at Central does not help size M.
+    expect(caught({ ...pe, central: { P: { L: cell(5, T - 1) } } })).toEqual(["M"]);
+    // An empty cell behind it is not a pipeline.
+    expect(caught({ ...pe, central: { P: { M: cell(0, T - 1) } } })).toEqual(["M"]);
   });
   it("no stamp is no evidence of age: the piece is counted", () => {
-    expect(isStaleSingle({ qty: 1 }, "marathon-pe", rule, T)).toBe(false);
-    expect(isStaleSingle(1, "marathon-pe", rule, T)).toBe(false);
-    expect(isStaleSingle(cell(1, T - 40 * DAY), "marathon-pe", rule, NaN)).toBe(false);
+    expect(caught({ "marathon-pe": { P: { M: { qty: 1 } } } })).toEqual([]);
+    expect(caught({ "marathon-pe": { P: { M: 1 } } })).toEqual([]);
+    expect([...oldSingleSizes({ "marathon-pe": { P: { M: cell(1, T - 90 * DAY) } } }, "P", rule, NaN).keys()]).toEqual([]);
   });
-  it("the website does not count it, and counts it again the moment the cell moves", () => {
-    const tree = { "marathon-pe": { P: { M: cell(1, T - 30 * DAY), L: cell(1, T - 2 * DAY) } }, trophy: { P: { M: cell(1, T - 30 * DAY) } } };
+  it("the website does not count it, and counts it again the moment a shelf moves or stock arrives", () => {
+    const tree = { "marathon-pe": { P: { M: cell(1, T - 70 * DAY), L: cell(1, T - 70 * DAY) } }, trophy: { P: { M: cell(1, T - 80 * DAY), L: cell(1, T - 2 * DAY) } } };
     const { tree: out, hidden } = pickableTree(tree, "P", null, rulesFrom(null), T);
-    expect(networkTotals(out, "P", ["M", "L"])).toEqual({ M: 1, L: 1 });
-    expect(hidden).toEqual([{ loc: "marathon-pe", sizeKey: "M", qty: 1, why: "stale_single", at: T - 30 * DAY }]);
-    const moved = { ...tree, "marathon-pe": { P: { ...tree["marathon-pe"].P, M: cell(1, T - 1) } } };
-    expect(networkTotals(pickableTree(moved, "P", null, rulesFrom(null), T).tree, "P", ["M", "L"])).toEqual({ M: 2, L: 1 });
+    expect(networkTotals(out, "P", ["M", "L"])).toEqual({ M: 0, L: 2 });
+    expect(hidden).toEqual([
+      { loc: "marathon-pe", sizeKey: "M", qty: 1, why: "old_single", at: T - 70 * DAY },
+      { loc: "trophy", sizeKey: "M", qty: 1, why: "old_single", at: T - 80 * DAY },
+    ]);
+    const touched = { ...tree, trophy: { P: { ...tree.trophy.P, M: cell(1, T - 1) } } };
+    expect(networkTotals(pickableTree(touched, "P", null, rulesFrom(null), T).tree, "P", ["M", "L"])).toEqual({ M: 2, L: 2 });
+    const arrived = { ...tree, central: { P: { M: cell(3, T - 1) } } };
+    expect(networkTotals(pickableTree(arrived, "P", null, rulesFrom(null), T).tree, "P", ["M", "L"])).toEqual({ M: 5, L: 2 });
   });
-  it("Junid's switches: off, other days, other places", () => {
-    expect(rulesFrom({ staleSingle: { off: true } }).staleSingle).toBe(null);
-    expect(rulesFrom({ staleSingle: { days: 30 } }).staleSingle).toEqual({ days: 30, locations: ["marathon-pe"] });
-    expect(rulesFrom({ staleSingle: { days: 0 } }).staleSingle.days).toBe(14);
-    expect(rulesFrom({ staleSingle: { locations: ["marathon-pe", "trophy"] } }).staleSingle.locations).toEqual(["marathon-pe", "trophy"]);
-    expect(rulesFrom({ staleSingle: { locations: [] } }).staleSingle.locations).toEqual(["marathon-pe"]);
-    const tree = { "marathon-pe": { P: { M: cell(1, T - 30 * DAY) } } };
-    expect(pickableTree(tree, "P", null, rulesFrom({ staleSingle: { off: true } }), T).tree).toBe(tree);
-    // The two rules are independent: holds off leaves the stale rule on.
+  it("Junid's switches: off, other days", () => {
+    expect(rulesFrom({ oldSingle: { off: true } }).oldSingle).toBe(null);
+    expect(rulesFrom({ oldSingle: { days: 30 } }).oldSingle).toEqual({ days: 30 });
+    expect(rulesFrom({ oldSingle: { days: 0 } }).oldSingle.days).toBe(60);
+    const tree = { "marathon-pe": { P: { M: cell(1, T - 90 * DAY) } } };
+    expect(pickableTree(tree, "P", null, rulesFrom({ oldSingle: { off: true } }), T).tree).toBe(tree);
+    // The two rules are independent: holds off leaves this rule on.
     expect(pickableTree(tree, "P", null, rulesFrom({ holdsOff: true }), T).hidden).toHaveLength(1);
   });
-  it("a held cell is reported as held, not as stale", () => {
-    const tree = { "marathon-pe": { P: { M: cell(1, T - 30 * DAY) } } };
+  it("a held cell is reported as held, not as an old single", () => {
+    const tree = { "marathon-pe": { P: { M: cell(1, T - 90 * DAY) } } };
     const { hidden } = pickableTree(tree, "P", { M: { "marathon-pe": { at: T - DAY, kind: "shop_not_found" } } }, rulesFrom(null), T);
     expect(hidden).toEqual([{ loc: "marathon-pe", sizeKey: "M", qty: 1, why: "shop_not_found", at: T - DAY }]);
   });

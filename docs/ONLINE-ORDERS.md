@@ -177,23 +177,119 @@ Readers:
 - **POS walk-in guard**: exact-path read of `{pid}/{sizeKey}`, counting the rows'
   `locs[deductingLocation]`.
 
-## Routing (`routeLine`, pure)
+## Routing (`routeLine`, pure) — the chains, the most trustworthy place first (Junid, 24 Nov 2026)
 
 Live cell quantity minus units other orders already hold at that location:
 
 ```
-footwear / slides → hub1 if it has the size, else hub2 if it has it        status "pick"
+footwear / slides → hub1 → hub2 → hub3                                      status "pick"
+                  → central                                                 status "display"  (the Source strip)
 anything else     → marathon-pe → trophy                                    status "display"
-                  → hub2                                                    status "pick"
-nothing           → { locationId: null, status: "no_stock" }  order needs_attention
+                  → hub2                                                    status "pick"     (a hub order, three-letter code)
+                  → concrete → marathon-pine                                status "display"
+                  → central                                                 status "display"  (the Source strip)
+nothing           → { locationId: null, status: "no_stock" }  waits on refill
+```
+
+**Trust.** `availabilityFor` (poll.mjs) scores each shelf that shows a piece
+(`shelfRisk`): one point each for *one piece free*, *untouched longer than
+`staleDays`* (14) and *rejected a website pick in the last `rejectedDays`* (30,
+read from `/online_cell_holds`). A shelf is **risky** at `riskyAt` points (2).
+The chain is walked three times: trusted shops and hubs in chain order, then
+risky ones in chain order (a risky shelf is still used when it is all there
+is), then **Central — last even when trusted**, because its piece arrives the
+next morning. `source.why` on the line and the poller's log say why each line
+went where it did.
+
+```
+/config/onlineOrders/routing = { trustOff?, centralOff?, chainOff?, riskyAt?, staleDays?, rejectedDays?,
+                                 weights?: { single, stale, rejected } }
 ```
 
 Every unit is its own line (above): qty 2 with one at PE becomes two lines
-(PE ×1, then the next location ×1), and qty 2 both at PE is two PE lines. Footwear that neither hub holds is
-`no_stock` rather than a pick sent to an empty hub.
+(PE ×1, then the next location ×1), and qty 2 both at PE is two PE lines.
 
 A shop whose own Display Checks switch is off is never routed to: it could
-neither see nor close the entry.
+neither see nor close the entry. Central's strip is on unless
+`/displayChecks_settings/central/enabled === false`.
+
+## A rejection moves the line on at once (`chainMove.mjs`, Junid 24 Nov 2026)
+
+A hub's Out of Stock, a shop's (or Central's) Not found, or the packer's Not
+here / Damaged puts the line on the **next place on its chain that shows the
+size, in the same poll tick** — not on the order agent's next round. A place
+rejection stamps `source.failedAt`; the tick raises
+`agentRepicks/chain_{i}_{routeGen}` (`by: "chain"`, `exclude` = every place
+that already failed the line) and applies it with the agent re-pick's own
+machinery (`agentRepick.mjs`: same blockers, same one-transaction move), then
+raises the new pick. The hold (`/online_reservations` `locs`) follows the line
+to that one place; nowhere else is held for it.
+
+When nothing is left — Central included — the line is stamped
+`lines/{i}/chain = { gen, rid, at, result: "nowhere" | "blocked", why }`.
+**Jamie offers alternatives only after that stamp** (marathon-dm-agent
+`src/jimmy/chainFirst.js`; a 15-minute fallback covers a poller that is down).
+This replaces Jamie's "do not wait for Central" and "Hub 3 before alternatives".
+Switch: `/config/onlineOrders/routing/chainOff = true`.
+
+## A rejection corrects the count — single pieces only (Junid, 24 Nov 2026)
+
+`functions/lib/web-writedown.cjs`, used by the Display Checks function (a
+shop's or Central's Not found), the poller (a hub's Out of Stock) and the daily
+shelf check (Not found).
+
+- The rejecting shelf shows **exactly one** piece → it is written to **zero**
+  as a stock movement of its own type, `web_not_found` (one unit, `from` that
+  place; `web: { kind, orderId, orderNumber, line, by, rejectedAt }`; the cell's
+  `lastType` is `adjustment`), and a row is kept:
+  `/online_writedowns/{pid}/{sizeKey}/{loc} = { at, mvId, qty, kind, orderId, orderNumber, line, by, size }`.
+- It shows **two or more** → the count is **not** changed. The shelf hold
+  (below) keeps it off the website, and it is on the "count wrong by more than
+  one" list of that place's daily shelf check.
+- **It undoes itself.** Sold at a till or picked there (the shelf goes below
+  zero) → the poller's sweep (every 10 minutes) writes `web_found` +1, so the
+  shelf lands on zero and the ledger says why. Found on a shelf check, or a
+  display check answered "it is on display" → `web_found` at once. Any other
+  movement on the shelf (a delivery, a count) settles it: the row is closed.
+- This is the one count change a website order makes before packing. Junid
+  asked for it knowing the refill scan reads the corrected count. Nothing in
+  it reads or writes a policy, a target or a request.
+- Switch: `/config/onlineOrders/writeDown/off = true`.
+- `cell-holds.mjs --write-down [--commit]` applied it to the shelves held
+  since the report; `--write-down-rollback <file> --commit` puts those back.
+
+## Central is the last stop, with its own strip (Junid, 24 Nov 2026)
+
+The website has always counted Central's stock; now a line that reaches
+Central on its chain is a `display` line at `central`, with a strip entry at
+`/displayChecks_active/central/online__…` exactly like a shop's. The strip is
+shown **inside Source** (`ShelfChecksPanel loc="central"`, listed through the
+`webShelfList` callable, answered through `completeDisplayCheck` — anyone who
+may work Source may answer it). **Found** → the line is `handed` from
+`central`; the piece travels on the next morning stock run, the POS shows it
+green as "On its way from Central", and it is deducted from Central's own
+count, one unit per line, **at Pack**. **Not found** follows the write-down
+rule above and the chain is then exhausted, so the line goes to Jamie.
+Nothing holds Central's piece against the refill scan: a refill may take it
+before Central pulls it, in which case Central taps Not found.
+
+## Daily shelf checks (Junid, 24 Nov 2026)
+
+`functions/webShelf` (rules in `lib.cjs`), `src/components/online/ShelfChecksPanel.jsx`,
+`scripts/online/shelf-checks.mjs`. Each shop and hub gets a short list a day
+(`/config/onlineOrders/shelfChecks = { off?, perDay?: 20 }`) on the screen it
+already uses — Display Checks (shops), the Warehouse queue (hubs), Source
+(Central, "wrong by more" only): first the shelves held as **count wrong by
+more than one**, then the **single pieces untouched longest** that the website
+lists. The list is topped up after the 02:30 stock sweep, from the cells that
+sweep reads anyway; unchecked items roll over. Staff tap **Found / Not found**
+(or scan the piece), or the **real number** for a shelf showing several —
+nothing is typed. Found stamps the shelf touched (`updatedAt`, `checkedAt`),
+lifts a hold and undoes an open write-down; Not found on a single piece is the
+write-down; a number becomes an `adjustment` ("shelf check: counted N, the app
+showed M"). Nodes (server-only, through the callables): `/shelf_checks/{loc}/open`,
+`/done/{saDate}`, `/days/{saDate}`. Junid's progress per place: Settings →
+Online orders → "Shelf checks — progress per place" (`webShelfProgress`).
 
 ## Shelf holds — a rejection takes that shelf off the website (Junid, 24 Nov 2026)
 
@@ -204,7 +300,7 @@ the same size sold again from a shelf that had already rejected it.
 
 ```
 /online_cell_holds/{pid}/{sizeKey}/{locationId} =
-    { at, kind: "hub_out_of_stock" | "shop_not_found", orderId, line, qty?, by? }
+    { at, kind: "hub_out_of_stock" | "shop_not_found" | "shelf_check", orderId, line, qty?, by? }
 ```
 
 - **Written** by the poller when a hub order comes back `out_of_stock`
@@ -222,16 +318,19 @@ the same size sold again from a shelf that had already rejected it.
 - **No stock is touched.** The count, the refill scan and the Total Stock card
   are unchanged; the card's "online N" is the figure before holds.
 - Kill switch: `/config/onlineOrders/pickable/holdsOff = true`.
-- **The lone stale piece** (same module, same report section 3): a cell at
-  Marathon PE showing exactly one piece whose count has not moved for more than
-  14 days is not counted for the website (54 website lines were sent to such a
-  cell; 31, 57%, were rejected — the only class over Junid's bar of 10 lines
-  with half unavailable). It is still routed to, and it counts again the moment
-  the cell moves. `/config/onlineOrders/pickable/staleSingle = { off?, days?,
-  locations? }`. The nightly stock sweep (02:30) is what notices a piece
-  crossing 14 days. `cell-holds.mjs --stale` lists what the rule hides now
+- **The old single piece with nothing behind it** (same module; Junid's rule
+  of 24 Nov 2026, which replaced the 14-day Marathon PE "lone stale piece"
+  rule): a size is not counted for the website only when **every** place
+  holding it shows a single piece, **each** untouched for 60 days or more, and
+  **nothing** is at Central, a hub, a stockroom or in transit. It counts again
+  the moment a shelf is touched or stock arrives.
+  `/config/onlineOrders/pickable/oldSingle = { off?, days? }`. The nightly stock
+  sweep (02:30) is what notices a piece crossing 60 days.
+  `cell-holds.mjs --old-single [--was <old file>]` lists what the rule hides now
   (with `--commit`: a rollback file, and the website is told at once);
-  `--stale-off <file> --commit` switches it off.
+  `--old-single-off <file> --commit` switches it off.
+- A hold row whose shelf has moved hides nothing, but stays for 45 days as the
+  router's "rejected a website pick lately" note; `--prune` clears older ones.
 - `scripts/shopify/onlineOrders/cell-holds.mjs`: `--list`, `--prune` (run by
   the nightly stock sweep), `--from` (back-fill, writes a rollback file),
   `--rollback`.

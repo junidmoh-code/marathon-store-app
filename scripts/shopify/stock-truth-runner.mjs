@@ -92,6 +92,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     });
     for (const l of `${h.stdout || ""}${h.stderr || ""}`.split("\n")) if (l.trim()) log(`   holds: ${l}`);
     if (h.status !== 0) log(`   holds: the tidy-up did not finish (exit ${h.status ?? "none"}${h.error ? `, ${h.error.message}` : ""}); ended holds hide nothing, it runs again tomorrow`);
+    // DAILY SHELF CHECKS (functions/webShelf, Junid 24 Nov 2026): each shop and hub's list is topped up to its
+    // day's number from the lone pieces the sweep has just seen and the shelves held as "wrong by more than one".
+    // Writes only under /shelf_checks. Never fails the night.
+    const c = spawnSync(process.execPath, [join(REPO, "scripts", "online", "shelf-checks.mjs"), "--build", "--commit"], {
+      cwd: REPO, env: process.env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60e3,
+    });
+    for (const l of `${c.stdout || ""}${c.stderr || ""}`.split("\n")) if (l.trim()) log(`   shelf checks: ${l}`);
+    if (c.status !== 0) log(`   shelf checks: the lists were not topped up (exit ${c.status ?? "none"}${c.error ? `, ${c.error.message}` : ""}); yesterday's unchecked items are still there`);
     // Stamped only when the sweep got as far as its REPORT ("rtdb read:" is
     // printed just before it is written): a sweep that refused or could not
     // correct something has said so at /shopify_inventory_health and the

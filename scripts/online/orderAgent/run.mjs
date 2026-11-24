@@ -91,9 +91,9 @@ async function lineFacts(db, id, order, i, line) {
     // rejected a website pick and has not moved since is not a place to re-pick
     // at — the same picture the poller's router has, so the agent never asks for
     // a re-pick the poller would answer "not in stock".
-    const [holdsRaw, centralQty, shelfHolds, rules, ...cells] = await Promise.all([
+    const [holdsRaw, centralCell, shelfHolds, rules, ...cells] = await Promise.all([
       get(db, `online_reservations/${line.pid}/${sk}`),
-      get(db, `stock/central/${line.pid}/${sk}/qty`),
+      get(db, `stock/central/${line.pid}/${sk}`),
       get(db, `${CELL_HOLDS_PATH}/${line.pid}/${sk}`).catch(() => null),
       readPickableRules((p) => get(db, p)),
       ...ROUTED.map((loc) => get(db, `stock/${loc}/${line.pid}/${sk}`)),
@@ -113,7 +113,10 @@ async function lineFacts(db, id, order, i, line) {
       if (!["pick", "display", "handed"].includes(l.source.status)) continue;
       facts.free[l.source.locationId] = Math.max(0, num(facts.free[l.source.locationId]) - num(l.qty || 1));
     }
-    facts.central = num(centralQty);
+    // CENTRAL IS THE LAST STOP OF THE CHAIN (Junid, 24 Nov 2026): once Central itself said Not found (its shelf is held)
+    // or the poller stamped the chain as run out for this route, "coming from Central" is no longer true of this line.
+    const chainOut = line.chain?.result === "nowhere" && num(line.chain.gen) === num(line.routeGen);
+    facts.central = chainOut || cellHeld(shelfHolds, "central", centralCell, rules) ? 0 : num(centralCell?.qty);
   }
   const st = line?.source?.status;
   if ((st === "pick" || st === "display") && line.source?.entryKey) {

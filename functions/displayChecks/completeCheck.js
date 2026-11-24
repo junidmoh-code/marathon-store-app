@@ -54,7 +54,7 @@ const {
 
 const ALL_RESULTS = [...DISPLAY_RESULTS, ...ONLINE_PICK_RESULTS, ...ONLINE_RETURN_RESULTS];
 const { guardedMutate } = require("./guardedTransaction.cjs");
-const { applyOnlineOrderOutcome } = require("./onlineOrder.cjs");
+const { applyOnlineOrderOutcome, applyFoundOnCheck } = require("./onlineOrder.cjs");
 const { locationName, SEED_REGISTRY } = require("../lib/network-registry.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { loadStoreSettings } = require("./settings.cjs");
@@ -163,6 +163,8 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   const durable = (record) => Promise.all([
     archiveAndLog(db, store, record),
     applyOnlineOrderOutcome(db, store, record, { storeName: name }),
+    // "It is on display" also undoes a website write-down on that shelf (never decides ok: best-effort).
+    applyFoundOnCheck(db, store, record),
   ]).then(([a, o]) => a && o);
   const okOrRetry = (record) => durable(record).then((ok) =>
     ok ? { kind: "ok", result: record.result, completedAt: record.completedAt, overridden: !!record.resultOverridden }
@@ -223,6 +225,8 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
 function displayCheckAllowed({ email, emailVerified, userRec, store }) {
   const perms = Array.isArray(userRec?.permissions) ? userRec.permissions : [];
   const isSuper = isSuperAdmin(email) && emailVerified === true;
+  // Central's website strip lives inside Source (Junid, 24 Nov 2026): whoever may work Source may answer it.
+  if (store === "central" && perms.includes("source")) return true;
   return isSuper || (perms.includes("display_checks") && typeof store === "string" && store.length > 0);
 }
 

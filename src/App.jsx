@@ -103,6 +103,8 @@ import DisplayRegistrationCard from "./components/stock/DisplayRegistrationCard"
 // are precomputed once a day inside refillHealthScan; the screen reads one
 // small node per store and nothing else.
 import StockAuditView from "./components/stock/StockAuditView";
+import ShelfChecksPanel from "./components/online/ShelfChecksPanel.jsx";
+import { WebOrderBanner, HubWebPicksSummary } from "./components/online/WebOrderBadge.jsx";
 import { stockAuditVisibleForViewer } from "./config/stockAudit";
 import DisplayRegistrationView from "./components/stock/DisplayRegistrationView";
 import { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
@@ -14272,9 +14274,13 @@ function WarehouseView({ products = [], orders, onExit }) {
     return o.createdAt; // incoming + all
   };
 
+  // WEBSITE ORDERS FIRST (Junid, 24 Nov 2026): a website pick still to be pulled sits at the top of the
+  // queue, oldest first (the one waiting longest is the one to pull), above walk-in and refill work.
+  const webWaitingPick = (o) => o.channel === "online" && o.status === STATUS.INCOMING;
   const filtered = hubOrders
     .filter(o => filter === "all" ? o.status !== STATUS.COMING_TOMORROW : o.status === filter)
-    .sort((a, b) => (queueDateOf(b) || "").localeCompare(queueDateOf(a) || ""));
+    .sort((a, b) => (webWaitingPick(b) - webWaitingPick(a))
+      || (webWaitingPick(a) ? (queueDateOf(a) || "").localeCompare(queueDateOf(b) || "") : (queueDateOf(b) || "").localeCompare(queueDateOf(a) || "")));
 
   // Tally for the incoming pill at top right
   const incomingCount = hubOrders.filter(o => o.status === STATUS.INCOMING).length;
@@ -14363,6 +14369,10 @@ function WarehouseView({ products = [], orders, onExit }) {
           {laybyPhoto && <GalleryLightbox photos={laybyPhoto} onClose={() => setLaybyPhoto(null)}/>}
           {/* ORDER CARDS — grouped by day, last 3 days only (Phase 10) */}
           <div style={{ padding:"0 13px" }}>
+            {/* Website picks still to be pulled, at the very top whatever day they came in; then this hub's
+                daily shelf checks (Junid, 24 Nov 2026). */}
+            <HubWebPicksSummary orders={hubOrders.filter(webWaitingPick)} />
+            <ShelfChecksPanel loc={selectedHub} />
             <DayCollapsible
               sectionKey={`wh-${filter}`}
               items={filtered}
@@ -14398,7 +14408,8 @@ function WarehouseView({ products = [], orders, onExit }) {
                           : ready   ? "rgba(0,30,15,.4)"
                           : oos     ? "rgba(40,10,10,.4)"
                                     : "rgba(6,9,20,1)";
-            const cardBorder = incoming ? "1px solid rgba(60,110,255,.2)"
+            const cardBorder = incoming && order.channel === "online" ? "2px solid #FF453A"
+                              : incoming ? "1px solid rgba(60,110,255,.2)"
                               : ready   ? "1px solid rgba(0,180,80,.15)"
                               : oos     ? "1px solid rgba(200,40,40,.15)"
                                         : "1px solid rgba(255,255,255,.07)";
@@ -14457,7 +14468,9 @@ function WarehouseView({ products = [], orders, onExit }) {
                         <div style={{ marginLeft:"auto", color:"rgba(255,255,255,.2)", fontSize:16 }}>···</div>
                       )}
                     </div>
-                    <div style={{ fontSize:15, fontWeight:600, color:"#fff" }}>{order.productName}{order.size ? ` — Size ${order.size}` : ""}{order.qty > 1 ? ` × ${order.qty}` : ""}</div>
+                    {/* A website pick still to be pulled: red, bold, with how long it has waited (Junid, 24 Nov 2026). */}
+                    {order.channel === "online" && incoming && <WebOrderBanner since={order.createdAt} />}
+                    <div style={{ fontSize: order.channel === "online" && incoming ? 17 : 15, fontWeight: order.channel === "online" && incoming ? 800 : 600, color:"#fff" }}>{order.productName}{order.size ? ` — Size ${order.size}` : ""}{order.qty > 1 ? ` × ${order.qty}` : ""}</div>
                     <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginTop:3, display:"flex", alignItems:"center", gap:4 }}>
                       <svg width="10" height="10" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                       {order.customerName}{order.customerPhone ? ` · ${order.customerPhone}` : ""}
@@ -17728,6 +17741,10 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   };
   const content = (
     <>
+        {/* WEBSITE ORDERS THAT REACHED CENTRAL (Junid, 24 Nov 2026): Central is the last stop of every
+            website line's chain. The same strip as a shop's Display Checks — pull the piece, tap Found or
+            Not found; a found piece goes on the next morning stock run. Shown above every tab. */}
+        <ShelfChecksPanel loc="central" />
         {tab==="hub1refill" && hubTabContent("hub1")}
         {tab==="clothing" && hubTabContent("hub2")}
         {/* Shop tabs — first-batch requests from Central (request rows only). */}
