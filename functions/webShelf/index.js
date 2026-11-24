@@ -24,7 +24,7 @@ const L = require("./lib.cjs");
 const { isSuperAdmin } = require("../lib/super-admins.cjs");
 const { saDateStringFromMs } = require("../lib/sa-time.cjs");
 const { applyMovementAdmin } = require("../lib/admin-movement.cjs");
-const { writeDownSingle, restoreFound } = require("../lib/web-writedown.cjs");
+const { writeDownSingle, restoreFound, WRITEDOWNS_PATH } = require("../lib/web-writedown.cjs");
 const { readOnTheWay } = require("../lib/on-the-way.cjs");
 const { DIRTY_PATH, CONCRETE_DIRTY_PATH } = require("../lib/shopify-inventory-dirty.cjs");
 const { readAccountSections, locationInSections } = require("../lib/section-access.cjs");
@@ -152,9 +152,11 @@ async function runAnswer(db, { loc, id, result, count, uid, name, nowMs }) {
       return { ...(typeof cur === "object" ? cur : { qty: Number(cur) || 0 }), updatedAt: nowIso, checkedAt: nowIso, checkedBy: uid };
     });
     if (!touched.committed || !touched.snapshot.val()) { await db.ref(openPath).remove(); return { error: "stale" }; }
-    // Found (or counted right): a write-down still open on the shelf was wrong, so it is undone. A "not found" that
-    // agrees with the count (a confirmed write-down, or a shelf whose pieces are all still on the way) undoes nothing.
-    if (plan.outcome !== "notFound") await restoreFound(db, { pid: item.pid, sizeKey: item.sizeKey, loc, why: "found_on_check", by: uid }, { nowIso });
+    // Found on a shelf that shows nothing that should be there (a write-down left it at what is on the way): the
+    // piece the write-down took is back, so it is undone. Any other agreeing answer — a count equal to what the shelf
+    // shows — already includes every piece: nothing is added, and an open write-down on it is simply settled.
+    if (result === "found" && shown - otw <= 0) await restoreFound(db, { pid: item.pid, sizeKey: item.sizeKey, loc, why: "found_on_check", by: uid }, { nowIso });
+    else if (plan.outcome !== "notFound") await db.ref(`${WRITEDOWNS_PATH}/${item.pid}/${item.sizeKey}/${loc}`).remove();
   }
   // The shelf has been settled by a person: a hold on it from an older rejection ends here.
   await db.ref(`${CELL_HOLDS_PATH}/${item.pid}/${item.sizeKey}/${loc}`).transaction((cur) => (cur == null ? null : Number(cur.at) <= nowMs ? null : undefined));

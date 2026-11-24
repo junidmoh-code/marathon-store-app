@@ -98,8 +98,11 @@ async function writeDownSingle(db, w, { nowIso }) {
   // The row is what makes it undo itself. Create-once: a retry never moves `at`.
   // …and only when THIS call moved the stock: a heal that finds the movement already made must not bring back a row
   // the sweep or a Found has since closed (it would later undo a write-down that was already settled).
+  // The version the write-down left the cell at: the reversal can then tell "only sold from since" from "counted since".
+  const v0 = otw > 0 ? Number(((await read(db, cellP)) || {}).v) : NaN;
   if (!res.idempotent) {
     await db.ref(rowPath(w.pid, w.sizeKey, w.loc)).transaction((cur) => (cur != null && cur.mvId === movementId ? undefined : clean({
+      v0: Number.isFinite(v0) ? v0 : null,
       at, mvId: movementId, qty: 1, kind: w.kind, size, orderId: w.orderId != null ? String(w.orderId) : null, orderNumber: w.orderNumber ?? null, line: w.line ?? null, by: w.by ?? null, otw: otw || null,
     })));
   }
@@ -153,7 +156,10 @@ function sweepDecision(row, cell, nowMs) {
   // Written down to what was on the way: the pieces that land are sold off the same shelf, and only a sale BEYOND
   // them proves the missing piece was there. So while the shelf has only been sold from (never filled or counted),
   // the row waits for that.
-  if (Number(row.otw) > 0 && cell.lastType === "sold" && cellQty(cell) <= Number(row.otw) && !tooOld) return "keep";
+  // Each movement bumps the cell's version by one and each sale takes at least one piece, so "only sold from since"
+  // holds only while qty ≤ otw − (versions since). A count in between breaks it and the row closes.
+  const since = Number(cell.v) - Number(row.v0);
+  if (Number(row.otw) > 0 && Number.isFinite(since) && since >= 1 && cell.lastType === "sold" && cellQty(cell) <= Number(row.otw) - since && !tooOld) return "keep";
   return "close";
 }
 

@@ -111,6 +111,7 @@ test("write-down: a shelf showing 2 with 1 on the way → down by ONE, to the on
   assert.deepEqual({ before: mv.before, after: mv.after, otw: mv.web.onTheWay }, { before: { "marathon-pe": 2 }, after: { "marathon-pe": 1 }, otw: 1 });
   assert.match(mv.reason, /1 more on the way, left on the count/);
   assert.equal(root(db).online_writedowns.p9.M["marathon-pe"].otw, 1);
+  assert.equal(root(db).online_writedowns.p9.M["marathon-pe"].v0, root(db).stock["marathon-pe"].p9.M.v);
 });
 
 test("write-down: a shelf showing 1 with 1 on the way → nothing changes (the piece is still travelling); 3 with 1 → held, not written", async () => {
@@ -131,10 +132,12 @@ test("write-down: once the cutoff has passed, nothing is on the way any more and
 });
 
 test("the self-reversal still works after a write-down to the on-the-way number: sales of the arriving piece keep the row; a sale beyond it restores", () => {
-  const row = { mvId: "web_nf_x", at: TUE_15, otw: 1 };
-  assert.equal(W.sweepDecision(row, { qty: 1, mv: "web_nf_x" }, TUE_15 + 1), "keep");
+  const row = { mvId: "web_nf_x", at: TUE_15, otw: 1, v0: 5 };
+  assert.equal(W.sweepDecision(row, { qty: 1, mv: "web_nf_x", v: 5 }, TUE_15 + 1), "keep");
   // The arriving piece sold: the shelf shows 0, only ever sold from → still waiting for proof.
-  assert.equal(W.sweepDecision(row, { qty: 0, mv: "sale1", lastType: "sold" }, TUE_15 + 2), "keep");
+  assert.equal(W.sweepDecision(row, { qty: 0, mv: "sale1", lastType: "sold", v: 6 }, TUE_15 + 2), "keep");
+  // A count in between (to 1), then a sale: two versions since, so "only sold from" is not true — the count settled it.
+  assert.equal(W.sweepDecision(row, { qty: 0, mv: "sale2", lastType: "sold", v: 7 }, TUE_15 + 2), "close");
   // A sale beyond it took the shelf below zero → the missing piece was there: restore.
   assert.equal(W.sweepDecision(row, { qty: -1, mv: "sale2", lastType: "sold" }, TUE_15 + 3), "restore");
   // A count or a delivery settled it.
@@ -197,4 +200,22 @@ test("once a day the tick reads two days back (a phone that synced a transfer la
   assert.equal(asked[0], iso(TUE_15 - 2 * DAY));
   assert.equal(asked[1], iso(TUE_15 - 600e3 - 20 * 60e3));
   assert.equal(root(db).shelf_on_the_way_meta.refoldDay, "2026-11-24");
+});
+
+test("on the way at a past instant counts only stock travelling INTO that shelf, never the sender's", () => {
+  const rows = [{ type: "transfer_out", productId: "p1", size: "M", qty: 2, from: "central", to: "hub2", ts: "2026-11-24T08:00:00.000Z" }];
+  assert.equal(O.onTheWayAt(rows, at("2026-11-24T09:00:00.000Z"), undefined, "hub2"), 2);
+  assert.equal(O.onTheWayAt(rows, at("2026-11-24T09:00:00.000Z"), undefined, "central"), 0);
+});
+
+test("a count that agrees with what the shelf shows never adds a unit back, even with a write-down still open on it", async () => {
+  const db = makeFakeDb({
+    stock: { hub2: { w: { L: cell(2, TUE_15 - 86400e3, "web_nf_old", "adjustment") } } },
+    online_writedowns: { w: { L: { hub2: { mvId: "web_nf_old", at: TUE_15 - 86400e3, qty: 1 } } } },
+    shelf_checks: { hub2: { open: { w__L: { pid: "w", sizeKey: "L", shown: 2, why: "not_selling", at: 1, lastMoved: TUE_15 - 86400e3 } } } },
+  });
+  assert.deepEqual(await runAnswer(db, { loc: "hub2", id: "w__L", result: "count", count: 2, uid: "u", name: "M", nowMs: TUE_15 }), { outcome: "counted", unitsCorrected: 0 });
+  assert.equal(root(db).stock.hub2.w.L.qty, 2);
+  assert.equal(root(db).online_writedowns, undefined); // settled by a person
+  assert.equal(moves(db, "web_found").length, 0);
 });

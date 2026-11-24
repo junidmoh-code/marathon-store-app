@@ -42,7 +42,7 @@ const O = require("../../functions/lib/on-the-way.cjs");
 const { applyMovementAdmin } = require("../../functions/lib/admin-movement.cjs");
 const DB_URL = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
 const SINCE_DEFAULT = "2026-11-24T11:30:00.000Z"; // 13:30 SAST, 24 Nov 2026
-const LOOKBACK_MS = 4 * 864e5;
+const LOOKBACK_MS = 8 * 864e5; // the longest a piece can be on the way (six closed days in a row, then the cutoff)
 const keyOf = (loc, pid, sizeKey) => `${loc}|${pid}|${sizeKey}`;
 const tsOf = (m) => { const t = Date.parse((m && (m.ts || m.appliedAt)) || ""); return Number.isFinite(t) ? t : null; };
 // A later movement of these kinds on the same shelf is a person (or the write-down) settling the count again.
@@ -82,7 +82,7 @@ export function planFixes(ledger, sinceMs, cfg = O.configFrom(null), untilMs = I
     if (!c || at == null || at < sinceMs || at > untilMs) continue;
     const sizeKey = O.sizeKeyOf(m.size);
     const rows = byShelf.get(keyOf(c.loc, m.productId, sizeKey)) || [];
-    const otw = O.onTheWayAt(rows.filter((r) => r.id !== mvId), at, cfg);
+    const otw = O.onTheWayAt(rows.filter((r) => r.id !== mvId), at, cfg, c.loc);
     if (!(otw > 0)) continue;
     const base = { mvId, loc: c.loc, pid: m.productId, sizeKey, size: String(m.size), kind: c.kind, at, otw };
     const later = rows.filter((r) => r.id !== mvId && tsOf(r) != null && tsOf(r) > at && SETTLING.has(r.type));
@@ -93,7 +93,9 @@ export function planFixes(ledger, sinceMs, cfg = O.configFrom(null), untilMs = I
     // A write-down took ONE piece: under the rule it should not have been taken while that piece was still travelling.
     const delta = c.kind === "write_down" ? Math.min(otw, Number.isFinite(before) && Number.isFinite(after) ? before - after : 1) : otw;
     if (!(delta > 0)) continue;
-    fixes.push({ ...base, delta, before: Number.isFinite(before) ? before : null, after: Number.isFinite(after) ? after : null, counted: c.counted ?? null });
+    // The newest movement the ledger snapshot saw on this shelf: the correction is refused if anything landed since.
+    const newest = rows.filter((r) => tsOf(r) != null).sort((a, b) => tsOf(a) - tsOf(b)).at(-1);
+    fixes.push({ ...base, delta, before: Number.isFinite(before) ? before : null, after: Number.isFinite(after) ? after : null, counted: c.counted ?? null, expectMv: newest ? newest.id : mvId });
   }
   fixes.sort((a, b) => a.at - b.at);
   return { fixes, skipped };
@@ -121,6 +123,8 @@ async function main() {
     const rb = JSON.parse(readFileSync(file, "utf8"));
     let undone = 0, refused = 0;
     for (const f of rb.fixes || []) {
+      // Only a correction that was really written (a run that stopped half-way lists some that were not).
+      if (!(await rest(`stock_movements/${f.fixId}`))) { console.log(`  · ${f.fixId}: never written — nothing to take back`); continue; }
       const cell = await rest(`stock/${f.loc}/${f.pid}/${f.sizeKey}`);
       const qty = Number(cell && cell.qty) || 0;
       if (qty < f.delta) { console.log(`  ✗ ${f.loc} ${f.pid} ${f.sizeKey}: holds ${qty}, less than the ${f.delta} added — left as it is`); refused += 1; continue; }
@@ -128,7 +132,8 @@ async function main() {
       if (!COMMIT) continue;
       const res = await applyMovementAdmin(db, { type: "adjustment", productId: f.pid, size: f.size, sizeKey: f.sizeKey, qty: f.delta, from: f.loc, expectQty: qty, movementId: `${f.fixId}_rollback`, actor: "system:on-the-way-backfill", actorRole: "admin", reason: `rollback of ${f.fixId} (on-the-way correction)`, link: {} }, { nowIso });
       if (!res.ok) { console.log(`    refused: ${res.reason}`); refused += 1; continue; }
-      if (f.row) await db.ref(`online_writedowns/${f.pid}/${f.sizeKey}/${f.loc}`).transaction((cur) => (cur == null ? f.row : undefined));
+      // The write-down's self-reversing row comes back, tied to the debit that now stands on the shelf.
+      if (f.row) await db.ref(`online_writedowns/${f.pid}/${f.sizeKey}/${f.loc}`).transaction((cur) => (cur == null ? { ...f.row, mvId: `${f.fixId}_rollback` } : undefined));
       undone += 1;
     }
     console.log(`${COMMIT ? "" : "dry run: "}${undone} taken back, ${refused} left · downloaded ${(bytes / 1e6).toFixed(2)} MB`);
@@ -168,7 +173,7 @@ async function main() {
     const cell = await rest(`stock/${f.loc}/${f.pid}/${f.sizeKey}`);
     const qty = Number(cell && cell.qty) || 0;
     const res = await applyMovementAdmin(db, {
-      type: "adjustment", productId: f.pid, size: f.size, sizeKey: f.sizeKey, qty: f.delta, to: f.loc, expectQty: qty,
+      type: "adjustment", productId: f.pid, size: f.size, sizeKey: f.sizeKey, qty: f.delta, to: f.loc, expectQty: qty, expectMv: f.expectMv,
       movementId: f.fixId, actor: "system:on-the-way-backfill", actorRole: "admin",
       reason: f.kind === "write_down"
         ? `on the way at the time: written down by ${f.mvId} while ${f.otw} piece(s) were still travelling — put back (Junid, 24 Nov 2026)`

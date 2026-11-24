@@ -134,6 +134,8 @@ function planDay({ open = {}, candidates = [], checked = {}, onTheWay = () => 0,
   const better = (a, b) => rankOf(a.why) < rankOf(b.why) || (rankOf(a.why) === rankOf(b.why) && Number(a.at) < Number(b.at));
   for (const [id, item] of Object.entries(open || {})) {
     if (!item || !keyOk(item.pid) || !keyOk(item.sizeKey)) continue;
+    // A rolled shelf that has stock on the way now waits for its cutoff like any other.
+    if (onTheWay(id) > 0) { skipped.travelling += 1; continue; }
     pool.set(id, { ...item, at: Number.isFinite(Number(item.at)) ? Number(item.at) : Number(item.lastMoved) || Number(item.addedAt) || 0, rolled: true });
   }
   for (const c of candidates || []) {

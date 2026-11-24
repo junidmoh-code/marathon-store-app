@@ -14377,7 +14377,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             <DayCollapsible
               sectionKey={`wh-${filter}`}
               items={filtered}
-              dateOf={(o) => hubQueueDay(o, webWaitingPick, queueDateOf, new Date().toISOString())}
+              dateOf={(o) => hubQueueDay(o, webWaitingPick, queueDateOf, serverNowIso())}
               columns={isWide ? 2 : 1}
               // Cards here are STATEFUL now (TomorrowActionButton holds a
               // Central probe); the date-index fallback key would hand one

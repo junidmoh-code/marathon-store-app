@@ -154,14 +154,20 @@ async function scanRejections(db, { nowMs, readInsights, readRequests, markDirty
     const t = tMs(r && r.resolvedAt); if (t != null && t > lastReq && t <= nowMs + 5 * 60e3) lastReq = t;
     const x = fromRequest(id, r); if (x) rejections.push(x);
   }
-  // One shelf answered several times in the window: the earliest "no" is the one held.
+  // One shelf answered several times in the window: oldest first, until one holds it (an earlier "no" the shelf has
+  // moved past since must not hide a later one).
   const byShelf = new Map();
-  for (const x of rejections.sort((a, b) => a.at - b.at)) { const k = `${x.loc}|${x.pid}|${x.sizeKey}`; if (!byShelf.has(k)) byShelf.set(k, x); }
+  for (const x of rejections.sort((a, b) => a.at - b.at)) { const k = `${x.loc}|${x.pid}|${x.sizeKey}`; if (!byShelf.has(k)) byShelf.set(k, []); byShelf.get(k).push(x); }
   const out = { insights: Object.keys(insights || {}).length, requests: Object.keys(requests || {}).length, rejections: rejections.length, held: 0, skipped: {} };
-  for (const x of byShelf.values()) {
-    const r = await holdRejection(db, x, { nowMs, markDirty });
-    if (r.held) { out.held += 1; log(`held off the website until checked: ${x.pid} size ${x.sizeKey} at ${x.loc} (${x.kind}, ${x.ref})`); }
-    else out.skipped[r.why] = (out.skipped[r.why] || 0) + 1;
+  for (const list of byShelf.values()) {
+    let why = null;
+    for (const x of list) {
+      const r = await holdRejection(db, x, { nowMs, markDirty });
+      if (r.held) { out.held += 1; why = null; log(`held off the website until checked: ${x.pid} size ${x.sizeKey} at ${x.loc} (${x.kind}, ${x.ref})`); break; }
+      why = r.why;
+      if (r.why !== "moved_since") break;
+    }
+    if (why) out.skipped[why] = (out.skipped[why] || 0) + 1;
   }
   await db.ref(CURSOR_PATH).set({ insightsKey: lastKey, requestsAt: new Date(lastReq).toISOString(), ranAt: nowMs });
   return out;

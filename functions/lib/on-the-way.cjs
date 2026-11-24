@@ -141,13 +141,15 @@ function sumOnTheWay(node, nowMs) {
 }
 
 /** Units that were on the way into one shelf at instant `atMs`, from ledger rows of that shelf. PURE. */
-function onTheWayAt(rows, atMs, cfg = configFrom(null)) {
+function onTheWayAt(rows, atMs, cfg = configFrom(null), loc = null) {
   let n = 0;
   for (const m of rows || []) {
     const t = tsOf(m);
     if (t == null || t > atMs) continue;
     const u = untilMs(t, cfg);
-    if (u != null && u > atMs && inboundLeg(m)) n += num(m.qty);
+    const leg = inboundLeg(m);
+    // Only stock travelling INTO this shelf: a transfer's sender is not "on the way".
+    if (u != null && u > atMs && leg && (loc == null || leg.loc === loc)) n += num(m.qty);
   }
   return n;
 }
@@ -225,7 +227,12 @@ async function trackOnTheWay(db, { nowMs, readSince, log = () => {} }) {
   for (const [untilKey, byShelf] of Object.entries(due)) {
     for (const k of Object.keys(byShelf || {})) {
       const [loc, pid, sizeKey, mvId] = k.split("~");
-      if (keyOk(loc) && keyOk(pid) && keyOk(sizeKey) && keyOk(mvId)) { upd[`${shelfPath(loc, pid, sizeKey)}/${mvId}`] = null; expired += 1; }
+      if (!(keyOk(loc) && keyOk(pid) && keyOk(sizeKey) && keyOk(mvId))) continue;
+      const rowKey = `${shelfPath(loc, pid, sizeKey)}/${mvId}`;
+      // Only a row that really is due: a cutoff setting changed since may have rescheduled it (its new entry is later).
+      const fresh = upd[rowKey] && typeof upd[rowKey] === "object" ? upd[rowKey] : await read(db, rowKey);
+      if (fresh && num(fresh.until) > nowMs) continue;
+      upd[rowKey] = null; expired += 1;
     }
     upd[`${OTW_DUE_PATH}/${untilKey}`] = null;
   }

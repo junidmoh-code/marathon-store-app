@@ -100,3 +100,11 @@ test("a push key minted by a phone whose clock runs ahead never carries the curs
   await R.scanRejections(db, { nowMs: NOW, readInsights: async () => ({ [normal]: oosRow({ action: "ready" }), [ahead]: oosRow({ action: "ready" }) }), readRequests: async () => ({}) });
   assert.equal(root(db).shelf_checks_meta.rejects.insightsKey, normal);
 });
+
+test("several rejections of one shelf in a window: an earlier one the shelf moved past does not hide a later one", async () => {
+  const db = makeFakeDb({ stock: { hub2: { p1: { 9: cell(2, NOW - 30 * 60e3) } } } });
+  const a = R.pushKeyAt(NOW - 60 * 60e3) + "aaaaaaaaaaaa", b = R.pushKeyAt(NOW - 10 * 60e3) + "aaaaaaaaaaaa";
+  const out = await R.scanRejections(db, { nowMs: NOW, readInsights: async () => ({ [a]: oosRow({ placedAtHub: "hub2", timestamp: iso(NOW - 60 * 60e3) }), [b]: oosRow({ placedAtHub: "hub2", timestamp: iso(NOW - 10 * 60e3) }) }), readRequests: async () => ({}) });
+  assert.equal(out.held, 1);
+  assert.equal(root(db).online_cell_holds.p1["9"].hub2.at, NOW - 10 * 60e3);
+});

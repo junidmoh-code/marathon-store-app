@@ -168,7 +168,11 @@ async function main() {
   const by = candidatesByPlace({ writeDowns, holds, singles: singles.map((s) => ({ ...s })), idle: idleAll, auditSkip });
   for (const loc of L.CHECK_LOCATIONS) {
     if (!L.placeOn(cfg, loc)) { console.log(`${NAME[loc] || loc}: switched off (config/onlineOrders/shelfChecks/shops/${loc}/on) · ${by[loc].length} candidates waiting`); continue; }
-    const [open, checked] = await Promise.all([rest(`${L.SHELF_CHECKS_PATH}/${loc}/open`), rest(`${L.SHELF_CHECKS_PATH}/${loc}/checked`)]);
+    const [openRaw, checked] = await Promise.all([rest(`${L.SHELF_CHECKS_PATH}/${loc}/open`), rest(`${L.SHELF_CHECKS_PATH}/${loc}/checked`)]);
+    // A rolled item whose shelf has moved since (a sale, a delivery, a count) is no longer the shelf it asked about:
+    // it leaves, and the shelf comes back only through tonight's candidates (one cell read per rolled item).
+    const open = {};
+    for (const [id, item] of Object.entries(openRaw || {})) if (item && !L.itemStale(item, await rest(`stock/${loc}/${item.pid}/${item.sizeKey}`))) open[id] = item;
     const plan = L.planDay({ open: open || {}, candidates: by[loc], checked: checked || {}, onTheWay: (id) => { const [pid, sizeKey] = id.split("__"); return otw.get(`${loc}|${pid}|${sizeKey}`) || 0; }, perDay: L.perDayFor(cfg, loc), recheckDays: cfg.recheckDays, nowMs, saDate });
     const addedBy = {};
     for (const id of plan.added) addedBy[plan.open[id].why] = (addedBy[plan.open[id].why] || 0) + 1;
