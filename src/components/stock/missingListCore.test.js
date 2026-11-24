@@ -106,11 +106,16 @@ describe("sneakerRow", () => {
     const row = sneakerRow({ ...base, planFor: () => [{ size: "8", qty: 2, avail: 5 }], refusal: (_c, [h]) => (h === "hub2" ? "seated at Hub 1" : null) });
     expect(row.dests.map((d) => d.id)).toEqual(["hub1"]);
   });
-  it("nothing to raise because NO policy names its sizes, and nobody has requested it → 'needs policy', with Central's stock", () => {
-    const row = sneakerRow({ ...base, planFor: () => [], hasPolicy: () => false, requested: false });
-    expect(row.needsPolicy).toBe(true);
-    expect(row.stock).toBe(30);
-    expect(row.dests.every((d) => !d.ok)).toBe(true);
+  it("nothing to raise because NO policy names its sizes (24 Nov 2026) → NOT a row: 'Not listed', reason noPolicy — never a card with no location", () => {
+    expect(sneakerRow({ ...base, planFor: () => [], hasPolicy: () => false, requested: false })).toBe(null);
+    expect(decideSneakerRow({ ...base, planFor: () => [], hasPolicy: () => false, requested: false }).why).toBe("noPolicy");
+  });
+  it("every row that IS built offers at least one location", () => {
+    const plans = [() => [], (_c, h) => (h === "hub2" ? [{ size: "8", qty: 1, avail: 1 }] : [])];
+    for (const planFor of plans) for (const hasPolicy of [() => false, () => true]) for (const requested of [false, true]) {
+      const row = sneakerRow({ ...base, planFor, hasPolicy, requested });
+      if (row) expect(row.dests.length).toBeGreaterThan(0);
+    }
   });
   it("nothing to raise because it IS requested, or because a policy exists and Central has none free → not a row at all", () => {
     expect(sneakerRow({ ...base, planFor: () => [], hasPolicy: () => false, requested: true })).toBe(null);
@@ -208,7 +213,7 @@ describe("decideProductRow / decideSneakerRow — the same row, and why when the
     expect(w({ planFor: () => [], hasPolicy: () => true, requested: false })).toBe("noSize");
     // requested wins: it is in Central's queue, whatever its numbers
     expect(w({ planFor: () => [], hasPolicy: () => false, requested: true })).toBe("requested");
-    // the needs-policy card is a ROW (it is on the list), so it has no reason
-    expect(decideSneakerRow({ ...sb, planFor: () => [], hasPolicy: () => false, requested: false })).toMatchObject({ why: null, row: { needsPolicy: true } });
+    // no policy and not requested: not a row, reason noPolicy (24 Nov 2026)
+    expect(decideSneakerRow({ ...sb, planFor: () => [], hasPolicy: () => false, requested: false })).toEqual({ row: null, why: "noPolicy" });
   });
 });

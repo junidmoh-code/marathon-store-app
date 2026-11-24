@@ -160,7 +160,7 @@ describe("the screen Junid asked for", () => {
     }
     expect(count(tree, MARATHON)).toBe(String(n[MARATHON]));
     expect(count(tree, CONCRETE)).toBe(String(n[CONCRETE]));
-    expect(n).toEqual({ [MARATHON]: 8, [CONCRETE]: 8 });
+    expect(n).toEqual({ [MARATHON]: 6, [CONCRETE]: 8 });
   });
 
   it("every card is the same fixed box: photo, name, one stock line, its destinations and the division button", async () => {
@@ -192,7 +192,7 @@ describe("destinations follow the division — on the card, and in what is writt
     const tree = await mount();
     await tapDest(tree, SHOE_B, "hub1");
     expect(cardsOf(tree)).not.toContain("Gazelle Bold");
-    expect(count(tree, MARATHON)).toBe("7");
+    expect(count(tree, MARATHON)).toBe("5");
     expect(updateMock).toHaveBeenCalledTimes(1);          // one tap, one hub, one write
     await division(tree, CONCRETE);
     expect(cardsOf(tree)).toContain("Gazelle Bold");
@@ -285,7 +285,7 @@ describe("only what a solve would send is on the list", () => {
     emit("refill_requests", { r1: { productId: SHOE_C, size: "8", qty: 1, requestingLocation: "hub2", status: "open", requestSource: "scan", createdFrom: { source: "central" } } });
     const tree = await mount();
     expect(cardsOf(tree)).not.toContain("Samba OG");
-    expect(count(tree, MARATHON)).toBe("7");
+    expect(count(tree, MARATHON)).toBe("5");
   });
 });
 
@@ -299,7 +299,7 @@ describe("queued means a real open request, and nothing else", () => {
     emit("refill_requests", { r1: sneakerReq(), r2: sneakerReq({ size: "9" }) });
     const tree = await mount();
     expect(cardsOf(tree)).not.toContain("Air Zoom Alpha");
-    expect(count(tree, MARATHON)).toBe("7");
+    expect(count(tree, MARATHON)).toBe("5");
     expect(updateMock).not.toHaveBeenCalled();
   });
 
@@ -331,15 +331,55 @@ describe("queued means a real open request, and nothing else", () => {
 });
 
 describe("kids shoes: no policy is said as no policy, never as queued", () => {
-  it("Central stock, no request, no policy → under one Needs policy label, 'No policy yet', nothing to tap", async () => {
+  it("Central stock, no request, no policy → NOT a card (24 Nov 2026): under 'Not listed' as 'No policy', with the Engine Policy action", async () => {
+    let opened = 0;
+    let tree;
+    await act(async () => { tree = TestRenderer.create(<MissingProductsScreen products={PRODUCTS} onExit={() => {}} onOpenEnginePolicy={() => { opened += 1; }} />); });
+    await act(async () => {}); await act(async () => {});
+    expect(host(tree, "data-needs-label").length).toBe(0);
+    expect(cardsOf(tree)).not.toContain("Nike SB dunk low grey small");
+    expect(host(tree, "data-card", KID).length).toBe(0);
+    expect(textOf(tree)).not.toMatch(/queued|No policy yet/i);
+    await act(async () => { host(tree, "data-not-listed-line")[0].props.onClick(); });
+    const row = host(tree, "data-not-listed-row", KID)[0];
+    expect(row.props["data-reason"]).toBe("noPolicy");
+    expect(flat(row.findAll((n) => typeof n.type === "string" && n.props["data-reason-text"])[0].children)).toBe("No policy");
+    const btn = row.findAll((n) => n.type === "button" && n.props["data-action"] === "not-listed-policy")[0];
+    await act(async () => { btn.props.onClick(); });
+    expect(opened).toBe(1);
+  });
+
+  it("a no-policy shoe a SHOP of the division holds a pair of (so not 'stranded') is still under Not listed as No policy — never silently gone", async () => {
+    const st = baseStock(); st.trophy = { ...(st.trophy || {}), [KID]: { 24: cell(1) } };
+    emit("stock", st);
     const tree = await mount();
-    expect(host(tree, "data-needs-label").length).toBe(1);
-    expect(cardsOf(tree).slice(0, 2)).toEqual(["Nike SB dunk low grey small", "Nike SB dunk small black white"]);
-    expect(stockLine(tree, KID)).toBe("Central 6No policy yet");
-    expect(live(tree, KID)).toEqual([]);
-    expect(textOf(tree)).not.toMatch(/queued/i);
-    // adult sneakers sit under it, not among it
-    expect(card(tree, SHOE_B).findAll((n) => typeof n.type === "string" && n.props["data-needs-policy"]).length).toBe(0);
+    expect(host(tree, "data-card", KID).length).toBe(0);
+    await act(async () => { host(tree, "data-not-listed-line")[0].props.onClick(); });
+    expect(host(tree, "data-not-listed-row", KID)[0].props["data-reason"]).toBe("noPolicy");
+  });
+
+  it("tapping a location or Solve disarms the division button", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    const mb = () => card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0];
+    await act(async () => { mb().props.onClick(); });
+    expect(mb().props["data-armed"]).toBe(true);
+    await pick(tree, TEE, offered(tree, TEE)[0]);
+    expect(mb().props["data-armed"]).toBeUndefined();
+    updateMock.mockClear();
+    await act(async () => { mb().props.onClick(); });            // arms again — writes nothing
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("NO CARD ANYWHERE has the division button as its only control: every card on both divisions and both kinds offers a location", async () => {
+    const tree = await mount();
+    for (const sec of [MARATHON, CONCRETE]) {
+      await division(tree, sec);
+      for (const k of ["sneakers", "clothing"]) {
+        await kind(tree, k);
+        for (const c of host(tree, "data-card")) expect(c.findAll((n) => n.type === "button" && n.props["data-dest"]).length).toBeGreaterThan(0);
+      }
+    }
   });
 
   it("once a policy names its sizes at a hub it is solvable there, and the request is written for Source", async () => {
@@ -348,7 +388,7 @@ describe("kids shoes: no policy is said as no policy, never as queued", () => {
     const tree = await mount();
     expect(live(tree, KID)).toEqual(["hub1"]);                 // Hub 1 has the numbers; Hub 2 has none
     expect(stockLine(tree, KID)).toBe("Central 6");
-    expect(live(tree, KID2)).toEqual([]);                      // the other kids shoe still waits
+    expect(host(tree, "data-card", KID2).length).toBe(0);      // the other kids shoe still waits — not a card
     await tapDest(tree, KID, "hub1");
     const reqs = requestsIn(lastUpdate());
     expect(reqs.map((r) => [r.size, r.qty, r.requestingLocation, r.status])).toEqual([["24", 2, "hub1", "open"], ["25", 2, "hub1", "open"], ["26", 2, "hub1", "open"]]);
@@ -371,7 +411,7 @@ describe("kids shoes: no policy is said as no policy, never as queued", () => {
     await act(async () => { tree = TestRenderer.create(<MissingProductsScreen products={[...PRODUCTS, { id: BIG, name: "Air Max Size 15", category: "Footwear", categoryKey: "sneakers", sizes: ["15"] }]} onExit={() => {}} />); });
     await act(async () => {}); await act(async () => {});
     expect(cardsOf(tree)).not.toContain("Air Max Size 15");
-    expect(count(tree, MARATHON)).toBe("8");
+    expect(count(tree, MARATHON)).toBe("6");
   });
 
   it("adult sneakers are unchanged: the run's numbers, with or without a target row for a size the run names", async () => {
@@ -432,7 +472,7 @@ describe("no shake: the order is frozen and only the solved card leaves", () => 
     expect(toast(tree).text).toMatch(/nothing changed.*PERMISSION_DENIED/);
     expect(toast(tree).undo).toBeUndefined();
     expect(cardsOf(tree)).toEqual(before);
-    expect(count(tree, MARATHON)).toBe("8");
+    expect(count(tree, MARATHON)).toBe("6");
     expect(live(tree, SHOE_B)).toEqual(["hub1", "hub2"]);      // and can be tapped again
   });
 
@@ -453,7 +493,7 @@ describe("no shake: the order is frozen and only the solved card leaves", () => 
       expect(cardsOf(tree)).toEqual(order);
     }
     expect(updateMock).toHaveBeenCalledTimes(10);
-    expect(count(tree, MARATHON)).toBe("8");
+    expect(count(tree, MARATHON)).toBe("6");
   });
 });
 
@@ -472,7 +512,7 @@ describe("Undo", () => {
     for (const c of txnCalls) { expect(c.next.status).toBe("cancelled"); expect(c.next.cancelReason).toBe("solve_undone"); expect(c.next.productId).toBe(SHOE_B); }
     expect(updateMock).toHaveBeenCalledTimes(1);               // Undo creates nothing
     expect(cardsOf(tree)).toEqual(before);
-    expect(count(tree, MARATHON)).toBe("8");
+    expect(count(tree, MARATHON)).toBe("6");
     expect(toast(tree).text).toBe("Undone");
   });
 
@@ -540,7 +580,7 @@ describe("the hidden tab behind the invisible spot (Hide left the cards, 23 Nov 
     const tree = await mount();
     await kind(tree, "clothing");
     expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
-    expect(count(tree, MARATHON)).toBe("7");
+    expect(count(tree, MARATHON)).toBe("5");
     expect(buttons(tree).some((t) => /Hidden/.test(t))).toBe(false);          // no visible way in
     const spot = tree.root.findAll((n) => n.type === "div" && typeof n.props.onPointerDown === "function")[0];
     expect(spot).toBeDefined();
@@ -562,7 +602,7 @@ describe("who may do what", () => {
     perm.isSuperAdmin = false; perm.permRecord = { stockRole: "warehouse", section: 2 };
     const tree = await mount();
     expect(host(tree, "data-division").map((n) => n.props["data-division"])).toEqual([MARATHON]);
-    expect(count(tree, MARATHON)).toBe("8");
+    expect(count(tree, MARATHON)).toBe("6");
   });
 
   it("without a stock role nothing can be tapped", async () => {
@@ -815,7 +855,8 @@ describe("one product, one shop — Pine or Concrete, never both", () => {
 // nothing else: no stock, no seat, no request.
 describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
   const markBtn = (tree, pid) => card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0];
-  const tapMark = async (tree, pid) => { await act(async () => { await markBtn(tree, pid).props.onClick(); }); await act(async () => {}); await act(async () => {}); };
+  // Two taps on the same button (24 Nov 2026): the first arms, the second marks.
+  const tapMark = async (tree, pid) => { await act(async () => { markBtn(tree, pid).props.onClick(); }); await act(async () => { await markBtn(tree, pid).props.onClick(); }); await act(async () => {}); await act(async () => {}); };
   const allWrites = () => updateMock.mock.calls.flatMap((c) => Object.keys(c[1]));
   const FORBIDDEN = /^(stock|refill_requests|refill_engine|stock_targets|stock_movements|transfers)\//;
   const withProducts = async (over) => {
@@ -825,11 +866,37 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
   };
   const listOf = async (tree, sec, k) => { await division(tree, sec); await kind(tree, k); return cardsOf(tree); };
 
+  it("ONE tap does nothing (24 Nov 2026): the button reads 'Tap again to move to Concrete', nothing is written, nothing moves; the window runs out and it is the tag again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const tree = await mount();
+      await kind(tree, "clothing");
+      const before = cardsOf(tree);
+      const shellH = card(tree, TEE).props.style.height;
+      updateMock.mockClear();
+      await act(async () => { markBtn(tree, TEE).props.onClick(); });
+      expect(markBtn(tree, TEE).props["data-armed"]).toBe(true);
+      expect(flat(card(tree, TEE).findAll((n) => typeof n.type === "string" && n.props["data-division-confirm"])[0].children)).toBe("Tap again to move to Concrete");
+      // laid over the name block, absolutely: the card and the list do not move
+      const over = card(tree, TEE).findAll((n) => typeof n.type === "string" && n.props["data-division-confirm"])[0];
+      expect(over.props.style.position).toBe("absolute");
+      expect(card(tree, TEE).props.style.height).toBe(shellH);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(cardsOf(tree)).toEqual(before);
+      await act(async () => { vi.advanceTimersByTime(4100); });
+      expect(markBtn(tree, TEE).props["data-armed"]).toBeUndefined();
+      // a tap after the window only arms again — still nothing written
+      await act(async () => { markBtn(tree, TEE).props.onClick(); });
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(cardsOf(tree)).toEqual(before);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("Marathon card: Concrete marks it Concrete-only — leaves Marathon's list and count; writes the mark only", async () => {
     const tree = await mount();
     await kind(tree, "clothing");
     expect(flat(markBtn(tree, TEE).children)).toBe("Concrete");
-    expect(count(tree, MARATHON)).toBe("8");
+    expect(count(tree, MARATHON)).toBe("6");
     await tapMark(tree, TEE);
     const writes = allWrites();
     expect(writes).toEqual(expect.arrayContaining([`products/${TEE}/concreteProduct`, `settings/concreteOnlyIndex/${TEE}`]));
@@ -839,13 +906,13 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     expect(lastUpdate()[`products/${TEE}/concreteProduct`]).toBe(true);
     expect(lastUpdate()[`settings/concreteOnlyIndex/${TEE}`]).toBe(true);
     expect(cardsOf(tree)).not.toContain("Essentials Tee Olive");
-    expect(count(tree, MARATHON)).toBe("7");
+    expect(count(tree, MARATHON)).toBe("5");
     expect(toast(tree).text).toMatch(/Concrete only/);
     // the database echoes the mark: it stays off Marathon for good
     await act(async () => { emit("settings/concreteOnlyIndex", { [TEE]: true }); });
     await act(async () => {});
     expect(await listOf(tree, MARATHON, "clothing")).not.toContain("Essentials Tee Olive");
-    expect(count(tree, MARATHON)).toBe("7");
+    expect(count(tree, MARATHON)).toBe("5");
     // genuinely missing at Concrete → on Concrete's list, Concrete-division shops only
     expect(await listOf(tree, CONCRETE, "clothing")).toContain("Essentials Tee Olive");
     expect(offered(tree, TEE)).toEqual(["marathon-pine", "concrete"]);
@@ -879,7 +946,7 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     expect(upd[`settings/concreteOnlyIndex/${TEE}`]).toBe(null);
     expect(allWrites().filter((k) => FORBIDDEN.test(k))).toEqual([]);
     expect(cardsOf(tree)).toEqual(before);
-    expect(count(tree, MARATHON)).toBe("8");
+    expect(count(tree, MARATHON)).toBe("6");
   });
 
   it("Concrete card: Marathon marks it Marathon-only — the mirror", async () => {
@@ -936,7 +1003,7 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     const tree = await withProducts({ [TEE]: { concreteProduct: true }, [SHOE_B]: { concreteProduct: true } });
     expect(await listOf(tree, MARATHON, "sneakers")).not.toContain("Gazelle Bold");
     expect(await listOf(tree, MARATHON, "clothing")).not.toContain("Essentials Tee Olive");
-    expect(count(tree, MARATHON)).toBe("6");
+    expect(count(tree, MARATHON)).toBe("4");
     expect(await listOf(tree, CONCRETE, "clothing")).toContain("Essentials Tee Olive");
     expect(await listOf(tree, CONCRETE, "sneakers")).toContain("Gazelle Bold");
     // a mark made on another device (the index) applies here at once
@@ -1005,7 +1072,9 @@ describe("division Undo that fails (CodeRabbit, PR #967)", () => {
   it("a failed Undo changes nothing and keeps its Undo to retry", async () => {
     const tree = await mount();
     await kind(tree, "clothing");
-    await act(async () => { await card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0].props.onClick(); });
+    const mb = () => card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0];
+    await act(async () => { mb().props.onClick(); });            // arms
+    await act(async () => { await mb().props.onClick(); });      // marks
     await act(async () => {}); await act(async () => {});
     updateMock.mockImplementationOnce(() => Promise.reject(new Error("offline")));
     await act(async () => { await toast(tree).undo.props.onClick(); });
@@ -1091,5 +1160,34 @@ describe("search (Junid, 23 Nov 2026)", () => {
     expect(names.length).toBeGreaterThan(1);
     for (const n of names) { expect(n.props.style.height).toBe(30); expect(n.props.style.WebkitLineClamp).toBe(2); }
     for (const n of host(tree, "data-card")) expect(n.props.style.height).toBe(CARD_H);
+  });
+});
+
+describe("the division a person opens on (Junid, 24 Nov 2026)", () => {
+  const pressed = (tree) => host(tree, "data-division").filter((b) => b.props["aria-pressed"]).map((b) => b.props["data-division"]);
+  it("no setting → Marathon, as before", async () => {
+    const tree = await mount();
+    expect(pressed(tree)).toEqual([MARATHON]);
+  });
+  it("Junid (missingProductsDivision: marathon) lands on Marathon and can switch with one tap", async () => {
+    perm.permRecord = { stockRole: "admin", displayName: "Junid", missingProductsDivision: "marathon" };
+    const tree = await mount();
+    expect(pressed(tree)).toEqual([MARATHON]);
+    await division(tree, CONCRETE);
+    expect(pressed(tree)).toEqual([CONCRETE]);
+  });
+  it("Jafer (missingProductsDivision: concrete) lands on Concrete, keeps Marathon, and switches with one tap", async () => {
+    perm.permRecord = { stockRole: "admin", displayName: "Jafer", missingProductsDivision: "concrete" };
+    const tree = await mount();
+    expect(pressed(tree)).toEqual([CONCRETE]);
+    expect(host(tree, "data-division").map((b) => b.props["data-division"])).toEqual([MARATHON, CONCRETE]);
+    await division(tree, MARATHON);
+    expect(pressed(tree)).toEqual([MARATHON]);
+    expect(cardsOf(tree).length).toBeGreaterThan(0);
+  });
+  it("a setting naming a division this person cannot open falls back to the first they can", async () => {
+    perm.permRecord = { stockRole: "admin", displayName: "X", missingProductsDivision: "nowhere" };
+    const tree = await mount();
+    expect(pressed(tree)).toEqual([MARATHON]);
   });
 });

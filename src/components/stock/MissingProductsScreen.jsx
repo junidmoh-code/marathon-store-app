@@ -9,8 +9,8 @@
 // the destinations as buttons. Tapping a destination IS the solve.
 //
 // THE DIVISION BUTTON (Junid, 23 Nov 2026) sits where Hide was: "Concrete" on
-// a Marathon card, "Marathon" on a Concrete card. One tap says the product
-// belongs to that division only (divisionMark.js — the pre-rebuild Concrete
+// a Marathon card, "Marathon" on a Concrete card. Two taps (24 Nov 2026 — the
+// first arms it) say the product belongs to that division only (divisionMark.js — the pre-rebuild Concrete
 // button's own data, plus its mirror). The card leaves this list for good and
 // is never counted here; on the other list it shows only when it is genuinely
 // missing there. Hide left the cards; the hidden tab still works.
@@ -214,7 +214,13 @@ function Engine({ section, shared, box, report }) {
 function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, requestsError, seats, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit, onOpenEnginePolicy }) {
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const [pick, setPick] = useState(null);
-  const section = divisions.includes(pick) ? pick : divisions[0];
+  // THE DIVISION THIS PERSON OPENS ON (Junid, 24 Nov 2026): their own
+  // /users/{uid}.missingProductsDivision ("marathon" | "concrete"), read from
+  // the record the app already listens to. No setting → today's default
+  // (Marathon first). A tap on the switch always wins for this visit.
+  const { permRecord, isSuperAdmin } = usePermissions();
+  const homeDivision = divisions.find((s) => listKindOf(network, s) === permRecord?.missingProductsDivision);
+  const section = divisions.includes(pick) ? pick : (homeDivision ?? divisions[0]);
   const [kind, setKind] = useState("sneakers");
   const [view, setView] = useState("list");   // "list" | "hidden" | "notlisted"
   const [lightbox, setLightbox] = useState(null);
@@ -227,7 +233,6 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const canAct = divisions.length ? !!flags[divisions[0]]?.canAct : false;
   // Marking a division is Junid's / Jafer's / a stockRole admin's — the same
   // identities the pre-rebuild Concrete button had (the mark is the brand check).
-  const { permRecord, isSuperAdmin } = usePermissions();
   const canMark = !!isSuperAdmin || permRecord?.stockRole === "admin";
 
   const label = useCallback((loc) => SHORT[loc] || nameOf(loc, network), [network]);
@@ -262,8 +267,11 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
             return marathonHubSeated({ cells, rows: c.targets?.[other]?.[cd.pid], openRequest: !!open?.[other] }) ? marathonSolveRefusal(hub) : api.pickRefusal(cd, [hub]);
           },
         });
-        noteWhy(bucketId(sec, "sneakers"), card.pid, d.why);
-        return d.row;
+        // A CARD ALWAYS OFFERS A LOCATION (Junid, 24 Nov 2026): a row with none
+        // is "Not listed", never a card whose only control is the division button.
+        const row = d.row && d.row.dests.length ? d.row : null;
+        noteWhy(bucketId(sec, "sneakers"), card.pid, row ? null : d.why || "unknown");
+        return row;
       },
     },
     {
@@ -283,8 +291,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
           planFor: api.planFor, openByLoc: open, allStock: c.allStock, central: c.central,
           routes: c.cfg?.routes, nameOf: c.label, owners,
         });
-        noteWhy(bucketId(sec, "clothing"), card.pid, d.why);
-        return d.row;
+        const row = d.row && d.row.dests.length ? d.row : null;
+        noteWhy(bucketId(sec, "clothing"), card.pid, row ? null : d.why || "unknown");
+        return row;
       },
     },
   ]), [divisions, cards]);
@@ -337,7 +346,17 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     const { hubs } = strandedBy[sec];
     const heldAt = (pid) => hubs.some((h) => Object.values((heldLines && heldLines[h]) || {}).some((l) => l && l.productId === pid && Number(l.qty) > 0));
     const paused = (loc) => cfg?.pausedLocations?.[loc] === true;
-    return notListedRows({ stranded: strandedBy[sec].stranded, listedPids, whyByPid, hiddenMap, byId, listKind: listKindOf(network, sec), allStock, locations: strandedBy[sec].locations, openPids: openPidsBy[sec], heldAt, paused });
+    // A card dropped for NO POLICY is "Not listed" even when a shop or hub of
+    // the division holds some of it (so it is not "stranded"): the card it
+    // replaces was on the list before 24 Nov, and it must not vanish silently.
+    const stranded = [...strandedBy[sec].stranded];
+    const inStranded = new Set(stranded.map((x) => x.pid));
+    for (const [pid, why] of whyByPid) {
+      if (why !== "noPolicy" || inStranded.has(pid) || listedPids.has(pid)) continue;
+      const centralUnits = Object.entries(allStock?.[central]?.[pid] || {}).reduce((t, [k, c]) => (k === "_meta" ? t : t + Math.max(Number(c?.qty) || 0, 0)), 0);
+      if (centralUnits > 0) stranded.push({ pid, centralUnits });
+    }
+    return notListedRows({ stranded, listedPids, whyByPid, hiddenMap, byId, listKind: listKindOf(network, sec), allStock, locations: strandedBy[sec].locations, openPids: openPidsBy[sec], heldAt, paused });
   };
 
   // A card solved or hidden here stays off until the DATA no longer lists it;
@@ -371,7 +390,6 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const listed = onScreen ? listedOf(active) : [];
   const listedBy = new Map(listed.map((r) => [r.key, r]));
   latestRows.current = listedBy;   // the rows as drawn, for Solve's second look
-  // Shoes waiting for a policy sit together at the top, under one label.
   const before = new Set(fz.seen);
   freezeOrder(fz, listed.map((r) => r.key));
   for (const r of listed) fz.last.set(r.key, r);
@@ -382,7 +400,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     // put back by Undo (seen before, not on screen a moment ago): its slot opens
     entering: !!fz.shown && before.has(k) && listedBy.has(k) && !fz.shown.has(k),
   }));
-  const display = [...inOrder.filter((d) => d.row.needsPolicy), ...inOrder.filter((d) => !d.row.needsPolicy)];
+  const display = inOrder;
   // What is drawn: the frozen list, narrowed by the search (no reads — the
   // rows and product records are the ones already on screen).
   const terms = searchTerms(query);
@@ -551,8 +569,10 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       },
     });
   };
-  // THE DIVISION BUTTON (Junid, 23 Nov 2026), where Hide was: one tap marks
-  // the product for the OTHER division; the card leaves this list for good.
+  // THE DIVISION BUTTON (Junid, 23 Nov 2026), where Hide was: it marks the
+  // product for the OTHER division; the card leaves this list for good. Since
+  // 24 Nov it takes two taps on the same button (MissingRow arms it, "Tap
+  // again to move to …"); this runs on the second.
   // It writes the mark only (divisionMark.js) — no stock, seat or request.
   act.current.division = async (row) => {
     if (inFlight.current.has(row.pid) || !canMark || gone[row.key]) return;
@@ -624,8 +644,6 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     border: on ? "1px solid rgba(60,110,255,.75)" : "1px solid rgba(255,255,255,.12)",
     background: on ? "rgba(60,110,255,.22)" : "rgba(255,255,255,.03)", color: on ? "#fff" : "rgba(255,255,255,.55)",
   });
-  const firstNormal = shown.findIndex((d) => !d.row.needsPolicy);
-  const anyNeeds = shown.some((d) => d.row.needsPolicy && !d.leaving);
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
@@ -725,10 +743,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
                     )}
                   </div>
                 )
-                : shown.slice(0, limit).map((d, i) => (
+                : shown.slice(0, limit).map((d) => (
                   <React.Fragment key={d.key}>
-                    {i === 0 && anyNeeds && <div data-needs-label style={{ height: 20, fontSize: 11.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: AMBER }}>Needs policy</div>}
-                    {i === firstNormal && i > 0 && anyNeeds && <div aria-hidden="true" style={{ height: 8 }} />}
                     <Slot leaving={d.leaving} entering={d.entering} data-slot={d.key}>
                       <MissingRow row={d.row} product={byId.get(d.row.pid)} twinProduct={d.row.twin ? byId.get(d.row.twin) : null}
                         selected={d.leaving ? NO_PICK : chosen(d.row)} busy={!!busy[d.key]} canAct={canAct} onPick={onPick} onSolve={onSolve} onPhoto={onPhoto}
