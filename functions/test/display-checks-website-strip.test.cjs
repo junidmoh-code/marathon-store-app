@@ -32,13 +32,17 @@ const call = (db, over = {}) => runComplete(db, {
   storeName: "Marathon Pine", websiteOnly: true, ...over,
 });
 
-test("the strip gate: every registry store unless switched OFF explicitly; never a hub or Central", () => {
+test("the strip gate: every registry store unless switched OFF explicitly; never a hub; Central has its own strip in Source (Junid, 24 Nov 2026)", () => {
   assert.equal(lib.isWebsiteStripEnabled("marathon-pine", SEED_REGISTRY, null), true);
   assert.equal(lib.isWebsiteStripEnabled("marathon-pine", SEED_REGISTRY, {}), true);
   assert.equal(lib.isWebsiteStripEnabled("concrete", SEED_REGISTRY, { enabled: true }), true);
   assert.equal(lib.isWebsiteStripEnabled("trophy", SEED_REGISTRY, { enabled: false }), false);
   assert.equal(lib.isWebsiteStripEnabled("hub3", SEED_REGISTRY, null), false);
-  assert.equal(lib.isWebsiteStripEnabled("central", SEED_REGISTRY, null), false);
+  assert.equal(lib.isWebsiteStripEnabled("central", SEED_REGISTRY, null), true);
+  assert.equal(lib.isWebsiteStripEnabled("central", SEED_REGISTRY, { enabled: false }), false);
+  assert.equal(lib.isWebsiteStripEnabled("studio", SEED_REGISTRY, null), false);
+  // …but Central's sale-driven display checks do not exist.
+  assert.equal(lib.isTriggerStoreEnabled("central", SEED_REGISTRY, null), false);
   // …and Pine's sale-driven display checks stay OFF.
   assert.equal(lib.isTriggerStoreEnabled("marathon-pine", SEED_REGISTRY, null), false);
 });

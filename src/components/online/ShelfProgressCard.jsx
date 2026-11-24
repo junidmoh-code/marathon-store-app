@@ -6,7 +6,8 @@ import { useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 
-const webShelfProgress = httpsCallable(functions, "webShelfProgress");
+// Made when the card is opened, not when the module loads: Settings must render even where Functions is not set up.
+const webShelfProgress = (data) => httpsCallable(functions, "webShelfProgress")(data);
 const NAME = { "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concrete", "marathon-pine": "Pine", hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", central: "Central" };
 const cellStyle = { padding: "6px 8px", borderTop: "1px solid rgba(255,255,255,.07)", fontSize: 13, textAlign: "right" };
 
