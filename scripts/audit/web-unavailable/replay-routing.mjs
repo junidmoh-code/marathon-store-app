@@ -134,7 +134,8 @@ for (const a of first) {
   if (!cellsOf(a.pid) && !(mvBy.get(`${a.pid}|${a.size}`) || []).length) { out.unknownElsewhere += 1; continue; }
   // Footwear or not: the order line's own flag (what routing used); the place it went decides when the flag is missing.
   const flag = linesOf(orders[a.orderId]).find(([i]) => i === a.line)?.[1]?.isFootwear;
-  const isFootwear = typeof flag === "boolean" ? flag : ["hub1", "hub3"].includes(a.loc);
+  // Hub 1 and Hub 3 are only on the footwear chain and the shops only on the other one; Hub 2 is on both.
+  const isFootwear = ["hub1", "hub3"].includes(a.loc) ? true : a.loc !== "hub2" ? false : typeof flag === "boolean" ? flag : false;
   const risk = {}, free = {};
   for (const step of routeFor(isFootwear)) {
     const loc = step.locationId;
@@ -152,6 +153,18 @@ for (const a of first) {
   }
   out.moved.push({ order: orders[a.orderId]?.orderNumber, product: a.name, size: a.size, from: NAME[a.loc] || a.loc, to: NAME[to.locationId] || to.locationId, why: own.why.join(", "), was: a.ok ? "picked" : "rejected" });
 }
+// Commit 2 and 4, replayed: when the first place said no, did any other place on the chain show the size at that
+// moment — a shop or hub (the line moves on at once), or only Central (it now goes to Central's strip)?
+const moveOn = { rejected: 0, toShopOrHub: 0, toCentralOnly: 0, nowhere: 0 };
+for (const a of first) {
+  if (a.ok || !a.at) continue;
+  const flag = linesOf(orders[a.orderId]).find(([i]) => i === a.line)?.[1]?.isFootwear;
+  const isFootwear = ["hub1", "hub3"].includes(a.loc) ? true : a.loc !== "hub2" ? false : typeof flag === "boolean" ? flag : false;
+  moveOn.rejected += 1;
+  const has = (loc) => Math.max(0, (stockAt(a.pid, a.size, loc, a.at) ?? 0) - heldByOthers(a.pid, a.size, loc, a.at, a.orderId)) > 0;
+  const near = routeFor(isFootwear).filter((s) => s.locationId !== "central" && s.locationId !== a.loc).some((s) => has(s.locationId));
+  if (near) moveOn.toShopOrHub += 1; else if (has("central")) moveOn.toCentralOnly += 1; else moveOn.nowhere += 1;
+}
 const pct = (b) => (b.picked + b.rejected ? Math.round((1000 * b.rejected) / (b.picked + b.rejected)) / 10 : null);
 const movedFailed = out.moved.filter((m) => m.was === "rejected");
 const movedOk = out.moved.filter((m) => m.was === "picked");
@@ -168,7 +181,7 @@ const summary = {
   failuresAvoidedAtBest: movedFailed.length,
   failuresAvoidedExpected: Math.round((movedFailed.length * trustedOk - movedOk.length * (1 - trustedOk)) * 10) / 10,
   riskyButStayed: out.sameRisky, riskyAndTheOnlyPlace: { ...out.riskyOnlyPlace, failedPct: pct(out.riskyOnlyPlace) },
-  elsewhereUnknown: out.unknownElsewhere, byRoute,
+  elsewhereUnknown: out.unknownElsewhere, byRoute, afterTheFirstRejection: moveOn,
   settings: { riskyAt: rules.riskyAt, staleDays: rules.staleDays, rejectedDays: rules.rejectedDays },
 };
 writeFileSync(join(OUT, "replay-routing.json"), JSON.stringify({ summary, moved: out.moved }, null, 1));
