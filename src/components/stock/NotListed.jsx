@@ -57,7 +57,11 @@ const Row = memo(function Row({ row, product, can, busy, onAct }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{row.name}</div>
         <div style={{ fontSize: 12, color: GRAY, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          <span style={{ color: "rgba(255,255,255,.7)", fontVariantNumeric: "tabular-nums" }}>Central {row.centralUnits}</span>
+          {/* Units at Central FREE to send — the same meaning as on a card (missingFigures.js);
+              units open requests already own are named as promised. */}
+          <span data-central-free={row.centralFree ?? row.centralUnits} style={{ color: "rgba(255,255,255,.7)", fontVariantNumeric: "tabular-nums" }}>
+            Central {row.centralFree ?? row.centralUnits} free{row.centralOwed > 0 ? ` · ${row.centralOwed} promised` : ""}
+          </span>
           {" · "}<span data-reason-text style={{ color: row.group === "chosen" ? GRAY : AMBER }}>{row.text}</span>
         </div>
       </div>
