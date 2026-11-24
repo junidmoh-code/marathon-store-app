@@ -259,13 +259,17 @@ export async function runOrdersPoll(deps) {
         // instead of on the order agent's next round. Nowhere left → the line is
         // stamped `chain.exhausted` and Jamie offers alternatives.
         {
-          const fresh = after ?? await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+          let fresh = after ?? await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+          let again = false;
           if (fresh && await raiseChainMoves(ctx, id, fresh)) {
-            const again = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
-            if (await applyAgentRepicks(ctx, id, again, { availabilityFor, cancelLine: (line) => cancelLineEntries(ctx, line) })) await clearAttentionIfSettled(ctx, id);
-            await stampChainResults(ctx, id, await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`));
-            after = await maintainOrder(ctx, id, await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`));
+            if (await applyAgentRepicks(ctx, id, await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`), { availabilityFor, cancelLine: (line) => cancelLineEntries(ctx, line) })) await clearAttentionIfSettled(ctx, id);
+            fresh = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+            again = true;
           }
+          // Stamped from the order as it stands, whichever tick answered the request (a move claimed on one tick and
+          // answered on a later one must still tell Jamie). Reads nothing; writes once per route generation.
+          if (fresh?.agentRepicks && await stampChainResults(ctx, id, fresh)) again = true;
+          if (again) after = await maintainOrder(ctx, id, await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`));
         }
         // The keep step itself may just have turned a line no_stock (a hub
         // marked its order Out of Stock): escalate it in THIS tick, before the

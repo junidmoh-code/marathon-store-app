@@ -165,6 +165,17 @@ describe("a hub's Out of Stock moves the line on in the same tick", () => {
     expect(f.read(`online_orders/9001/agentRepicks/${chainKey(0, 0)}`).state).toBe("applying");
   });
 
+  it("a move answered on a LATER tick than it was raised still stamps the line (a claim that went stale is finished, then Jamie is told)", async () => {
+    const f = fakeDb(world({ stock: { hub1: { SNK: { 8: cell(1) } } } }));
+    await runOrdersPoll(deps(f, [shopifyOrder(9001, 2501)]));
+    await f.db.ref("online_orders/9001/lines/0/source").update({ status: "no_stock", failedAt: NOW - 1000 });
+    await f.db.ref("online_orders/9001/status").set("needs_attention");
+    await f.db.ref(`online_orders/9001/agentRepicks/${chainKey(0, 0)}`).set({ lineIndex: 0, expectPid: "SNK", expectSizeKey: "8", expectStatus: "no_stock", expectRouteGen: 0, exclude: ["hub1"], by: "chain", at: NOW - 500, state: "applying", claimedAt: NOW - 400 });
+    await runOrdersPoll(deps(f, [], NOW + 6 * 60e3)); // the claim is stale now: the tick finishes it — nowhere has the size
+    expect(f.read(`online_orders/9001/agentRepicks/${chainKey(0, 0)}`).state).toBe("not_in_stock");
+    expect(line(f).chain).toMatchObject({ gen: 0, result: "nowhere", at: NOW + 6 * 60e3 });
+  });
+
   it("a shelf that rejected a website pick lately is doubtful even after it moved: a new order goes to the trusted shelf first", async () => {
     const f = fakeDb(world({
       stock: { hub1: { SNK: { 8: cell(1) } }, hub2: { SNK: { 8: cell(3) } } },
