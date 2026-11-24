@@ -32,7 +32,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { checkAddress, checkLockerArea, addressFingerprint, addressParts } from "./addressCheck.mjs";
+import { checkAddress, checkLockerArea, addressFingerprint, addressParts, LOCKER_AREA_KM } from "./addressCheck.mjs";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 
 export const HOLD_INDEX = "shipping_recon/addressHolds";
@@ -65,9 +65,12 @@ export function addressGate(order, cfg = {}) {
  */
 export function lockerGate(order, locker, cfg = {}) {
   if (cfg?.addressCheck === false || !locker || confirmedFor(order)) return null;
+  // A locker a PERSON named (rebook-locker --locker, a split finishing at its first locker) is theirs to choose.
+  if (str(order?.shipping?.lockerChoice?.id)) return null;
   const check = checkAddress(rawAddress(order));
   if (!check.ok) return null; // addressGate already holds it
-  const lk = checkLockerArea(locker, check);
+  // A wider automatic locker radius Junid set (/config/shipping/locker/maxKm) widens the area with it.
+  const lk = checkLockerArea(locker, check, { maxKm: Math.max(LOCKER_AREA_KM, (Number(cfg?.locker?.maxKm) || 0) + 5) });
   if (lk.ok) return null;
   const why = `the chosen locker is not in the customer's area: ${lk.why}`;
   return { reason: `${HOLD_REASON_PREFIX}${why}`, hold: { ...holdRecord(order, { ...check, kind: "locker", why }, "held"), locker: { id: str(locker.id), name: str(locker.name), km: lk.km ?? null } } };
@@ -90,12 +93,14 @@ export async function raiseHold(db, key, hold, { now = Date.now() } = {}) {
   assertSafeSegment(key, "order key");
   let raised = false;
   const tx = await db.ref(`online_orders/${key}/shipping/addressHold`).transaction((cur) => {
-    if (cur && cur.sig === hold.sig && cur.state !== "cleared") return undefined;
+    // One hold per address and kind: a hold already standing (or cleared/confirmed) for this exact address is kept.
+    if (cur && cur.sig === hold.sig && (cur.kind === hold.kind || cur.state !== "cleared")) return undefined;
     raised = true;
     return { ...hold, at: now };
   });
   const value = tx?.snapshot?.val?.() ?? hold;
-  if (raised && tx?.committed) await db.ref(`${HOLD_INDEX}/${key}`).set({ at: now, state: value.state, kind: value.kind });
+  // The index is upserted whenever an open hold has not been asked yet: a crash between the two writes never strands it.
+  if (value && ["asking", "held"].includes(value.state) && !value.junidAt) await db.ref(`${HOLD_INDEX}/${key}`).set({ at: value.at ?? now, state: value.state, kind: value.kind });
   return { raised: raised && !!tx?.committed, hold: value };
 }
 
@@ -118,7 +123,7 @@ export function askText(order, hold, key = "") {
 /** Junid's one line for a hold. Pure. */
 export function junidText(order, hold, key) {
   const n = orderNo(order, key);
-  const what = hold.state === "asking" ? (hold.askError === "no customer phone" ? "No customer phone to ask: call or email them." : "Customer asked on WhatsApp which is right.") : "A person needs to look (no customer message).";
+  const what = hold.state !== "asking" ? "A person needs to look (no customer message)." : hold.askError ? `The customer was NOT asked (${hold.askError}): call or email them.` : "Customer asked on WhatsApp which is right.";
   return `${n}: Courier Guy NOT booked, address held: ${hold.why}. ${what} Fix: node scripts/shipping/addressHold.mjs --confirm ${key} --zip <code> (or --as-is).`;
 }
 
@@ -136,6 +141,7 @@ export function jimmyQueue({ dir = process.env.COURIER_JIMMY_DIR || join(homedir
 }
 
 const JUNID = "27813995333";
+export const MAX_ASK_REFUSALS = 3;
 
 /**
  * Every open hold not yet asked: the customer's ONE WhatsApp and Junid's ONE line. askedAt is claimed in a transaction
@@ -150,34 +156,45 @@ export async function sweepAddressHolds({ db, queue = jimmyQueue(), now = () => 
       const order = (await db.ref(`online_orders/${assertSafeSegment(key, "order key")}`).get()).val();
       const hold = order?.shipping?.addressHold;
       if (!hold || ["cleared", "confirmed"].includes(hold.state)) { await db.ref(`${HOLD_INDEX}/${key}`).remove(); continue; }
-      if (hold.askedAt || hold.junidAt) continue;
+      if (hold.junidAt && (hold.askedAt || hold.state !== "asking")) { await db.ref(`${HOLD_INDEX}/${key}`).remove(); continue; }
       const at = now();
-      const claim = await db.ref(`online_orders/${key}/shipping/addressHold`).transaction((cur) => (cur && cur.sig === hold.sig && !cur.askedAt && !cur.junidAt ? { ...cur, junidAt: at, ...(cur.state === "asking" ? { askedAt: at } : {}) } : undefined));
-      if (!claim?.committed) continue;
       const row = { key, asked: false, outboxId: null, junid: false };
-      if (hold.state === "asking") {
-        const phone = str(order?.customer?.phone || order?.shipping?.address?.phone || order?.exchange?.contactPhone);
-        const text = askText(order, hold, key);
-        const id = phone ? await queue(["--to", phone, "--kind", "lifecycle", "--sub", "order_first", "--ref", `address:${key}`, "--text", text]) : null;
-        if (id == null && phone) {
-          // Refused (quiet hours, the gate, the service down): released, asked again on the next pass.
-          await db.ref(`online_orders/${key}/shipping/addressHold`).update({ askedAt: null, junidAt: null, askError: "jimmy-send refused (see the log)" });
-          out.push(row);
-          continue;
-        } else if (id == null) {
-          // No number to ask: Junid's line says so, once.
-          await db.ref(`online_orders/${key}/shipping/addressHold`).update({ askError: "no customer phone" });
-          row.error = "no customer phone";
-        } else {
-          await db.ref(`online_orders/${key}/shipping/addressHold`).update({ askedText: text, outboxId: id, askError: null });
-          row.asked = true; row.outboxId = id;
-          log(`address hold ${key}: customer asked on WhatsApp (outbox #${id}): ${text}`);
+      const holdRef = db.ref(`online_orders/${key}/shipping/addressHold`);
+      // 1. The customer's ONE question (asking holds only), claimed before the send.
+      if (hold.state === "asking" && !hold.askedAt && !hold.askError?.startsWith?.("no customer phone")) {
+        const claim = await holdRef.transaction((cur) => (cur && cur.sig === hold.sig && !cur.askedAt ? { ...cur, askedAt: at } : undefined));
+        if (claim?.committed) {
+          const phone = str(order?.customer?.phone || order?.shipping?.address?.phone || order?.exchange?.contactPhone);
+          const text = askText(order, hold, key);
+          const id = phone ? await queue(["--to", phone, "--kind", "lifecycle", "--sub", "order_first", "--ref", `address:${key}`, "--text", text]) : null;
+          if (id != null) {
+            await holdRef.update({ askedText: text, outboxId: id, askError: null });
+            Object.assign(row, { asked: true, outboxId: id });
+            log(`address hold ${key}: customer asked on WhatsApp (outbox #${id}): ${text}`);
+          } else {
+            const refusals = (Number(hold.askRefusals) || 0) + 1;
+            // Released for the next pass; after MAX_ASK_REFUSALS Junid hears why (the line below) and it is not retried.
+            const giveUp = !phone || refusals >= MAX_ASK_REFUSALS;
+            const askError = !phone ? "no customer phone" : giveUp ? `jimmy-send refused ${refusals} times (see logs/fast-ship.log)` : "jimmy-send refused (see the log)";
+            await holdRef.update({ askedAt: giveUp ? at : null, askRefusals: refusals, askError });
+            row.error = askError;
+            if (!giveUp) { out.push(row); continue; }
+          }
         }
       }
-      const line = junidText(order, { ...hold, askError: row.error ?? null }, key);
-      const sent = await queue(["--kind", "junid", "--to", JUNID, "--text", line, "--ref", `address-hold-${key}`]);
-      await db.ref(`shipping_recon/junidLines/${key}-address`).set({ orderId: key, text: line, at, ...(sent != null ? { sentAt: at } : {}) });
-      row.junid = sent != null;
+      // 2. Junid's ONE line (once the question went, or could not), retried until it is queued.
+      const fresh = (await holdRef.get()).val() ?? hold;
+      if (!fresh.junidAt && (fresh.state !== "asking" || fresh.askedAt)) {
+        const claim = await holdRef.transaction((cur) => (cur && cur.sig === hold.sig && !cur.junidAt ? { ...cur, junidAt: at } : undefined));
+        if (claim?.committed) {
+          const line = junidText(order, fresh, key);
+          const sent = await queue(["--kind", "junid", "--to", JUNID, "--text", line, "--ref", `address-hold-${key}`]);
+          await db.ref(`shipping_recon/junidLines/${key}-address`).set({ orderId: key, text: line, at, ...(sent != null ? { sentAt: at } : {}) });
+          // Not queued: the courier-recon runner sends the junidLines row (it has no sentAt), so it is never lost.
+          row.junid = sent != null;
+        }
+      }
+      if (fresh.askedAt && fresh.junidAt) await db.ref(`${HOLD_INDEX}/${key}`).remove();
       out.push(row);
     } catch (e) {
       log(`address hold ${key}: sweep failed — ${String(e?.message || e).slice(0, 200)}`);
@@ -196,9 +213,10 @@ export async function confirmAddress(db, key, { zip, suburb, city, province, asI
   const ref = db.ref(`online_orders/${key}`);
   const order = (await ref.get()).val();
   if (!order) return { ok: false, why: `no order at online_orders/${key}` };
-  const before = { ...(order.shipping?.address ?? {}) };
+  if (asIs && /^jamie$/i.test(str(by))) return { ok: false, why: "--as-is is a person's decision (Junid or staff), never Jamie's: a customer cannot talk an address past the gate" };
+  const before = { ...rawAddress(order) };
   const patch = {};
-  if (zip != null) patch.zip = str(zip);
+  if (zip != null) { patch.zip = str(zip); if (before.code != null) patch.code = str(zip); }
   if (suburb != null) patch.address2 = str(suburb);
   if (city != null) patch.city = str(city);
   if (province != null) patch.province = str(province);
@@ -210,15 +228,29 @@ export async function confirmAddress(db, key, { zip, suburb, city, province, asI
   const updates = {
     ...Object.fromEntries(Object.entries(patch).map(([k, v]) => [`shipping/address/${k}`, v])),
     ...(Object.keys(patch).length ? { "shipping/addressBefore": before, "shipping/addressFixedAt": now, "shipping/addressFixedBy": by } : {}),
-    "shipping/addressHold": { ...hold, state: check.ok ? "cleared" : "confirmed", sig, resolvedAt: now, resolvedBy: by, ...(check.ok ? {} : { confirmedAsIs: true }) },
+    // "confirmed" (the gate then passes this exact address, its locker area included) for --as-is and for a locker
+    // hold; "cleared" when the corrected address now agrees by itself.
+    "shipping/addressHold": { ...hold, state: check.ok && !asIs && hold.kind !== "locker" ? "cleared" : "confirmed", sig, resolvedAt: now, resolvedBy: by, ...(asIs ? { confirmedAsIs: true } : {}) },
     updatedAt: now,
   };
-  // A packed order the gate stopped goes back to the ship step (the POS Retry), and only that one.
-  const stopped = order.status === "packed" && order.fulfilState === "courier_failed" && str(order.courierError).startsWith(HOLD_REASON_PREFIX);
-  if (stopped) Object.assign(updates, { fulfilState: "pending", "fulfil/state": "pending", courierError: null, ...(order.attention?.kind === "courier_failed" ? { attention: null, attentionOpen: null } : {}) });
   await ref.update(updates);
   await db.ref(`${HOLD_INDEX}/${key}`).remove();
-  return { ok: true, cleared: check.ok, check, handedBack: stopped };
+  // A packed order the gate stopped goes back to the ship step (the POS Retry), and only that one: in a transaction
+  // on the order as it is NOW, so an order that moved on meanwhile is never flipped back.
+  const stoppedNow = (o) => o?.status === "packed" && o.fulfilState === "courier_failed" && str(o.courierError).startsWith(HOLD_REASON_PREFIX);
+  let handedBack = false;
+  if (stoppedNow(order)) {
+    const tx = await ref.transaction((cur) => {
+      if (cur == null) return null;
+      if (!stoppedNow(cur)) return undefined;
+      const next = { ...cur, fulfilState: "pending", fulfil: { ...(cur.fulfil ?? {}), state: "pending" }, updatedAt: now };
+      delete next.courierError;
+      if (cur.attention?.kind === "courier_failed") { delete next.attention; delete next.attentionOpen; }
+      return next;
+    });
+    handedBack = !!tx?.committed && tx.snapshot?.val?.()?.fulfilState === "pending";
+  }
+  return { ok: true, cleared: check.ok, check, handedBack };
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────────

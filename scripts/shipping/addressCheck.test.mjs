@@ -44,6 +44,13 @@ describe("checkAddress: postal code ↔ suburb/town", () => {
     expect(checkAddress({ address1: "26 new street", address2: "Office", city: "Johannesburg", province: "Gauteng", zip: "6139" })).toMatchObject({ ok: false, kind: "mismatch" });
   });
 
+  it("every field must agree: a listed suburb never outvotes a far town (architect review, #985)", () => {
+    expect(checkAddress({ address1: "1 Main Rd", address2: "Umlazi", city: "Johannesburg", province: "KwaZulu-Natal", zip: "4031" }).ok).toBe(false);
+    expect(checkAddress({ address1: "1 Main Rd", address2: "Century City", city: "Johannesburg", province: "Western Cape", zip: "7441" }).ok).toBe(false);
+    // …but a building or street name in the suburb line does not hold a right town and code.
+    expect(checkAddress({ address1: "5 Osklands Golf Estate", address2: "Athlone street", city: "Boksburg", province: "Gauteng", zip: "1459" }).ok).toBe(true);
+  });
+
   it("ambiguity is a mismatch: an unknown code, a non-code, or no place we can match", () => {
     expect(checkAddress({ address1: "273 Maltzan Street", city: "Pretoria", province: "Gauteng", zip: "0111" })).toMatchObject({ ok: false, kind: "unknown_code" });
     expect(checkAddress({ address1: "1 Road", city: "Durban", zip: "40011" })).toMatchObject({ ok: false, kind: "bad_code" });
@@ -79,6 +86,13 @@ describe("checkLockerArea: the locker must be in the customer's area", () => {
     expect(checkLockerArea(UMLAZI_LOCKER, umlazi).ok).toBe(true);
     // No code match and no name match: judged by the distance alone.
     expect(checkLockerArea({ ...UMLAZI_LOCKER, tcgAddress: undefined }, umlazi)).toMatchObject({ ok: true, by: "distance" });
+  });
+  it("a namesake locker with a point is judged by distance, never by its name (architect review, #985)", () => {
+    expect(checkLockerArea({ ...CG306, tcgAddress: { ...CG306.tcgAddress, local_area: "Umlazi", city: "Umlazi" } }, umlazi).ok).toBe(false);
+  });
+  it("a locker placed from the customer's own point (Shopify/street) within the limit passes; one placed by POSTAL CODE is judged by the area", () => {
+    expect(checkLockerArea({ ...CG306, placedBy: "shopify", km: 2.1 }, umlazi)).toMatchObject({ ok: true, by: "placed" });
+    expect(checkLockerArea({ ...CG306, placedBy: "postcode", km: 1.3 }, umlazi).ok).toBe(false);
   });
   it("a locker with no point and no code cannot be shown to be near: held", () => {
     expect(checkLockerArea({ id: "X1", name: "Somewhere" }, umlazi)).toMatchObject({ ok: false, km: null });

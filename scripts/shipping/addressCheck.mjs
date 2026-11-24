@@ -53,7 +53,7 @@ const GENERIC = new Set([
   "hospital", "airport", "station", "mall", "prison", "mine", "school", "college", "police", "camp", "depot", "industrial", "industria",
   "business", "office", "post", "box", "po", "private bag", "bag", "street address", "rural", "area", "metro", "municipality",
   "local municipality", "district", "province", "gauteng", "kwazulu natal", "kzn", "western cape", "eastern cape", "northern cape",
-  "free state", "limpopo", "mpumalanga", "north west", "a", "b", "c", "d", "e", "f", "g", "h", "j", "k", "l", "m", "n", "p", "r", "s",
+  "free state", "limpopo", "mpumalanga", "north west", "northwest", "southafrica", "kwazulunatal", "westerncape", "easterncape", "northerncape", "freestate", "a", "b", "c", "d", "e", "f", "g", "h", "j", "k", "l", "m", "n", "p", "r", "s",
   "t", "u", "v", "w", "x", "y", "z", "and", "of", "at", "in", "on", "near", "next", "to", "opposite", "behind", "corner", "cnr",
 ]);
 
@@ -66,7 +66,7 @@ export const ALIASES = {
   ekurhuleni: ["germiston", "boksburg", "benoni", "kempton park", "alberton", "springs", "brakpan", "edenvale", "nigel", "tembisa", "katlehong", "vosloorus", "thokoza", "daveyton", "tsakane", "kwa thema", "rusloo", "isando"],
   joburg: ["johannesburg"], jozi: ["johannesburg"], jhb: ["johannesburg"], "city of johannesburg": ["johannesburg", "soweto", "randburg", "sandton", "roodepoort"],
   mbombela: ["nelspruit"], emalahleni: ["witbank"], mahikeng: ["mafikeng", "mmabatho"], makhanda: ["grahamstown"], mthatha: ["umtata"],
-  komani: ["queenstown"], mkhondo: ["piet retief", "pietretief"], kugompo: ["east london"], "kugompo city": ["east london"], "dr pixley ka isaka seme": ["volksrust"], msunduzi: ["pietermaritzburg"], pmb: ["pietermaritzburg"], maritzburg: ["pietermaritzburg"],
+  komani: ["queenstown"], gcuwa: ["butterworth"], qonce: ["king williams town"], "king williams town": ["king williams town"], mkhondo: ["piet retief", "pietretief"], kugompo: ["east london"], "kugompo city": ["east london"], "dr pixley ka isaka seme": ["volksrust"], msunduzi: ["pietermaritzburg"], pmb: ["pietermaritzburg"], maritzburg: ["pietermaritzburg"],
   "buffalo city": ["east london"], mangaung: ["bloemfontein"], bloem: ["bloemfontein"], emfuleni: ["vereeniging", "vanderbijlpark"],
   kwadukuza: ["stanger"], "city of cape town": ["cape town"], cpt: ["cape town"], polokwane: ["pietersburg"], mokopane: ["potgietersrus"],
   "bela bela": ["warmbaths"], modimolle: ["nylstroom"], musina: ["messina"], lephalale: ["ellisras"], mookgophong: ["naboomspruit"],
@@ -253,18 +253,28 @@ export function checkAddress(address) {
     for (const z of Z) for (const c of codes) for (const q of codePoint.get(c) ?? []) { const d = kmBetween(z, q); if (!best || d < best.km) best = { km: d, point: q }; }
     return { ...m, how: best && best.km <= NEAR_KM ? "near" : "far", km: best ? Math.round(best.km) : null, point: best?.point ?? null };
   };
-  const areaJ = [...placesIn(p.suburb), ...placesIn(p.city)].map(judge);
+  const subJ = placesIn(p.suburb).map(judge);
+  const cityJ = placesIn(p.city).map(judge);
+  const areaJ = [...subJ, ...cityJ];
   const streetJ = placesIn(p.street).map(judge);
   // A misspelt name of one of the code's OWN places ("Pietemarizrburg" for Pietermaritzburg 3201, "Randjiesfontein"
   // for Randjesfontein 1682) agrees with the code: only ever matched against that code's places, never used to say
   // the address is somewhere else.
-  const typos = [p.suburb, p.city].flatMap((t) => typoOf(t, own)).map((form) => ({ form, raw: form, how: "listed", km: 0 }));
-  const good = [...areaJ.filter((m) => m.how !== "far"), ...typos];
+  const typoIn = (t) => typoOf(t, own).map((form) => ({ form, raw: form, how: "listed", km: 0 }));
+  const subT = typoIn(p.suburb), cityT = typoIn(p.city);
+  const good = [...areaJ.filter((m) => m.how !== "far"), ...subT, ...cityT];
+  // THE TOWN must be in the same area whenever it names a known place (architect review, #985): a listed suburb never
+  // outvotes a far town ("Newlands, Johannesburg, 7700" or "Umlazi, Johannesburg, 1475" hold). A town within FAIR_KM is
+  // the metro-level name over a township and still counts. The suburb line is NOT held to this: it carries complex,
+  // building and street names ("Palm Manor", "Athlone Street", "SAPS Denver building"), which tripled false holds on
+  // the last 600 orders when it was.
+  const fieldOk = (js, ts) => !js.length || ts.length > 0 || js.some((m) => m.how !== "far" || (m.km != null && m.km <= FAIR_KM));
+  const fieldsAgree = fieldOk(cityJ, cityT);
   // The suburb/town fields decide; the street line only when they name no known place at all, or when it names a
   // place the code itself files and the town typed is a big name nearby ("848 Khozi Street Naledi Ext 2, Johannesburg,
   // 1861"): never when the town typed is far (#2316's Umlazi is 487 km from 1475).
   const nearish = areaJ.every((m) => m.km != null && m.km <= FAIR_KM);
-  const agree = good.length ? good : !areaJ.length ? streetJ.filter((m) => m.how !== "far") : nearish ? streetJ.filter((m) => m.how === "listed") : [];
+  const agree = !fieldsAgree ? [] : good.length ? good : !areaJ.length ? streetJ.filter((m) => m.how !== "far") : nearish ? streetJ.filter((m) => m.how === "listed") : [];
   if (agree.length) {
     // THE PROVINCE is not a reason to hold once the suburb/town and the postal code agree: customers pick the wrong
     // one in Shopify's list all the time (#2330 Rooiberg 0500 "Gauteng", #2338 Botshabelo 9781 "Western Cape", #2340
@@ -277,7 +287,7 @@ export function checkAddress(address) {
     return { ok: true, how: agree.some((m) => m.how === "listed") ? "listed" : "near", code, zipSays, matched: [...new Set(agree.map((m) => m.form))], areaPoints: pts, ...(provinceNote ? { provinceNote } : {}) };
   }
   if (areaJ.length) {
-    const far = areaJ.find((m) => m.km != null) ?? areaJ[0];
+    const far = areaJ.filter((m) => m.how === "far").sort((a, b) => (b.km ?? 1e9) - (a.km ?? 1e9))[0] ?? areaJ[0];
     const hint = codesOf(far.form);
     return {
       ok: false, kind: "mismatch", code, zipSays, addressSays: addressSaysOf(far.raw), addressPlace: title(far.raw), addressCodes: hint, km: far.km,
@@ -327,20 +337,26 @@ export function typoOf(text, own) {
  * postal code's own point)? Only asked of an address checkAddress passed. Pure.
  * → { ok: true, km } | { ok: false, why, km }
  */
-export function checkLockerArea(locker, check) {
+export function checkLockerArea(locker, check, { maxKm = LOCKER_AREA_KM } = {}) {
   const { codePoint, codeNames } = index();
   const pts = (check?.areaPoints ?? []).filter(Boolean);
   const name = str(locker?.name) || str(locker?.id) || "the locker";
   const lockerCode = postalCode(locker?.tcgAddress?.code);
-  // The locker's own postal code is the customer's, or files one of the places the address names: in their area.
-  if (lockerCode && (lockerCode === check?.code || (check?.matched ?? []).some((f) => codeNames.get(lockerCode)?.has(f)))) return { ok: true, km: 0, by: "code" };
+  const pointOf = Number.isFinite(Number(locker?.lat)) && Number.isFinite(Number(locker?.lng)) ? { lat: Number(locker.lat), lng: Number(locker.lng) } : null;
+  // The locker's own postal code is the customer's: in their area.
+  if (lockerCode && lockerCode === check?.code) return { ok: true, km: 0, by: "code" };
+  // Chosen by distance from the customer's OWN point (Shopify's validated point or their street on the map, not a
+  // postal-code or town guess like #2316's): that distance is the customer's, and it is within the limit.
+  if (["shopify", "street"].includes(str(locker?.placedBy)) && Number.isFinite(Number(locker?.km)) && Number(locker.km) <= maxKm) return { ok: true, km: Math.round(Number(locker.km)), by: "placed" };
+  // Names are only trusted for a locker with NO map point (an older record): a "Rosebank" locker in Cape Town is not
+  // a Johannesburg Rosebank customer's area (architect review, #985). With a point, the distance decides.
+  if (!pointOf && lockerCode && (check?.matched ?? []).some((f) => codeNames.get(lockerCode)?.has(f))) return { ok: true, km: 0, by: "code" };
   // The locker's own suburb/town (Courier Guy's record of it) is one the address names, or one the code files.
   const { nameCodes } = index();
   // (An older locker record has only its one-line address: "Ext.9 Ext.9, Sam Sekoati Avenue, Vosloorus".)
   const lockerText = [locker?.tcgAddress?.local_area, locker?.tcgAddress?.city].map(str).filter(Boolean).join(", ");
   const lockerPlaces = placesIn(lockerText || str(locker?.address).split(",").slice(-2).join(","));
-  if (lockerPlaces.some((m) => (check?.matched ?? []).includes(m.form) || nameCodes.get(m.form)?.has(check?.code))) return { ok: true, km: 0, by: "name" };
-  const pointOf = Number.isFinite(Number(locker?.lat)) && Number.isFinite(Number(locker?.lng)) ? { lat: Number(locker.lat), lng: Number(locker.lng) } : null;
+  if (!pointOf && lockerPlaces.some((m) => (check?.matched ?? []).includes(m.form) || nameCodes.get(m.form)?.has(check?.code))) return { ok: true, km: 0, by: "name" };
   const at = [
     pointOf,
     ...(lockerCode ? codePoint.get(lockerCode) ?? [] : []),
@@ -349,7 +365,7 @@ export function checkLockerArea(locker, check) {
   ].filter(Boolean);
   if (!at.length || !pts.length) return { ok: false, km: null, why: `${name} could not be placed against the customer's area (no map point), so it cannot be shown to be near them` };
   const km = Math.round(Math.min(...at.flatMap((a) => pts.map((q) => kmBetween(a, q)))));
-  if (km <= LOCKER_AREA_KM) return { ok: true, km, by: "distance" };
+  if (km <= maxKm) return { ok: true, km, by: "distance" };
   return { ok: false, km, why: `${name} is ${km} km from the customer's area (${(check.matched ?? []).map(title).join(", ") || check.code})` };
 }
 

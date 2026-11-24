@@ -83,12 +83,22 @@ describe("the ONE question and Junid's line", () => {
     expect(sent).toHaveLength(2);
   });
 
-  it("a refused send is released and asked again next pass", async () => {
+  it("a refused send is released and asked again next pass; after 3 refusals Junid hears it was NOT asked", async () => {
     const g = addressGate(ORDER());
     const db = fakeDb({ online_orders: { 19024021749909: ORDER({ addressHold: { ...g.hold, at: 1 } }) }, shipping_recon: { addressHolds: { 19024021749909: { at: 1 } } } });
-    const out = await sweepAddressHolds({ db, queue: async () => null, now: () => 5 });
+    const sent = [];
+    const queue = async (args) => { sent.push(args); return args.includes("junid") ? 7 : null; };
+    const out = await sweepAddressHolds({ db, queue, now: () => 5 });
     expect(out[0]).toMatchObject({ asked: false });
-    expect(db.root.online_orders["19024021749909"].shipping.addressHold.askedAt).toBeUndefined();
+    expect(db.root.online_orders["19024021749909"].shipping.addressHold.askedAt ?? null).toBeNull();
+    await sweepAddressHolds({ db, queue, now: () => 6 });
+    expect(sent.filter((a) => a.includes("junid"))).toHaveLength(0);
+    await sweepAddressHolds({ db, queue, now: () => 7 });
+    const junid = sent.filter((a) => a.includes("junid"));
+    expect(junid).toHaveLength(1);
+    expect(junid[0].join(" ")).toMatch(/NOT asked \(jimmy-send refused 3 times/);
+    await sweepAddressHolds({ db, queue, now: () => 8 });
+    expect(sent).toHaveLength(4);
   });
 });
 
@@ -104,6 +114,20 @@ describe("the answer: confirmAddress", () => {
     expect(o.attention).toBeUndefined();
     expect(db.root.shipping_recon.addressHolds?.["19024021749909"]).toBeUndefined();
     expect(addressGate(o)).toBeNull();
+  });
+
+  it("a LOCKER hold confirmed by a person is released (confirmed), never re-held; --as-is is never Jamie's", async () => {
+    const good = ORDER({ address: { ...BAD, zip: "4031" } });
+    const far = { id: "CG306", name: "Pick n Pay Sam Sekoti", lat: -26.3525, lng: 28.2134, tcgAddress: { city: "Vosloorus", code: "1475" } };
+    const g = lockerGate(good, far);
+    const db = fakeDb({ online_orders: { 19024021749909: { ...good, shipping: { ...good.shipping, addressHold: { ...g.hold, at: 1 } } } } });
+    expect((await confirmAddress(db, "19024021749909", { asIs: true, by: "jamie" })).ok).toBe(false);
+    const out = await confirmAddress(db, "19024021749909", { by: "junid", now: 4 });
+    expect(out.ok).toBe(true);
+    const o = db.root.online_orders["19024021749909"];
+    expect(o.shipping.addressHold.state).toBe("confirmed");
+    expect(lockerGate(o, far)).toBeNull();
+    expect(lockerGate({ ...good, shipping: { ...good.shipping, lockerChoice: { id: "CG306", by: "hand" } } }, far)).toBeNull();
   });
 
   it("an answer that still disagrees writes nothing; --as-is confirms the exact address", async () => {

@@ -1247,7 +1247,9 @@ export const OWN_COURIER_COMPANY = "Other";
 export function ownCourierWaybill(order) {
   const oc = order?.shipping?.ownCourier;
   const waybill = String(oc?.waybill ?? "").trim();
-  return waybill ? { waybill, company: String(oc?.courier ?? "").trim() || OWN_COURIER_COMPANY } : null;
+  // It goes into Shopify's customer notification: a plain reference only (no spaces, no link, at most 60 characters).
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{2,59}$/.test(waybill)) return null;
+  return { waybill, company: String(oc?.courier ?? "").trim().slice(0, 60) || OWN_COURIER_COMPANY };
 }
 
 /** Waiting own-courier orders whose waybill has come: handed back to the ship step (a transaction on a fresh read). Never throws. */
