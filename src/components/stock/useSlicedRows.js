@@ -25,7 +25,7 @@ const PAINT_MS = 100;   // the list is repainted at most this often while a pass
 const now = () => (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now());
 
 // What makes two rows "the same card" on screen.
-const signature = (r) => (r ? `${r.name}|${r.photo}|${r.source}|${r.sourceName}|${r.stock}|${r.twin}|${r.needsPolicy ? "np" : ""}|${r.dests.map((d) => `${d.id}:${d.name}:${d.ok ? d.sizes.join(",") : "-"}:${d.units}`).join(";")}` : "");
+const signature = (r) => (r ? `${r.name}|${r.photo}|${r.source}|${r.sourceName}|${r.stock}|${r.twin}|${r.dests.map((d) => `${d.id}:${d.name}:${d.ok ? d.sizes.join(",") : "-"}:${d.units}`).join(";")}` : "");
 
 /**
  * buckets  [{ id, cards, build }]  — cards in the order the list opens in

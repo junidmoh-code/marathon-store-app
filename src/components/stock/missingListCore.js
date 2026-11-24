@@ -161,13 +161,15 @@ export function decideProductRow({ card, section, product, dests = [], tickable 
  *   refusal     (card, [hub]) → why that hub may not take it (the other
  *               Marathon hub already has it), or null
  */
-// NEEDS POLICY — the one card that is shown although nothing can be sent
-// (Junid, 22 Nov 2026). A shoe Central holds, that nobody has requested, whose
-// sizes NO policy names at any of the list's hubs (a kids shoe, 24–35, under a
-// footwear run that speaks for 3–13) is not "queued" and is not "out of
-// stock": it is waiting for Junid to give it numbers, and he has to SEE it to
-// do that. `hasPolicy(card, hub)` says whether any of its sizes has a number
-// there; `requested` whether any open request for it exists.
+// NO POLICY IS NOT A CARD (Junid, 24 Nov 2026). Until today a kids shoe whose
+// sizes no policy named at the list's hubs was drawn as a "No policy yet" card
+// with NO location button — its only control was the division button, and on
+// 24 Nov three kids shoes were moved to Concrete by a tap meant for something
+// else. A card always offers at least one location. A shoe nothing can be sent
+// for because no policy names its sizes is "Not listed", reason "No policy",
+// and from there opens the Engine Policy card. `hasPolicy(card, hub)` says
+// whether any of its sizes has a number there; `requested` whether any open
+// request for it exists.
 export function sneakerRow(args) { return decideSneakerRow(args).row; }
 
 // The same decision, with WHY when there is no row (see decideProductRow).
@@ -192,8 +194,6 @@ export function decideSneakerRow({ card, section, dests = [], planFor, refusal =
   };
   if (!out.some((d) => d.ok)) {
     const policied = typeof hasPolicy === "function" ? dests.some((d) => hasPolicy(card, d)) : true;
-    const unarmed = typeof hasPolicy === "function" && dests.length > 0 && !requested && !policied;
-    if (unarmed) return { why: null, row: { ...base, needsPolicy: true, stock: Math.max(Number(card.centralUnits) || 0, 0), dests: [] } };
     const why = !dests.length ? "noShop" : refused === dests.length ? "otherHub" : requested ? "requested" : !policied ? "noPolicy" : "noSize";
     return { row: null, why };
   }

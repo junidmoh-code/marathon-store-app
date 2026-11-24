@@ -142,7 +142,7 @@ function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = fals
             {/* Two lines at most, always the same box: a short name and a long one give the same card. */}
             <div data-name style={{ fontWeight: 800, fontSize: 13, lineHeight: "15px", height: 30, color: "#fff", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflowWrap: "anywhere" }}>{String(row.name).replace(/\u00a0/g, " ")}</div>
             <div data-stock style={{ fontSize: 12.5, lineHeight: "14px", height: 14, fontWeight: 700, color: BLUE_L, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {row.sourceName} {row.stock}{row.needsPolicy && <span data-needs-policy style={{ color: AMBER, marginLeft: 8 }}>No policy yet</span>}
+              {row.sourceName} {row.stock}
             </div>
           </div>
           {/* SAME NAME ELSEWHERE: the other record's photo, no sentence. */}
