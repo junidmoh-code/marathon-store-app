@@ -176,3 +176,18 @@ export function deriveOrderStatus(order, { enabled = false } = {}) {
   if (enabled && live.every((l) => st(l) === LINE_STATUS.HANDED || l?.source?.entryKey)) return ORDER_STATUS.PICKING;
   return ORDER_STATUS.NEW;
 }
+
+// ── How long a website line has been waiting (Junid, 24 Nov 2026) ───────────
+// Shown wherever staff see a website line (the Display Checks strip, a hub's
+// order card, Central's strip in Source). PURE.
+//   → { text: "waiting 1 h 20 min", level: "fresh" | "late" | "overdue" }
+export const WEB_WAIT_LATE_MS = 30 * 60 * 1000;
+export const WEB_WAIT_OVERDUE_MS = 60 * 60 * 1000;
+export function webWaiting(since, nowMs) {
+  const t = typeof since === "number" ? since : Date.parse(since);
+  if (!Number.isFinite(t) || !Number.isFinite(nowMs)) return null;
+  const ms = Math.max(0, nowMs - t);
+  const min = Math.floor(ms / 60000);
+  const text = min < 1 ? "just in" : min < 60 ? `waiting ${min} min` : min < 48 * 60 ? `waiting ${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ""}` : `waiting ${Math.floor(min / 1440)} days`;
+  return { text, level: ms >= WEB_WAIT_OVERDUE_MS ? "overdue" : ms >= WEB_WAIT_LATE_MS ? "late" : "fresh" };
+}

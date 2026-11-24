@@ -140,6 +140,11 @@ async function rollback(file) {
   log(`rollback: ${restored} quantity(ies) restored from ${file}`);
 }
 
+// Lone pieces seen while judging (desiredFor reads each product's cells anyway: no extra read). Written to
+// logs/shelf-singles.json at the end of the run for scripts/online/shelf-checks.mjs (Junid, 24 Nov 2026).
+const LONE_PIECES = [];
+const SHELF_SINGLES_FILE = new URL("../../logs/shelf-singles.json", import.meta.url);
+
 // ── Pass 1 for one listed product, from the bulk snapshot ────────────────────
 // The SAME comparison syncProduct makes (planProduct), fed by the snapshot
 // instead of two live queries. Nothing here is a write baseline.
@@ -149,6 +154,8 @@ async function judgeFromSnapshot(pid, snapshot, locNames, published) {
   const { map, totals, reserved, released } = desired;
   const gid = map.shopifyProductId ?? null;
   const shop = gid ? snapshot.get(gid) : null;
+  // Lone pieces of a listing that is live and on a sales channel: tonight's candidates for the daily shelf checks.
+  if (shop && (published ? published.has(gid) : true)) for (const c of desired.singles || []) LONE_PIECES.push({ pid, ...c });
   // Not in the snapshot = not ACTIVE on Shopify (draft, archived or deleted):
   // nothing can be bought from it, so there is nothing to correct.
   if (!shop) return { pid, gid, ok: true, inactive: true, drift: [], untracked: [], shopifyUnits: 0, appUnits: 0 };
@@ -305,6 +312,14 @@ async function main() {
     const stored = JSON.parse(JSON.stringify(report)); // drop undefined
     if (COMMIT) await rawDb.ref(`${HEALTH_PATH}/lastSweep`).set(stored);
     await rawDb.ref(`shopify_inventory_sweeps/${day}${COMMIT ? "" : "-dry"}`).set(stored);
+  }
+  // Tonight's lone pieces, for the daily shelf-check lists (a whole-shop run only; best-effort, never fails the night).
+  if (!ONLY) {
+    try {
+      mkdirSync(new URL("../../logs/", import.meta.url), { recursive: true });
+      writeFileSync(SHELF_SINGLES_FILE, JSON.stringify({ at: Date.now(), singles: LONE_PIECES }));
+      log(`shelf checks: ${LONE_PIECES.length} lone piece(s) at shops and hubs noted for tomorrow's lists`);
+    } catch (e) { log(`shelf checks: the lone-piece list was not written (${String(e?.message || e)})`); }
   }
   // Printed AFTER the report is stored: stock-truth-runner.mjs treats this
   // line as "the night reported".

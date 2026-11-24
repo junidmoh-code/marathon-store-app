@@ -43,7 +43,7 @@ import {
   ONLINE_EXCLUDED_LOCATIONS,
 } from "./inventory.mjs";
 import { ONLINE_RESERVATIONS_PATH, heldUnits } from "../../src/utils/onlineOrders.js";
-import { pickableTree, readCellHolds, readPickableRules } from "./pickableStock.mjs";
+import { pickableTree, readCellHolds, readPickableRules, readPipeline, loneCells } from "./pickableStock.mjs";
 
 // The node the trigger writes to and this sweep drains.
 export const DIRTY_PATH = storeNode("shopify_inventory_dirty");
@@ -105,11 +105,15 @@ export async function desiredFor(db, pid, locNames = null) {
   // reservation node (docs/ONLINE-ORDERS.md), read with the stock it adjusts.
   const holds = await readReservations(db, pid);
   // Pieces at a shelf that rejected a website pick and has not moved since, and
-  // a lone piece at Marathon PE untouched for over 14 days, are not counted
+  // an old single piece with nothing behind it (every holder one piece, 60+
+  // days untouched, nothing at Central / a hub / in transit), are not counted
   // (pickableStock.mjs). `hidden` names them, for the reports.
   const get = (path) => db.ref(path).get().then((x) => x.val());
-  const { tree: pickable, hidden } = pickableTree(tree, pid, await readCellHolds(get, pid), await readPickableRules(get), Date.now());
-  return { map, totals: withoutForeignHolds(networkTotals(pickable, pid, sizes), holds), reserved: reservedBySize(holds), released: releasedBySize(holds), hidden };
+  const pickRules = await readPickableRules(get);
+  const { tree: pickable, hidden } = pickableTree(tree, pid, await readCellHolds(get, pid), pickRules, Date.now(), await readPipeline(get, pid, pickRules));
+  // `singles`: this product's lone pieces at shops and hubs, from the cells just read (no extra read) — the nightly
+  // sweep hands them to the daily shelf-check list (scripts/online/shelf-checks.mjs).
+  return { map, totals: withoutForeignHolds(networkTotals(pickable, pid, sizes), holds), reserved: reservedBySize(holds), released: releasedBySize(holds), hidden, singles: loneCells(tree, pid, sizes) };
 }
 
 // /online_reservations/{pid} → { [sizeKey]: units held by open website orders }.

@@ -102,10 +102,14 @@ function isTriggerStoreEnabled(storeId, network, settings) {
 // its Display Checks are switched OFF explicitly (/displayChecks_settings/
 // {store}/enabled === false). Unlike the sale-driven display checks it does NOT
 // need the store to be fully live: Pine (not live, switch unset) has a working
-// strip without its till sales raising display checks. A hub, Central or an
-// unknown id is not a store → off.
+// strip without its till sales raising display checks. A hub or an unknown id
+// is not a store → off.
+// CENTRAL HAS A STRIP TOO (Junid, 24 Nov 2026): Central is the last stop of
+// every website line's chain, and its strip is shown inside Source. On unless
+// /displayChecks_settings/central/enabled === false.
+const WEBSITE_STRIP_CENTRAL = "central";
 function isWebsiteStripEnabled(storeId, network, settings) {
-  if (!isRegistryStore(storeId, network)) return false;
+  if (storeId !== WEBSITE_STRIP_CENTRAL && !isRegistryStore(storeId, network)) return false;
   const s = settings ? normStoreSettings(settings) : null;
   return !(s && s.enabled === false);
 }
@@ -780,6 +784,8 @@ function onlineOrderOutcomeUpdates({ record, store, storeName, order }) {
     return { updates };
   }
   updates[`${linePath}/status`] = ONLINE_LINE_NOT_FOUND;
+  // When the place said no: what the poller's chain move picks the line up by (chainMove.mjs).
+  if (Number.isFinite(at) && at > 0) updates[`${linePath}/failedAt`] = at;
   const att = order.attention;
   const sameAttention = att && att.kind === ONLINE_LINE_NOT_FOUND && Number(att.at) === at;
   if (!sameAttention) {
@@ -802,7 +808,13 @@ function onlineOrderOutcomeUpdates({ record, store, storeName, order }) {
     };
     held = record.productId;
   }
-  return { updates, held };
+  // What the single-piece write-down needs (functions/lib/web-writedown.cjs); the caller applies it.
+  const writeDown = held ? {
+    pid: record.productId, sizeKey, size: record.size != null && record.size !== "" ? String(record.size) : sizeKey, loc: store,
+    kind: store === "central" ? "central_not_found" : "shop_not_found", orderId, orderNumber: order.orderNumber != null ? order.orderNumber : null,
+    line: i, gen, by, at,
+  } : null;
+  return { updates, held, writeDown };
 }
 
 // A completed online_return ("Put back") closes the order's return record —

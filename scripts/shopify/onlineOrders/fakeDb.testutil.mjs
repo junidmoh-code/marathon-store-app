@@ -75,6 +75,7 @@ export function fakeDb(initial = {}, { failWritesUnder = null, missingIndexes = 
   const ref = (path = "") => ({
     key: parts(path).at(-1) ?? null,
     get: async () => snap(at(path), parts(path).at(-1)),
+    once: async () => snap(at(path), parts(path).at(-1)), // the functions-side modules read with once("value")
     set: async (value) => { writes.push(["set", path, clone(value)]); setAt(path, value); },
     update: async (obj) => {
       writes.push(["update", path, clone(obj)]);

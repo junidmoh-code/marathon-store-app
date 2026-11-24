@@ -4017,6 +4017,15 @@ exports.wakeHeldChecks = require("./displayChecks/wakeHeldChecks.js").wakeHeldCh
 //   firebase deploy --only functions:completeDisplayCheck
 exports.completeDisplayCheck = require("./displayChecks/completeCheck.js").completeDisplayCheck;
 
+// ─── SHELF CHECKS + CENTRAL'S WEBSITE STRIP (Junid, 24 Nov 2026) ──────────────
+// Each shop and hub works a short daily list of its riskiest shelves (Found /
+// Not found / the real number, never typed); Central's website-orders strip is
+// listed for the Source screen. Rules in webShelf/lib.cjs, IO in webShelf/index.js.
+//   firebase deploy --only functions:webShelfList,functions:webShelfAnswer,functions:webShelfProgress
+exports.webShelfList = require("./webShelf/index.js").webShelfList;
+exports.webShelfAnswer = require("./webShelf/index.js").webShelfAnswer;
+exports.webShelfProgress = require("./webShelf/index.js").webShelfProgress;
+
 // ─── ALL-STORE ACCESS — logStoreSwitch (audit of every active-shop switch) ─────
 // Junid, 20 Nov 2026. Append-only /store_switch_log/{saDate}/{pushId}; the
 // client never writes that path. IO + pure shaping in storeSwitch/logStoreSwitch.js.

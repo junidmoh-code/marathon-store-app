@@ -22,6 +22,7 @@
 // RTDB rules on /config/onlineOrders and /online_orders are what refuse.
 
 import { useEffect, useState } from "react";
+import ShelfProgressCard from "../online/ShelfProgressCard.jsx";
 import { ref, onValue, update, query, orderByChild, equalTo } from "firebase/database";
 import { database } from "../../firebase";
 import { isSuperAdmin as isSuperAdminEmail } from "../../config/superAdmins";
@@ -272,6 +273,8 @@ export default function OnlineOrdersSettingsCard({ authUser, onExit, write = def
           </div>
         ))}
       </div>
+      {/* Daily shelf checks: how much each place has worked through (Junid, 24 Nov 2026). */}
+      <ShelfProgressCard />
     </div>
   );
 }

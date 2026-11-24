@@ -106,7 +106,7 @@ const sweepSearchIndex = (...a) => (IS_MARATHON ? sweepSearchIndexRaw(...a) : Pr
 // its storefront quantity in step with the shops. Without it the shop was
 // offering 220 variants it had none of. See inventorySync.mjs.
 import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames, reservedBySize, releasedBySize, onlineHoldAdjustment, withoutForeignHolds } from "./inventorySync.mjs";
-import { pickableTree, readCellHolds, readPickableRules } from "./pickableStock.mjs";
+import { pickableTree, readCellHolds, readPickableRules, readPipeline } from "./pickableStock.mjs";
 import { sweepMovements } from "./movementSync.mjs";
 // PRICE. The app owns it; this module is the only place that decides the
 // number Shopify shows (retail, never the trade price), drains the
@@ -1319,7 +1319,8 @@ for (const { pid, want } of capped) {
     // …and pieces at a shelf that rejected a website pick and has not moved
     // since (pickableStock.mjs) — the same subtraction desiredFor makes.
     const pickGet = (p) => db.ref(p).get().then((x) => x.val());
-    const { tree: pickable } = pickableTree(tree, pid, await readCellHolds(pickGet, pid), await readPickableRules(pickGet), await serverNowMs(db));
+    const pickRules = await readPickableRules(pickGet);
+    const { tree: pickable } = pickableTree(tree, pid, await readCellHolds(pickGet, pid), pickRules, await serverNowMs(db), await readPipeline(pickGet, pid, pickRules));
     const totals = withoutForeignHolds(networkTotals(pickable, pid, sizes), holdsNode, pendingForeign);
     const heldBySize = reservedBySize(holdsNode);
     const releasedHeld = releasedBySize(holdsNode);

@@ -29,10 +29,10 @@ const tee = (over = {}) => ({
   source: { status: "no_stock" }, ...over,
 });
 
-function world({ lines, stock = {}, enabled = true, settings = {} } = {}) {
+function world({ lines, stock = {}, enabled = true, settings = {}, routing = null } = {}) {
   return {
     online_orders_meta: { goLiveAtMs: NOW - 5 * 86400e3, cursorMs: NOW },
-    config: { onlineOrders: { enabled, escalationOff: true } },
+    config: { onlineOrders: { enabled, escalationOff: true, ...(routing ? { routing } : {}) } },
     displayChecks_settings: settings,
     products: {
       SHX: { name: "Nike Shox TL", categoryKey: "sneakers", category: "Footwear", sizes: ["7"] },
@@ -107,9 +107,42 @@ describe("a waiting line routes itself to the Concrete division when only it hol
   });
 });
 
-describe("waiting on refill — Central is listed but never picked, and nothing is requested", () => {
-  it("only Central holds it: the line WAITS, stamped with what it waits on; no request, no hub order, no strip entry", async () => {
+describe("Central is the last stop (Junid, 24 Nov 2026)", () => {
+  it("only Central holds it: the line goes on Central's strip, held at Central; no request, no hub order, nothing deducted", async () => {
     const f = fakeDb(world({ lines: [tee()], stock: { central: { TEE: { M: { qty: 6 } } } } }));
+    const before = snapshotStock(f);
+    await tick(f);
+    const l = line(f, 0);
+    expect(l.source).toMatchObject({ status: "display", locationId: "central" });
+    expect(l.source.why).toMatch(/^last stop/);
+    expect(l.source.waiting ?? null).toBeNull();
+    const entry = f.read(l.source.entryKey);
+    expect(l.source.entryKey.startsWith("displayChecks_active/central/online__9100__0")).toBe(true);
+    expect(entry).toMatchObject({ kind: "online_pick", status: "open", productId: "TEE", orderNumber: 2100 });
+    expect(f.read("online_reservations/TEE/M/9100")).toMatchObject({ qty: 1, locs: { central: 1 } });
+    expect(f.read("refill_requests") ?? null).toBeNull();
+    expect(f.read("orders") ?? null).toBeNull();
+    expect(snapshotStock(f)).toBe(before);
+  });
+
+  it("a shop or hub that has it now beats Central, however much Central holds", async () => {
+    const f = fakeDb(world({ lines: [tee()], stock: { central: { TEE: { M: { qty: 6 } } }, "marathon-pine": { TEE: { M: { qty: 1 } } } } }));
+    await tick(f);
+    expect(line(f, 0).source).toMatchObject({ status: "display", locationId: "marathon-pine" });
+  });
+
+  it("Central's strip switched off: the line waits, as before", async () => {
+    const f = fakeDb(world({ lines: [tee()], stock: { central: { TEE: { M: { qty: 6 } } } }, settings: { central: { enabled: false } } }));
+    await tick(f);
+    expect(line(f, 0).source).toMatchObject({ status: "no_stock", waiting: { on: "refill", centralQty: 6 } });
+    expect(f.read("displayChecks_active") ?? null).toBeNull();
+  });
+});
+
+const CENTRAL_OFF = { centralOff: true };
+describe("waiting on refill — with Junid's switch /config/onlineOrders/routing/centralOff, Central is listed but not picked, and nothing is requested", () => {
+  it("only Central holds it: the line WAITS, stamped with what it waits on; no request, no hub order, no strip entry", async () => {
+    const f = fakeDb(world({ lines: [tee()], stock: { central: { TEE: { M: { qty: 6 } } } }, routing: CENTRAL_OFF }));
     const before = snapshotStock(f);
     await tick(f);
     expect(line(f, 0).source).toMatchObject({ status: "no_stock", waiting: { on: "refill", centralQty: 6, since: NOW, checkedAt: NOW } });
@@ -121,14 +154,14 @@ describe("waiting on refill — Central is listed but never picked, and nothing 
   });
 
   it("a second quiet tick writes nothing new (the stamp only changes with Central's count)", async () => {
-    const f = fakeDb(world({ lines: [tee()], stock: { central: { TEE: { M: { qty: 6 } } } } }));
+    const f = fakeDb(world({ lines: [tee()], stock: { central: { TEE: { M: { qty: 6 } } } }, routing: CENTRAL_OFF }));
     await tick(f);
     await tick(f, NOW + 120e3);
     expect(line(f, 0).source.waiting).toEqual({ on: "refill", centralQty: 6, since: NOW, checkedAt: NOW });
   });
 
   it("the refill scan's box lands at Hub 2: the next tick routes it as normal", async () => {
-    const f = fakeDb(world({ lines: [tee()], stock: { central: { TEE: { M: { qty: 6 } } } } }));
+    const f = fakeDb(world({ lines: [tee()], stock: { central: { TEE: { M: { qty: 6 } } } }, routing: CENTRAL_OFF }));
     await tick(f);
     await f.db.ref("stock/hub2/TEE/M").set({ qty: 1 });   // the scan's refill arrived
     await tick(f, NOW + 120e3);

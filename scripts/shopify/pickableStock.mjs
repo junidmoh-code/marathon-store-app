@@ -27,24 +27,35 @@
 // Kill switch: /config/onlineOrders/pickable/holdsOff = true (read by every
 // tick; a long-running process picks it up within a minute).
 //
-// THE LONE STALE PIECE (same report, section 3). The one clearly defined class
-// that fails more often than it succeeds: a cell at Marathon PE showing exactly
-// ONE piece whose count has not moved for more than 14 days — 54 website lines
-// were sent to such a cell and 31 (57%) were rejected. Junid's bar for hiding a
-// class is at least 10 lines with at least half unavailable; no other place
-// reaches it (Hub 1 42%, Trophy 37%, Hub 2 34%), so only Marathon PE is listed.
-// Such a piece is not COUNTED for the website. It is still routed to: when it
-// is the only one on the route, a pick that works 43% of the time is better
-// than a line that waits for nothing. It comes back by itself the moment the
-// cell moves (a sale, a delivery, a count).
-//   /config/onlineOrders/pickable/staleSingle = { off?: true, days?: 14, locations?: ["marathon-pe"] }
+// THE OLD SINGLE PIECE WITH NOTHING BEHIND IT (Junid's rule, 24 Nov 2026 — it
+// REPLACES the 14-day Marathon PE "lone stale piece" rule PR #980 shipped, which
+// took 249 sizes off sale in Black Friday week). A size stops being sold on the
+// website only when ALL of these hold:
+//   1. every place that holds it shows a SINGLE piece;
+//   2. each of those pieces has been untouched for `days` or more (60);
+//   3. there is no refill pipeline behind it: nothing at Central, at a hub, in
+//      a stockroom or in transit. (An open refill request with nothing behind
+//      it has nothing to send, and one already sent shows as stock in transit
+//      or as a movement on the shelf — which ends rule 2 by itself — so the
+//      request list is not read; that keeps this module out of request data.)
+// A place is "a shop" when it is in SHOP_LOCATIONS; any other location holding
+// a piece is the pipeline. Measured (docs/audits/web-unavailable-2026-11-24,
+// "Single pieces by time untouched"): a lone piece fails 12% of the time when
+// it moved in the last 14 days and about 40% from 14 days on, with no further
+// rise at 60 or 90 — so 60 days is not a sharper line than 14; what makes this
+// rule narrow is conditions 1 and 3, which leave the piece on sale whenever
+// any other piece or any refill could still serve the order.
+// It comes back by itself the moment a shelf is touched or stock arrives.
+// Such a piece is not COUNTED for the website; routing still sends to it (a
+// doubtful shelf is asked last, routing.mjs).
+//   /config/onlineOrders/pickable/oldSingle = { off?: true, days?: 60 }
 //
 // PURE. The readers are at the bottom; a failed read never stops a push or a
 // route (the hold is then not applied — today's behaviour — and it is logged).
 
 export const CELL_HOLDS_PATH = "online_cell_holds";
 export const PICKABLE_CONFIG_PATH = "config/onlineOrders/pickable";
-export const HOLD_KINDS = Object.freeze(["hub_out_of_stock", "shop_not_found"]);
+export const HOLD_KINDS = Object.freeze(["hub_out_of_stock", "shop_not_found", "shelf_check"]);
 
 /** Units a stock cell shows (a bare number is tolerated for old data). */
 export const cellQty = (cell) => Math.max(0, Number(cell !== null && typeof cell === "object" ? cell.qty : cell) || 0);
@@ -69,30 +80,47 @@ export function holdStands(hold, cell) {
 }
 
 /** /config/onlineOrders/pickable → the rules in force. Absent = the defaults. */
-export const STALE_SINGLE_DEFAULT = Object.freeze({ days: 14, locations: Object.freeze(["marathon-pe"]) });
+export const OLD_SINGLE_DEFAULT = Object.freeze({ days: 60 });
+/** The places a customer-facing piece sits on a floor. Anything else holding a piece is the refill pipeline. */
+export const SHOP_LOCATIONS = Object.freeze(["marathon-pe", "trophy", "concrete", "marathon-pine"]);
 
 export function rulesFrom(config) {
   const c = config && typeof config === "object" ? config : {};
-  const st = c.staleSingle && typeof c.staleSingle === "object" ? c.staleSingle : {};
-  const days = Number(st.days);
-  const locations = Array.isArray(st.locations) ? st.locations.filter((l) => typeof l === "string" && l) : null;
+  const os = c.oldSingle && typeof c.oldSingle === "object" ? c.oldSingle : {};
+  const days = Number(os.days);
   return {
     holds: c.holdsOff !== true,
-    staleSingle: st.off === true ? null : {
-      days: Number.isFinite(days) && days >= 1 ? days : STALE_SINGLE_DEFAULT.days,
-      locations: locations && locations.length ? locations : [...STALE_SINGLE_DEFAULT.locations],
-    },
+    // Retired 24 Nov 2026 (see the header). The key stays so an old caller reads "no such rule".
+    staleSingle: null,
+    oldSingle: os.off === true ? null : { days: Number.isFinite(days) && days >= 1 ? days : OLD_SINGLE_DEFAULT.days },
   };
 }
 
 /**
- * Is this cell a lone piece nobody has touched for longer than the rule allows?
- * Needs a real stamp: a cell with no `updatedAt` gives no evidence of its age and is counted.
+ * The sizes of one product that are old single pieces with nothing behind them. PURE.
+ *   tree  { [locationId]: { [pid]: { [sizeKey]: cell } } }
+ * → Map(sizeKey → [{ loc, at }])  the shop cells to leave out, per size
+ * A cell with no `updatedAt` gives no evidence of its age: its size is not caught.
  */
-export function isStaleSingle(cell, loc, rule, nowMs) {
-  if (!rule || !rule.locations.includes(loc) || cellQty(cell) !== 1) return false;
-  const stamp = cellStampMs(cell);
-  return stamp != null && Number.isFinite(nowMs) && nowMs - stamp > rule.days * 864e5;
+export function oldSingleSizes(tree, pid, rule, nowMs) {
+  const out = new Map();
+  if (!rule || !tree || !Number.isFinite(nowMs)) return out;
+  const bySize = new Map();
+  for (const [loc, perProduct] of Object.entries(tree)) {
+    const cells = perProduct?.[pid];
+    if (!cells || typeof cells !== "object") continue;
+    for (const [sizeKey, cell] of Object.entries(cells)) {
+      const qty = cellQty(cell);
+      if (qty <= 0) continue;
+      if (!bySize.has(sizeKey)) bySize.set(sizeKey, []);
+      bySize.get(sizeKey).push({ loc, qty, at: cellStampMs(cell) });
+    }
+  }
+  for (const [sizeKey, holders] of bySize) {
+    const caught = holders.every((h) => SHOP_LOCATIONS.includes(h.loc) && h.qty === 1 && h.at != null && nowMs - h.at >= rule.days * 864e5);
+    if (caught) out.set(sizeKey, holders.map((h) => ({ loc: h.loc, at: h.at })));
+  }
+  return out;
 }
 
 /**
@@ -102,11 +130,13 @@ export function isStaleSingle(cell, loc, rule, nowMs) {
  * → { tree, hidden: [{ loc, sizeKey, qty, why, at }] }. `tree` is a new object
  * (the input is not mutated) and is the input itself when nothing is hidden.
  */
-export function pickableTree(tree, pid, holdsNode, rules = rulesFrom(null), nowMs = Date.now()) {
+export function pickableTree(tree, pid, holdsNode, rules = rulesFrom(null), nowMs = Date.now(), pipeline = null) {
   const hidden = [];
   const holds = rules?.holds && holdsNode && typeof holdsNode === "object" ? holdsNode : null;
-  const stale = rules?.staleSingle || null;
-  if (!tree || (!holds && !stale)) return { tree, hidden };
+  // `pipeline`: the cells the website never counts (in transit, a stockroom) — read only to answer "is anything
+  // behind this size?". They are judged with the tree and never returned in it.
+  const old = pipeline === PIPELINE_UNKNOWN ? new Map() : oldSingleSizes(pipeline ? { ...pipeline, ...tree } : tree, pid, rules?.oldSingle || null, nowMs);
+  if (!tree || (!holds && !old.size)) return { tree, hidden };
   const out = {};
   for (const [loc, perProduct] of Object.entries(tree)) {
     const cells = perProduct?.[pid];
@@ -115,16 +145,38 @@ export function pickableTree(tree, pid, holdsNode, rules = rulesFrom(null), nowM
     for (const [sizeKey, cell] of Object.entries(cells)) {
       const hold = holds?.[sizeKey]?.[loc];
       const held = !!hold && holdStands(hold, cell);
-      if (!held && !isStaleSingle(cell, loc, stale, nowMs)) continue;
+      const lone = !held && (old.get(sizeKey) || []).some((h) => h.loc === loc);
+      if (!held && !lone) continue;
       if (next === cells) next = { ...cells };
       next[sizeKey] = typeof cell === "object" ? { ...cell, qty: 0 } : 0;
       hidden.push(held
         ? { loc, sizeKey, qty: cellQty(cell), why: hold.kind || "rejected", at: Number(hold.at) }
-        : { loc, sizeKey, qty: 1, why: "stale_single", at: cellStampMs(cell) });
+        : { loc, sizeKey, qty: 1, why: "old_single", at: cellStampMs(cell) });
     }
     out[loc] = next === cells ? perProduct : { ...perProduct, [pid]: next };
   }
   return hidden.length ? { tree: out, hidden } : { tree, hidden };
+}
+
+/** Where the daily shelf check looks for lone pieces: the shop floors and the hubs (functions/webShelf/lib.cjs). */
+export const CHECK_SINGLE_LOCATIONS = Object.freeze([...SHOP_LOCATIONS, "hub1", "hub2", "hub3"]);
+
+/**
+ * The lone pieces of one product, for the daily shelf-check list. PURE.
+ * → [{ loc, sizeKey, at }] — a shop or hub cell showing exactly one piece of a size the listing carries, with a stamp.
+ */
+export function loneCells(tree, pid, sizes) {
+  const out = [];
+  const listed = new Set(sizes || []);
+  for (const loc of CHECK_SINGLE_LOCATIONS) {
+    const cells = tree?.[loc]?.[pid];
+    if (!cells || typeof cells !== "object") continue;
+    for (const [sizeKey, cell] of Object.entries(cells)) {
+      const at = cellStampMs(cell);
+      if (cellQty(cell) === 1 && at != null && listed.has(sizeKey)) out.push({ loc, sizeKey, at });
+    }
+  }
+  return out;
 }
 
 /** Is one cell under a standing hold? (the router's question, one size at a time) */
@@ -166,6 +218,25 @@ export async function readPickableRules(get, nowMs = Date.now()) {
 
 /** Test seam: forget the cached rules. */
 export function forgetPickableRules() { rulesCache = null; }
+
+/** The places the website never counts but that ARE a refill pipeline (inventory.mjs UNSELLABLE_LOCATIONS). */
+export const PIPELINE_ONLY_LOCATIONS = Object.freeze(["in_transit", "concrete-stockroom"]);
+
+/**
+ * { [loc]: { [pid]: cells } } for the pipeline-only places: two exact reads per product, only while the old-single
+ * rule is on. A failed read counts as "something is behind it" for every size (the rule then hides nothing).
+ */
+export async function readPipeline(get, pid, rules) {
+  if (!rules?.oldSingle) return null;
+  const out = {};
+  for (const loc of PIPELINE_ONLY_LOCATIONS) {
+    try { const cells = await get(`stock/${loc}/${pid}`); if (cells) out[loc] = { [pid]: cells }; }
+    catch (e) { console.error(`  ⚠ ${pid}: ${loc} unreadable (${String(e?.message || e)}) — the old-single rule is not applied to it`); return PIPELINE_UNKNOWN; }
+  }
+  return out;
+}
+/** Passed as `pipeline` when it could not be read: pickableTree then leaves the old-single rule off for the product. */
+export const PIPELINE_UNKNOWN = Object.freeze({ unknown: true });
 
 /** /online_cell_holds/{pid}; null when there are none or the read failed (logged). */
 export async function readCellHolds(get, pid) {

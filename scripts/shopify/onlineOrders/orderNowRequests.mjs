@@ -124,10 +124,12 @@ export async function clearAttentionIfSettled(ctx, id) {
   });
 }
 
-/** "Hub 1: 0 free, Hub 2: 0 free · Central has 3 (a refill, not a pick)". PURE. */
+/** "Hub 1: 0 free, Hub 2: 0 free, Hub 3: 0 free, Central: 0 free". PURE. */
 export function describeChecked(checked) {
   const free = (checked?.free || []).map((c) => `${place(c.loc)}: ${c.free} free`).join(", ");
-  const central = Number(checked?.central) > 0 ? ` · Central has ${checked.central} (Central sends by refill, not a pick)` : "";
+  // Central is on the chain itself since 24 Nov 2026 (routing.mjs): it is one of the places listed, not a footnote.
+  const listed = (checked?.free || []).some((c) => c.loc === "central");
+  const central = !listed && Number(checked?.central) > 0 ? ` · Central has ${checked.central}` : "";
   return `${free || "nowhere to check"}${central}`;
 }
 

@@ -46,7 +46,9 @@ import {
 } from "../../../src/utils/onlineOrders.js";
 import { stockSizeKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "../../../src/utils/sizeKey.js";
 import { productIsFootwear } from "../../../src/utils/footwearLine.js";
-import { availableAt, routeLines, ROUTED_LOCATIONS, STRIP_SHOPS } from "./routing.mjs";
+import { availableAt, routeLines, shelfRisk, routingRulesFrom, ROUTED_LOCATIONS, STRIP_SHOPS, ROUTING_CONFIG_PATH, CENTRAL } from "./routing.mjs";
+import { raiseChainMoves, stampChainResults } from "./chainMove.mjs";
+import { writeDownRejected, sweepWriteDowns, restoreFound, WRITEDOWNS_PATH } from "./writeDown.mjs";
 import {
   isIngestible, buildLine, buildItemLines, unitPieces, buildOrder, holdRowsFor, sameHold, numericId, linesOf,
   displayKey, displayEntry, hubOrderRecord, hubOutcome, attentionFromLines, placeName, shippingOf,
@@ -229,7 +231,7 @@ export async function runOrdersPoll(deps) {
         // The POS "Order it now" (orderNowRequests.mjs): a grey line whose item
         // is back in stock goes to reroute, and maintainOrder below routes and
         // raises it exactly like a new order's line.
-        if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor: (c, i, list, own) => availabilityFor(c, i, list, own, { trustBefore: c.now }), resolveVariant })) {
+        if (order?.orderNowRequests && await applyOrderNowRequests(ctx, id, order, { availabilityFor: async (c, i, list, own) => { await undoOwnWriteDowns(c, i, list); return availabilityFor(c, i, list, own, { trustBefore: c.now }); }, resolveVariant })) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
         // The order agent's re-pick (agentRepick.mjs, Junid 14 Nov 2026): a line a
@@ -249,7 +251,26 @@ export async function runOrdersPoll(deps) {
         if (ctx.escalate && await escalateOrder(ctx, id, order, escalationHelpers(ctx))) {
           order = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
         }
-        const after = await maintainOrder(ctx, id, order);
+        let after = await maintainOrder(ctx, id, order);
+        // A REJECTION MOVES THE LINE ON IN THIS TICK (chainMove.mjs, Junid 24 Nov
+        // 2026): a hub's Out of Stock (turned into no_stock just above), a shop's
+        // Not found or the packer's Not here goes to the next place on its chain
+        // that shows the size — the agent re-pick's own machinery, raised here
+        // instead of on the order agent's next round. Nowhere left → the line is
+        // stamped `chain` (result "nowhere") and Jamie offers alternatives.
+        {
+          let fresh = after ?? await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+          let again = false;
+          if (fresh && await raiseChainMoves(ctx, id, fresh)) {
+            if (await applyAgentRepicks(ctx, id, await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`), { availabilityFor, cancelLine: (line) => cancelLineEntries(ctx, line) })) await clearAttentionIfSettled(ctx, id);
+            fresh = await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`);
+            again = true;
+          }
+          // Stamped from the order as it stands, whichever tick answered the request (a move claimed on one tick and
+          // answered on a later one must still tell Jamie). Reads nothing; writes once per route generation.
+          if (fresh?.agentRepicks && await stampChainResults(ctx, id, fresh)) again = true;
+          if (again) after = await maintainOrder(ctx, id, await ctx.get(`${ONLINE_ORDERS_PATH}/${id}`));
+        }
         // The keep step itself may just have turned a line no_stock (a hub
         // marked its order Out of Stock): escalate it in THIS tick, before the
         // attention mailer below would email Junid about it.
@@ -307,6 +328,9 @@ export async function runOrdersPoll(deps) {
     log(`  ⚠ /online_orders has no index on ${[...ctx.summary.missingIndex].join(", ")} — the rules block in docs/ONLINE-ORDERS.md is not pasted yet; open orders are not swept, fulfilled or emailed until it is (new orders are still pulled in and held)`);
   }
   await db.ref(`${META_PATH}/lastRunAt`).set(now);
+  // LAST, after every order is kept, shipped and told: a written-down shelf whose piece was sold or picked after
+  // all puts itself back (writeDown.mjs). Housekeeping never stands in front of a parcel.
+  if (IS_MARATHON) await sweepWriteDowns(ctx, META_PATH);
   return ctx.summary;
 }
 
@@ -356,7 +380,7 @@ async function handleShopifyOrder(ctx, node) {
   const res = await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => (cur == null ? order : undefined));
   if (!res.committed) return;
   ctx.summary.ingested++;
-  log(`  + ${orderLabel(order)} ${order.customer?.name ?? ""}: ${linesOf(order).map((l) => `${l.title}${l.size && l.size !== "_" ? ` ${l.size}` : ""} ×${l.qty} → ${l.source?.locationId ? `${placeName(l.source.locationId)} (${l.source.status})` : l.source?.status}`).join(", ")}`);
+  log(`  + ${orderLabel(order)} ${order.customer?.name ?? ""}: ${linesOf(order).map((l) => `${l.title}${l.size && l.size !== "_" ? ` ${l.size}` : ""} ×${l.qty} → ${l.source?.locationId ? `${placeName(l.source.locationId)} (${l.source.status}${l.source.why ? `: ${l.source.why}` : ""})` : l.source?.status}`).join(", ")}`);
   await maintainOrder(ctx, id, res.snapshot.val());
 }
 
@@ -368,7 +392,7 @@ async function buildIngestedOrder(ctx, id, node) {
   const available = await availabilityFor(ctx, id, routable.map((x) => x.r));
   const routed = routeLines(
     routable.map((x) => ({ key: `${x.r.pid}|${x.r.sizeKey}`, qty: Number(x.item.currentQuantity ?? x.item.quantity) || 1, isFootwear: x.r.isFootwear })),
-    available,
+    available, ctx.shelfRisk,
   );
   // ONE LINE PER UNIT (Junid, 20 Nov 2026): an item of quantity N becomes N lines of qty 1.
   const lines = [];
@@ -414,19 +438,29 @@ async function resolveVariant(ctx, variantGid, productGid, variantTitle) {
 async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}, { trustBefore = null } = {}) {
   const out = {};
   const rules = await readPickableRules(ctx.get, ctx.now);
+  const routing = await routingRules(ctx);
+  ctx.shelfRisk ||= {};
   for (const r of resolvedList) {
     const key = `${r.pid}|${r.sizeKey}`;
     if (out[key]) continue;
     const stockQty = {};
-    for (const loc of ROUTED_LOCATIONS) stockQty[loc] = Number(await ctx.get(`stock/${loc}/${r.pid}/${r.sizeKey}/qty`)) || 0;
+    const stamps = {};
+    for (const loc of ROUTED_LOCATIONS) {
+      if (loc === CENTRAL && !routing.central) { stockQty[loc] = 0; continue; }
+      stockQty[loc] = Number(await ctx.get(`stock/${loc}/${r.pid}/${r.sizeKey}/qty`)) || 0;
+    }
+    // When each shelf that shows a piece last moved: the hold test and the trust score both read it.
+    const stampOf = async (loc) => {
+      if (!(loc in stamps)) stamps[loc] = stockQty[loc] > 0 ? (await ctx.get(`stock/${loc}/${r.pid}/${r.sizeKey}/updatedAt`)) ?? null : null;
+      return stamps[loc];
+    };
+    let holds = null;
+    try { holds = await ctx.get(`${CELL_HOLDS_PATH}/${r.pid}/${r.sizeKey}`); } catch (e) { ctx.log?.(`  ⚠ shelf holds for ${key} unreadable (${String(e?.message || e)}) — routed without them`); }
     if (rules?.holds) {
-      let holds = null;
-      try { holds = await ctx.get(`${CELL_HOLDS_PATH}/${r.pid}/${r.sizeKey}`); } catch (e) { ctx.log?.(`  ⚠ shelf holds for ${key} unreadable (${String(e?.message || e)}) — routed without them`); }
       for (const loc of holds ? ROUTED_LOCATIONS : []) {
         if (!holds[loc] || stockQty[loc] <= 0) continue;
         if (trustBefore != null && Number(holds[loc].at) <= trustBefore) continue;
-        const updatedAt = await ctx.get(`stock/${loc}/${r.pid}/${r.sizeKey}/updatedAt`);
-        if (cellHeld(holds, loc, { qty: stockQty[loc], updatedAt }, rules)) stockQty[loc] = 0;
+        if (cellHeld(holds, loc, { qty: stockQty[loc], updatedAt: await stampOf(loc) }, rules)) stockQty[loc] = 0;
       }
     }
     const holdsCell = await ctx.get(`${ONLINE_RESERVATIONS_PATH}/${r.pid}/${r.sizeKey}`);
@@ -439,8 +473,45 @@ async function availabilityFor(ctx, orderId, resolvedList, ownOther = {}, { trus
     // the order's own rows, so its untouched lines are subtracted here).
     for (const [loc, q] of Object.entries(ownOther[key] || {})) free[loc] = Math.max(0, (free[loc] || 0) - q);
     out[key] = free;
+    // HOW FAR EACH SHELF CAN BE TRUSTED (routing.mjs shelfRisk; Junid 24 Nov
+    // 2026). A person who has the piece in their hand ("Order it now",
+    // trustBefore) outranks every signal, so no score is kept for that read.
+    const risk = {};
+    if (routing.trust && trustBefore == null) {
+      for (const loc of ROUTED_LOCATIONS) {
+        if (!(free[loc] > 0)) continue;
+        const stamp = Date.parse(await stampOf(loc));
+        risk[loc] = shelfRisk({ free: free[loc], stampMs: Number.isFinite(stamp) ? stamp : null, rejectedAt: Number(holds?.[loc]?.at) || null, nowMs: ctx.now, rules: routing });
+      }
+    }
+    ctx.shelfRisk[key] = risk;
   }
   return out;
+}
+
+// "Order it now": a person has the item in their hand. A shelf THIS ORDER's own rejection wrote to zero is put back
+// first (web_found), so the line can be sent there — the count's version of lifting the shelf hold. Only this
+// order's write-downs: another order's rejection of the same shelf is not this person's to overturn.
+async function undoOwnWriteDowns(ctx, orderId, resolvedList) {
+  for (const r of resolvedList) {
+    try {
+      const rows = (await ctx.get(`${WRITEDOWNS_PATH}/${r.pid}/${r.sizeKey}`)) || {};
+      for (const [loc, row] of Object.entries(rows)) {
+        if (!row || String(row.orderId) !== String(orderId)) continue;
+        const res = await restoreFound(ctx.db, { pid: r.pid, sizeKey: r.sizeKey, loc, why: "order_it_now" }, { nowIso: new Date(ctx.now).toISOString() });
+        if (res.ok && res.restored) { for (const dirty of ALL_DIRTY_PATHS) await ctx.db.ref(`${dirty}/${r.pid}`).set(ctx.increment(1)); ctx.log?.(`  ↺ write-down undone: ${r.pid} size ${r.sizeKey} at ${loc} (found: Order it now)`); }
+      }
+    } catch (e) { ctx.log?.(`  ⚠ write-down for ${r.pid}/${r.sizeKey} not undone (${String(e?.message || e)})`); }
+  }
+}
+
+/** /config/onlineOrders/routing, read once per tick. A failed read routes on the defaults (logged). */
+async function routingRules(ctx) {
+  if (ctx.routing) return ctx.routing;
+  let config = null;
+  try { config = await ctx.get(ROUTING_CONFIG_PATH); } catch (e) { ctx.log?.(`  ⚠ ${ROUTING_CONFIG_PATH} unreadable (${String(e?.message || e)}) — the default routing settings apply`); }
+  ctx.routing = routingRulesFrom(config);
+  return ctx.routing;
 }
 
 // Can this shop's website strip take a line? (functions/displayChecks lib.cjs
@@ -686,7 +757,7 @@ async function maintainOrder(ctx, id, order) {
     const found = routable.filter((x) => foundJustNow(before[x.i], now) && !routable.some((y) => keyOf(y) === keyOf(x) && !foundJustNow(before[y.i], now)));
     for (const x of found) Object.assign(available, await availabilityFor(ctx, id, [x.r], ownOther, { trustBefore: Number(before[x.i].orderNow.appliedAt) }));
     const foundLines = new Set(found.map((x) => x.i));
-    const routed = routeLines(routable.map((x) => ({ key: `${x.r.pid}|${x.r.sizeKey}`, qty: Number(before[x.i].qty) || 1, isFootwear: x.r.isFootwear })), available);
+    const routed = routeLines(routable.map((x) => ({ key: `${x.r.pid}|${x.r.sizeKey}`, qty: Number(before[x.i].qty) || 1, isFootwear: x.r.isFootwear })), available, ctx.shelfRisk);
     const holdsToLift = [];
     let k = 0;
     reroute.forEach((i, j) => {
@@ -738,7 +809,13 @@ async function maintainOrder(ctx, id, order) {
     // The hub said Out of Stock: its pieces of this size come off the website
     // and out of routing until that shelf moves again (pickableStock.mjs).
     const refused = out.status === LINE_STATUS.NO_STOCK ? records.find((r) => r && r.channel === "online" && r.status === "out_of_stock") : null;
-    if (refused?.hub) await holdCell(ctx, { pid: l.pid, sizeKey: l.sizeKey, loc: refused.hub, kind: "hub_out_of_stock", orderId: id, line: i, by: refused.outOfStockByUid, at: rejectedAt(refused.outOfStockAt, now) });
+    // A lone piece is written to zero in the app's own count as well (writeDown.mjs, Junid 24 Nov 2026).
+    const refusedAt = refused?.hub ? rejectedAt(refused.outOfStockAt, now) : null;
+    if (refused?.hub) {
+      const at = refusedAt;
+      await holdCell(ctx, { pid: l.pid, sizeKey: l.sizeKey, loc: refused.hub, kind: "hub_out_of_stock", orderId: id, line: i, by: refused.outOfStockByUid, at });
+      await writeDownRejected(ctx, { pid: l.pid, size: l.size, sizeKey: l.sizeKey, loc: refused.hub, kind: "hub_out_of_stock", orderId: id, orderNumber: order.orderNumber ?? null, line: i, gen: Number(l.routeGen) || 0, by: refused.outOfStockByUid || null, at });
+    }
     changed.set(i, {
       ...l,
       source: {
@@ -747,6 +824,9 @@ async function maintainOrder(ctx, id, order) {
         ...(out.locationId ? { locationId: out.locationId } : {}),
         ...(out.reason ? { reason: out.reason } : {}),
         ...(out.status === LINE_STATUS.HANDED ? { handedAt: now, handedBy: "hub" } : {}),
+        // When the hub said no: what the chain move (chainMove.mjs) picks the line up by.
+        // The hub's own time, not this tick's: a poller that was away for days must not treat an old rejection as fresh.
+        ...(refused?.hub ? { failedAt: refusedAt } : {}),
       },
     });
   }

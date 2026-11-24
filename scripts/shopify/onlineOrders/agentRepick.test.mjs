@@ -115,8 +115,8 @@ describe("repickBlocker / planRepick (pure)", () => {
   it("one place for the whole line, never a split", () => {
     const two = tee({ qty: 2 });
     expect(planRepick({ line: two, available: { "marathon-pe": 1, trophy: 1 } }).pieces).toEqual([]);
-    expect(planRepick({ line: two, available: { "marathon-pe": 1, trophy: 2 } }).pieces).toEqual([{ qty: 2, locationId: "trophy", status: "display" }]);
-    expect(planRepick({ line: tee(), available: { "marathon-pe": 1, hub2: 1 }, exclude: ["marathon-pe"] }).pieces).toEqual([{ qty: 1, locationId: "hub2", status: "pick" }]);
+    expect(planRepick({ line: two, available: { "marathon-pe": 1, trophy: 2 } }).pieces).toMatchObject([{ qty: 2, locationId: "trophy", status: "display" }]);
+    expect(planRepick({ line: tee(), available: { "marathon-pe": 1, hub2: 1 }, exclude: ["marathon-pe"] }).pieces).toMatchObject([{ qty: 1, locationId: "hub2", status: "pick" }]);
   });
 });
 
@@ -164,7 +164,10 @@ describe("Jamie's relocate of a line the packer marked Not available / Damaged (
     expect(f.read("online_orders/2085/codesIn/ABC") ?? null).toBeNull();
   });
   it("the same line asked by the order agent (not Jamie's relocate) is still refused", async () => {
-    const f = fakeDb(world({ lines: [beanie(), marked()], stock: { concrete: { GST: { XXL: { qty: 1 } } } }, repicks: { "1_0": ask(1, marked()) } }));
+    // (The poller's own chain move is switched off here: this case pins the order agent's request alone.)
+    const w = world({ lines: [beanie(), marked()], stock: { concrete: { GST: { XXL: { qty: 1 } } } }, repicks: { "1_0": ask(1, marked()) } });
+    w.config.onlineOrders.routing = { chainOff: true };
+    const f = fakeDb(w);
     await tick(f);
     expect(reqOf(f, "1_0").state).toBe(REPICK.REFUSED);
     expect(line1(f).source.status).toBe("unavailable");

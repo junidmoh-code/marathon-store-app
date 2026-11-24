@@ -1,0 +1,436 @@
+{
+ "windowStart": "2026-07-25T08:33:09.368Z",
+ "singles": 410,
+ "ageUnknown": 17,
+ "table": {
+  "All places": {
+   "any age": {
+    "picked": 303,
+    "rejected": 107,
+    "unknown": 0,
+    "lines": 410,
+    "failedPct": 26.1
+   },
+   "under 14": {
+    "picked": 175,
+    "rejected": 23,
+    "unknown": 0,
+    "lines": 198,
+    "failedPct": 11.6
+   },
+   "14+ days": {
+    "picked": 128,
+    "rejected": 84,
+    "unknown": 0,
+    "lines": 212,
+    "failedPct": 39.6
+   },
+   "30+ days": {
+    "picked": 86,
+    "rejected": 65,
+    "unknown": 0,
+    "lines": 151,
+    "failedPct": 43
+   },
+   "30 to 59": {
+    "picked": 30,
+    "rejected": 30,
+    "unknown": 0,
+    "lines": 60,
+    "failedPct": 50
+   },
+   "60+ days": {
+    "picked": 56,
+    "rejected": 35,
+    "unknown": 0,
+    "lines": 91,
+    "failedPct": 38.5
+   },
+   "60 to 89": {
+    "picked": 28,
+    "rejected": 14,
+    "unknown": 0,
+    "lines": 42,
+    "failedPct": 33.3
+   },
+   "14 to 29": {
+    "picked": 42,
+    "rejected": 19,
+    "unknown": 0,
+    "lines": 61,
+    "failedPct": 31.1
+   },
+   "90+ days": {
+    "picked": 27,
+    "rejected": 21,
+    "unknown": 1,
+    "lines": 48,
+    "failedPct": 43.8
+   },
+   "90 and over": {
+    "picked": 14,
+    "rejected": 18,
+    "unknown": 0,
+    "lines": 32,
+    "failedPct": 56.3
+   }
+  },
+  "Hub 2": {
+   "any age": {
+    "picked": 50,
+    "rejected": 17,
+    "unknown": 0,
+    "lines": 67,
+    "failedPct": 25.4
+   },
+   "under 14": {
+    "picked": 24,
+    "rejected": 5,
+    "unknown": 0,
+    "lines": 29,
+    "failedPct": 17.2
+   },
+   "14+ days": {
+    "picked": 26,
+    "rejected": 12,
+    "unknown": 0,
+    "lines": 38,
+    "failedPct": 31.6
+   },
+   "30+ days": {
+    "picked": 20,
+    "rejected": 10,
+    "unknown": 0,
+    "lines": 30,
+    "failedPct": 33.3
+   },
+   "30 to 59": {
+    "picked": 5,
+    "rejected": 2,
+    "unknown": 0,
+    "lines": 7,
+    "failedPct": 28.6
+   },
+   "60+ days": {
+    "picked": 15,
+    "rejected": 8,
+    "unknown": 0,
+    "lines": 23,
+    "failedPct": 34.8
+   },
+   "60 to 89": {
+    "picked": 9,
+    "rejected": 6,
+    "unknown": 0,
+    "lines": 15,
+    "failedPct": 40
+   },
+   "90+ days": {
+    "picked": 5,
+    "rejected": 2,
+    "unknown": 1,
+    "lines": 7,
+    "failedPct": 28.6
+   },
+   "90 and over": {
+    "picked": 2,
+    "rejected": 2,
+    "unknown": 0,
+    "lines": 4,
+    "failedPct": 50
+   },
+   "14 to 29": {
+    "picked": 6,
+    "rejected": 2,
+    "unknown": 0,
+    "lines": 8,
+    "failedPct": 25
+   }
+  },
+  "Hub 1": {
+   "any age": {
+    "picked": 80,
+    "rejected": 31,
+    "unknown": 0,
+    "lines": 111,
+    "failedPct": 27.9
+   },
+   "14+ days": {
+    "picked": 40,
+    "rejected": 26,
+    "unknown": 0,
+    "lines": 66,
+    "failedPct": 39.4
+   },
+   "14 to 29": {
+    "picked": 9,
+    "rejected": 5,
+    "unknown": 0,
+    "lines": 14,
+    "failedPct": 35.7
+   },
+   "under 14": {
+    "picked": 40,
+    "rejected": 5,
+    "unknown": 0,
+    "lines": 45,
+    "failedPct": 11.1
+   },
+   "30+ days": {
+    "picked": 31,
+    "rejected": 21,
+    "unknown": 0,
+    "lines": 52,
+    "failedPct": 40.4
+   },
+   "30 to 59": {
+    "picked": 9,
+    "rejected": 8,
+    "unknown": 0,
+    "lines": 17,
+    "failedPct": 47.1
+   },
+   "60+ days": {
+    "picked": 22,
+    "rejected": 13,
+    "unknown": 0,
+    "lines": 35,
+    "failedPct": 37.1
+   },
+   "90+ days": {
+    "picked": 10,
+    "rejected": 10,
+    "unknown": 0,
+    "lines": 20,
+    "failedPct": 50
+   },
+   "90 and over": {
+    "picked": 6,
+    "rejected": 8,
+    "unknown": 0,
+    "lines": 14,
+    "failedPct": 57.1
+   },
+   "60 to 89": {
+    "picked": 12,
+    "rejected": 3,
+    "unknown": 0,
+    "lines": 15,
+    "failedPct": 20
+   }
+  },
+  "Hub 3": {
+   "any age": {
+    "picked": 31,
+    "rejected": 3,
+    "unknown": 0,
+    "lines": 34,
+    "failedPct": 8.8
+   },
+   "under 14": {
+    "picked": 25,
+    "rejected": 2,
+    "unknown": 0,
+    "lines": 27,
+    "failedPct": 7.4
+   },
+   "14+ days": {
+    "picked": 6,
+    "rejected": 1,
+    "unknown": 0,
+    "lines": 7,
+    "failedPct": 14.3
+   },
+   "14 to 29": {
+    "picked": 6,
+    "rejected": 1,
+    "unknown": 0,
+    "lines": 7,
+    "failedPct": 14.3
+   }
+  },
+  "Marathon PE": {
+   "any age": {
+    "picked": 99,
+    "rejected": 48,
+    "unknown": 0,
+    "lines": 147,
+    "failedPct": 32.7
+   },
+   "under 14": {
+    "picked": 61,
+    "rejected": 8,
+    "unknown": 0,
+    "lines": 69,
+    "failedPct": 11.6
+   },
+   "14+ days": {
+    "picked": 38,
+    "rejected": 40,
+    "unknown": 0,
+    "lines": 78,
+    "failedPct": 51.3
+   },
+   "14 to 29": {
+    "picked": 12,
+    "rejected": 11,
+    "unknown": 0,
+    "lines": 23,
+    "failedPct": 47.8
+   },
+   "30+ days": {
+    "picked": 26,
+    "rejected": 29,
+    "unknown": 0,
+    "lines": 55,
+    "failedPct": 52.7
+   },
+   "30 to 59": {
+    "picked": 10,
+    "rejected": 18,
+    "unknown": 0,
+    "lines": 28,
+    "failedPct": 64.3
+   },
+   "60+ days": {
+    "picked": 16,
+    "rejected": 11,
+    "unknown": 0,
+    "lines": 27,
+    "failedPct": 40.7
+   },
+   "90+ days": {
+    "picked": 11,
+    "rejected": 9,
+    "unknown": 0,
+    "lines": 20,
+    "failedPct": 45
+   },
+   "90 and over": {
+    "picked": 6,
+    "rejected": 8,
+    "unknown": 0,
+    "lines": 14,
+    "failedPct": 57.1
+   },
+   "60 to 89": {
+    "picked": 5,
+    "rejected": 2,
+    "unknown": 0,
+    "lines": 7,
+    "failedPct": 28.6
+   }
+  },
+  "Trophy": {
+   "any age": {
+    "picked": 25,
+    "rejected": 7,
+    "unknown": 0,
+    "lines": 32,
+    "failedPct": 21.9
+   },
+   "under 14": {
+    "picked": 13,
+    "rejected": 2,
+    "unknown": 0,
+    "lines": 15,
+    "failedPct": 13.3
+   },
+   "14+ days": {
+    "picked": 12,
+    "rejected": 5,
+    "unknown": 0,
+    "lines": 17,
+    "failedPct": 29.4
+   },
+   "30+ days": {
+    "picked": 9,
+    "rejected": 5,
+    "unknown": 0,
+    "lines": 14,
+    "failedPct": 35.7
+   },
+   "60+ days": {
+    "picked": 3,
+    "rejected": 3,
+    "unknown": 0,
+    "lines": 6,
+    "failedPct": 50
+   },
+   "60 to 89": {
+    "picked": 2,
+    "rejected": 3,
+    "unknown": 0,
+    "lines": 5,
+    "failedPct": 60
+   },
+   "30 to 59": {
+    "picked": 6,
+    "rejected": 2,
+    "unknown": 0,
+    "lines": 8,
+    "failedPct": 25
+   },
+   "14 to 29": {
+    "picked": 3,
+    "rejected": 0,
+    "unknown": 0,
+    "lines": 3,
+    "failedPct": 0
+   },
+   "90+ days": {
+    "picked": 1,
+    "rejected": 0,
+    "unknown": 0,
+    "lines": 1,
+    "failedPct": 0
+   }
+  },
+  "Concrete": {
+   "any age": {
+    "picked": 15,
+    "rejected": 1,
+    "unknown": 0,
+    "lines": 16,
+    "failedPct": 6.3
+   },
+   "under 14": {
+    "picked": 9,
+    "rejected": 1,
+    "unknown": 0,
+    "lines": 10,
+    "failedPct": 10
+   },
+   "14+ days": {
+    "picked": 6,
+    "rejected": 0,
+    "unknown": 0,
+    "lines": 6,
+    "failedPct": 0
+   },
+   "14 to 29": {
+    "picked": 6,
+    "rejected": 0,
+    "unknown": 0,
+    "lines": 6,
+    "failedPct": 0
+   }
+  },
+  "Pine": {
+   "any age": {
+    "picked": 3,
+    "rejected": 0,
+    "unknown": 0,
+    "lines": 3,
+    "failedPct": 0
+   },
+   "under 14": {
+    "picked": 3,
+    "rejected": 0,
+    "unknown": 0,
+    "lines": 3,
+    "failedPct": 0
+   }
+  }
+ }
+}
