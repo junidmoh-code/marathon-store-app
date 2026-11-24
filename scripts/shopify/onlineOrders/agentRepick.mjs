@@ -35,7 +35,7 @@
 // written. The routing order is routing.mjs's, unchanged.
 import { ONLINE_ORDERS_PATH, LINE_STATUS, orderLabel } from "../../../src/utils/onlineOrders.js";
 import { linesOf } from "./orderModel.mjs";
-import { routeLines, routeFor } from "./routing.mjs";
+import { routeLines, routeFor, chainOrder } from "./routing.mjs";
 import { clearAttentionIfSettled, PLACE } from "./orderNowRequests.mjs";
 
 export const REPICK = Object.freeze({ PENDING: "pending", APPLYING: "applying", ORDERED: "ordered", NOT_IN_STOCK: "not_in_stock", REFUSED: "refused" });
@@ -50,8 +50,12 @@ export const REPICK_LINE = Object.freeze([LINE_STATUS.NOT_FOUND, LINE_STATUS.NO_
 // that failed was written off or flagged for a recount by the POS, so the basket tick and code confirmations of the dead
 // unit are cleared when the line moves; nothing a hub already sent can be "sent twice" (that unit is the failed one).
 export const RELOCATE_BY = "jamie-relocate";
+// THE CHAIN MOVE (Junid, 24 Nov 2026 — chainMove.mjs): the poller itself raises the same request the moment a place
+// rejects a line, `by: "chain"`. On a line the packer marked Not here / Damaged it moves exactly as Jamie's relocate does.
+export const CHAIN_BY = "chain";
 const RELOCATE_PHASES = new Set(["unavailable", "resolved", "done"]);
-const isRelocate = (req, line) => req?.by === RELOCATE_BY && line?.source?.status === LINE_STATUS.UNAVAILABLE;
+const relocates = (req) => req?.by === RELOCATE_BY || req?.by === CHAIN_BY;
+const isRelocate = (req, line) => relocates(req) && line?.source?.status === LINE_STATUS.UNAVAILABLE;
 
 const clean = (v) => JSON.parse(JSON.stringify(v ?? null));
 const place = (loc) => PLACE[loc] || loc;
@@ -84,7 +88,7 @@ export function repickBlocker({ line, req, enabled, order = null, i = Number(req
   // A line of several units: part may be packed, so a relocate of the whole line could send extras (architect review M3).
   if (relocate && Math.max(1, Number(line.qty) || 1) > 1) return "a line of several units needs a person";
   if (!REPICK_LINE.includes(st) && !(st === LINE_STATUS.UNAVAILABLE && (relocate || customerChoseToWait(order, i, line)))) return `the line is "${st || "unknown"}", not one a place failed`;
-  if (line.escalation && !(req?.by === RELOCATE_BY && RELOCATE_PHASES.has(String(line.escalation.phase || "")))) return "the line has an escalation under way";
+  if (line.escalation && !(relocates(req) && RELOCATE_PHASES.has(String(line.escalation.phase || "")))) return "the line has an escalation under way";
   if (line.awaitingCustomer || line.resolution?.conversation) return "the customer is being asked about this line";
   if (line.escalationOverride && !line.escalationOverride.appliedAt) return "Junid's decision on this line is still being applied";
   if (["unavailable", "resolved"].includes(line.escalationOverride?.kind)) return `Junid decided this line (${line.escalationOverride.kind})`;
@@ -102,21 +106,23 @@ export function repickBlocker({ line, req, enabled, order = null, i = Number(req
  * The place a re-pick goes to, from the free units and the exclusions. PURE.
  * → { pieces, routedQty, checked }  (pieces in route order; one place for the whole line or nothing)
  */
-export function planRepick({ line, available, exclude = [] }) {
+export function planRepick({ line, available, exclude = [], risk = {}, central = true }) {
   const qty = Math.max(1, Number(line?.qty) || 1);
   const key = `${line.pid}|${line.sizeKey}`;
   const free = { ...(available || {}) };
   for (const loc of exclude || []) free[loc] = 0;
   const isFootwear = !!line.isFootwear;
-  const checked = { free: routeFor(isFootwear).map((s) => ({ loc: s.locationId, free: Math.max(0, Number(free[s.locationId]) || 0), excluded: (exclude || []).includes(s.locationId) || undefined })) };
+  const checked = { free: routeFor(isFootwear).map((s) => ({ loc: s.locationId, free: Math.max(0, Number(free[s.locationId]) || 0), excluded: (exclude || []).includes(s.locationId) || undefined, risky: risk?.[s.locationId]?.risky || undefined })) };
   // ONE place for the whole line: a split would turn one line into several and a
   // half-sent line reads as handed one unit short. A split needs a person.
-  const step = routeFor(isFootwear).find((s) => (Number(free[s.locationId]) || 0) >= qty);
+  // The order is routing's own: trusted shelves, then doubtful ones, Central last.
+  const step = chainOrder(isFootwear, risk, { central }).find((s) => (Number(free[s.locationId]) || 0) >= qty);
   if (!step) {
     const pieces = routeLines([{ key, qty, isFootwear }], { [key]: free })[0] || [];
     return { pieces: [], routedQty: pieces.filter((p) => p.locationId).reduce((s, p) => s + p.qty, 0), checked };
   }
-  return { pieces: [{ qty, locationId: step.locationId, status: step.status }], routedQty: qty, checked };
+  const why = step.pass === "central" ? "last stop: no shop or hub left on the chain shows it" : step.pass === "risky" ? `only place left on the chain with it; its count is doubtful (${(risk?.[step.locationId]?.why || []).join(", ")})` : "next place on the chain with it";
+  return { pieces: [{ qty, locationId: step.locationId, status: step.status, why }], routedQty: qty, checked };
 }
 
 export function describeRepickChecked(checked) {
@@ -180,7 +186,7 @@ export async function applyAgentRepicks(ctx, id, order, helpers) {
       });
       const available = (await helpers.availabilityFor(ctx, id, [{ pid: line.pid, sizeKey: line.sizeKey }], ownOther))[key] || {};
       const exclude = Array.isArray(req.exclude) ? req.exclude.map(String) : [];
-      const plan = planRepick({ line, available, exclude });
+      const plan = planRepick({ line, available, exclude, risk: ctx.shelfRisk?.[key] || {}, central: ctx.routing?.central !== false });
       if (!plan.pieces.length) {
         await answer({ state: REPICK.NOT_IN_STOCK, checked: plan.checked, ...(plan.routedQty > 0 ? { why: "only part of the line is free in one place; a split needs a person" } : {}) });
         continue;
@@ -211,7 +217,7 @@ export async function applyAgentRepicks(ctx, id, order, helpers) {
           // Every place that failed this line, kept across re-picks (the agent skips them unless stock arrives there
           // after their failure). A walk-in sale is not a place failing.
           failedPlaces: { ...(cur.failedPlaces || {}), ...(old.locationId && old.status !== LINE_STATUS.NEEDS_ATTENTION ? { [old.locationId]: Number(req.evidence?.failed?.since) || ctx.now } : {}) },
-          source: { status: to.status, locationId: to.locationId },
+          source: { status: to.status, locationId: to.locationId, ...(to.why ? { why: to.why } : {}) },
           repick: { rid, at: Number(req.at) || ctx.now, appliedAt: ctx.now, cancelledAt: ctx.now, by: req.by || "order-agent", from: { status: old.status, locationId: old.locationId }, to: to.locationId, old, exclude },
         });
         const nextLines = Array.isArray(curOrder.lines) ? [...curOrder.lines] : { ...curOrder.lines };

@@ -59,7 +59,12 @@
 const { trustStamp, arrivalTrust, arrivalMayTrust } = require("./stock-trust.cjs");
 const networkRegistry = require("./network-registry.cjs");
 
-const ADMITTED_TYPES = new Set(["transfer_in", "adjustment", "refusal_writeoff", "return"]);
+// web_not_found / web_found (Junid, 24 Nov 2026 — web-writedown.cjs): a place
+// rejected a website pick while its shelf showed exactly ONE piece, so that
+// shelf is written to zero; and the reverse, when the piece turns up after all.
+// Each is ONE cell and one unit, a movement type of its own so the ledger says
+// what happened; the cell says "adjustment" (see cellLastType).
+const ADMITTED_TYPES = new Set(["transfer_in", "adjustment", "refusal_writeoff", "return", "web_not_found", "web_found"]);
 
 const emptyLink = (link) => ({ orderId: null, transferId: null, refillId: null, saleId: null, deviceId: null, ...(link || {}) });
 const read = async (db, path) => (await db.ref(path).once("value")).val();
@@ -78,7 +83,8 @@ const cellPath = (loc, pid, size, sizeKey) => `stock/${loc}/${pid}/${sizeKey || 
 // Same predicate as the client's clampsNegativeBase — kept byte-for-byte in
 // meaning so the two writers cannot disagree about which legs clamp.
 function clampsNegativeBase(movement, delta, loc) {
-  return delta > 0 && movement.type !== "adjustment" && loc !== "in_transit";
+  // web_found undoes a write-down: the shelf a sale drove to -1 must land on 0, not on +1.
+  return delta > 0 && movement.type !== "adjustment" && movement.type !== "web_found" && loc !== "in_transit";
 }
 
 // The CELL's lastType must stay inside the live /stock rule's enum
@@ -87,7 +93,8 @@ function clampsNegativeBase(movement, delta, loc) {
 // so an unknown one would refuse the next sale on that cell. A refusal
 // write-off is a count correction, so the cell says "adjustment"; the LEDGER
 // row keeps the precise type "refusal_writeoff".
-const cellLastType = (type) => (type === "refusal_writeoff" ? "adjustment" : type);
+const CELL_ADJUSTMENT = new Set(["refusal_writeoff", "web_not_found", "web_found"]);
+const cellLastType = (type) => (CELL_ADJUSTMENT.has(type) ? "adjustment" : type);
 
 function cellDeltas(m) {
   const qty = Number(m.qty);
@@ -96,6 +103,8 @@ function cellDeltas(m) {
     case "transfer_in": return m.from && m.to ? [{ loc: m.from, delta: -qty }, { loc: m.to, delta: +qty }] : null;
     case "adjustment": return m.to ? [{ loc: m.to, delta: +qty }] : (m.from ? [{ loc: m.from, delta: -qty }] : null);
     case "refusal_writeoff": return m.from && !m.to ? [{ loc: m.from, delta: -qty }] : null;
+    case "web_not_found": return m.from && !m.to ? [{ loc: m.from, delta: -qty }] : null;
+    case "web_found": return m.to && !m.from ? [{ loc: m.to, delta: +qty }] : null;
     // A return credits the shelf it lands on and nothing else (the client's `return +to`).
     case "return": return m.to && !m.from ? [{ loc: m.to, delta: +qty }] : null;
     default: return null;
@@ -201,6 +210,8 @@ async function applyMovementAdmin(db, movement, { nowIso, network: trustNetwork 
     ...(Object.keys(negativeCleared).length ? { negativeCleared } : {}),
     // A refusal write-off carries its evidence (refusal ids, days) on the row.
     ...(movement.writeoff && typeof movement.writeoff === "object" ? { writeoff: movement.writeoff } : {}),
+    // A website write-down / its reversal carries who, which order and why on the row.
+    ...(movement.web && typeof movement.web === "object" ? { web: movement.web } : {}),
   };
   // create-once: a device that wrote the same id first wins the row
   await db.ref(`stock_movements/${mvId}`).transaction((cur) => (cur == null ? mv : undefined));

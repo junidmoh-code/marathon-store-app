@@ -27,6 +27,22 @@ async function markWebsiteDirty(db, pid) {
   }
 }
 
+// NOT FOUND ON A SHELF SHOWING ONE PIECE writes that shelf to zero (Junid, 24
+// Nov 2026 — functions/lib/web-writedown.cjs has the rule and the reversal).
+// Idempotent by its movement id, so a heal re-applies nothing. Best-effort: the
+// shelf hold in the write above already keeps the piece off the website.
+// Kill switch: /config/onlineOrders/writeDown/off = true.
+const { writeDownSingle } = require("../lib/web-writedown.cjs");
+async function applyWriteDown(db, w) {
+  try {
+    if ((await db.ref("config/onlineOrders/writeDown/off").get()).val() === true) return;
+    const res = await writeDownSingle(db, w, { nowIso: new Date().toISOString() });
+    if (!res.ok) console.warn(`online_pick: write-down ${w.pid}/${w.sizeKey} at ${w.loc} refused (${res.reason})`);
+  } catch (err) {
+    console.warn(`online_pick: write-down ${w.pid}/${w.sizeKey} at ${w.loc} failed (${err && err.message})`);
+  }
+}
+
 async function applyOnlineOrderOutcome(db, store, record, { storeName } = {}) {
   if (!isOnlinePickRecord(record) && !isOnlineReturnRecord(record)) return true;
   const orderId = record.orderId;
@@ -43,6 +59,7 @@ async function applyOnlineOrderOutcome(db, store, record, { storeName } = {}) {
         return true;
       }
       if (Object.keys(out.updates).length) await db.ref().update(out.updates);
+      if (out.writeDown) await applyWriteDown(db, out.writeDown);
       if (out.held) await markWebsiteDirty(db, out.held);
       return true;
     } catch (err) {

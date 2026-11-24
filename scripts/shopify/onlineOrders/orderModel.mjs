@@ -165,7 +165,8 @@ export function buildLine({ index, item, resolved, piece, unit = null, units = n
     barcode: resolved.barcode || null,
     category: p.category || null,
     isFootwear: !!resolved.isFootwear,
-    source: compact({ locationId: piece.locationId, status: piece.status }),
+    // `why`: routing's own words for why the piece went to this place (routing.mjs).
+    source: compact({ locationId: piece.locationId, status: piece.status, why: piece.why }),
   });
 }
 

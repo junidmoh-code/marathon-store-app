@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { routeLine, routeLines, availableAt, ROUTED_LOCATIONS } from "./routing.mjs";
+import { routeLine as routeLineWhy, routeLines as routeLinesWhy, availableAt, ROUTED_LOCATIONS, shelfRisk, routingRulesFrom, chainOrder, FOOTWEAR_ROUTE, OTHER_ROUTE } from "./routing.mjs";
+
+// The place and the quantity are what these older cases pin; `why` (routing's own words) has its own cases below.
+const bare = (pieces) => pieces.map(({ why, ...p }) => p);
+const routeLine = (a) => bare(routeLineWhy(a));
+const routeLines = (...a) => routeLinesWhy(...a).map(bare);
 
 const pick = (locationId, qty = 1) => ({ qty, locationId, status: "pick" });
 const display = (locationId, qty = 1) => ({ qty, locationId, status: "display" });
@@ -99,7 +104,7 @@ describe("availableAt — live cells minus other orders' holds", () => {
       holdsCell: { o1: { qty: 1, locs: { "marathon-pe": 1 } }, o2: { qty: 2, locs: { hub1: 2 } } },
       orderId: "o9",
     });
-    expect(a).toEqual({ hub1: 1, hub2: 0, hub3: 0, "marathon-pe": 1, trophy: 1, concrete: 0, "marathon-pine": 0 });
+    expect(a).toEqual({ hub1: 1, hub2: 0, hub3: 0, "marathon-pe": 1, trophy: 1, concrete: 0, "marathon-pine": 0, central: 0 });
   });
   it("never counts the order's own hold against it", () => {
     const a = availableAt({ stockQty: { "marathon-pe": 1 }, holdsCell: { o1: { qty: 1, locs: { "marathon-pe": 1 } } }, orderId: "o1" });
@@ -141,12 +146,75 @@ describe("routeLine — the Concrete division after Marathon (12 Nov 2026)", () 
     expect(routeLine({ qty: 3, isFootwear: false, available: { "marathon-pe": 1, concrete: 1, "marathon-pine": 1 } }))
       .toEqual([display("marathon-pe"), display("concrete"), display("marathon-pine")]);
   });
-  it("CENTRAL IS NEVER A SOURCE — a line only Central holds waits (no_stock, no location)", () => {
-    expect(routeLine({ qty: 1, isFootwear: false, available: { central: 50 } })).toEqual([none()]);
-    expect(routeLine({ qty: 1, isFootwear: true, available: { central: 50 } })).toEqual([none()]);
-    expect(ROUTED_LOCATIONS).not.toContain("central");
+  it("CENTRAL IS THE LAST STOP (Junid, 24 Nov 2026) — a line only Central holds goes to Central's strip", () => {
+    expect(routeLine({ qty: 1, isFootwear: false, available: { central: 50 } })).toEqual([display("central")]);
+    expect(routeLine({ qty: 1, isFootwear: true, available: { central: 50 } })).toEqual([display("central")]);
+    expect(FOOTWEAR_ROUTE.at(-1).locationId).toBe("central");
+    expect(OTHER_ROUTE.at(-1).locationId).toBe("central");
   });
-  it("routing reads exactly the shops and hubs of both divisions", () => {
-    expect([...ROUTED_LOCATIONS].sort()).toEqual(["concrete", "hub1", "hub2", "hub3", "marathon-pe", "marathon-pine", "trophy"]);
+  it("Central is last even when every nearer place is doubtful and Central is not", () => {
+    const risk = { "marathon-pe": { risky: true, why: ["one piece", "untouched 40 days"] } };
+    expect(routeLine({ qty: 1, isFootwear: false, available: { "marathon-pe": 1, central: 9 }, risk })).toEqual([display("marathon-pe")]);
+  });
+  it("Junid's switch takes Central out of the chain again", () => {
+    expect(routeLine({ qty: 1, isFootwear: false, available: { central: 50 }, central: false })).toEqual([none()]);
+  });
+  it("routing reads the shops and hubs of both divisions, and Central", () => {
+    expect([...ROUTED_LOCATIONS].sort()).toEqual(["central", "concrete", "hub1", "hub2", "hub3", "marathon-pe", "marathon-pine", "trophy"]);
+  });
+});
+
+describe("the most trustworthy place first (Junid, 24 Nov 2026)", () => {
+  const NOW = Date.UTC(2026, 10, 24, 10);
+  const days = (n) => NOW - n * 864e5;
+  const rules = routingRulesFrom(null);
+
+  it("one point per proven signal; risky at two", () => {
+    expect(shelfRisk({ free: 1, stampMs: days(2), nowMs: NOW, rules })).toMatchObject({ score: 1, risky: false });
+    expect(shelfRisk({ free: 1, stampMs: days(40), nowMs: NOW, rules })).toMatchObject({ score: 2, risky: true, why: ["one piece", "untouched 40 days"] });
+    expect(shelfRisk({ free: 3, stampMs: days(40), nowMs: NOW, rules })).toMatchObject({ score: 1, risky: false });
+    expect(shelfRisk({ free: 1, stampMs: days(2), rejectedAt: days(3), nowMs: NOW, rules })).toMatchObject({ score: 2, risky: true });
+    expect(shelfRisk({ free: 3, stampMs: days(40), rejectedAt: days(3), nowMs: NOW, rules })).toMatchObject({ score: 2, risky: true });
+  });
+  it("exactly the threshold day is not stale; a rejection older than the window scores nothing", () => {
+    expect(shelfRisk({ free: 1, stampMs: days(14), nowMs: NOW, rules }).score).toBe(1);
+    expect(shelfRisk({ free: 1, stampMs: days(14) - 1, nowMs: NOW, rules }).score).toBe(2);
+    expect(shelfRisk({ free: 1, stampMs: days(1), rejectedAt: days(31), nowMs: NOW, rules }).score).toBe(1);
+  });
+  it("a shelf with no stamp gives no evidence of its age; an empty shelf is never risky", () => {
+    expect(shelfRisk({ free: 1, stampMs: null, nowMs: NOW, rules })).toMatchObject({ score: 1, risky: false });
+    expect(shelfRisk({ free: 0, stampMs: days(90), rejectedAt: days(1), nowMs: NOW, rules })).toMatchObject({ score: 0, risky: false });
+  });
+  it("the thresholds are settings; trustOff scores nothing", () => {
+    const strict = routingRulesFrom({ riskyAt: 1, staleDays: 7 });
+    expect(shelfRisk({ free: 2, stampMs: days(8), nowMs: NOW, rules: strict }).risky).toBe(true);
+    expect(shelfRisk({ free: 1, stampMs: days(90), nowMs: NOW, rules: routingRulesFrom({ trustOff: true }) })).toMatchObject({ score: 0, risky: false });
+    expect(routingRulesFrom({ riskyAt: "x", staleDays: -3, weights: { single: 2 } })).toMatchObject({ riskyAt: 2, staleDays: 14, weights: { single: 2, stale: 1, rejected: 1 } });
+  });
+  it("a doubtful Marathon PE piece yields to a trusted Hub 2 shelf — a hub order, like sneakers", () => {
+    const risk = { "marathon-pe": { risky: true, why: ["one piece", "untouched 40 days"] } };
+    const [p] = routeLineWhy({ qty: 1, isFootwear: false, available: { "marathon-pe": 1, hub2: 3 }, risk });
+    expect(p).toMatchObject({ locationId: "hub2", status: "pick" });
+    expect(p.why).toBe("trusted shelf, ahead of marathon-pe (one piece, untouched 40 days)");
+  });
+  it("a doubtful shelf is still used when it is the only place, and says so", () => {
+    const risk = { hub1: { risky: true, why: ["one piece", "untouched 20 days"] } };
+    const [p] = routeLineWhy({ qty: 1, isFootwear: true, available: { hub1: 1 }, risk });
+    expect(p).toMatchObject({ locationId: "hub1", status: "pick" });
+    expect(p.why).toMatch(/only place on the chain.*one piece, untouched 20 days/);
+  });
+  it("a doubtful shelf comes before Central (its rejection moves the line on at once); Central says it is the last stop", () => {
+    const risk = { hub1: { risky: true, why: ["one piece"] } };
+    expect(chainOrder(true, risk).map((s) => `${s.locationId}:${s.pass}`)).toEqual(["hub2:trusted", "hub3:trusted", "hub1:risky", "central:central"]);
+    const pieces = routeLineWhy({ qty: 2, isFootwear: true, available: { hub1: 1, central: 4 }, risk });
+    expect(bare(pieces)).toEqual([pick("hub1"), display("central")]);
+    expect(pieces[1].why).toMatch(/^last stop/);
+  });
+  it("with no risk given the chain is walked exactly as written", () => {
+    expect(routeLineWhy({ qty: 1, isFootwear: false, available: { "marathon-pe": 1, hub2: 3 } })[0]).toMatchObject({ locationId: "marathon-pe", why: "first on the chain with it" });
+  });
+  it("two doubtful places keep chain order between them", () => {
+    const risk = { "marathon-pe": { risky: true, why: [] }, trophy: { risky: true, why: [] } };
+    expect(routeLine({ qty: 2, isFootwear: false, available: { "marathon-pe": 1, trophy: 1 }, risk })).toEqual([display("marathon-pe"), display("trophy")]);
   });
 });

@@ -331,6 +331,7 @@ describe("feed entries", () => {
     it("escalation off: Out of Stock at the hub → no_stock, the order needs attention, Junid is emailed", async () => {
       const f = on(); await first(f);
       await f.db.ref("config/onlineOrders/escalationOff").set(true);
+      await f.db.ref("config/onlineOrders/routing/chainOff").set(true); // the chain move has its own cases (chainMove.test.mjs)
       await f.db.ref(`orders/${C(0)}`).update({ status: "out_of_stock" });
       const d = deps(f, shopify());
       await runOrdersPoll(d.deps);
@@ -342,6 +343,7 @@ describe("feed entries", () => {
 
     it("Out of Stock at the hub asks NOBODY (Junid, 1 Nov 2026: the scan is the only requester) — the line waits on the attention list", async () => {
       const f = on(); await first(f);
+      await f.db.ref("config/onlineOrders/routing/chainOff").set(true); // the chain move has its own cases (chainMove.test.mjs)
       await f.db.ref(`orders/${C(0)}`).update({ status: "out_of_stock" });
       const n = f.writes.length;
       const d = deps(f, shopify());
@@ -1180,6 +1182,7 @@ describe("what a tick downloads", () => {
     await f.db.ref("config/onlineOrders").set({ enabled: true, escalationOff: true });
     await runOrdersPoll({ ...deps(f, shopify()).deps, ...at(NOW + TICK) });
     const key = lineAt(f, 0).source.orderKeys[0];
+    await f.db.ref("config/onlineOrders/routing/chainOff").set(true); // the chain move has its own cases (chainMove.test.mjs)
     await f.db.ref(`orders/${key}`).update({ status: "out_of_stock" });
     const c = counting(f);
     const d = deps(f, shopify(), at(NOW + 2 * TICK));
@@ -1193,6 +1196,7 @@ describe("what a tick downloads", () => {
   it("the escalation check is handed the order as the keep pass LEFT it (the no_stock line), with no second download", async () => {
     const f = fakeDb(world(ON));
     await runOrdersPoll(deps(f, shopify({ orders: [shopifyOrder()] })).deps);
+    await f.db.ref("config/onlineOrders/routing/chainOff").set(true); // the chain move has its own cases (chainMove.test.mjs)
     await f.db.ref(`orders/${lineAt(f, 0).source.orderKeys[0]}`).update({ status: "out_of_stock" });
     escalateCalls.length = 0;
     const c = counting(f);

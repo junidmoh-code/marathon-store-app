@@ -15,7 +15,8 @@ const V = (n) => `gid://shopify/ProductVariant/${n}`;
 const P = (n) => `gid://shopify/Product/${n}`;
 const world = (over = {}) => ({
   online_orders_meta: { goLiveAtMs: NOW - 3600e3 },
-  config: { onlineOrders: { enabled: true }, shipping: { deliveryMode: "door" } },
+  // The chain move (chainMove.test.mjs) is switched off here: these cases pin what the HOLD does to a line that stays put.
+  config: { onlineOrders: { enabled: true, routing: { chainOff: true } }, shipping: { deliveryMode: "door" } },
   products: { SNK: { name: "Air Runner", categoryKey: "sneakers", category: "Footwear", sizes: ["8"] } },
   shopify_sync: { _claims: { 111: "SNK" }, SNK: { shopifyProductId: P(111), variants: { 8: { shopifyVariantId: V(1108) } } } },
   stock: {
@@ -120,6 +121,8 @@ describe("a hub's Out of Stock on a website pick", () => {
     const f = fakeDb(world());
     await rejectedAtHub1(f);
     await f.db.ref("config/onlineOrders/pickable/holdsOff").set(true);
+    // The trust order is its own switch (routing/trustOff): with both off the chain is walked as written.
+    await f.db.ref("config/onlineOrders/routing/trustOff").set(true);
     forgetPickableRules();
     await runOrdersPoll(deps(f, [shopifyOrder(9002, 2502)]));
     expect(line(f, "9002").source).toMatchObject({ locationId: "hub1", status: "pick" });
