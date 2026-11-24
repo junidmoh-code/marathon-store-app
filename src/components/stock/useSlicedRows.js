@@ -35,7 +35,12 @@ const signature = (r) => (r ? `${r.name}|${r.photo}|${r.source}|${r.sourceName}|
  *
  * Returns { rows: { id: row[] }, started: { id: bool }, complete: { id: bool } }.
  */
-export function useSlicedRows({ buckets, active, version, ready }) {
+// HOT PRODUCTS (Junid, 24 Nov 2026 — "every number must be live"): `hot` is a
+// list of product ids whose own inputs just changed (Central's cells, what is
+// owed to their requests). Their cards are rebuilt AT ONCE, outside the
+// throttle — a unit claimed by one person's Solve leaves the other person's
+// card in the same moment the request lands. The full pass still follows.
+export function useSlicedRows({ buckets, active, version, ready, hot = null }) {
   const latest = useRef({ buckets, active });
   latest.current = { buckets, active };
   const store = useRef({ results: {}, started: {}, complete: {}, running: false, ranVersion: null, wantVersion: null, timer: null, alive: true });
@@ -108,6 +113,27 @@ export function useSlicedRows({ buckets, active, version, ready }) {
     const first = !latest.current.buckets.every((b) => s.complete[b.id]);
     if (first) runPass(); else s.timer = setTimeout(() => { s.timer = null; runPass(); }, QUIET_MS);
   }, [version, ready]);
+
+  useEffect(() => {
+    const s = store.current;
+    if (!ready || !hot || !hot.length) return;
+    const want = new Set(hot);
+    let changed = false;
+    for (const b of latest.current.buckets) {
+      const res = s.results[b.id];
+      if (!res) continue;
+      for (const card of b.cards) {
+        if (!want.has(card.pid)) continue;
+        let row = null;
+        try { row = b.build(card); } catch { row = null; }
+        const prev = res.get(card.pid);
+        const next = row && prev && signature(prev) === signature(row) ? Object.assign(prev, { card: row.card }) : row;
+        if (next !== prev) changed = true;
+        res.set(card.pid, next);
+      }
+    }
+    if (changed) bump((n) => n + 1);
+  }, [hot, ready]);
 
   const s = store.current;
   const rows = {};

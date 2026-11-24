@@ -121,8 +121,12 @@ const destChip = (on) => ({
 //   targets   /stock_targets as the screen already holds it (optional). See
 //             `withRows` below: a per-product target row Junid has set at a
 //             hub fills the sizes the footwear run does not name.
-export function useSneakerRequest({ products = [], section: sectionProp = null, cards: cardsProp = null, onQueued = null, onPhoto = null, targets = null } = {}) {
-  const allStock = useStockCells();                 // live — a card clears when units land
+//   allStock  the screen's cells (optional) — the one-tap screen hands in its
+//             own, so a product it has just re-read live plans from those
+//             values (Junid, 24 Nov 2026). Absent ⇒ this hook's own listener.
+export function useSneakerRequest({ products = [], section: sectionProp = null, cards: cardsProp = null, onQueued = null, onPhoto = null, targets = null, allStock: allStockProp = null } = {}) {
+  const allStockOwn = useStockCells();              // live — a card clears when units land
+  const allStock = allStockProp || allStockOwn;
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canAct = ["store", "warehouse", "admin"].includes(actorRole);
@@ -279,8 +283,12 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
   };
   // Units already promised to ANY hub for this product. Central's shelf count is
   // not free stock: two hubs solving the same shoe would otherwise each claim it.
+  // WHAT CENTRAL STILL OWES (Junid, 24 Nov 2026 — the numbers must be exact):
+  // an open request's qty less what has already been SENT (sent units have
+  // left Central's cell), and never a shadow row. Before this a part-sent
+  // request was reserved in full, so the card showed fewer free than Central had.
   const reservedFor = (pid, requests) => (requests || [])
-    .filter((r) => r && r.status === "open" && r.productId === pid && RESERVING_HUBS.includes(r.requestingLocation))
+    .filter((r) => r && r.status === "open" && !r.shadow && r.productId === pid && RESERVING_HUBS.includes(r.requestingLocation))
     .reduce((acc, r) => {
       // sizeKeyOf, NOT encodeSizeKey: the plan keys `reserved` with sizeKeyOf,
       // which trims before encoding. encodeSizeKey does not, so a size stored as
@@ -288,9 +296,20 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
       // would silently not be found and the units double-promised. One encoder on
       // both sides is the only way these can't drift. (CodeRabbit #291.)
       const k = sizeKeyOf(r.size);
-      acc[k] = (acc[k] || 0) + (Number(r.qty) || 0);
+      acc[k] = (acc[k] || 0) + Math.max((Number(r.qty) || 0) - (Number(r.sentQty) || 0), 0);
       return acc;
     }, {});
+  // SOLVE SENDS WHAT THE CARD SHOWS (Junid, 24 Nov 2026). `expect` is the
+  // card's own destination ({ units, sizes }); a plan that differs from it in
+  // units or in sizes is refused and nothing is written.
+  const planDiffers = (lines, expect) => {
+    if (!expect) return false;
+    const units = (lines || []).reduce((t, l) => t + l.qty, 0);
+    const a = (lines || []).map((l) => String(l.size)).sort().join("|");
+    const b = (expect.sizes || []).map(String).sort().join("|");
+    return units !== Number(expect.units) || a !== b;
+  };
+  const STALE_MSG = "The numbers changed while you were looking — nothing sent. Check the card and Solve again.";
   const openSizesFor = (pid, hub) => (allRequests || [])
     .filter((r) => r && r.status === "open" && r.requestingLocation === hub && r.productId === pid)
     .map((r) => r.size);
@@ -367,7 +386,7 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
   // screen allows one call per card). The outcome is also RETURNED —
   // { ok, msg, hubs, units, requestIds, seedPaths, seat } — for the toast and
   // its Undo.
-  const solve = async (card, only = null) => {
+  const solve = async (card, only = null, opts = {}) => {
     const picked = only || solveHubsOf(card);
     // THE SECOND GATE (divisionDestinations.js): whatever a chooser showed —
     // a stale screen included — nothing is raised for a hub outside this
@@ -378,7 +397,7 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
       return { ok: false, msg: `Nothing raised — ${wrong}` };
     }
     const hub = picked[0];
-    if (picked.length > 1 || picked.includes(DIVISION_HUB)) return solveDivision(card, picked, !!only);
+    if (picked.length > 1 || picked.includes(DIVISION_HUB)) return solveDivision(card, picked, !!only, opts);
     const lines = planFor(card, hub);
     if ((solveBusy && !only) || !canAct || !lines.length || !REQUESTABLE_HUBS.includes(hub)) {   // guarded by the disabled button
       return { ok: false, msg: !canAct ? "You need a stock role to raise requests." : "Nothing to raise there." };
@@ -395,7 +414,9 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
     try {
       // Re-read live so a size queued by someone else between render and click is
       // not raised twice; the plan is recomputed against it rather than trusted.
-      const liveRequests = Object.values((await readPathOnce("refill_requests",
+      // (the one-tap screen hands in this product's requests, read live by
+      // the productId index a moment ago — no whole-node read then)
+      const liveRequests = Array.isArray(opts.liveRequests) ? opts.liveRequests : Object.values((await readPathOnce("refill_requests",
         async () => (await get(ref(database, "refill_requests"))).val())) || {});
       const refused = await seatRefusal(card.pid, [hub], liveRequests);
       if (refused) {
@@ -420,6 +441,9 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
       if (!fresh.length) {
         setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: `Already queued at ${LOC_LABEL[hub]} — nothing new to raise.` } }));
         outcome = { ok: false, msg: `Already queued at ${LOC_LABEL[hub]} — nothing new to raise.` };
+      } else if (planDiffers(fresh, opts.expect)) {
+        setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: STALE_MSG } }));
+        outcome = { ok: false, stale: true, msg: STALE_MSG };
       } else {
         // ONE atomic multi-path write: a partial failure would leave some sizes
         // queued and no way to tell which, so all lines land together or none do.
@@ -458,7 +482,7 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
 
   // A SOLVE THAT NAMES HUB 3 (alone or in an allowed pair). The Marathon hub's
   // single-hub Solve above is untouched: its rows carry nothing new.
-  const solveDivision = async (card, hubs, oneTap = false) => {
+  const solveDivision = async (card, hubs, oneTap = false, opts = {}) => {
     if ((solveBusy && !oneTap) || !canAct || !sneakerSolvePairAllowed(hubs)) return { ok: false, msg: !canAct ? "You need a stock role to raise requests." : "Nothing to raise there." };
     if (destinationProblem({ network, section, destinations: hubs, kind: "sneaker" })) return { ok: false, msg: "Not a destination on this list." };   // solve() has already said why
     if (isDeactivated(byId.get(card.pid))) {
@@ -471,7 +495,7 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
     let seat = null, seated = false;
     let outcome;
     try {
-      const liveRequests = Object.values((await readPathOnce("refill_requests",
+      const liveRequests = Array.isArray(opts.liveRequests) ? opts.liveRequests : Object.values((await readPathOnce("refill_requests",
         async () => (await get(ref(database, "refill_requests"))).val())) || {});
       const refused = await seatRefusal(card.pid, hubs, liveRequests);
       if (refused) {
@@ -484,6 +508,11 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
         setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: `Already queued, or Central has none free — nothing new to raise.` } }));
         setSolveBusy(null);
         return { ok: false, msg: "Already queued, or Central has none free — nothing new to raise." };
+      }
+      if (opts.expect && hubs.length === 1 && planDiffers(plan[hubs[0]], opts.expect)) {
+        setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: STALE_MSG } }));
+        setSolveBusy(null);
+        return { ok: false, stale: true, msg: STALE_MSG };
       }
       seat = httpsCallable(functions, "seatDivisionSolve");
       if (hubs.includes(DIVISION_HUB)) { await seat({ location: DIVISION_HUB, pid: card.pid, hubs, solveId }); seated = true; }
@@ -641,7 +670,8 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
   const api = {
     canAct, ready: policyRead.run && policyRead.hub3 && policyRead.own, notLive,
     destinations: SOLVE_HUBS,
-    solveTo: (card, hub) => solve(card, [hub]),
+    // opts: { expect, liveRequests } from the one-tap screen (see solve).
+    solveTo: (card, hub, opts = {}) => solve(card, [hub], opts),
     planFor, pickRefusal,
     // Does ANY of this shoe's sizes have a number at this hub? (No → the card
     // reads "No policy yet" rather than being listed as something to send.)

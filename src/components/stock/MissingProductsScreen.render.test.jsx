@@ -13,6 +13,15 @@ const gets = {};
 const listeners = {};
 // Every database read the screen makes (search must add none).
 const reads = { onValue: 0, get: 0 };
+// A one-product live read (Solve's check at the tap) answers from the same
+// data the listeners hold: stock/{loc}/{pid}, and refill_requests by productId.
+const liveOf = (path) => {
+  const m = /^stock\/([^/]+)\/([^/?]+)$/.exec(path);
+  if (m) return paths.stock?.[m[1]]?.[m[2]] ?? null;
+  const q = /^refill_requests\?orderBy=productId&equalTo=(.+)$/.exec(path);
+  if (q) { const all = paths.refill_requests || {}; const out = Object.fromEntries(Object.entries(all).filter(([, r]) => r && r.productId === q[1])); return Object.keys(out).length ? out : null; }
+  return null;
+};
 const emit = (path, value) => { paths[path] = value; for (const cb of listeners[path] || []) cb({ val: () => value }); };
 const updateMock = vi.fn(() => Promise.resolve());
 const txnCalls = [];
@@ -23,7 +32,7 @@ vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path ?? "" }),
   onValue: (r, cb) => { reads.onValue++; (listeners[r.path] ||= []).push(cb); cb({ val: () => paths[r.path] ?? null }); return () => { listeners[r.path] = (listeners[r.path] || []).filter((x) => x !== cb); }; },
   update: (...a) => updateMock(...a),
-  get: (r) => { reads.get++; return Promise.resolve({ val: () => gets[r.path] ?? null }); },
+  get: (r) => { reads.get++; return Promise.resolve({ val: () => (r.path in gets ? gets[r.path] : liveOf(r.path)) }); },
   push: () => ({ key: `req${++pushN}` }),
   // A real transaction: the function sees the stored value; undefined aborts.
   runTransaction: (r, fn) => { const cur = txnData[r.path] ?? null; const next = fn(cur); txnCalls.push({ path: r.path, cur, next }); if (next !== undefined) txnData[r.path] = next; return Promise.resolve({ committed: next !== undefined, snapshot: { val: () => (next === undefined ? cur : next) } }); },
@@ -508,8 +517,9 @@ describe("Undo", () => {
     await act(async () => { await toast(tree).undo.props.onClick(); });
     await act(async () => {});
     const ids = Object.keys(upd);
-    expect(txnCalls.map((c) => c.path).sort()).toEqual(ids.sort());
-    for (const c of txnCalls) { expect(c.next.status).toBe("cancelled"); expect(c.next.cancelReason).toBe("solve_undone"); expect(c.next.productId).toBe(SHOE_B); }
+    const reqTxns = txnCalls.filter((c) => c.path.startsWith("refill_requests/"));   // (the Solve claim is a transaction too)
+    expect(reqTxns.map((c) => c.path).sort()).toEqual(ids.sort());
+    for (const c of reqTxns) { expect(c.next.status).toBe("cancelled"); expect(c.next.cancelReason).toBe("solve_undone"); expect(c.next.productId).toBe(SHOE_B); }
     expect(updateMock).toHaveBeenCalledTimes(1);               // Undo creates nothing
     expect(cardsOf(tree)).toEqual(before);
     expect(count(tree, MARATHON)).toBe("6");
@@ -1189,5 +1199,73 @@ describe("the division a person opens on (Junid, 24 Nov 2026)", () => {
     perm.permRecord = { stockRole: "admin", displayName: "X", missingProductsDivision: "nowhere" };
     const tree = await mount();
     expect(pressed(tree)).toEqual([MARATHON]);
+  });
+});
+
+describe("the numbers are exact (Junid, 24 Nov 2026)", () => {
+  it("the card's Central figure is the units free at Central: on hand less what open requests still owe", async () => {
+    // Hub 3 owes 4 of size 8 (one request, 1 of its 5 already sent) — a part-sent request owes only the rest
+    emit("refill_requests", { r1: sneakerReq({ productId: SHOE_B, size: "8", qty: 5, sentQty: 1, requestingLocation: "hub3" }) });
+    const tree = await mount();
+    expect(stockLine(tree, SHOE_B)).toBe("Central 14");          // 8: 9−4 = 5, 9: 9 → 14
+  });
+
+  it("a reserved unit is never shown as free: a shadow request owes nothing, an open one owes its rest", async () => {
+    emit("refill_requests", {
+      s1: sneakerReq({ productId: SHOE_B, size: "9", qty: 9, requestingLocation: "hub3", shadow: true }),
+      r2: sneakerReq({ productId: SHOE_B, size: "9", qty: 9, requestingLocation: "hub3" }),
+    });
+    const tree = await mount();
+    expect(stockLine(tree, SHOE_B)).toBe("Central 9");           // size 9 entirely owed → only size 8's 9 free
+    expect(dests(tree, SHOE_B).length).toBeGreaterThan(0);
+  });
+
+  it("a STALE card refuses to send, says the live number, and is redrawn on it in place", async () => {
+    const tree = await mount();
+    expect(stockLine(tree, SHOE_B)).toBe("Central 18");
+    const order = cardsOf(tree);
+    // Live, Central sold 7 of size 8 — the feed has not brought it yet.
+    paths.stock = { ...paths.stock, central: { ...paths.stock.central, [SHOE_B]: { 8: cell(2), 9: cell(9) } } };
+    updateMock.mockClear();
+    await tapDest(tree, SHOE_B, "hub1");
+    expect(updateMock).not.toHaveBeenCalled();                    // nothing sent
+    expect(toast(tree).kind).toBe("fail");
+    expect(toast(tree).text).toMatch(/now has 11 free, not 18 — nothing sent/);
+    expect(stockLine(tree, SHOE_B)).toBe("Central 11");          // the card shows the live figure
+    expect(cardsOf(tree)).toEqual(order);                         // in place: nothing moved
+    // …and the person decides again on the correct figure (the choice is kept): this time it sends
+    expect(picked(tree, SHOE_B)).toEqual(["hub1"]);
+    await solve(tree, SHOE_B);
+    expect(requestsIn(lastUpdate()).map((r) => [r.size, r.qty])).toEqual([["8", 2], ["9", 2]]);
+  });
+
+  it("two people solving the same product at once: the second is refused while the first holds it — nothing is granted twice", async () => {
+    const tree = await mount();
+    txnData["settings/missingSolveClaims/" + SHOE_B] = { token: "someone-else", at: NOW, by: "u2" };   // the first solve, in flight
+    updateMock.mockClear();
+    await tapDest(tree, SHOE_B, "hub1");
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(toast(tree).text).toMatch(/Someone else is solving this product right now/);
+    // the first solve finishes: its requests now owe Central's units, and the second card shows what is left
+    delete txnData["settings/missingSolveClaims/" + SHOE_B];
+    await act(async () => { emit("refill_requests", { a: sneakerReq({ productId: SHOE_B, size: "8", qty: 2, requestingLocation: "hub3" }), b: sneakerReq({ productId: SHOE_B, size: "9", qty: 2, requestingLocation: "hub3" }) }); });
+    await act(async () => {}); await act(async () => {});
+    expect(stockLine(tree, SHOE_B)).toBe("Central 14");
+  });
+
+  it("the claim is released after a solve, so the next product (or the next solve) is not blocked", async () => {
+    const tree = await mount();
+    await tapDest(tree, SHOE_B, "hub1");
+    expect(txnData["settings/missingSolveClaims/" + SHOE_B] ?? null).toBe(null);
+  });
+
+  it("Solve sends exactly what the card showed: a plan that differs is refused before anything is written", async () => {
+    const tree = await mount();
+    // the hook is handed the card's expectation; the live requests show one size already queued at Hub 1
+    paths.refill_requests = { q: sneakerReq({ productId: SHOE_B, size: "9", qty: 2, requestingLocation: "hub1" }) };
+    updateMock.mockClear();
+    await tapDest(tree, SHOE_B, "hub1");
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(toast(tree).kind).toBe("fail");
   });
 });

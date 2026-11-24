@@ -26,6 +26,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ref, get, update, onValue, runTransaction, push, query, orderByChild, equalTo } from "firebase/database";
+import { openRequestsByProduct } from "./missingListCore";
 import { database, auth } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
@@ -1032,7 +1033,14 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
   // planned and written for it is exactly what a panel confirm with that one
   // shop ticked writes. The outcome is also RETURNED ({ ok, msg, rows, units })
   // so the caller can say it in a toast — the card no longer carries it.
-  const solve = async (card, only = null) => {
+  // opts (the one-tap Missing Products screen, Junid 24 Nov 2026):
+  //   expect        { [store]: { units } } — what the card showed; a plan
+  //                 that would send a different number is refused, nothing written
+  //   liveRequests  this product's request records, read live a moment ago —
+  //                 Central's reservations are planned from THEM, the same
+  //                 records the card was drawn from (a solve-raised request has
+  //                 no engine lock, so the lock table alone under-reserves)
+  const solve = async (card, only = null, opts = {}) => {
     const ticks = only ? allocationOrder({ network, ticked: only, tickable: (st) => tickableStores(card).includes(st) }) : ticksFor(card);
     if (solving[card.pid] || resolving[card.pid] || !canAct || !ticks.length) {
       return { ok: false, msg: !canAct ? "You need a stock role to solve." : !ticks.length ? "That shop cannot take this product." : "Already being solved." };
@@ -1133,7 +1141,30 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
         ...touchLocs.map(async (loc) => { priorRaw[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val(); }),
       ]);
       const rowOf = (loc) => rows[loc] || {};
-      const plan = planFor(card, ticks, openNow || {}, { firstBatchOk: onPath && !!openNow });
+      let openForPlan = openNow || {};
+      if (Array.isArray(opts.liveRequests)) {
+        // Reservations from the request records; the presence test keeps the
+        // lock table's hub rows (non-enumerable, as readOpenLocks sets them).
+        const fromRequests = { ...(openRequestsByProduct(opts.liveRequests).get(card.pid) || {}) };
+        for (const k of ["hubRaw", "heldByHub", "openHubRequests"]) {
+          if (openNow && openNow[k] !== undefined) Object.defineProperty(fromRequests, k, { value: openNow[k], enumerable: false });
+        }
+        openForPlan = fromRequests;
+      }
+      const plan = planFor(card, ticks, openForPlan, { firstBatchOk: onPath && !!openNow });
+      // SOLVE SENDS WHAT THE CARD SHOWS: a different number of units for any
+      // shop is refused before anything is written.
+      if (opts.expect) {
+        const off = plan.lines.find((l) => opts.expect[l.store] && Number(l.units || 0) !== Number(opts.expect[l.store].units || 0));
+        if (off || plan.lines.length !== Object.keys(opts.expect).length) {
+          const msg = off
+            ? `Solve would now send ${off.units || 0} to ${LOC_LABEL[off.store] || off.store}, not the ${opts.expect[off.store].units} the card showed — nothing sent. Check the card and Solve again.`
+            : "The numbers changed while you were looking — nothing sent. Check the card and Solve again.";
+          setSolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
+          setResolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
+          return { ok: false, stale: true, msg };
+        }
+      }
       const baseSolveId = solveIdFor(card.pid, serverNowMs());
       const parts = [];      // each store's part of the ONE update
       const entries = [];    // each store's undo record
@@ -1779,7 +1810,7 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
     canAct, ready: cfg !== null && targetsReady,
     // One shop, or (Marathon's list, where both may be chosen) several: the
     // same solve the panel's confirm made with those shops ticked.
-    solveTo: (card, stores) => solve(card, [].concat(stores)),
+    solveTo: (card, stores, opts = {}) => solve(card, [].concat(stores), opts),
     planFor, tickableStores, undoEntry,
   };
   return { cards, renderCard, sectionSwitch, viewOnly, selectBar, bulkBar, strip: undoStrip, solvedView, selectMode, section: listSection || HOME_SECTION, busy: solveBusy != null || busyPid != null, api };

@@ -45,7 +45,7 @@ describe("solve → undo wiring", () => {
     const fbSnapAt = NETWORK.indexOf("priorOpen[loc] = openNow[loc] ?? null;");
     // (Sections, 2026-10: both paths are now per-store parts of ONE write —
     // there is a single update in the solve, and BOTH snapshots precede it.)
-    const solveStart = NETWORK.indexOf("const solve = async (card, only = null) => {");
+    const solveStart = NETWORK.indexOf("const solve = async (card, only = null, opts = {}) => {");
     const solveBlock = NETWORK.slice(solveStart, NETWORK.indexOf("\n  };", solveStart));
     expect(solveBlock.split("await update(ref(database), updates)").length - 1).toBe(1);
     const writeAt = NETWORK.indexOf("await update(ref(database), updates)");
@@ -61,7 +61,7 @@ describe("solve → undo wiring", () => {
     // …and every read is awaited (one Promise.all) before the plan is built.
     const allAt = NETWORK.indexOf("await Promise.all([", solveStart);
     expect(allAt).toBeLessThan(fbReadAt);
-    expect(NETWORK.indexOf("const plan = planFor(card, ticks, openNow || {}", solveStart)).toBeGreaterThan(readAt);
+    expect(NETWORK.indexOf("const plan = planFor(card, ticks, openForPlan", solveStart)).toBeGreaterThan(readAt);
     // And the guard core carries no timestamp inputs at all.
     // (ownRunId, first batch 2026-09-17: the solve's OWN server-claimed lock is
     // exempted by runId — an identity, still never a clock.)

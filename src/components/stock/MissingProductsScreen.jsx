@@ -56,8 +56,8 @@ import { shopDestinations, shopsAreExclusive, destinationProblem } from "./divis
 import { otherMarathonHub, marathonHubSeated, marathonSolveRefusal, SEATS_PATH, DIVISION_SHOPS } from "./concreteDivision";
 import { undoSneakerRequest, shopOwnersNow } from "./missingActions";
 import { withDivisionMarks, listedForDivision, markDivision, undoDivision, clearDivision, restoreMarks, liveMarksOf, CONCRETE_INDEX_PATH, MARATHON_INDEX_PATH } from "./divisionMark";
-import { ref, update } from "firebase/database";
-import { database } from "../../firebase";
+import { ref, update, get, query, orderByChild, equalTo, runTransaction } from "firebase/database";
+import { database, auth } from "../../firebase";
 import { unhideUpdate } from "./hiddenProductsCore";
 import { usePermissions } from "../PermissionsContext";
 import HiddenProducts, { HoldSpot } from "./HiddenProducts";
@@ -67,6 +67,9 @@ import { searchTerms, matchesSearch } from "./missingSearch";
 import { primaryPhotoUrl } from "../../utils/primaryPhoto";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { setUpdateBusy } from "../../update/updateChecker";
+import { owedBySize, figureChanged, productAtCentral, owedIndex } from "./missingFigures";
+import { decodeSizeKey } from "../../utils/sizeKey";
+import { serverNowMs } from "../../utils/serverTime";
 
 // The division shown first, and the order of the switch: Marathon, Concrete.
 const DIVISION_ORDER = [2, 1];
@@ -87,6 +90,36 @@ const bucketId = (section, kind) => `${section}:${kind}`;
 // section, "marathon" for every other (divisionMark.js).
 const listKindOf = (network, sec) => (sec === concreteSection(network) ? "concrete" : "marathon");
 
+// ── THE SOLVE CLAIM (Junid, 24 Nov 2026) ─────────────────────────────────────
+// /settings/missingSolveClaims/{pid} — held for the length of one Solve (a
+// second or two), never longer than CLAIM_MS even if a phone dies mid-solve.
+// It decides nothing about stock: it only says "someone is solving this now".
+export const SOLVE_CLAIMS_PATH = "settings/missingSolveClaims";
+export const CLAIM_MS = 30000;
+export async function claimSolve(pid, token) {
+  const now = serverNowMs();
+  const r = await runTransaction(ref(database, `${SOLVE_CLAIMS_PATH}/${pid}`), (cur) => {
+    if (cur && cur.token !== token && Number(cur.at) > now - CLAIM_MS) return undefined;   // someone else holds it
+    return { token, at: now, by: auth.currentUser?.uid || null };
+  });
+  return !!(r && r.committed && r.snapshot?.val()?.token === token);
+}
+export async function releaseSolveClaim(pid, token) {
+  await runTransaction(ref(database, `${SOLVE_CLAIMS_PATH}/${pid}`), (cur) => (cur && cur.token === token ? null : undefined));
+}
+// One product, live: its cells at `source` (decoded, as the screen holds them)
+// and every request record for it (the productId index — never a whole node).
+export async function readLiveProduct(source, pid) {
+  const [cellsSnap, reqSnap] = await Promise.all([
+    get(ref(database, `stock/${source}/${pid}`)),
+    get(query(ref(database, "refill_requests"), orderByChild("productId"), equalTo(pid))),
+  ]);
+  const cells = {};
+  for (const [k, c] of Object.entries(cellsSnap.val() || {})) cells[decodeSizeKey(k)] = c;
+  const reqs = Object.entries(reqSnap.val() || {}).map(([id, r]) => ({ id, ...r }));
+  return { cells, reqs };
+}
+
 export default function MissingProductsScreen({ products: rawProducts = [], onExit, onOpenEnginePolicy = null }) {
   const { registry: network, sections: mySections } = useMySections();
   // WHICH DIVISION A PRODUCT BELONGS TO (Junid, 23 Nov 2026): the two small
@@ -97,7 +130,7 @@ export default function MissingProductsScreen({ products: rawProducts = [], onEx
   const marksSettled = concreteIdx.settled && marathonIdx.settled;
   const marksError = !!(concreteIdx.error || marathonIdx.error);
   const products = useMemo(() => withDivisionMarks(rawProducts, concreteIdx.value, marathonIdx.value, marksSettled && !marksError), [rawProducts, concreteIdx.value, marathonIdx.value, marksSettled, marksError]);
-  const allStock = useStockCells();
+  const allStockLive = useStockCells();
   const targetsState = useStockTargetsState();
   const hiddenMap = useHiddenMissingProducts();
   const reqState = usePathState("refill_requests");
@@ -120,7 +153,41 @@ export default function MissingProductsScreen({ products: rawProducts = [], onEx
   const seats = useMemo(() => ({ [DIVISION_SHOPS[0]]: seatsA.value || NONE, [DIVISION_SHOPS[1]]: seatsB.value || NONE }), [seatsA.value, seatsB.value]);
   const seatsSettled = !needSeats || (seatsA.settled && seatsB.settled);
   const seatsError = needSeats && !!(seatsA.error || seatsB.error);
-  const requests = useMemo(() => (reqState.value ? Object.entries(reqState.value).map(([id, r]) => ({ id, ...r })) : []), [reqState.value]);
+  const requestsLive = useMemo(() => (reqState.value ? Object.entries(reqState.value).map(([id, r]) => ({ id, ...r })) : []), [reqState.value]);
+  // LIVE AT THE TAP (Junid, 24 Nov 2026 — "the numbers must be 100% accurate"):
+  // when Solve's live read finds Central's cells or this product's requests
+  // differ from what the screen holds, those live values are laid over the
+  // screen's for that product at once, so its card redraws on the correct
+  // figure without waiting for the feed. An entry is dropped as soon as the
+  // feed itself says the same (or after a minute, whichever is first).
+  const [liveFix, setLiveFix] = useState({});   // pid → { cells, reqs, at }
+  const { allStock, requests } = useMemo(() => {
+    const pids = Object.keys(liveFix);
+    if (!pids.length) return { allStock: allStockLive, requests: requestsLive };
+    const central = { ...(allStockLive?.central || {}) };
+    for (const pid of pids) central[pid] = liveFix[pid].cells;
+    const fixed = new Set(pids);
+    return {
+      allStock: { ...allStockLive, central },
+      requests: [...requestsLive.filter((r) => !fixed.has(r.productId)), ...pids.flatMap((pid) => liveFix[pid].reqs)],
+    };
+  }, [allStockLive, requestsLive, liveFix]);
+  useEffect(() => {
+    const pids = Object.keys(liveFix);
+    if (!pids.length) return undefined;
+    const done = pids.filter((pid) => {
+      const f = liveFix[pid];
+      if (Date.now() - f.at > 60000) return true;
+      const routes = cfgState.raw?.routes || {};
+      const same = !figureChanged({ dests: [{ sizes: Object.keys({ ...(allStockLive?.central?.[pid] || {}), ...f.cells }) }] },
+        { cells: allStockLive?.central?.[pid] || {}, owed: owedBySize(requestsLive, pid, { routes }) },
+        { cells: f.cells, owed: owedBySize(f.reqs, pid, { routes }) });
+      return same;
+    });
+    if (done.length) setLiveFix((m) => { const n = { ...m }; for (const pid of done) delete n[pid]; return n; });
+    const t = setTimeout(() => setLiveFix((m) => ({ ...m })), 61000);
+    return () => clearTimeout(t);
+  }, [liveFix, allStockLive, requestsLive]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Never count against a half-loaded /stock: a zero then would say "nothing
   // is missing" at the moment nothing is known.
@@ -186,7 +253,8 @@ export default function MissingProductsScreen({ products: rawProducts = [], onEx
       {divisions.map((sec) => <Engine key={sec} section={sec} shared={shared} box={apisBox} report={report} />)}
       <Body apis={apisBox.current} flags={flags} divisions={divisions} network={network} products={products} allStock={allStock} targets={targetsState}
         hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled && seatsSettled && marksSettled} requestsError={!!reqState.error || seatsError || marksError} seats={seats} cfg={cfg} cfgSettled={cfgState.settled}
-        heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} onOpenEnginePolicy={onOpenEnginePolicy} />
+        heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} onOpenEnginePolicy={onOpenEnginePolicy}
+        liveFix={liveFix} setLiveFix={setLiveFix} />
     </>
   );
 }
@@ -202,7 +270,7 @@ function Engine({ section, shared, box, report }) {
     solvedSession: shared.solvedSession, setSolvedSession: shared.setSolvedSession,
     resolving: shared.resolving[section] || NONE, setResolving: shared.setResolvingFor(section),
   });
-  const sneaker = useSneakerRequest({ products: shared.products, section, cards: shared.cards[section]?.sneakers || [], onQueued: NOOP, targets: shared.targetsState.value });
+  const sneaker = useSneakerRequest({ products: shared.products, section, cards: shared.cards[section]?.sneakers || [], onQueued: NOOP, targets: shared.targetsState.value, allStock: shared.allStock });
   box.current[section] = { product: product.api, sneaker: sneaker.api };
   const ready = !!(product.api.ready && sneaker.api.ready);
   const canAct = !!product.api.canAct;
@@ -211,7 +279,7 @@ function Engine({ section, shared, box, report }) {
   return null;
 }
 
-function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, requestsError, seats, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit, onOpenEnginePolicy }) {
+function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, requestsError, seats, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit, onOpenEnginePolicy, liveFix = NONE, setLiveFix = NOOP }) {
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const [pick, setPick] = useState(null);
   // THE DIVISION THIS PERSON OPENS ON (Junid, 24 Nov 2026): their own
@@ -237,6 +305,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
 
   const label = useCallback((loc) => SHORT[loc] || nameOf(loc, network), [network]);
   const reqByPid = useMemo(() => openRequestsByProduct(requests), [requests]);
+  // What Central still owes, per product and size (missingFigures.js) — one pass.
+  const owedAll = useMemo(() => owedIndex(requests, { routes: cfg?.routes || {}, central }), [requests, cfg, central]);
 
   // ── THE ROWS: every card asked, before it is drawn, what a tap would send ──
   const apisRef = useRef(apis); apisRef.current = apis;
@@ -247,7 +317,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const ctx = useRef(null);
   // Where each product has ANY open request (fully sent or not): ownership.
   const openAt = useMemo(() => openLocationsByProduct(requests), [requests]);
-  ctx.current = { byId, allStock, targets: targets.value, reqByPid, openAt, cfg, network, central, label, seats };
+  ctx.current = { byId, allStock, targets: targets.value, reqByPid, openAt, cfg, network, central, label, seats, requests, liveFix };
   const buckets = useMemo(() => divisions.flatMap((sec) => [
     {
       id: bucketId(sec, "sneakers"), cards: cards[sec].sneakers,
@@ -255,7 +325,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
         const c = ctx.current, api = apisRef.current[sec].sneaker;
         const open = c.reqByPid.get(card.pid);
         const d = decideSneakerRow({
-          card, section: sec, dests: api.destinations, planFor: api.planFor, blocked: !!api.notLive, central: c.central, nameOf: c.label,
+          card, section: sec, dests: api.destinations, blocked: !!api.notLive, central: c.central, nameOf: c.label,
+          // (a product whose live values are laid over the feed plans from them)
+          planFor: c.liveFix[card.pid] ? (cd, hub) => api.planFor(cd, hub, c.requests) : api.planFor,
           hasPolicy: api.hasPolicy, requested: !!open && Object.keys(open).length > 0,
           // Hub 1 and Hub 2 never share a sneaker: the same test the write
           // makes (cells, target rows and open requests at the OTHER hub),
@@ -303,8 +375,22 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // promised, so no list is built — the screen says so and offers a Retry.
   const ready = stockReady && requestsSettled && !requestsError && cfgSettled && targets.settled && enginesReady;
   // Anything a plan reads. A new identity means "work the rows out again".
-  const version = useMemo(() => ({}), [buckets, allStock, requests, cfg, targets.value, heldLines, products, network, canAct, seats]);
-  const sliced = useSlicedRows({ buckets, active, version, ready });
+  const version = useMemo(() => ({}), [buckets, allStock, requests, cfg, targets.value, heldLines, products, network, canAct, seats, liveFix]);
+  // The products whose own figures just moved: rebuilt at once (useSlicedRows `hot`).
+  const prevSig = useRef(null);
+  const hot = useMemo(() => {
+    const sig = new Map();
+    for (const [pid, cells] of Object.entries(allStock?.[central] || {})) sig.set(pid, JSON.stringify(cells));
+    for (const [pid, o] of owedAll) sig.set(pid, `${sig.get(pid) || ""}|${JSON.stringify(o)}`);
+    const prev = prevSig.current;
+    prevSig.current = sig;
+    if (!prev) return null;
+    const out = [];
+    for (const [k, v] of sig) if (prev.get(k) !== v) out.push(k);
+    for (const k of prev.keys()) if (!sig.has(k)) out.push(k);
+    return out.length && out.length <= 300 ? out : null;   // a mass change is the full pass's job
+  }, [allStock, owedAll, central]);
+  const sliced = useSlicedRows({ buckets, active, version, ready, hot });
 
   // ── OFF THE LIST FOR THIS VISIT: solved here, or hidden here ───────────────
   const [gone, setGone] = useState({});       // row key → true
@@ -356,7 +442,10 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       const centralUnits = Object.entries(allStock?.[central]?.[pid] || {}).reduce((t, [k, c]) => (k === "_meta" ? t : t + Math.max(Number(c?.qty) || 0, 0)), 0);
       if (centralUnits > 0) stranded.push({ pid, centralUnits });
     }
-    return notListedRows({ stranded, listedPids, whyByPid, hiddenMap, byId, listKind: listKindOf(network, sec), allStock, locations: strandedBy[sec].locations, openPids: openPidsBy[sec], heldAt, paused });
+    // "Central N" here means what it means on a card: units at Central FREE to
+    // send; what open requests already own is said beside it as "promised".
+    return notListedRows({ stranded, listedPids, whyByPid, hiddenMap, byId, listKind: listKindOf(network, sec), allStock, locations: strandedBy[sec].locations, openPids: openPidsBy[sec], heldAt, paused })
+      .map((r) => { const f = productAtCentral(allStock?.[central]?.[r.pid], owedAll.get(r.pid)); return { ...r, centralFree: f.free, centralOwed: f.owed }; });
   };
 
   // A card solved or hidden here stays off until the DATA no longer lists it;
@@ -539,10 +628,56 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       say({ ok: false, text: problem });
       return;
     }
+    // ── ONE SOLVE OF A PRODUCT AT A TIME, ON EVERY DEVICE (Junid, 24 Nov 2026)
+    // A short claim, taken in a transaction before anything is read: a second
+    // person tapping Solve on the same product meanwhile is told so and sends
+    // nothing. When the first solve's requests land, its units are owed — they
+    // leave the second person's card through the request feed.
+    const token = `${auth.currentUser?.uid || "anon"}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const release = () => releaseSolveClaim(row.pid, token).catch(() => {});
+    let claimed = false;
+    try { claimed = await claimSolve(row.pid, token); } catch (e) { problem = `Couldn't check whether someone else is solving this — nothing sent, retry. (${e?.message || "error"})`; }
+    if (!problem && !claimed) problem = "Someone else is solving this product right now — nothing sent. Look again in a moment.";
+    // ── THE CARD'S NUMBER, CHECKED LIVE AT THE TAP ───────────────────────────
+    // Central's cells (or the hub's, for a hub-fed card) and this product's
+    // open requests, read now. If the figure the card was drawn from differs
+    // in any size, nothing is sent: the card is redrawn on the live figure
+    // and the person decides again.
+    let expect = null, liveOpen = null;
+    if (!problem) {
+      try {
+        const live = await readLiveProduct(row.source, row.pid);
+        const routes = c.cfg?.routes || {};
+        const fromCentral = row.source === c.central;
+        const owedNow = fromCentral ? owedBySize(live.reqs, row.pid, { routes, central: c.central }) : {};
+        const changed = figureChanged(row,
+          { cells: c.allStock?.[row.source]?.[row.pid] || {}, owed: fromCentral ? owedBySize(c.requests, row.pid, { routes, central: c.central }) : {} },
+          { cells: live.cells, owed: owedNow });
+        if (changed) {
+          if (fromCentral) setLiveFix((m) => ({ ...m, [row.pid]: { cells: live.cells, reqs: live.reqs, at: Date.now() } }));
+          problem = `${row.sourceName} now has ${changed.now.total} free, not ${changed.was.total} — nothing sent. The card shows the live number; check it and Solve again.`;
+        } else {
+          // Solve may send ONLY what the card shows: the hooks refuse a plan
+          // that differs from this, and plan from these same live requests.
+          expect = Object.fromEntries(row.dests.filter((d) => sel.includes(d.id)).map((d) => [d.id, { units: d.units, sizes: d.sizes }]));
+          liveOpen = live.reqs;
+        }
+      } catch (e) {
+        problem = `Couldn't read the live stock — nothing sent, retry. (${e?.message || "error"})`;
+      }
+    }
+    if (problem) {
+      if (claimed) release();
+      inFlight.current.delete(row.pid);
+      setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
+      say({ ok: false, text: problem });
+      return;
+    }
     const api = apisRef.current[row.section];
     let res;
-    try { res = row.kind === "sneakers" ? await api.sneaker.solveTo(row.card, sel[0]) : await api.product.solveTo(row.card, sel); }
+    try { res = row.kind === "sneakers" ? await api.sneaker.solveTo(row.card, sel[0], { expect: expect[sel[0]], liveRequests: liveOpen }) : await api.product.solveTo(row.card, sel, { expect, liveRequests: liveOpen }); }
     catch (e) { res = { ok: false, msg: `Nothing changed — retry. (${e?.message || "error"})` }; }
+    finally { release(); }
     inFlight.current.delete(row.pid);
     setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
     if (!res || !res.ok) { say({ ok: false, text: res?.msg || "Nothing was sent." }); return; }   // the card stays put, choice kept

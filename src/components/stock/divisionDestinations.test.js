@@ -96,17 +96,17 @@ const body = (src, start) => { const a = src.indexOf(start); return src.slice(a,
 
 describe("Confirm asks destinationProblem of the payload it is about to write", () => {
   it("the sneaker request: refused before the plan, the live read and the update — on both writers", () => {
-    const solve = body(FOOT, "  const solve = async (card, only = null) => {");
+    const solve = body(FOOT, "  const solve = async (card, only = null, opts = {}) => {");
     const gate = solve.indexOf('destinationProblem({ network, section, destinations: picked, kind: "sneaker" })');
     expect(gate).toBeGreaterThan(-1);
-    for (const later of ["solveDivision(card, picked, !!only)", "readPathOnce(", "update(ref(database)"]) expect(solve.indexOf(later)).toBeGreaterThan(gate);
-    const division = body(FOOT, "  const solveDivision = async (card, hubs, oneTap = false) => {");
+    for (const later of ["solveDivision(card, picked, !!only, opts)", "readPathOnce(", "update(ref(database)"]) expect(solve.indexOf(later)).toBeGreaterThan(gate);
+    const division = body(FOOT, "  const solveDivision = async (card, hubs, oneTap = false, opts = {}) => {");
     const gate2 = division.indexOf('destinationProblem({ network, section, destinations: hubs, kind: "sneaker" })');
     expect(gate2).toBeGreaterThan(-1);
     for (const later of ["readPathOnce(", "httpsCallable(", "update(ref(database)"]) expect(division.indexOf(later)).toBeGreaterThan(gate2);
   });
   it("the clothing Solve: refused before the optimistic hide, every read and the update", () => {
-    const solve = body(NET, "  const solve = async (card, only = null) => {");
+    const solve = body(NET, "  const solve = async (card, only = null, opts = {}) => {");
     const gate = solve.indexOf('destinationProblem({ network, section: division, destinations: ticks, kind: "product" })');
     expect(gate).toBeGreaterThan(-1);
     for (const later of ['setResolving((m) => ({ ...m, [card.pid]: "pending" }))', "readOpenLocks(card.pid)", "await update(ref(database), updates)"]) expect(solve.indexOf(later)).toBeGreaterThan(gate);
