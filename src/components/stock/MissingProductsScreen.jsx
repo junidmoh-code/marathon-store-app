@@ -94,6 +94,11 @@ const listKindOf = (network, sec) => (sec === concreteSection(network) ? "concre
 // /settings/missingSolveClaims/{pid} — held for the length of one Solve (a
 // second or two), never longer than CLAIM_MS even if a phone dies mid-solve.
 // It decides nothing about stock: it only says "someone is solving this now".
+// What the feed (or a live read) says about ONE product's Central figure.
+const sigOf = (cells, owed) => JSON.stringify([Object.entries(cells || {}).filter(([k]) => k !== "_meta").map(([k, c]) => [k, Math.max(Number(c?.qty) || 0, 0)]).sort(), Object.entries(owed || {}).sort()]);
+function feedSigOf(stock, requests, pid, routes) { return sigOf(stock?.central?.[pid], owedBySize(requests, pid, { routes })); }
+function liveSigOf(fix, pid, routes) { return sigOf(fix.cells, owedBySize(fix.reqs, pid, { routes })); }
+
 export const SOLVE_CLAIMS_PATH = "settings/missingSolveClaims";
 export const CLAIM_MS = 30000;
 export async function claimSolve(pid, token) {
@@ -175,14 +180,15 @@ export default function MissingProductsScreen({ products: rawProducts = [], onEx
   useEffect(() => {
     const pids = Object.keys(liveFix);
     if (!pids.length) return undefined;
+    // Dropped as soon as the FEED moves for that product (it then knows at
+    // least as much as the tap's read did) or says the same — never held over
+    // a newer feed value (Sonnet architect review, PR #990).
     const done = pids.filter((pid) => {
       const f = liveFix[pid];
       if (Date.now() - f.at > 60000) return true;
       const routes = cfgState.raw?.routes || {};
-      const same = !figureChanged({ dests: [{ sizes: Object.keys({ ...(allStockLive?.central?.[pid] || {}), ...f.cells }) }] },
-        { cells: allStockLive?.central?.[pid] || {}, owed: owedBySize(requestsLive, pid, { routes }) },
-        { cells: f.cells, owed: owedBySize(f.reqs, pid, { routes }) });
-      return same;
+      const feedNow = feedSigOf(allStockLive, requestsLive, pid, routes);
+      return feedNow !== f.feedSig || feedNow === liveSigOf(f, pid, routes);
     });
     if (done.length) setLiveFix((m) => { const n = { ...m }; for (const pid of done) delete n[pid]; return n; });
     const t = setTimeout(() => setLiveFix((m) => ({ ...m })), 61000);
@@ -254,7 +260,7 @@ export default function MissingProductsScreen({ products: rawProducts = [], onEx
       <Body apis={apisBox.current} flags={flags} divisions={divisions} network={network} products={products} allStock={allStock} targets={targetsState}
         hiddenMap={hiddenMap} requests={requests} requestsSettled={reqState.settled && seatsSettled && marksSettled} requestsError={!!reqState.error || seatsError || marksError} seats={seats} cfg={cfg} cfgSettled={cfgState.settled}
         heldLines={heldLines} stockReady={stockReady} walked={walked} cards={cards} central={CENTRAL} onExit={onExit} onOpenEnginePolicy={onOpenEnginePolicy}
-        liveFix={liveFix} setLiveFix={setLiveFix} />
+        liveFix={liveFix} setLiveFix={setLiveFix} allStockFeed={allStockLive} requestsFeed={requestsLive} />
     </>
   );
 }
@@ -279,7 +285,7 @@ function Engine({ section, shared, box, report }) {
   return null;
 }
 
-function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, requestsError, seats, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit, onOpenEnginePolicy, liveFix = NONE, setLiveFix = NOOP }) {
+function Body({ apis, flags, divisions, network, products, allStock, targets, hiddenMap, requests, requestsSettled, requestsError, seats, cfg, cfgSettled, heldLines, stockReady, walked, cards, central, onExit, onOpenEnginePolicy, liveFix = NONE, setLiveFix = NOOP, allStockFeed = null, requestsFeed = null }) {
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const [pick, setPick] = useState(null);
   // THE DIVISION THIS PERSON OPENS ON (Junid, 24 Nov 2026): their own
@@ -317,7 +323,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const ctx = useRef(null);
   // Where each product has ANY open request (fully sent or not): ownership.
   const openAt = useMemo(() => openLocationsByProduct(requests), [requests]);
-  ctx.current = { byId, allStock, targets: targets.value, reqByPid, openAt, cfg, network, central, label, seats, requests, liveFix };
+  ctx.current = { byId, allStock, targets: targets.value, reqByPid, openAt, cfg, network, central, label, seats, requests, liveFix, allStockFeed: allStockFeed || allStock, requestsFeed: requestsFeed || requests };
   const buckets = useMemo(() => divisions.flatMap((sec) => [
     {
       id: bucketId(sec, "sneakers"), cards: cards[sec].sneakers,
@@ -587,6 +593,19 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       || destinationProblem({ network: c.network, section: row.section, destinations: sel, kind: kindOf });
     inFlight.current.add(row.pid);
     setBusy((b) => ({ ...b, [row.key]: true }));
+    // ── ONE SOLVE OF A PRODUCT AT A TIME, ON EVERY DEVICE (Junid, 24 Nov 2026)
+    // A short claim, taken in a transaction BEFORE every live read below (the
+    // division marks, the one-owner check, the stock): a second person
+    // tapping Solve on the same product meanwhile is told so and sends
+    // nothing, and once the first solve has written, the second reads its
+    // requests (and its owner) in everything it checks.
+    const token = `${auth.currentUser?.uid || "anon"}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const release = () => releaseSolveClaim(row.pid, token).catch(() => {});
+    let claimed = false;
+    if (!problem) {
+      try { claimed = await claimSolve(row.pid, token); } catch (e) { problem = `Couldn't check whether someone else is solving this — nothing sent, retry. (${e?.message || "error"})`; }
+      if (!problem && !claimed) problem = "Someone else is solving this product right now — nothing sent. Look again in a moment.";
+    }
     // ONE OWNER, CHECKED LIVE (Pine / Concrete): a stale screen — another
     // device solved it to the other shop a minute ago — must not write a
     // second shop. Read now, per product: stock and seat at the other shop,
@@ -622,22 +641,6 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
         if (now.length !== sel.length || now.some((d, i) => d !== sel[i])) problem = "The choice changed — check it and Solve again.";
       }
     }
-    if (problem) {
-      inFlight.current.delete(row.pid);
-      setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
-      say({ ok: false, text: problem });
-      return;
-    }
-    // ── ONE SOLVE OF A PRODUCT AT A TIME, ON EVERY DEVICE (Junid, 24 Nov 2026)
-    // A short claim, taken in a transaction before anything is read: a second
-    // person tapping Solve on the same product meanwhile is told so and sends
-    // nothing. When the first solve's requests land, its units are owed — they
-    // leave the second person's card through the request feed.
-    const token = `${auth.currentUser?.uid || "anon"}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const release = () => releaseSolveClaim(row.pid, token).catch(() => {});
-    let claimed = false;
-    try { claimed = await claimSolve(row.pid, token); } catch (e) { problem = `Couldn't check whether someone else is solving this — nothing sent, retry. (${e?.message || "error"})`; }
-    if (!problem && !claimed) problem = "Someone else is solving this product right now — nothing sent. Look again in a moment.";
     // ── THE CARD'S NUMBER, CHECKED LIVE AT THE TAP ───────────────────────────
     // Central's cells (or the hub's, for a hub-fed card) and this product's
     // open requests, read now. If the figure the card was drawn from differs
@@ -654,12 +657,20 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
           { cells: c.allStock?.[row.source]?.[row.pid] || {}, owed: fromCentral ? owedBySize(c.requests, row.pid, { routes, central: c.central }) : {} },
           { cells: live.cells, owed: owedNow });
         if (changed) {
-          if (fromCentral) setLiveFix((m) => ({ ...m, [row.pid]: { cells: live.cells, reqs: live.reqs, at: Date.now() } }));
+          if (fromCentral) setLiveFix((m) => ({ ...m, [row.pid]: { cells: live.cells, reqs: live.reqs, at: Date.now(), feedSig: feedSigOf({ central: c.allStockFeed?.central }, c.requestsFeed, row.pid, routes) } }));
           problem = `${row.sourceName} now has ${changed.now.total} free, not ${changed.was.total} — nothing sent. The card shows the live number; check it and Solve again.`;
         } else {
           // Solve may send ONLY what the card shows: the hooks refuse a plan
           // that differs from this, and plan from these same live requests.
           expect = Object.fromEntries(row.dests.filter((d) => sel.includes(d.id)).map((d) => [d.id, { units: d.units, sizes: d.sizes }]));
+          // Two shops in one Solve (Marathon PE + Trophy): the card's buttons
+          // are each planned alone, the send plans them TOGETHER (the second
+          // gets what the first leaves). What is expected is that joint plan,
+          // worked out here from the same live data the card was checked on.
+          if (row.kind === "clothing" && sel.length > 1) {
+            const joint = apisRef.current[row.section]?.product.planFor(row.card, sel, openRequestsByProduct(live.reqs).get(row.pid) || {});
+            for (const l of joint?.lines || []) if (expect[l.store]) expect[l.store] = { units: l.units || 0, sizes: expect[l.store].sizes, joint: true };
+          }
           liveOpen = live.reqs;
         }
       } catch (e) {
@@ -675,7 +686,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     }
     const api = apisRef.current[row.section];
     let res;
-    try { res = row.kind === "sneakers" ? await api.sneaker.solveTo(row.card, sel[0], { expect: expect[sel[0]], liveRequests: liveOpen }) : await api.product.solveTo(row.card, sel, { expect, liveRequests: liveOpen }); }
+    try { if (!api) throw new Error("this list is not ready"); res = row.kind === "sneakers" ? await api.sneaker.solveTo(row.card, sel[0], { expect: expect[sel[0]], liveRequests: liveOpen }) : await api.product.solveTo(row.card, sel, { expect, liveRequests: liveOpen }); }
     catch (e) { res = { ok: false, msg: `Nothing changed — retry. (${e?.message || "error"})` }; }
     finally { release(); }
     inFlight.current.delete(row.pid);

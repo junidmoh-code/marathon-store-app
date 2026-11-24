@@ -11,7 +11,8 @@ describe("what a Central figure counts", () => {
     expect(owedByCentral(req({ status: "fulfilled" }))).toBe(0);
     expect(owedByCentral(req({ requestingLocation: "trophy", createdFrom: { source: "hub2" } }))).toBe(0);
     expect(owedByCentral(req({ requestingLocation: "trophy", createdFrom: null }), { trophy: "hub2" })).toBe(0);
-    expect(owedByCentral(req({ requestingLocation: "hub3", createdFrom: null }), {})).toBe(2);   // unrouted hub → Central
+    expect(owedByCentral(req({ requestingLocation: "hub1", createdFrom: null }), { hub1: "central" })).toBe(2);   // routed from Central
+    expect(owedByCentral(req({ requestingLocation: "hub3", createdFrom: null }), {})).toBe(0);   // the card's rule: unstamped + unrouted is not counted
   });
   it("free = on hand − owed, floored per size; 5.5-style sizes key the same on both sides", () => {
     const owed = owedBySize([req({ qty: 4 }), req({ size: "8.5", qty: 1 }), req({ size: "9", qty: 3 })], "p1");

@@ -1155,10 +1155,17 @@ export function useProductSolve({ products = [], category = "all", allStock = {}
       // SOLVE SENDS WHAT THE CARD SHOWS: a different number of units for any
       // shop is refused before anything is written.
       if (opts.expect) {
-        const off = plan.lines.find((l) => opts.expect[l.store] && Number(l.units || 0) !== Number(opts.expect[l.store].units || 0));
+        const sizesOf = (l) => (l.got || []).map((g) => String(g.size)).sort().join("|");
+        const off = plan.lines.find((l) => {
+          const e = opts.expect[l.store];
+          if (!e) return false;
+          if (Number(l.units || 0) !== Number(e.units || 0)) return true;
+          // a shop fed straight from Central: the very sizes the card named
+          return !l.hub && !e.joint && Array.isArray(l.got) && sizesOf(l) !== (e.sizes || []).map(String).sort().join("|");
+        });
         if (off || plan.lines.length !== Object.keys(opts.expect).length) {
           const msg = off
-            ? `Solve would now send ${off.units || 0} to ${LOC_LABEL[off.store] || off.store}, not the ${opts.expect[off.store].units} the card showed — nothing sent. Check the card and Solve again.`
+            ? `Solve would now send ${off.units || 0} to ${LOC_LABEL[off.store] || off.store} (the card showed ${opts.expect[off.store].units}) — nothing sent. Check the card and Solve again.`
             : "The numbers changed while you were looking — nothing sent. Check the card and Solve again.";
           setSolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
           setResolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });

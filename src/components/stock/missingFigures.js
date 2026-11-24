@@ -21,10 +21,16 @@ import { lockKeyFor } from "./firstBatchCore";
 
 const qty = (c) => Math.max(Number(c?.qty) || 0, 0);
 
-/** Which location supplies an open request: its stamped source, else its route, else Central. */
+/**
+ * Which location supplies an open request: its stamped source, else its route
+ * — THE SAME RULE the card's planner applies (firstBatchCore.
+ * centralReservedBySize). An unstamped request at an unrouted location is
+ * not counted by either; the daily check, whose truth assumes Central, would
+ * report such a product (every open request is stamped as of 24 Nov 2026).
+ */
 export function requestSource(r, routes = {}) {
   const stamped = r && r.createdFrom && typeof r.createdFrom === "object" ? r.createdFrom.source : null;
-  return stamped || routes?.[r?.requestingLocation] || "central";
+  return stamped || routes?.[r?.requestingLocation] || null;
 }
 
 /** Is this request still owed units by Central? → the units, else 0. */

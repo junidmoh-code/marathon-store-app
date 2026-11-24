@@ -1269,3 +1269,33 @@ describe("the numbers are exact (Junid, 24 Nov 2026)", () => {
     expect(toast(tree).kind).toBe("fail");
   });
 });
+
+describe("the numbers are exact — after the architect review (PR #990)", () => {
+  it("a live correction never hides a NEWER feed value: when the feed moves for that product, the card follows the feed", async () => {
+    const tree = await mount();
+    paths.stock = { ...paths.stock, central: { ...paths.stock.central, [SHOE_B]: { 8: cell(2), 9: cell(9) } } };
+    await tapDest(tree, SHOE_B, "hub1");                          // stale → overlay → Central 11
+    expect(stockLine(tree, SHOE_B)).toBe("Central 11");
+    // five seconds later someone else's request lands in the feed (and the feed now carries the sale too)
+    const st = baseStock(); st.central[SHOE_B] = { 8: cell(2), 9: cell(9) };
+    await act(async () => { emit("stock", st); emit("refill_requests", { z: sneakerReq({ productId: SHOE_B, size: "9", qty: 3, requestingLocation: "hub3" }) }); });
+    await act(async () => {}); await act(async () => {});
+    expect(stockLine(tree, SHOE_B)).toBe("Central 8");           // 2 + (9 − 3), not the overlay's 11
+  });
+
+  it("a refused solve releases its claim on every path", async () => {
+    const tree = await mount();
+    paths.stock = { ...paths.stock, central: { ...paths.stock.central, [SHOE_B]: { 8: cell(1), 9: cell(9) } } };
+    await tapDest(tree, SHOE_B, "hub1");                          // refused: stale
+    await act(async () => {});
+    expect(txnData["settings/missingSolveClaims/" + SHOE_B] ?? null).toBe(null);
+  });
+
+  it("the claim is taken BEFORE the one-owner and division reads, so a second solver reads the first one's writes", async () => {
+    const src = (await import("fs")).readFileSync(new URL("./MissingProductsScreen.jsx", import.meta.url), "utf8");
+    const solve = src.slice(src.indexOf("act.current.solve = async"), src.indexOf("act.current.division = async"));
+    const claimAt = solve.indexOf("await claimSolve(");
+    expect(claimAt).toBeGreaterThan(-1);
+    for (const later of ["await liveMarksOf(", "await shopOwnersNow(", "await readLiveProduct("]) expect(solve.indexOf(later)).toBeGreaterThan(claimAt);
+  });
+});
