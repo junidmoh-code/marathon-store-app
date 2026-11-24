@@ -643,8 +643,8 @@ export function useSneakerRequest({ products = [], section: sectionProp = null, 
     destinations: SOLVE_HUBS,
     solveTo: (card, hub) => solve(card, [hub]),
     planFor, pickRefusal,
-    // Does ANY of this shoe's sizes have a number at this hub? (No → the shoe
-    // is "Not listed: No policy" rather than a card — Junid 24 Nov 2026.)
+    // Does ANY of this shoe's sizes have a number at this hub? (No → the card
+    // reads "No policy yet" rather than being listed as something to send.)
     // Only Kids Shoes is ever "waiting for a policy" (Junid, 22 Nov 2026); any
     // other shoe with nothing to send is simply not listed. A policy read that
     // FAILED is unknown, never "no policy".
