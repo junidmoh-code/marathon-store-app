@@ -45,6 +45,24 @@ function world() {
 const rows = (q) => q._db.prepare(`SELECT id, kind, order_key, line_index, reason FROM ${CHASE_TABLE} ORDER BY id`).all();
 const mkQueue = () => { const sqlite = new DatabaseSync(":memory:"); const q = chaseQueueOver(sqlite); q._db = sqlite; return q; };
 
+describe("shelf holds (pickableStock.mjs): the agent sees the same shelves the router does", () => {
+  it("a shelf that rejected a website pick and has not moved since is not a place to re-pick at: the next place is asked", async () => {
+    const w = world();
+    // Marathon PE's piece was rejected for another order AFTER that cell last moved.
+    w.online_cell_holds = { GST: { XXL: { "marathon-pe": { at: Date.parse("2026-11-13T09:00:00Z"), kind: "shop_not_found", orderId: "2001", line: 0 } } } };
+    const f = fakeDb(w);
+    await runOrderAgent({ db: f.db, chase: mkQueue(), push: async () => ({ sent: true, delivered: 1 }), now: T("2026-11-14T11:30:00Z"), commit: true });
+    expect(f.read("online_orders/2085/agent").reason).toBe("Item unavailable — re-picking at Hub 2");
+  });
+  it("once that shelf has moved again the hold no longer applies", async () => {
+    const w = world();
+    w.online_cell_holds = { GST: { XXL: { "marathon-pe": { at: Date.parse("2026-11-12T09:00:00Z"), kind: "shop_not_found", orderId: "2001", line: 0 } } } };
+    const f = fakeDb(w);
+    await runOrderAgent({ db: f.db, chase: mkQueue(), push: async () => ({ sent: true, delivered: 1 }), now: T("2026-11-14T11:30:00Z"), commit: true });
+    expect(f.read("online_orders/2085/agent").reason).toBe("Item unavailable — re-picking at Marathon PE");
+  });
+});
+
 describe("one committed run", () => {
   it("re-pick asked for #2085, Jamie asked to follow up #2097, both places nudged then Junid told once for #2142, every order stamped", async () => {
     const f = fakeDb(world());
