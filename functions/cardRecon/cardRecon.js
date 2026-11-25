@@ -72,7 +72,7 @@ const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, canonicalTid, STANDARD_BANK, isPhotoPrimary, isPortalRecordTerminal, registeredRowFor } = require("../lib/card-terminals.cjs");
 const { isPortalDay } = require("../lib/card-portal.cjs");
-const { SB_READER_VERSION, planSbFiling, sequenceTidProof, typedCheck: sbTypedCheck } = require("../lib/card-sb-photo.cjs");
+const { SB_READER_VERSION, planSbFiling, sequenceTidProof, typedCheck: sbTypedCheck, typedStandsFor, sastYmd: sbSastYmd } = require("../lib/card-sb-photo.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { tillsFor } = require("../lib/network-registry.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
@@ -3026,6 +3026,31 @@ async function processReadJob(db, jobId, deps = {}) {
     console.warn(`CARD_RECON_PHOTO_NOT_READ ${job.label || job.pickedTid} ${job.dayYmd}: the typed total stands as ${fellBack.batchKey} — ${unreadReason(job, outcome)}`);
   } else if (!check && final === "unread") await markJobUnread(db, done, outcome, t);
   if (!check && final === "recorded") await resolveJobDay(db, done, outcome.batchKey, t);
+  // THE SLIP'S OWN DAY STILL HAS NO FIGURE (Junid, 25 Nov 2026 — lib/card-sb-
+  // photo.cjs typedStandsFor): the photo was an earlier day's report, or it
+  // has not been read within minutes. The typed total stands for the slip's
+  // day (recordTypedFallback refuses when that day already has a record, so a
+  // second run, or a day already answered, writes nothing).
+  if (!check && !(fellBack && fellBack.ok) && job.bank === STANDARD_BANK && Number.isInteger(job.typedCents)) {
+    try {
+      let recordedCloseYmd = null, recordedTotalCents = null;
+      if (final === "recorded" && outcome.batchKey) {
+        const slipNode = (await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${outcome.batchKey}/slip`).once("value")).val() || {};
+        recordedCloseYmd = sbSastYmd(Number(slipNode.closedAt));
+        recordedTotalCents = Number.isInteger(slipNode.totalCents) ? slipNode.totalCents : null;
+      }
+      const stands = typedStandsFor({
+        final, typedCents: job.typedCents, receivedAt: job.receivedAt, nowMs: t, jobDayYmd: job.dayYmd,
+        recordedCloseYmd, batchKey: outcome.batchKey || null, recordedTotalCents,
+      });
+      if (stands) {
+        const typedDay = await (deps.typedFallback || recordTypedFallback)(db, done, outcome, t, { ...deps, warning: stands.warning, photoReadStatus: stands.kind });
+        if (typedDay && typedDay.ok) console.warn(`CARD_RECON_TYPED_STANDS ${job.label || job.pickedTid} ${job.dayYmd}: ${stands.kind} — the typed total stands as ${typedDay.batchKey}`);
+      }
+    } catch (err) {
+      console.error(`cardBatchReadJob: typed total for ${job.dayYmd} failed for ${jobId}: ${err && err.message}`);
+    }
+  }
   if (!check) await noteStaffSlipRead(db, done, outcome, final, t);
   const updates = { [`${DUE_PATH}/${job.dueKey}`]: null };
   for (const [k, v] of Object.entries(patch)) updates[`${JOBS_PATH}/${jobId}/${k}`] = v;
@@ -3059,6 +3084,16 @@ async function noteStaffSlipRead(db, job, outcome, final, nowMs) {
     reason: outcome.reason ? String(outcome.reason).slice(0, 300) : null,
     batchKey: final === "recorded" && outcome.batchKey ? String(outcome.batchKey) : null,
   };
+  // THE DAY THE READ BATCH WAS FILED ON (25 Nov 2026): a Standard Bank slip
+  // photographed before the 18:50 settlement is the previous day's report —
+  // the POS shows this entry as answered there, not "being read" here.
+  if (read.batchKey) {
+    try {
+      const closedAt = (await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${read.batchKey}/slip/closedAt`).once("value")).val();
+      const filed = sbSastYmd(Number(closedAt));
+      if (filed) read.filedDayYmd = filed;
+    } catch { /* the note is best-effort */ }
+  }
   try {
     await db.ref(path).transaction((cur) => (cur === null ? null : { ...cur, read }));
   } catch (err) {
@@ -3083,6 +3118,34 @@ async function recordTypedFallback(db, job, outcome, nowMs, deps = {}) {
   if (dayStart !== null) {
     const onDay = (await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}`).orderByChild("slip/closedAt")
       .startAt(dayStart).endAt(dayStart + 24 * 60 * 60 * 1000 - 1).once("value")).val() || {};
+    // THIS JOB'S OWN TYPED FIGURE already stands (it stood after five minutes
+    // unread — typedStandsFor): the reader has now given up, so it is marked
+    // "photo not read" where it stands, never recorded twice.
+    // Found by its mark — or, if the mark's own write was lost after the
+    // record landed, by the record itself: a typed staff-slip record of this
+    // job's amount carrying the FROM TYPED TOTAL warning. (Architect review, #999.)
+    const isOwn = (r) => r && !r.displacedBy && ((r.fromTypedTotal && r.fromTypedTotal.jobId === job.jobId)
+      || (!r.fromTypedTotal && r.capturedVia === "typed" && r.declaredTotal && r.declaredTotal.via === "staff-slip"
+        && r.declaredTotal.cents === job.typedCents && (r.warnings || []).some((w) => /^FROM TYPED TOTAL/.test(String(w)))));
+    const ownKey = Object.keys(onDay).find((k) => isOwn(onDay[k]));
+    if (ownKey && deps.photoReadStatus) {
+      // Already standing. The photo has since been read as an earlier day's
+      // report: the label says so instead of "not read yet". Never a second record.
+      const own = onDay[ownKey];
+      const why = deps.photoReadStatus;
+      if (!own.fromTypedTotal || (own.fromTypedTotal.why === "not-read-yet" && why === "earlier-report")) {
+        await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${ownKey}`).transaction((cur) => (cur === null ? null
+          : { ...cur, fromTypedTotal: { why, jobId: job.jobId || null }, warnings: [...(cur.warnings || []), ...(deps.warning && why !== (cur.fromTypedTotal && cur.fromTypedTotal.why) ? [deps.warning] : [])] }));
+      }
+      return { ok: true, batchKey: ownKey, already: true };
+    }
+    if (ownKey && !deps.photoReadStatus) {
+      const why = unreadReason(job, outcome);
+      await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${ownKey}`).transaction((cur) => (cur === null ? null
+        : { ...cur, fromTypedTotal: { ...cur.fromTypedTotal, why: "photo-not-read" }, warnings: [...(cur.warnings || []), `PHOTO NOT READ — the end-of-day report photo could not be read, so the total typed on the Card Slip (${formatCents(job.typedCents)}) stands as this day's figure. Open the photo to check it. ${why}`] }));
+      await writePhotoRead(db, { storeId: job.storeId, pickedTid: job.pickedTid, batchKey: ownKey, typedCents: job.typedCents }, { status: "unread", reason: why }, nowMs);
+      return { ok: true, batchKey: ownKey };
+    }
     if (Object.values(onDay).some((r) => r && typeof r === "object" && !r.displacedBy)) {
       return { ok: false, reason: `${job.dayYmd} already has a record — the typed total is not recorded a second time` };
     }
@@ -3096,15 +3159,21 @@ async function recordTypedFallback(db, job, outcome, nowMs, deps = {}) {
   const drafted = await handleTypedCapture(db, request, {
     picked: job.pickedTid, terminal, nowMs: Number.isFinite(job.receivedAt) ? job.receivedAt : nowMs,
     slip: { photos: bufs.map((buffer) => ({ buffer })), bucket: deps.bucket || null },
-    extraWarnings: [`PHOTO NOT READ — the end-of-day report photo could not be read, so the total typed on the Card Slip (${formatCents(job.typedCents)}) stands as this day's figure. Open the photo to check it. ${why}`],
+    extraWarnings: [deps.warning || `PHOTO NOT READ — the end-of-day report photo could not be read, so the total typed on the Card Slip (${formatCents(job.typedCents)}) stands as this day's figure. Open the photo to check it. ${why}`],
   });
   if (!drafted || drafted.ok !== true) return { ok: false, reason: drafted && drafted.reason };
   const done = await handleSubmit(db, { auth: request.auth, data: { action: "submit", draftId: drafted.draftId } });
   if (!done || done.ok !== true) return { ok: false, reason: done && done.reason };
   // The record is in: from here nothing may turn it back into an Unread day.
   try {
-    await writePhotoRead(db, { storeId: job.storeId, pickedTid: job.pickedTid, batchKey: done.batchKey, typedCents: job.typedCents },
-      { status: "unread", reason: why }, nowMs);
+    // "From typed total" on the record (Junid, 25 Nov 2026): the POS shows
+    // the source in neutral text; the photo stays on the record.
+    await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${done.batchKey}`)
+      .transaction((cur) => (cur === null ? null : { ...cur, fromTypedTotal: { why: deps.photoReadStatus || "photo-not-read", jobId: job.jobId || null } }));
+    if (!deps.photoReadStatus) {
+      await writePhotoRead(db, { storeId: job.storeId, pickedTid: job.pickedTid, batchKey: done.batchKey, typedCents: job.typedCents },
+        { status: "unread", reason: why }, nowMs);
+    }
   } catch (err) {
     console.error(`cardBatchReadJob: photoRead note on ${done.batchKey} failed: ${err && err.message}`);
   }
