@@ -965,3 +965,82 @@ test("which floats a proof covers: the upload's SAST day only, and never a float
   assert.equal(proofCoversFloat(float("2026-10-26T12:01:00"), proof("2026-10-26T12:00:00", "2026-10-27T00:00:00")), false, "the payment is dated after the float was typed");
   assert.equal(proofCoversFloat({ ...float("2026-10-26T12:01:00"), amountCents: 190100 }, uploadedAtNoon), false, "another amount");
 });
+
+// ─── THE CAPITEC SKYQR PROOF — 25 Nov 2026 ───────────────────────────────────
+// The genuine Capitec "Payment Notification" (SkyQR immediate payment) Junid
+// uploaded was refused as "no reader". Sanitised lines (the account is the
+// fixture's Standard Bank account, configured below with its bank tag).
+const CAPITEC_SKYQR = [
+  "Payment Notification", "Capitec Bank Limited", "5 Neutron Road", "Techno Park", "Stellenbosch", "7600",
+  "SkyQR reference: 4000-4000-4a00", "Dear Sir/Madam",
+  "Please note that MARY SOAP has made an immediate payment, which is intended to reflect",
+  "instantly in the beneficiary's account.",
+  "Beneficiary Details", "Beneficiary Name concerte", "Account Number 10100008534", "Bank Standard Bank",
+  "Payment Details", "Payment Date 24/11/2026 12:34", "Amount R15 050.00", "Reference M SOAP", "IMPORTANT",
+  "Funds may be delayed due to processing at the beneficiary's bank.",
+  "24hr Client Care Centre 0860 10 20 43 E ClientCare@capitecbank.co.za W capitecbank.co.za",
+  "Capitec Bank is an authorised financial services (FSP46669) and registered credit provider (NCRCP13). Capitec Bank Limited Reg. No.: 1980/003695/06",
+  "Unique Document No.: 00000000-f1a5-4908-b450-000000000000 / 903 / V2.0 - 01/11/2024 Page 1 of 1",
+];
+const SB_ACCOUNTS = "62900004321,10100008534:standardbank:immediate";
+
+test("CAPITEC SKYQR: the genuine proof is registered by its SkyQR reference, into the Standard Bank account", async () => {
+  reset(); pdfLines = CAPITEC_SKYQR; secretValue = SB_ACCOUNTS;
+  const out = await upload(OWNER);
+  assert.equal(out.reader, "capitec");
+  assert.equal(out.bankRef, "4000-4000-4a00");
+  assert.equal(out.amountCents, 1505000);
+  assert.equal(out.synthetic, false);
+  const fp = paymentFingerprint({ reader: "capitec", bankRef: "4000-4000-4a00" });
+  assert.equal(out.key, approvedKeyOf(fp));
+  assert.equal(dbState.fingerprints[`eft_pool_fingerprints/${fp}`].spentBy, out.key);
+});
+
+test("CAPITEC SKYQR: into an account that is not configured, it still refuses (wrong-destination) — the check is not loosened", async () => {
+  reset(); pdfLines = CAPITEC_SKYQR; secretValue = "62900004321";
+  await rejects(upload(OWNER), "failed-precondition", "wrong-destination");
+  // …and a Standard Bank account configured as FNB is the wrong bank.
+  secretValue = "10100008534";
+  await rejects(upload(OWNER), "failed-precondition", "wrong-destination");
+  assert.deepEqual(dbState.fingerprints, {});
+});
+
+test("THE GATE names the field it could not read — never 'no reader' for a bank it knows", async () => {
+  reset(); secretValue = SB_ACCOUNTS;
+  pdfLines = CAPITEC_SKYQR.filter((l) => !/^SkyQR|^Unique Document/.test(l));
+  let e = await rejects(upload(OWNER), "failed-precondition", "no-identity");
+  assert.match(e.message, /bank transaction id/);
+  assert.deepEqual(e.details.missing, ["bank transaction id"]);
+  assert.equal(e.details.reader, "capitec");
+
+  pdfLines = CAPITEC_SKYQR.map((l) => (l.startsWith("Amount ") ? "Amount R15 050,0O" : l));
+  e = await rejects(upload(OWNER), "failed-precondition", "unreadable-proof");
+  assert.match(e.message, /amount/);
+  assert.deepEqual(e.details.missing, ["amount"]);
+
+  pdfLines = CAPITEC_SKYQR.filter((l) => !/^Account Number/.test(l));
+  e = await rejects(upload(OWNER), "invalid-argument", "no-reader");
+  assert.equal(e.details.detectedBank, "capitec", "the bank is still named from its footer");
+  assert.match(e.message, /Capitec/);
+  assert.match(e.message, /destination account number/);
+  assert.doesNotMatch(e.message, /has a reader for/);
+
+  pdfLines = ["Proof of Payment", "Thank you for shopping", "Total R15 050.00"];
+  e = await rejects(upload(OWNER), "invalid-argument", "no-reader");
+  assert.equal(e.details.detectedBank, null);
+  assert.match(e.message, /Could not tell which bank/);
+  assert.match(e.message, /float it by hand/);
+  assert.deepEqual(dbState.fingerprints, {});
+});
+
+test("THE GATE refuses as strictly as before: a doubled id, a doubled amount, two banks", async () => {
+  reset(); secretValue = SB_ACCOUNTS;
+  pdfLines = [...CAPITEC_SKYQR, "SkyQR reference: 1111-2222-3333"];
+  await rejects(upload(OWNER), "failed-precondition", "unreadable-proof");
+  pdfLines = [...CAPITEC_SKYQR, "Amount R1.00"];
+  await rejects(upload(OWNER), "failed-precondition", "unreadable-proof");
+  pdfLines = [...CAPITEC_SKYQR.map((l) => (l.startsWith("Please note") ? "Please note that MARY SOAP has made an immediate payment, which is intended to reflect" : l)), "www.absa.co.za"]
+    .map((l) => (l === "Payment Notification" ? "Notification" : l));
+  await rejects(upload(OWNER), "invalid-argument", "no-reader");
+  assert.deepEqual(dbState.fingerprints, {});
+});
