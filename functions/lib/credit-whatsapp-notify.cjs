@@ -173,7 +173,9 @@ async function customerMismatch(db, e) {
   const phones = new Set([saMobile(rec && rec.phone), saMobile(e.customerId)].filter(Boolean));
   if (rec && rec.phone && saMobile(rec.phone)) { if (saMobile(rec.phone) !== e.phone) return "phone_not_the_customers"; }
   else if (!phones.has(e.phone)) return "phone_not_the_customers";
-  if (rec && typeof rec.code === "string" && rec.code.trim() && rec.code.trim().toUpperCase() !== String(e.customerCode).trim().toUpperCase()) return "code_not_the_customers";
+  // The code (message text + the barcode link) must BE the record's — never
+  // taken on the entry's word, so a customer with no code on record gets none.
+  if (!rec || typeof rec.code !== "string" || rec.code.trim().toUpperCase() !== String(e.customerCode).trim().toUpperCase()) return "code_not_the_customers";
   return null;
 }
 
@@ -247,7 +249,11 @@ async function processEntry({ db, enqueueWhatsApp, queueId, approval, nowMs = Da
       return { outcome: "dropped", reason: "unusable_recipient" };
     }
     // Nothing was enqueued — release so the next sweep can claim again.
-    await claimRef.remove().catch((e) => log.error("creditWhatsApp: could not release claim:", queueId, e.message));
+    // Release only OUR claim: after a takeover the claim may be someone else's.
+    // (null on the cold first pass: RTDB runs the function against the cached
+    // value first, and an undefined there would abort before the real read.)
+    await claimRef.transaction((cur) => (cur == null || (cur.queueId === queueId && cur.claimedAt === now) ? null : undefined))
+      .catch((e) => log.error("creditWhatsApp: could not release claim:", queueId, e.message));
     log.error("creditWhatsApp: enqueue failed, claim released:", queueId, msg);
     return { outcome: "failed", reason: "enqueue_failed", error: err };
   }

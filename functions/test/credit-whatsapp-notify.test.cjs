@@ -241,13 +241,19 @@ for (const [why, rec, reason] of [
   });
 }
 
-test("no customer record: the phone must be the one the customer is keyed by", async () => {
+test("no customer record, or none with a code: nothing sent (the code is never taken on the entry's word)", async () => {
   const db = world();
   delete db.state.customers;
-  assert.equal((await notify(db, producer())).outcome, "sent");
+  assert.equal((await notify(db, producer())).reason, "code_not_the_customers");
+  const db1 = world();
+  db1.state.customers["0821234567"] = { name: "T" };
+  assert.equal((await notify(db1, producer())).reason, "code_not_the_customers");
   const db2 = world({ queue: { q1: entry({ phone: "+27831112222" }) } });
   delete db2.state.customers;
   assert.equal((await notify(db2, producer())).reason, "phone_not_the_customers");
+  const db3 = world();
+  db3.state.customers["0821234567"] = { name: "T", code: "C-2291" };   // no phone on record → the keyed phone
+  assert.equal((await notify(db3, producer())).outcome, "sent");
 });
 
 test("a transient enqueue failure releases the claim, keeps the entry, and the next sweep sends once", async () => {
@@ -273,7 +279,7 @@ test("the sweep throws after the run when an entry failed transiently (red in lo
 });
 
 test("a failed claim transaction sends nothing and keeps the entry", async () => {
-  const db = fakeDb({ users, pos: { credit_whatsapp_queue: { q1: entry() }, creditLedger: ledger("0821234567", "LT1") } }, { failTransactionFor: (p) => p.includes("credit_whatsapp_sent") });
+  const db = fakeDb({ users, customers, pos: { credit_whatsapp_queue: { q1: entry() }, creditLedger: ledger("0821234567", "LT1") } }, { failTransactionFor: (p) => p.includes("credit_whatsapp_sent") });
   const enq = producer();
   const r = await notify(db, enq);
   assert.equal(r.outcome, "failed");
