@@ -558,15 +558,21 @@ function capitecBankRef(lines) {
 // The SkyQR layout's sentence: "Please note that <PAYER> has made an immediate
 // payment, which is intended to reflect instantly in the beneficiary's
 // account." Read on the joined prose (the extraction wraps it). IMMEDIATE ONLY
-// BY THE BANK'S OWN PHRASE: the phrase must appear exactly once, and the
-// payer's name in front of it may not itself carry "payment" or "made" — so a
-// name cannot pose as the bank's words. Anything else: not immediate (null).
+// BY THE BANK'S OWN PHRASE: the phrase must appear exactly once, it must end
+// its sentence with nothing saying "has made" after it, and the payer's name
+// in front of it may not itself carry "payment" or "made" — so a name cannot
+// pose as the bank's words. Anything else: not immediate (null).
 function capitecSkyQrSentence(lines) {
   const prose = lines.map((l) => String(l ?? "").replace(/[\u00a0\u2007\u2009\u202f\t]/g, " ")).join(" ").replace(/ {2,}/g, " ");
   const phrase = /which is intended to reflect instantly in the beneficiary['’‘`]?s account/gi;
   if ((prose.match(phrase) || []).length !== 1) return { payer: null, immediate: false };
   const m = /Please note that (.{1,120}?) has made an immediate payment, which is intended to reflect instantly in the beneficiary['’‘`]?s account/i.exec(prose);
   if (!m || /payment|\bmade\b/i.test(m[1])) return { payer: null, immediate: false };
+  // The bank's phrase ENDS its sentence, and nothing after it says "has
+  // made" again: a name that carried the whole phrase would leave the
+  // bank's own (different) verb after it, and is refused here.
+  const rest = prose.slice(m.index + m[0].length);
+  if (!/^\s*\./.test(rest) || /\bhas made\b/i.test(rest)) return { payer: null, immediate: false };
   return { payer: m[1].trim(), immediate: true };
 }
 

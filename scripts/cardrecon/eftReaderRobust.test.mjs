@@ -75,11 +75,28 @@ describe("commit 1 — the issuing bank from strong evidence, not one heading", 
   it("evidence for TWO banks claims nothing — a guess between them is not a reading", () => {
     const both = [...CAPITEC_SKYQR_LINES, "www.absa.co.za"];
     expect(selectReaderByContent(both)).toBe(null);
+    // …from Capitec's own sender too: the poller's path asks only its reader.
+    expect(selectReader({ fromDomain: "capitecbank.co.za", lines: both })).toBe(null);
+    expect(evidenceClaims("capitec", both)).toBe(false);
+  });
+
+  it("a LAYOUT match decides first: an old-layout Capitec notice naming another bank's domain is still Capitec's", () => {
+    const old = [
+      "Payment Notification", "Capitec Bank",
+      "Please take note that Thabo made a payment to your account. The payment details are as follows:",
+      "Notification number 500001", "Account number 62900004321", "Amount R750.00", "Payment reference T NKOSI",
+      "Funds may be delayed. See www.absa.co.za for Absa clients.",
+    ];
+    expect(selectReaderByContent(old)?.id).toBe("capitec");
   });
 
   it("a Capitec letter that is not money in claims nothing, footer or not", () => {
     const failed = CAPITEC_SKYQR_LINES.map((l) => (l.startsWith("Please note that") ? "Please note that the payment by MARY SOAP was unsuccessful and has made no payment," : l));
     expect(evidenceClaims("capitec", failed)).toBe(false);
+    // The money-in sentence is there, but so is a refusal word: nothing.
+    for (const word of ["This payment was reversed.", "The payment was unsuccessful.", "Payment declined."]) {
+      expect(evidenceClaims("capitec", [...CAPITEC_SKYQR_LINES, word]), word).toBe(false);
+    }
     const noSentence = CAPITEC_SKYQR_LINES.filter((l) => !/made an immediate payment/.test(l));
     expect(evidenceClaims("capitec", noSentence)).toBe(false);
     const noAmount = CAPITEC_SKYQR_LINES.filter((l) => !/^Amount /.test(l));
@@ -180,6 +197,25 @@ describe("commit 2 — the Capitec SkyQR notification reads exactly", () => {
       .filter((l) => !/^instantly/.test(l));
     expect(cap.parse(regular).immediate).toBe(null);
     expect(cap.parse(regular).payer).toBe(null);
+    // A name carrying the WHOLE phrase, then the bank's own different verb:
+    // the phrase occurs once, but it is not the bank's — not immediate.
+    const wholePhrase = CAPITEC_SKYQR_LINES.filter((l) => !/^instantly/.test(l)).map((l) => (l.startsWith("Please note that")
+      ? "Please note that X has made an immediate payment, which is intended to reflect instantly in the beneficiary's account has made a payment, which will reflect in 2 days." : l));
+    expect(cap.parse(wholePhrase).immediate).toBe(null);
+    // A name carrying "payment" in front of the bank's phrase: not read.
+    const named = CAPITEC_SKYQR_LINES.map((l) => (l.startsWith("Please note that") ? "Please note that X payment Y has made an immediate payment, which is intended to reflect" : l));
+    expect(cap.parse(named).immediate).toBe(null);
+  });
+
+  it("a reader's own contradiction is never settled by the shared extractor (FNB: value-above vs same-line)", async () => {
+    const src = (await import("node:fs")).readFileSync(new URL("./eftBanks.test.mjs", import.meta.url), "utf8");
+    const FNB_LINES = (0, eval)(src.match(/const FNB_LINES = (\[[\s\S]*?\n\]);/)[1]);
+    const fnbReader = EFT_READERS.find((r) => r.id === "fnb");
+    expect(fnbReader.parse(FNB_LINES).ok).toBe(true);
+    const i = FNB_LINES.findIndex((l) => /^Reference\s*:\s*$/.test(l));
+    expect(i).toBeGreaterThan(0);
+    const contradicted = [...FNB_LINES.slice(0, i + 1), "Reference : SOMEONE ELSE", ...FNB_LINES.slice(i + 1)];
+    expect(fnbReader.parse(contradicted).ok).toBe(false);
   });
 });
 
@@ -197,6 +233,9 @@ describe("commit 2 — the shared extractor itself", () => {
     expect(labelledField(["Amount", "250655"], "amount").value).toBe(null);
     expect(labelledField(["Reference", "Amount R5.00"], "reference").value).toBe(null);
     expect(labelledField(["Amount :", ":"], "amount").value).toBe(null);
+    expect(labelledField(["Amount", "1 250.00"], "amount").value, "a figure on the next line needs its currency mark").toBe(null);
+    expect(labelledField(["Amount 1 250.00"], "amount").value, "…on the label's own line it does not").toBe("1 250.00");
+    expect(labelledField(["Reference no 4149999999"], "reference").value).toBe(null);
   });
   it("money and destination must agree across synonyms; a contradiction refuses", () => {
     expect(labelledField(["Amount R10.00", "Payment amount R10.00"], "amount").value).toBe("R10.00");
