@@ -1573,7 +1573,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
         // Decided on the full account number; the NAME is logged so it can be
         // added to eft-bank-alias.cjs (Junid, 25 Nov 2026).
         if (account?.ok && account.unrecognisedBankName) {
-          console.warn(`EFT_UNRECOGNISED_BANK_NAME: "${account.unrecognisedBankName}" (reader ${group.readerId}, account …${account.tail}) — admitted on the full account number; add it to functions/lib/eft-bank-alias.cjs`);
+          console.warn(`EFT_UNRECOGNISED_BANK_NAME: "${redactAccountDigits(account.unrecognisedBankName)}" (reader ${group.readerId}, account …${account.tail}) — admitted on the full account number; add it to functions/lib/eft-bank-alias.cjs`);
         }
         const timing = group.parse.ok
           ? immediacyVerdict({

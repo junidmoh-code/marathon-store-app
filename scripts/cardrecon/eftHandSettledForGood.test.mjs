@@ -60,7 +60,8 @@ describe("the R5,900 notice Junid floats by hand never floats, by any path", () 
   const refused = { ...base, outcome: "refused-account", reason: 'This payment was made to "STD S.A.", which is not a bank the shop is paid into' };
   const manual = { outcome: "recorded", status: "unmatched", reader: "manual", manualEntry: { at: 1 }, amountCents: 590000, reference: "CUSTOMR" };
   const fp = refusalFingerprint(refused);
-  const claims = new Map([[fp, { poolKey: FIRST, at: 1 }]]);
+  // The live claim as the 17:48 refusal wrote it — fresh for each test.
+  const unspent = () => new Map([[fp, { poolKey: FIRST, at: 1 }]]);
 
   it("the plan refuses a different spelling unless Junid's word is given, and needs the notice's reference", () => {
     expect(settledFingerprintPlan({ refusedKey: FIRST, refused, spenderKey: MANUAL, spender: manual }).ok).toBe(false);
@@ -72,13 +73,19 @@ describe("the R5,900 notice Junid floats by hand never floats, by any path", () 
 
   const plan = settledFingerprintPlan({ refusedKey: FIRST, refused, spenderKey: MANUAL, spender: manual, noticeReference: "customer", referenceDiffersOk: true });
   const synthetic = settledSyntheticPlan({ refused, payer: "MRS A PAYER", paymentDate: "2026-11-25", reference: "customer" });
+  const step = settledClaimStep({ spenderKey: MANUAL, refusedKey: FIRST, at: 2, referenceDiffers: plan.referenceDiffers });
+  /** The claims after the script ran: bank id and blank-number identity spent by Junid's entry. */
+  const settled = () => {
+    const claims = unspent();
+    claims.set(fp, step(claims.get(fp)));
+    claims.set(synthetic.fingerprint, step(null));
+    return claims;
+  };
 
   it("Junid's entry spends the bank id AND the blank-number identity, once, naming the difference", () => {
     expect(plan).toEqual({ ok: true, fingerprint: fp, referenceDiffers: { notice: "customer", entry: "CUSTOMR" } });
     expect(synthetic.ok).toBe(true);
-    const step = settledClaimStep({ spenderKey: MANUAL, refusedKey: FIRST, at: 2, referenceDiffers: plan.referenceDiffers });
-    claims.set(fp, step(claims.get(fp)));
-    claims.set(synthetic.fingerprint, step(claims.get(synthetic.fingerprint) ?? null));
+    const claims = settled();
     expect(claims.get(fp)).toMatchObject({ poolKey: FIRST, spentBy: MANUAL, settledByHandFor: FIRST, referenceDiffers: { notice: "customer" } });
     expect(claims.get(synthetic.fingerprint)).toMatchObject({ poolKey: MANUAL, spentBy: MANUAL });
     // Run again: never a second spender, never overwritten.
@@ -91,6 +98,7 @@ describe("the R5,900 notice Junid floats by hand never floats, by any path", () 
   });
 
   it("…but a re-run of the first refusal, a re-run of the second, and a RE-SENT copy all land HELD, naming his entry", () => {
+    const claims = settled();
     for (const key of [FIRST, SECOND, "3".repeat(40)]) {
       const w = claimAndDecide(claims, key, ingest(absaStdSa()));
       expect(w.outcome, key).toBe("held-duplicate");
@@ -100,6 +108,7 @@ describe("the R5,900 notice Junid floats by hand never floats, by any path", () 
   });
 
   it("a copy that leaves the transaction number BLANK is held too (its Absa identity is spent)", () => {
+    const claims = settled();
     const blank = ingest(absaStdSa({ txn: "" }));
     expect(blank.bankRef).toBe(null);
     expect(blank.syntheticRef).toBe(synthetic.syntheticRef);
@@ -109,6 +118,7 @@ describe("the R5,900 notice Junid floats by hand never floats, by any path", () 
   });
 
   it("a held copy is never released; Upload approved proof finds it already used", () => {
+    const claims = settled();
     const held = claimAndDecide(claims, "5".repeat(40), ingest(absaStdSa()));
     expect(releaseHoldDecision(held, { at: 9, by: "Junid", reason: "checked on the statement" }).ok).toBe(false);
     const d = approvedClaimDecision({ approvedKey: "a".repeat(40), claim: claims.get(fp), holderRecord: refused, now: 9 });

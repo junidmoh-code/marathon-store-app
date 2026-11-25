@@ -92,13 +92,15 @@ try {
         else if (mark) console.log(`· refusal unchanged (already stamped): settledByHand ${JSON.stringify(mark)}`);
         else { console.error(`✗ ${refusedKey} could not be stamped (gone, recorded or held)`); process.exitCode = 1; }
       }
-      if (synthetic?.ok) {
+      // Only when THIS entry holds the bank id: never give one payment's two
+      // identities to two different spenders. (CodeRabbit, #998.)
+      if (synthetic?.ok && claimSpentBy === spenderKey) {
         const spath = `${EFT_FINGERPRINT_PATH}/${synthetic.fingerprint}`;
         const sres = await db.ref(spath).transaction(settledClaimStep({ spenderKey, refusedKey, at, referenceDiffers }));
         const sBy = sres.snapshot.val()?.spentBy ?? null;
         if (sBy === spenderKey) console.log(`✓ Absa blank-number identity ${synthetic.syntheticRef} spent too: ${JSON.stringify(sres.snapshot.val())}`);
         else { console.error(`✗ the Absa blank-number identity ${spath} is spent by ${sBy ?? "nobody"}, not ${spenderKey} — check it`); process.exitCode = 1; }
-      }
+      } else if (synthetic?.ok) console.error("✗ the Absa blank-number identity is NOT claimed: the bank id is not spent by this entry");
     }
   }
 } finally {

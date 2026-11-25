@@ -143,6 +143,15 @@ describe("the real Absa 'STD S.A.' notice of 25 Nov 2026", () => {
     expect(v("XXXXXXX8534", null, "051001").ok).toBe(false);
   });
 
+  it("two DIFFERENT bank names or branch codes on one notice refuse at the reader (CodeRabbit)", () => {
+    const reader = selectReader({ fromDomain: "absa.co.za", lines: ABSA_STD_SA });
+    const twoBanks = [...ABSA_STD_SA.slice(0, 12), "Beneficiary bank name: CAPITEC BANK", ...ABSA_STD_SA.slice(12)];
+    const twoBranches = [...ABSA_STD_SA.slice(0, 14), "Bank branch code: 250655", ...ABSA_STD_SA.slice(14)];
+    expect(reader.parse(twoBanks).ok).toBe(false);
+    expect(reader.parse(twoBranches).ok).toBe(false);
+    expect(reader.parse(absaStdSa({ branch: "" })).ok).toBe(true); // an absent branch code is fine
+  });
+
   it("the poller LOGS an unrecognised name it admitted, and passes the branch code", () => {
     const src = readFileSync(new URL("./email-poller.mjs", import.meta.url), "utf8");
     expect(src).toMatch(/destBranchCode: group\.parse\.destBranchCode/);

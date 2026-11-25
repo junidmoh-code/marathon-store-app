@@ -156,7 +156,7 @@ const { linkedCopySettleCheck, linkedApprovalRefusal, crossBankNoticeOf } = requ
 const { selectReaderByContent } = require("../lib/eft-banks.cjs");
 const { approvalGate, unreadProofKeyOf, unreadProofRecord, LAST_RESORT } = require("../lib/eft-proof-gate.cjs");
 const { parseAccountPolicies, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
-const { maskAccountValue } = require("../lib/eft-text.cjs");
+const { maskAccountValue, redactAccountDigits } = require("../lib/eft-text.cjs");
 const { pdfToLines } = require("../cardRecon/pdfText.js");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { createHash } = require("node:crypto");
@@ -1186,7 +1186,7 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
     allowedAccounts: parseAccountPolicies(configured), configured: !!configured,
   });
   if (account.ok && account.unrecognisedBankName) {
-    console.warn(`EFT_UNRECOGNISED_BANK_NAME: "${account.unrecognisedBankName}" (proof upload, reader ${reader.id}, account …${account.tail}) — admitted on the full account number; add it to functions/lib/eft-bank-alias.cjs`);
+    console.warn(`EFT_UNRECOGNISED_BANK_NAME: "${redactAccountDigits(account.unrecognisedBankName)}" (proof upload, reader ${reader.id}, account …${account.tail}) — admitted on the full account number; add it to functions/lib/eft-bank-alias.cjs`);
   }
   if (!account.ok) {
     // The shared verdict names the mini's .env; here the value is the Secret
