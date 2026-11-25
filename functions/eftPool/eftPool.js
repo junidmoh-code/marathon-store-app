@@ -154,7 +154,7 @@ const {
 } = require("../lib/eft-manual-approved.cjs");
 const { linkedCopySettleCheck, linkedApprovalRefusal, crossBankNoticeOf } = require("../lib/eft-linked-copies.cjs");
 const { selectReaderByContent } = require("../lib/eft-banks.cjs");
-const { approvalGate, LAST_RESORT } = require("../lib/eft-proof-gate.cjs");
+const { approvalGate, unreadProofKeyOf, unreadProofRecord, LAST_RESORT } = require("../lib/eft-proof-gate.cjs");
 const { parseAccountPolicies, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
 const { maskAccountValue } = require("../lib/eft-text.cjs");
 const { pdfToLines } = require("../cardRecon/pdfText.js");
@@ -1154,9 +1154,27 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
     // field that could not be read instead of "no reader".
     gate = approvalGate({ lines, reader, parse });
     if (!gate.ok) {
+      // UNREAD → JUNID'S QUARANTINE (the owner-only /eft_pool, outcome
+      // refused-parse), create-only under the file's own hash, BEFORE the
+      // refusal. A failed write never hides the refusal itself.
+      const pdfSha256 = createHash("sha256").update(input.pdf).digest("hex");
+      const unreadKey = unreadProofKeyOf(pdfSha256);
+      const unread = unreadProofRecord({
+        gate, lines, readerId: reader?.id ?? null, at: now, actor, entryId: input.entryId, filename: input.filename,
+        pdfSha256, bytes: input.pdf.length, extractionReason: extracted.ok ? null : extracted.reason,
+      });
+      let saved = false;
+      try {
+        await db.ref(`${EFT_POOL_PATH}/${unreadKey}`).transaction((cur) => (cur ? undefined : unread));
+        saved = true;
+        console.warn(`EFT_PROOF_UNREAD: ${unreadKey} (${gate.code}, bank ${gate.detectedBank ?? "unknown"}, missing ${gate.missing.join("/") || "-"}) by ${actor.name}`);
+      } catch (err) {
+        console.error(`EFT_PROOF_UNREAD: could not file ${unreadKey} for review: ${err?.message ?? err}`);
+      }
       const httpsCode = gate.code === "no-identity" || (gate.code === "unreadable-proof" && reader) ? "failed-precondition" : "invalid-argument";
-      const message = extracted.ok ? gate.message : `${extracted.reason} ${LAST_RESORT}`;
-      throw new HttpsError(httpsCode, message, { code: gate.code, reader: reader?.id ?? null, detectedBank: gate.detectedBank, missing: gate.missing });
+      let message = extracted.ok ? gate.message : `${extracted.reason} ${LAST_RESORT}`;
+      if (!saved) message = message.replace(/it is saved for Junid on the EFT payments tab\./, "it could not be saved for review — send the PDF to Junid.");
+      throw new HttpsError(httpsCode, message, { code: gate.code, reader: reader?.id ?? null, detectedBank: gate.detectedBank, missing: gate.missing, unreadKey: saved ? unreadKey : null });
     }
   }
   const identity = proofIdentityOf(parse, reader.id);

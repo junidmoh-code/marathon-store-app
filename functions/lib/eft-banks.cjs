@@ -38,7 +38,7 @@ const { clip, parseBankTimestamp, redactAccountDigits } = require("./eft-text.cj
 const { parseRandsToCents } = require("./card-recon.cjs");
 // The shared label-driven extractor: asked ONLY for a field a reader's own
 // rule did not find (25 Nov 2026, eft-labels.cjs).
-const { labelledField, flatLine } = require("./eft-labels.cjs");
+const { labelledField, flatLine, fieldsSummary } = require("./eft-labels.cjs");
 
 /**
  * A reader's own value, else the shared extractor's — never instead of one
@@ -1039,4 +1039,18 @@ function noReaderReason(fromDomain) {
     : `No payment-notification reader exists for ${fromDomain} yet. The raw text below is the real format — build the reader from it (scripts/cardrecon/eftBanks.mjs).`;
 }
 
-module.exports = { EFT_READERS, selectReader, selectReaderByContent, noReaderReason, standardBankHeading, banksEvidencedBy, evidenceClaims };
+/**
+ * One sentence for a refusal nobody could read (25 Nov 2026): the bank its
+ * footer names, and the fields the shared extractor could and could not
+ * find — names only, never values. The poller appends it to its no-reader
+ * refusal so the owner's tab says what broke, from the first message.
+ */
+function unreadSummary(lines) {
+  const L = Array.isArray(lines) ? lines : [];
+  const banks = banksEvidencedBy(L);
+  const { read, missing } = fieldsSummary(L);
+  const bank = banks.length === 1 ? `Issuer by its footer: ${banks[0]}.` : banks.length > 1 ? `Footer names several banks: ${banks.join(", ")}.` : "No bank footer recognised.";
+  return `${bank} Read: ${read.join(", ") || "nothing"}. Missing: ${missing.join(", ") || "—"}.`;
+}
+
+module.exports = { EFT_READERS, selectReader, selectReaderByContent, noReaderReason, standardBankHeading, banksEvidencedBy, evidenceClaims, unreadSummary };

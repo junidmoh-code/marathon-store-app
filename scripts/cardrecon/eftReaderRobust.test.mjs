@@ -215,3 +215,12 @@ describe("commit 2 — the shared extractor itself", () => {
     expect(JSON.stringify(s)).not.toMatch(/\d{6}/);
   });
 });
+
+describe("commit 4 — the poller's no-reader refusal says what broke", () => {
+  it("names the footer's bank and the fields read / missing — never a value", async () => {
+    const { unreadSummary } = await import("./eftBanks.mjs");
+    const s = unreadSummary(CAPITEC_SKYQR_LINES.filter((l) => !/^SkyQR|^Unique/.test(l)));
+    expect(s).toBe("Issuer by its footer: capitec. Read: amount, payment date, destination account number, payment reference. Missing: bank transaction id.");
+    expect(unreadSummary(["hello"])).toBe("No bank footer recognised. Read: nothing. Missing: amount, payment date, destination account number, bank transaction id, payment reference.");
+  });
+});

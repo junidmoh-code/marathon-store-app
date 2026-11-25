@@ -1044,3 +1044,54 @@ test("THE GATE refuses as strictly as before: a doubled id, a doubled amount, tw
   await rejects(upload(OWNER), "invalid-argument", "no-reader");
   assert.deepEqual(dbState.fingerprints, {});
 });
+
+// ─── COMMIT 4 — AN UNREAD PROOF GOES TO JUNID'S QUARANTINE ───────────────────
+test("UNREAD: a refused upload is filed ONCE in the owner-only /eft_pool as refused-parse — inert, redacted, with the fields read and missing", async () => {
+  const { unreadProofKeyOf } = require("../lib/eft-proof-gate.cjs");
+  const sha = require("node:crypto").createHash("sha256").update(Buffer.from(PDF, "base64")).digest("hex");
+  const key = unreadProofKeyOf(sha);
+  reset(); secretValue = SB_ACCOUNTS;
+  pdfLines = CAPITEC_SKYQR.filter((l) => !/^SkyQR|^Unique Document/.test(l));
+  const e = await rejects(upload(OWNER), "failed-precondition", "no-identity");
+  assert.equal(e.details.unreadKey, key);
+  assert.match(e.message, /saved for Junid on the EFT payments tab/);
+  const rec = dbState.pool[`eft_pool/${key}`];
+  assert.ok(rec, "filed under the file's own hash");
+  assert.equal(rec.outcome, "refused-parse");
+  assert.equal(rec.reader, "capitec");
+  assert.equal(rec.auth.verdict, "manual-upload");
+  assert.equal(rec.unreadProof.detectedBank, "capitec");
+  assert.deepEqual(rec.unreadProof.fieldsMissing, ["bank transaction id"]);
+  assert.ok(rec.unreadProof.fieldsRead.includes("amount"));
+  assert.match(rec.reason, /Missing: bank transaction id/);
+  assert.ok(rec.rawText.includes("Payment Notification"), "the text the reader saw is kept");
+  assert.doesNotMatch(rec.rawText, /10100008534/, "account runs are struck out");
+  assert.equal(rec.status, undefined, "never a payment: no status");
+  assert.equal(publicEftView(rec), null, "invisible to the tills' search");
+  assert.deepEqual(dbState.fingerprints, {}, "claims no identity");
+  // The same file again: the same record, not a second one.
+  await rejects(upload(OWNER, { entryId: "PA-00000002" }), "failed-precondition", "no-identity");
+  assert.equal(Object.keys(dbState.pool).length, 1);
+  assert.equal(dbState.pool[`eft_pool/${key}`].unreadProof.entryId, "PA-00000001", "the first record is never overwritten");
+});
+
+test("UNREAD: a PDF no reader recognises, and a PDF with no text, are filed too; a successful or wrong-destination proof is not", async () => {
+  reset(); secretValue = SB_ACCOUNTS;
+  pdfLines = ["Proof of Payment", "Total R15 050.00"];
+  await rejects(upload(OWNER), "invalid-argument", "no-reader");
+  let recs = Object.values(dbState.pool);
+  assert.equal(recs.length, 1);
+  assert.equal(recs[0].reader, null);
+  assert.equal(recs[0].unreadProof.code, "no-reader");
+
+  reset(); secretValue = SB_ACCOUNTS; pdfLines = null; // the extractor finds no text
+  const e = await rejects(upload(OWNER), "invalid-argument", "unreadable-proof");
+  assert.match(e.message, /probably a scan/);
+  recs = Object.values(dbState.pool);
+  assert.equal(recs.length, 1);
+  assert.match(recs[0].reason, /probably a scan/);
+
+  reset(); secretValue = "62900004321"; pdfLines = CAPITEC_SKYQR;
+  await rejects(upload(OWNER), "failed-precondition", "wrong-destination");
+  assert.deepEqual(dbState.pool, {}, "someone else's money is a refusal, not an unread layout");
+});

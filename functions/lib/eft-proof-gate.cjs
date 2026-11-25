@@ -21,13 +21,14 @@
 // PURE: no IO, no clock.
 "use strict";
 
+const { createHash } = require("node:crypto");
 const { clip, redactAccountDigits } = require("./eft-text.cjs");
 const { paymentFingerprint, syntheticIdentityOf } = require("./eft-fingerprint.cjs");
 const { banksEvidencedBy } = require("./eft-banks.cjs");
 const { fieldsSummary, FIELD_NAMES } = require("./eft-labels.cjs");
 
 const BANK_LABELS = { standardbank: "Standard Bank", fnb: "FNB", capitec: "Capitec", absa: "Absa", nedbank: "Nedbank" };
-const LAST_RESORT = "Nothing was registered. Only if the customer cannot wait: float it by hand.";
+const LAST_RESORT = "Nothing was registered; it is saved for Junid on the EFT payments tab. Only if the customer cannot wait: float it by hand.";
 
 // Which required field a reader's refusal names. A reader's reason is its own
 // sentence ("carries no Amount line", "the destination account cannot be
@@ -91,4 +92,69 @@ function approvalGate({ lines, reader, parse }) {
   return { ok: true, identity: { fingerprint, syntheticRef } };
 }
 
-module.exports = { approvalGate, fieldOfReason, LAST_RESORT, BANK_LABELS };
+// ─── AN UNREAD PROOF GOES TO JUNID, NEVER A SILENT DEAD END ──────────────────
+// Every uploaded PDF the gate refuses is filed in the owner-only quarantine
+// that already holds the poller's refusals — /eft_pool, outcome
+// "refused-parse" — so it shows on Junid's EFT payments tab the same day,
+// with what the readers saw (account runs struck out), the bank it could
+// still name, and the fields read and missing. The next layout change is
+// caught on day one, from the first proof it breaks.
+//
+// INERT BY CONSTRUCTION: outcome "refused-parse" is not "recorded", so the
+// search, the settle, the tail cache and the linked-copy checks all skip it;
+// it claims no fingerprint; and eftRetryPlan refuses it (no mailbox claim
+// row). One record per FILE (the key is the PDF's own hash): the same proof
+// uploaded twice is one record, never a pile.
+//
+// EXPOSURE: /eft_pool is owner-only (rules) and written only by the Admin
+// SDK. The raw text keeps the payer's name as printed (the poller's refusals
+// do the same) but every account-number run is struck out
+// (redactAccountDigits), and nothing here is returned to the uploader beyond
+// the field NAMES.
+
+/** The quarantine key of an unread proof: 40 hex from the file's bytes. */
+function unreadProofKeyOf(pdfSha256) {
+  return createHash("sha256").update(`eftunread1|${pdfSha256}`).digest("hex").slice(0, 40);
+}
+
+/**
+ * The /eft_pool refusal record for an uploaded proof the gate refused.
+ * @returns {object}
+ */
+function unreadProofRecord({ gate, lines, readerId = null, at, actor, entryId, filename, pdfSha256, bytes, extractionReason = null }) {
+  const by = actor?.name || "Junid";
+  const bank = gate.detectedBank ? BANK_LABELS[gate.detectedBank] ?? gate.detectedBank : null;
+  const read = gate.read?.length ? gate.read.join(", ") : "nothing";
+  const missing = gate.missing?.length ? gate.missing.join(", ") : "—";
+  const text = Array.isArray(lines) ? lines.join("\n") : "";
+  return {
+    at,
+    receivedAt: at,
+    messageId: `proof-upload:${entryId}`,
+    from: actor?.email ?? null,
+    subject: clip(`Proof of payment uploaded by ${by} — not read${bank ? ` (${bank})` : ""}`, 200),
+    auth: {
+      verdict: "manual-upload", fromDomain: null, dkimDomain: null,
+      detail: `Uploaded by ${by} through "Upload approved proof". It could not be read, so nothing was registered and nothing floated.`,
+    },
+    rawText: clip(redactAccountDigits(text || extractionReason || ""), 4000),
+    // The reader that claimed it (null when none did — the poller's shape).
+    reader: readerId,
+    outcome: "refused-parse",
+    reason: clip(redactAccountDigits(`${extractionReason ?? gate.detail} Read: ${read}. Missing: ${missing}.`), 400),
+    unreadProof: {
+      source: "upload",
+      code: gate.code,
+      detectedBank: gate.detectedBank ?? null,
+      fieldsRead: gate.read ?? [],
+      fieldsMissing: gate.missing ?? [],
+      by,
+      entryId,
+      filename: filename || null,
+      sha256: pdfSha256,
+      bytes: Number.isInteger(bytes) ? bytes : null,
+    },
+  };
+}
+
+module.exports = { approvalGate, fieldOfReason, unreadProofKeyOf, unreadProofRecord, LAST_RESORT, BANK_LABELS };
