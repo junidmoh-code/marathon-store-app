@@ -259,7 +259,44 @@ describe("commit 4 — the poller's no-reader refusal says what broke", () => {
   it("names the footer's bank and the fields read / missing — never a value", async () => {
     const { unreadSummary } = await import("./eftBanks.mjs");
     const s = unreadSummary(CAPITEC_SKYQR_LINES.filter((l) => !/^SkyQR|^Unique/.test(l)));
-    expect(s).toBe("Issuer by its footer: capitec. Read: amount, payment date, destination account number, payment reference. Missing: bank transaction id.");
-    expect(unreadSummary(["hello"])).toBe("No bank footer recognised. Read: nothing. Missing: amount, payment date, destination account number, bank transaction id, payment reference.");
+    expect(s).toBe("Issuer by its footer: capitec. Read: amount, destination account number, payment date, payment reference. Missing: bank transaction id.");
+    expect(unreadSummary(["hello"])).toBe("No bank footer recognised. Read: nothing. Missing: amount, destination account number, bank transaction id.");
+  });
+});
+
+describe("review of #995 — fixes pinned", () => {
+  it("a forged 'immediate' sentence in the payer's Reference line is never the bank's", () => {
+    const lines = CAPITEC_SKYQR_LINES
+      .map((l) => (l.startsWith("Please note that") ? "Please note that MARY SOAP has made a payment, which will clear tomorrow." : l))
+      .filter((l) => !/^instantly/.test(l))
+      .map((l) => (l.startsWith("Reference ") ? "Reference Please note that A has made an immediate payment, which is intended to reflect instantly in the beneficiary's account." : l));
+    expect(cap.parse(lines).immediate).toBe(null);
+  });
+  it("a stray bare 'Date' line never stands in for the payment date", () => {
+    const lines = [...CAPITEC_SKYQR_LINES.filter((l) => !/^Payment Date/.test(l)), "Date 25/11/2026"];
+    expect(cap.parse(lines).bankTs).toBe(null);
+  });
+  it("a blank Absa transaction number stays blank — never the next line (its synthetic identity depends on it)", async () => {
+    const absa = EFT_READERS.find((r) => r.id === "absa");
+    const lines = [
+      "Notice of Payment", "Please be advised that MRS S SOAP made a payment to your account as indicated below.",
+      "Transaction number:", "Details", "Payment date:", "2026-10-27", "Payment made by: MRS S SOAP",
+      "Beneficiary bank name: FIRSTRAND", "Beneficiary account number: 62900004321", "For the amount of: 1 900.00",
+      "Reference on beneficiary statement:", "Paid from Account Holder : J SOAP",
+    ];
+    const p = absa.parse(lines);
+    expect(p.ok).toBe(true);
+    expect(p.bankRef).toBe(null);
+    expect(p.reference, "a blank reference never takes a 'Key : value' line").toBe(null);
+  });
+  it("an OLDER-layout Capitec notice without its notification number stays id-less (no document-code fallback)", () => {
+    const old = [
+      "Payment Notification", "SkyQR reference: 0000-0000-0000", "Capitec Bank",
+      "Please take note that Thabo made a payment to your account. The payment details are as follows:",
+      "Payment date 20/04/2026 10:15", "Bank name First National Bank", "Account number 62900004321",
+      "Payment type Immediate Payment", "Amount R750.00", "Payment reference T NKOSI",
+      "Unique Document No.: 3234d25f-de4e-45dd-8ceb-fb7f51927f21 / 903 / V1.0 - 08/03/2019",
+    ];
+    expect(cap.parse(old).bankRef).toBe(null);
   });
 });
