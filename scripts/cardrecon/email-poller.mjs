@@ -87,7 +87,7 @@ import {
   IMMEDIATE_NOT_REQUIRED_FROM,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
-import { EFT_READERS, noReaderReason } from "./eftBanks.mjs";
+import { EFT_READERS, noReaderReason, unreadSummary } from "./eftBanks.mjs";
 import { envelopeCandidateKeys, groupEftPayments, eftPaymentKey, applyEvictions } from "./eftCore.mjs";
 
 // firebase-admin is BORROWED from functions/, the way every other script on the
@@ -1617,7 +1617,9 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       outcomes.push({
         poolKey: key,
         record: eftPoolRecord({
-          message, verdict, parsed: { ok: false, reason: noReaderReason(fromDomain) },
+          // + what the footer and the shared extractor could still read
+          // (names only), so the first broken layout says what broke.
+          message, verdict, parsed: { ok: false, reason: `${noReaderReason(fromDomain)} ${unreadSummary(everything.split("\n"))}` },
           account: null, reader: null, rawText: everything, at,
         }),
       });

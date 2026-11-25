@@ -154,6 +154,7 @@ const {
 } = require("../lib/eft-manual-approved.cjs");
 const { linkedCopySettleCheck, linkedApprovalRefusal, crossBankNoticeOf } = require("../lib/eft-linked-copies.cjs");
 const { selectReaderByContent } = require("../lib/eft-banks.cjs");
+const { approvalGate, unreadProofKeyOf, unreadProofRecord, LAST_RESORT } = require("../lib/eft-proof-gate.cjs");
 const { parseAccountPolicies, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
 const { maskAccountValue } = require("../lib/eft-text.cjs");
 const { pdfToLines } = require("../cardRecon/pdfText.js");
@@ -1118,7 +1119,7 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   if (!input.ok) throw new HttpsError("invalid-argument", input.message, { code: input.code });
 
   const configured = String(eftAllowedAccounts.value() ?? "").trim();
-  let reader, parse, lines, alsoSyntheticRef = null;
+  let reader, parse, lines, alsoSyntheticRef = null, gate = null;
   if (input.kind === "image") {
     // A PHOTO: nothing to parse, and no OCR. Junid typed the identity from
     // it; keyedIdentityCheck shapes those fields as the bank's reader would
@@ -1144,13 +1145,37 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   } else {
     // THE DOCUMENT → LINES → READER → PARSE, exactly the poller's path.
     const extracted = await pdfToLines(input.pdf, { grouping: "bucket" });
-    if (!extracted.ok) throw new HttpsError("invalid-argument", extracted.reason, { code: "unreadable-proof" });
-    reader = selectReaderByContent(extracted.lines);
-    if (!reader) {
-      throw new HttpsError("invalid-argument", "That PDF is not a payment notification this pool has a reader for (Standard Bank, FNB, Capitec, Absa, Nedbank). Float the payment by hand instead.", { code: "no-reader" });
+    lines = extracted.ok ? extracted.lines : [];
+    reader = extracted.ok ? selectReaderByContent(lines) : null;
+    parse = reader ? reader.parse(lines) : null;
+    // THE REQUIRED-FIELDS GATE (25 Nov 2026, lib/eft-proof-gate.cjs): the same
+    // fields required as before — a reader, its exact parse (amount and
+    // destination account), the payment's identity — but a refusal names the
+    // field that could not be read instead of "no reader".
+    gate = approvalGate({ lines, reader, parse });
+    if (!gate.ok) {
+      // UNREAD → JUNID'S QUARANTINE (the owner-only /eft_pool, outcome
+      // refused-parse), create-only under the file's own hash, BEFORE the
+      // refusal. A failed write never hides the refusal itself.
+      const pdfSha256 = createHash("sha256").update(input.pdf).digest("hex");
+      const unreadKey = unreadProofKeyOf(pdfSha256);
+      const unread = unreadProofRecord({
+        gate, lines, readerId: reader?.id ?? null, at: now, actor, entryId: input.entryId, filename: input.filename,
+        pdfSha256, bytes: input.pdf.length, extractionReason: extracted.ok ? null : extracted.reason,
+      });
+      let saved = false;
+      try {
+        await db.ref(`${EFT_POOL_PATH}/${unreadKey}`).transaction((cur) => (cur ? undefined : unread));
+        saved = true;
+        console.warn(`EFT_PROOF_UNREAD: ${unreadKey} (${gate.code}, bank ${gate.detectedBank ?? "unknown"}, missing ${gate.missing.join("/") || "-"}) by ${actor.name}`);
+      } catch (err) {
+        console.error(`EFT_PROOF_UNREAD: could not file ${unreadKey} for review: ${err?.message ?? err}`);
+      }
+      const httpsCode = gate.code === "no-identity" || (gate.code === "unreadable-proof" && reader) ? "failed-precondition" : "invalid-argument";
+      let message = extracted.ok ? gate.message : `${extracted.reason} ${LAST_RESORT}`;
+      if (!saved) message = message.replace(/it is saved for Junid on the EFT payments tab\./, "it could not be saved for review — send the PDF to Junid.");
+      throw new HttpsError(httpsCode, message, { code: gate.code, reader: reader?.id ?? null, detectedBank: gate.detectedBank, missing: gate.missing, unreadKey: saved ? unreadKey : null });
     }
-    parse = reader.parse(extracted.lines);
-    lines = extracted.lines;
   }
   const identity = proofIdentityOf(parse, reader.id);
   if (!identity.ok) throw new HttpsError("failed-precondition", identity.message, { code: identity.code, reader: reader.id });
