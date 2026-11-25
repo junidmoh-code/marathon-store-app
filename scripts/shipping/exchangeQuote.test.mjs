@@ -89,11 +89,16 @@ describe("quoteRecord / parseItems", () => {
     expect(rec).toMatchObject({ key: "exchange-1952-0", orderNumber: "1952-EX", shopifyName: "#1952-EX", exchange: { contactPhone: "+27732296677", relatedOrders: [ORDER_KEY] }, shipping: { address: { zip: "5600" } } });
     expect(rec.lines).toHaveLength(2);
     expect(rec.lines[0]).toMatchObject({ pid: "p2", size: "XL", sizeKey: "XL", qty: 1, isFootwear: false });
+    const held = quoteRecord({ original: ORIGINAL({ shipping: { ...ORIGINAL().shipping, addressHold: { state: "confirmed" } } }), orderKey: ORDER_KEY, items: ONE });
+    expect(held.shipping.addressHold).toEqual({ state: "confirmed" });
   });
   it("refuses an item with no pid or an unsafe one", () => {
     expect(() => parseItems('[{"size":"7"}]', "returning")).toThrow(/no pid/);
     expect(() => parseItems([{ pid: "a/b" }], "returning")).toThrow();
     expect(() => parseItems("{", "returning")).toThrow(/not JSON/);
+    expect(() => parseItems([{ pid: "p1", qty: 11 }], "returning")).toThrow(/1 to 10/);
+    expect(() => parseItems([{ pid: "p1", qty: 1.5 }], "returning")).toThrow(/whole number/);
+    expect(parseItems([{ pid: "p1", qty: 10 }], "returning")[0].qty).toBe(10);
   });
 });
 

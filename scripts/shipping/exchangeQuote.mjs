@@ -28,6 +28,7 @@ const str = (v) => String(v ?? "").trim();
 const QUOTE_KEY_AT = 0; // the in-memory record's key: exchange-<n>-0 (never written anywhere)
 const FOOTWEAR_RE = /\b(sneakers?|trainers?|shoes?|loafers?|slides?|sandals?|boots?|slip[- ]?ons?|runners?|footwear|heels?|mules?|clogs?)\b/i;
 
+export const MAX_QTY = 10; // units of one item in one exchange
 /** "[{pid,size,qty?}]" (a JSON string or an array) → [{ pid, size, qty }]; throws on a bad item. Pure. */
 export function parseItems(raw, what) {
   let list = raw;
@@ -40,7 +41,9 @@ export function parseItems(raw, what) {
     const pid = str(it?.pid);
     if (!pid) throw new Error(`${what}[${i}]: no pid`);
     assertSafeSegment(pid, "productId");
-    const qty = Math.max(1, Math.min(10, Math.floor(Number(it?.qty) || 1)));
+    const qty = it?.qty == null ? 1 : Number(it.qty);
+    // Never silently capped (CodeRabbit #997): a quantity outside 1..MAX_QTY is refused, so the quote prices exactly what was asked.
+    if (!Number.isInteger(qty) || qty < 1 || qty > MAX_QTY) throw new Error(`${what}[${i}]: qty must be a whole number from 1 to ${MAX_QTY}`);
     return { pid, size: str(it?.size) || "_", qty };
   });
 }
@@ -66,7 +69,8 @@ export function quoteRecord({ original, orderKey, items, products = {}, phone = 
     key: `exchange-${n || "0"}-${QUOTE_KEY_AT}`,
     orderNumber: `${n}-EX`, shopifyName: `#${n}-EX`,
     ...(original?.customer?.name ? { customer: { name: original.customer.name, ...(original.customer.email ? { email: original.customer.email } : {}) } } : {}),
-    ...(original?.shipping?.address ? { shipping: { address: original.shipping.address } } : {}),
+    // The address AND its confirmation (CodeRabbit #997): addressGate accepts a confirmed mismatch only through shipping.addressHold.
+    ...(original?.shipping?.address ? { shipping: { address: original.shipping.address, ...(original.shipping.addressHold ? { addressHold: original.shipping.addressHold } : {}) } } : {}),
     lines,
     status: "new",
     exchange: { kind: "exchange", by: "quote", paidAt: QUOTE_KEY_AT, contactPhone: contact || null, relatedOrders: [String(orderKey)] },
