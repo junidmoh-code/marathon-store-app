@@ -7,6 +7,7 @@
 "use strict";
 
 const { clip } = require("./eft-text.cjs");
+const { BANK_ALIASES, BANK_LABELS, normaliseBankName, bankIdOf, bankIdFromBranchCode } = require("./eft-bank-alias.cjs");
 
 // The allowed accounts live in the gitignored .env ON THE MINI as
 // EFT_ALLOWED_ACCOUNTS (comma-separated; full numbers) — never in this public
@@ -33,7 +34,10 @@ const EFT_ACCOUNTS_ENV_VAR = "EFT_ALLOWED_ACCOUNTS";
 // Since 2 Nov 2026 the bank is the bank OF THE MATCHED ACCOUNT (FNB unless its
 // EFT_ALLOWED_ACCOUNTS entry says standardbank — see below), so a payment into
 // the shop's Standard Bank account is checked the same way, digit for digit.
-const FNB_BANK_NAMES = new Set(["FIRSTNATIONALBANK", "FNB", "FIRSTRAND", "FIRSTRANDBANK", "FIRSTRANDBANKLIMITED"]);
+// Since 25 Nov 2026 every name is read by the ONE normaliser in
+// eft-bank-alias.cjs (bankIdOf); these sets are kept, derived from it, for
+// anything that still imports them.
+const FNB_BANK_NAMES = new Set(BANK_ALIASES.fnb.map(normaliseBankName));
 
 // ─── WHICH BANK EACH ACCOUNT IS AT, AND WHICH TAKE IMMEDIATE ONLY ───────────
 // Junid, 2 Nov 2026: the shop is also paid into a STANDARD BANK account
@@ -65,10 +69,7 @@ const ACCOUNT_BANKS = Object.freeze(["fnb", "standardbank"]);
 const IMMEDIATE_TAG = "immediate";
 // Standard Bank by its own printed name, exact forms only (as FNB above):
 // "STANDARD BANK", "The Standard Bank of South Africa Limited", "SBSA".
-const STANDARD_BANK_NAMES = new Set([
-  "STANDARDBANK", "STANDARDBANKSA", "STANDARDBANKOFSA", "STANDARDBANKSOUTHAFRICA", "STANDARDBANKOFSOUTHAFRICA",
-  "STANDARDBANKOFSOUTHAFRICALIMITED", "THESTANDARDBANKOFSOUTHAFRICALIMITED", "SBSA",
-]);
+const STANDARD_BANK_NAMES = new Set(BANK_ALIASES.standardbank.map(normaliseBankName));
 const BANK_LABEL = { fnb: "First National Bank", standardbank: "Standard Bank" };
 
 /** One entry → its policy, or null (and a problem) when it does not read. */
@@ -115,12 +116,12 @@ function parseAllowedAccounts(raw) {
   return parseAccountPolicies(raw).map((p) => p.account);
 }
 
-/** "FIRST NATIONAL BANK" → "fnb", "STANDARD BANK" → "standardbank", else null. */
+/** "FIRST NATIONAL BANK" → "fnb", "STD S.A." → "standardbank" — one of the
+ *  shop's two banks, else null (another bank, or a name nobody knows). The
+ *  shared normaliser (eft-bank-alias.cjs) does the reading. */
 function destinationBankOf(destBankName) {
-  const bank = String(destBankName ?? "").toUpperCase().replace(/[^A-Z]/g, "");
-  if (FNB_BANK_NAMES.has(bank)) return "fnb";
-  if (STANDARD_BANK_NAMES.has(bank)) return "standardbank";
-  return null;
+  const id = bankIdOf(destBankName);
+  return ACCOUNT_BANKS.includes(id) ? id : null;
 }
 
 /** A configured entry as a policy: a bare digit string (older callers and
@@ -133,28 +134,74 @@ function asPolicy(a) {
   return null;
 }
 
+function noAllowlistReason(configured) {
+  return configured
+    ? `${EFT_ACCOUNTS_ENV_VAR} is set but holds no usable account number. Every payment refuses here until it is fixed.`
+    : `No account allowlist is configured — set ${EFT_ACCOUNTS_ENV_VAR} in the .env on the mini (the FULL account number). Until then every payment refuses here, deliberately.`;
+}
+
+// ─── A BANK NAME NOBODY RECOGNISES (Junid, 25 Nov 2026) ──────────────────────
+// The decision rests on the account number, not the name: a printed name the
+// normaliser does not know (a new abbreviation) is decided on the destination
+// account — admitted ONLY when the document prints the number IN FULL and it
+// EQUALS one of the shop's configured accounts on every digit. A masked number
+// cannot carry that weight and refuses as before. The ok verdict carries
+// `unrecognisedBankName` so the caller logs it for adding to the aliases.
+// "In full" means the printed number is digits, spaces and dashes ONLY (any
+// other character — X, *, •, …, # — is a mask) and at least
+// FULL_NUMBER_MIN_DIGITS long: a four-digit tail is never a full number,
+// whatever an allowlist entry holds. (Sonnet architect review, #998.)
+const FULL_NUMBER_MIN_DIGITS = 8;
+function unrecognisedBankVerdict({ accountMask, destBankName, onlyBank = null, allowedAccounts, configured }) {
+  const notOurs = destBankName
+    ? `This payment was made to "${clip(destBankName, 60)}", which is not a bank the shop is paid into (its own First National Bank and Standard Bank accounts only).`
+    : "The proof of payment names no bank the shop recognises and does not print the destination account in full, so it cannot be confirmed as paid into one of the shop's own accounts.";
+  const printed = String(accountMask ?? "").trim();
+  const visible = printed.replace(/\D/g, "");
+  if (!/^[\d\s-]+$/.test(printed) || visible.length < FULL_NUMBER_MIN_DIGITS) return { ok: false, reason: notOurs };
+  const policies = (Array.isArray(allowedAccounts) ? allowedAccounts : []).map(asPolicy).filter(Boolean);
+  if (!policies.length) return { ok: false, reason: noAllowlistReason(configured) };
+  // A branch code that named the bank narrows the match to that bank.
+  const hits = policies.filter((p) => p.account === visible && (!onlyBank || p.bank === onlyBank));
+  if (!hits.length || new Set(hits.map((p) => p.bank)).size > 1) return { ok: false, reason: notOurs };
+  return {
+    ok: true, tail: visible.slice(-4), bank: hits[0].bank, immediateOnly: hits.some((p) => p.immediateOnly),
+    ...(destBankName ? { unrecognisedBankName: clip(destBankName, 60) } : {}),
+  };
+}
+
 /**
  * `allowedAccounts`: parseAccountPolicies(raw) — or bare digit strings, read
  * as FNB accounts.
- * @returns {{ok:true, tail:string, bank:string, immediateOnly:boolean} | {ok:false, reason:string}}
+ * `destBranchCode`: the universal branch code the document prints, if any.
+ * @returns {{ok:true, tail:string, bank:string, immediateOnly:boolean, unrecognisedBankName?:string} | {ok:false, reason:string}}
  */
-function destinationVerdict({ accountMask, destBankName, allowedAccounts, configured }) {
-  const destBank = destinationBankOf(destBankName);
-  if (!destBank) {
-    return { ok: false, reason: destBankName
-      ? `This payment was made to "${clip(destBankName, 60)}", which is not a bank the shop is paid into (its own First National Bank and Standard Bank accounts only).`
-      : "The proof of payment does not say which bank the money was paid to, so it cannot be confirmed as paid into one of the shop's own accounts." };
+function destinationVerdict({ accountMask, destBankName, destBranchCode = null, allowedAccounts, configured }) {
+  // THE BANK — supporting evidence, read by the shared normaliser: the printed
+  // name, or failing that the universal branch code printed beside it. Two
+  // readings that disagree refuse: the document contradicts itself.
+  const named = bankIdOf(destBankName);
+  const branched = bankIdFromBranchCode(destBranchCode);
+  if (named && branched && named !== branched) {
+    return { ok: false, reason: `This payment names the bank "${clip(destBankName, 60)}" but prints the branch code of ${BANK_LABELS[branched]} — the document contradicts itself, so it is refused.` };
   }
+  const known = named ?? branched;
+  if (known && !ACCOUNT_BANKS.includes(known)) {
+    return { ok: false, reason: `This payment was made to ${BANK_LABELS[known] ?? clip(destBankName, 60)}, which is not a bank the shop is paid into (its own First National Bank and Standard Bank accounts only).` };
+  }
+  if (!known && !destBankName) {
+    return { ok: false, reason: "The proof of payment does not say which bank the money was paid to, so it cannot be confirmed as paid into one of the shop's own accounts." };
+  }
+  // NO RECOGNISED NAME — whether or not a branch code named the bank — is
+  // decided on the full account number alone. (Architect review, #998.)
+  if (!named) return unrecognisedBankVerdict({ accountMask, destBankName, onlyBank: branched, allowedAccounts, configured });
+  const destBank = known;
   const visible = String(accountMask ?? "").replace(/\D/g, "");
   if (visible.length < 4) {
     return { ok: false, reason: `The destination account prints as "${clip(accountMask, 40)}" — fewer than four visible digits, so it cannot be checked.` };
   }
   const policies = (Array.isArray(allowedAccounts) ? allowedAccounts : []).map(asPolicy).filter(Boolean);
-  if (!policies.length) {
-    return { ok: false, reason: configured
-      ? `${EFT_ACCOUNTS_ENV_VAR} is set but holds no usable account number. Every payment refuses here until it is fixed.`
-      : `No account allowlist is configured — set ${EFT_ACCOUNTS_ENV_VAR} in the .env on the mini (the FULL account number). Until then every payment refuses here, deliberately.` };
-  }
+  if (!policies.length) return { ok: false, reason: noAllowlistReason(configured) };
   const tail = visible.slice(-4);
   // Only the shop's accounts AT THE BANK THE MONEY WENT TO can vouch for it:
   // a Standard Bank account that happens to end like the FNB one (Standard

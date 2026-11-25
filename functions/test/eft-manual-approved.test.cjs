@@ -1161,3 +1161,40 @@ test("E2E: the same notification from ANOTHER bank's sender is a mismatch, never
   assert.equal(plan.mismatched.length, 1);
   assert.equal(plan.mismatched[0].foreign, "capitec");
 });
+
+// ─── THE ABSA "STD S.A." NOTICE THROUGH THE UPLOAD (Junid, 25 Nov 2026) ──────
+// "Upload approved proof" refused the real R5,900 Absa notice exactly as the
+// poller did: '"STD S.A." is not a bank the shop is paid into'. It reads the
+// bank through the same shared normaliser (eft-bank-alias.cjs) and decides on
+// the same full-account-number rule (destinationVerdict).
+const { SB_POLICY: STD_SA_POLICY, ABSA_STD_SA, absaStdSa } = require("./fixtures/absa-std-sa-2026-11-25.cjs");
+const STD_SA_ACCOUNTS = `62900004321, ${STD_SA_POLICY}`;
+
+test("STD S.A.: the real Absa notice into the shop's Standard Bank account is APPROVED through the upload", async () => {
+  reset(); secretValue = STD_SA_ACCOUNTS; pdfLines = ABSA_STD_SA;
+  const out = await upload(OWNER);
+  assert.equal(out.ok, true);
+  assert.equal(out.reader, "absa");
+  assert.equal(out.amountCents, 590000);
+  assert.equal(out.bankRef, "80D0A0A0A0-1");
+  const fp = paymentFingerprint({ reader: "absa", bankRef: "80D0A0A0A0-1" });
+  assert.equal(dbState.fingerprints[`eft_pool_fingerprints/${fp}`].spentBy, out.key, "the bank id is claimed as spent by the approval");
+  const rec = dbState.pool[`eft_pool/${out.key}`];
+  assert.equal(rec.destination.destBankName, "STD S.A.");
+  assert.equal(rec.destination.accountTail, "8534");
+});
+
+test("STD S.A.: alias but the WRONG account, or no Standard Bank account configured, still refuses (wrong-destination)", async () => {
+  reset(); secretValue = STD_SA_ACCOUNTS; pdfLines = absaStdSa({ account: "10100008535" });
+  await rejects(upload(OWNER), "failed-precondition", "wrong-destination");
+  pdfLines = ABSA_STD_SA; secretValue = "62900004321";
+  await rejects(upload(OWNER), "failed-precondition", "wrong-destination");
+  assert.deepEqual(dbState.fingerprints, {});
+});
+
+test("STD S.A.: an UNKNOWN bank name is decided on the full account number through the upload too", async () => {
+  reset(); secretValue = STD_SA_ACCOUNTS; pdfLines = absaStdSa({ bank: "STNDRD BNK OF S.A.", branch: "" });
+  assert.equal((await upload(OWNER)).ok, true);
+  reset(); secretValue = STD_SA_ACCOUNTS; pdfLines = absaStdSa({ bank: "STNDRD BNK OF S.A.", branch: "", account: "10100008535" });
+  await rejects(upload(OWNER), "failed-precondition", "wrong-destination");
+});

@@ -802,8 +802,7 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
   }
   if (id === "fnb") {
     // Intra-bank only: destination must be FNB (the same names 7a accepts).
-    const bank = String(parsed?.destBankName ?? "").toUpperCase().replace(/[^A-Z]/g, "");
-    if (FNB_BANK_NAMES.has(bank)) return { ok: true };
+    if (destinationBankOf(parsed?.destBankName) === "fnb") return { ok: true };
     // PAYSHAP (7 Nov 2026): FNB's own notice says the payment went over
     // PayShap, the real-time interbank rail — immediate into ANY bank,
     // including the immediate-only Standard Bank account. The reader sets
@@ -1166,6 +1165,9 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     accountMask: clip(maskAccountValue(parsed.accountMask), 40) || null,
     beneficiaryName: clip(parsed.beneficiaryName, 120) || null,
     destBankName: clip(parsed.destBankName, 60) || null,
+    // A printed bank name the shared normaliser did not know, admitted on the
+    // full account number (eft-destination.cjs) — flagged so it can be added.
+    ...(account?.ok === true && account.unrecognisedBankName ? { bankNameUnrecognised: true } : {}),
   };
   // THE IDENTITY WITHOUT A BANK ID (29 Oct 2026): an Absa notice that prints
   // no transaction number identifies itself by payer + account + day + amount
@@ -1176,6 +1178,9 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     return {
       ...base, outcome: "refused-account", destination,
       amountCents: parsed.amountCents,
+      // The payer's reference (25 Nov 2026): a hand settlement of this
+      // refusal is matched on it (settledFingerprintPlan).
+      reference: parsed.reference ?? null,
       // The bank's transaction id, so the refusal claims it (refusalFingerprint):
       // a copy resent after the allowlist changes is held, never fresh money.
       bankRef: clip(parsed.bankRef, 60) || null,
@@ -1306,6 +1311,21 @@ export function applyFingerprintHold(record, { fingerprint, holder, poolKey, man
         reason: "The bank's notification for a payment Junid already approved by hand from its proof of payment — the money is settled under the approval record. HELD, never spendable.",
       };
     }
+    // A COPY OF MONEY JUNID SETTLED BY HAND (25 Nov 2026): the claim is held
+    // by a refusal and spent by his manual entry (claim-settled-bank-
+    // fingerprint.mjs). Held as before, and now naming his entry, so the
+    // reason is visible on the copy and never mistaken for a possible
+    // second payment.
+    if (holder && spentBy && spentBy !== poolKey) {
+      return {
+        ...held,
+        outcome: "held-duplicate",
+        fingerprint,
+        duplicateOf: holder,
+        approvedByHand: spentBy,
+        reason: "A copy of a payment Junid already settled by hand — its bank identity is spent by his entry, which holds this money. HELD, never spendable.",
+      };
+    }
     if (holder && isSyntheticIdentity(record)) {
       return {
         ...held,
@@ -1394,8 +1414,17 @@ const sameRef = (a, b) => {
   return !!n(a) && n(a) === n(b);
 };
 
-/** @returns {{ok:true, fingerprint:string} | {ok:false, why:string}} */
-export function settledFingerprintPlan({ refusedKey, refused, spenderKey, spender }) {
+/**
+ * `noticeReference` (25 Nov 2026): the reference the bank notice PRINTS, read
+ * off the document by a person — for a refusal that stored none (an account
+ * refusal kept no reference before 25 Nov 2026). Never overrides one stored.
+ * `referenceDiffersOk`: Junid's hand entry was typed with a different
+ * spelling ("SHARLEEN" for "sharlene") and he has said it is the same money —
+ * allowed only on the same amount, and returned as `referenceDiffers` so the
+ * claim and the notice record it.
+ * @returns {{ok:true, fingerprint:string, referenceDiffers:null|{notice:string|null, entry:string|null}} | {ok:false, why:string}}
+ */
+export function settledFingerprintPlan({ refusedKey, refused, spenderKey, spender, noticeReference = null, referenceDiffersOk = false }) {
   if (!refused) return { ok: false, why: `No /eft_pool record at ${refusedKey}.` };
   if (!spender) return { ok: false, why: `No /eft_pool record at ${spenderKey}.` };
   if (refusedKey === spenderKey) return { ok: false, why: "The refused record and the settling record must be two different records." };
@@ -1410,8 +1439,35 @@ export function settledFingerprintPlan({ refusedKey, refused, spenderKey, spende
   // would already hold the claim. (Sonnet architect review.)
   if (spender.reader !== "manual" || !spender.manualEntry) return { ok: false, why: `${spenderKey} is not a manual entry — only Junid's hand entry settles a refused payment.` };
   if (spender.amountCents !== refused.amountCents) return { ok: false, why: `The amounts differ (${refused.amountCents}c refused, ${spender.amountCents}c used) — not the same money.` };
-  if (!sameRef(spender.reference, refused.reference)) return { ok: false, why: `The references differ ("${clip(refused.reference, 40)}" refused, "${clip(spender.reference, 40)}" used) — not the same money.` };
+  const noticeRef = refused.reference ?? (noticeReference == null ? null : String(noticeReference));
+  if (!sameRef(spender.reference, noticeRef)) {
+    if (!referenceDiffersOk) return { ok: false, why: `The references differ ("${clip(noticeRef, 40)}" refused, "${clip(spender.reference, 40)}" used) — not the same money.` };
+    if (!String(noticeRef ?? "").trim()) return { ok: false, why: "The refused notice stored no reference — say what it prints (--notice-reference) before linking a differently spelt entry." };
+    return { ok: true, fingerprint, referenceDiffers: { notice: clip(noticeRef, 60), entry: clip(spender.reference, 60) || null } };
+  }
   return { ok: true, fingerprint };
+}
+
+/**
+ * THE SAME MONEY'S ABSA IDENTITY WITHOUT ITS NUMBER (25 Nov 2026). Absa leaves
+ * "Transaction number:" blank on some copies of a notice; such a copy is keyed
+ * by payer + account + day + amount + reference (absaSyntheticRef) — a
+ * DIFFERENT fingerprint from the numbered copy's, so spending the bank id
+ * alone leaves a blank-numbered resend free to float. This is that identity
+ * for a refused Absa notice, from what the notice PRINTS (payer, payment day
+ * YYYY-MM-DD, reference) and the record's own amount and account. Pure.
+ * @returns {{ok:true, syntheticRef:string, fingerprint:string} | {ok:false, why:string}}
+ */
+export function settledSyntheticPlan({ refused, payer, paymentDate, reference }) {
+  if (refused?.reader !== "absa") return { ok: false, why: "Only an Absa notice has a blank-number identity." };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(paymentDate ?? ""))) return { ok: false, why: "The payment date must be YYYY-MM-DD, as the notice prints it." };
+  const syntheticRef = absaSyntheticRef({
+    payer: clip(redactAccountDigits(String(payer ?? "")), 120), accountMask: refused.destination?.accountMask,
+    bankTs: parseBankTimestamp(paymentDate), amountCents: refused.amountCents, reference: refused.reference ?? reference,
+  });
+  const fingerprint = syntheticRef ? paymentFingerprint({ reader: "absa", syntheticRef }) : null;
+  if (!fingerprint) return { ok: false, why: "The payer, account, date and amount do not make an Absa identity." };
+  return { ok: true, syntheticRef, fingerprint };
 }
 
 /**
@@ -1419,7 +1475,7 @@ export function settledFingerprintPlan({ refusedKey, refused, spenderKey, spende
  * REFUSED record — never to a recorded or held one, never over an earlier
  * mark, never creating a record that is not there. Every other field is kept.
  */
-export function settledByHandStep({ spenderKey, at }) {
+export function settledByHandStep({ spenderKey, at, referenceDiffers = null }) {
   return (cur) => {
     // null may be only the SDK's empty local cache on the first pass: writing
     // null back is a no-op the server corrects by re-running with the real
@@ -1428,7 +1484,7 @@ export function settledByHandStep({ spenderKey, at }) {
     if (typeof cur !== "object") return undefined;
     if (cur.outcome === "recorded" || HELD_OUTCOMES.includes(cur.outcome)) return undefined;
     if (cur.settledByHand) return undefined;
-    return { ...cur, settledByHand: { spentBy: spenderKey, at } };
+    return { ...cur, settledByHand: { spentBy: spenderKey, at, ...(referenceDiffers ? { referenceDiffers } : {}) } };
   };
 }
 
@@ -1476,9 +1532,9 @@ export function rereadRefusal({ record, readerId, parse, docText, fetched }) {
 }
 
 /** RTDB step: the bank id is spent by `spenderKey`. An existing spender is never overwritten. */
-export function settledClaimStep({ spenderKey, refusedKey, at }) {
+export function settledClaimStep({ spenderKey, refusedKey, at, referenceDiffers = null }) {
   return (existing) => {
-    const mark = { spentBy: spenderKey, settledByHandFor: refusedKey, settledClaimAt: at };
+    const mark = { spentBy: spenderKey, settledByHandFor: refusedKey, settledClaimAt: at, ...(referenceDiffers ? { referenceDiffers } : {}) };
     if (existing === null || existing === undefined) return { poolKey: spenderKey, at, ...mark };
     if (typeof existing !== "object" || typeof existing.spentBy === "string") return undefined;
     return { ...existing, ...mark };
