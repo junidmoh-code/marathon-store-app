@@ -15,4 +15,4 @@ import { createRequire } from "node:module";
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const banks = require("./lib/eft-banks.cjs");
 
-export const { EFT_READERS, selectReader, selectReaderByContent, noReaderReason, standardBankHeading } = banks;
+export const { EFT_READERS, selectReader, selectReaderByContent, noReaderReason, standardBankHeading, banksEvidencedBy, evidenceClaims } = banks;

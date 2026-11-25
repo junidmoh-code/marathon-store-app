@@ -49,6 +49,63 @@ function labelledLine(lines, re, what) {
   return { ok: true, value: values[0] ?? null };
 }
 
+// ─── WHICH BANK ISSUED THIS — FROM STRONG EVIDENCE (25 Nov 2026) ─────────────
+// Each reader's detect() was keyed on ONE layout's phrases (a heading, a
+// sentence, a label). Capitec reworded its notification ("…has made an
+// immediate payment, which is intended to reflect instantly in the
+// beneficiary's account." instead of "…made a payment to your account") and
+// a genuine proof Junid uploaded was refused as "no reader". A layout tweak
+// must not dead-end a real payment, so a reader ALSO claims a document when
+// the issuing bank is proved by what every bank prints in its legal footer —
+// its company registration number, its FSP number, its own client-care
+// domain — and the document says money was paid and labels an amount and an
+// account. Never the metadata title, never a bare bank name: "Standard Bank"
+// on a Capitec notice is the DESTINATION bank, not the issuer.
+//
+// THIS ONLY CHOOSES THE READER. Nothing about what is accepted changes: the
+// reader still has to read every required field exactly, the destination is
+// still checked digit for digit, the transaction id is still the identity,
+// and in the poller the sender's DKIM domain must still be this bank's.
+// Evidence for TWO banks is a document nobody claims (as two layout matches
+// already are). A refusal word anywhere ("unsuccessful", "could not be
+// processed", "reversed", …) and the evidence path claims nothing.
+const BANK_EVIDENCE = {
+  standardbank: [/\b1962\/000738\/06\b/, /\bstandardbank\.co\.za\b/i],
+  fnb: [/\b1929\/001225\/06\b/, /\bfnb\.co\.za\b/i, /\bFSP\s*(?:No\.?\s*)?3071\b/i],
+  capitec: [/\b1980\/003695\/06\b/, /\bcapitecbank\.co\.za\b/i, /\bFSP\s*(?:No\.?\s*)?46669\b/i, /\bCapitec Bank Limited\b/i],
+  absa: [/\b1986\/004794\/06\b/, /\babsa\.co\.za\b/i],
+  nedbank: [/\b1951\/000009\/06\b/, /\bnedbank\.co\.za\b/i],
+};
+const MONEY_IN = [
+  /\bmade (?:an? )?(?:immediate |instant |real[- ]time )?payment\b/i,
+  /\bpayment has been made\b/i,
+];
+const NOT_MONEY_IN = /\b(?:unsuccessful|could not be (?:processed|paid|made)|was not (?:processed|paid|made)|failed|declined|reversed|reversal|cancell?ed|returned|recalled|rejected|insufficient funds)\b/i;
+const AMOUNT_LABEL = /^(?:payment |transaction |transfer )?amount(?: paid)?\s*(?::|\s|$)|^for the amount of\b|^cur\/amount\b/i;
+const ACCOUNT_LABEL = /^(?:beneficiary |recipient )?account (?:number|no\.?)\b|^recipient\/account no\b/i;
+const flat = (l) => String(l ?? "").replace(/[\u00a0\u2007\u2009\u202f\t]/g, " ").replace(/ {2,}/g, " ").trim();
+
+/** The banks whose legal footer this document carries (ids, possibly several). */
+function banksEvidencedBy(lines) {
+  const text = (Array.isArray(lines) ? lines : []).map(flat).join("\n");
+  return Object.keys(BANK_EVIDENCE).filter((id) => BANK_EVIDENCE[id].some((re) => re.test(text)));
+}
+
+/**
+ * Does the document prove it was issued by `bankId` and say money came in?
+ * Evidence for exactly this one bank, a money-in sentence, no refusal word,
+ * and a labelled amount and account.
+ */
+function evidenceClaims(bankId, lines) {
+  if (!Array.isArray(lines) || !lines.length) return false;
+  const banks = banksEvidencedBy(lines);
+  if (banks.length !== 1 || banks[0] !== bankId) return false;
+  const flatLines = lines.map(flat);
+  const prose = flatLines.join(" ");
+  if (!MONEY_IN.some((re) => re.test(prose)) || NOT_MONEY_IN.test(prose)) return false;
+  return flatLines.some((l) => AMOUNT_LABEL.test(l)) && flatLines.some((l) => ACCOUNT_LABEL.test(l));
+}
+
 // ─── STANDARD BANK ───────────────────────────────────────────────────────────
 // Real layout (fixture in eftBanks.test.mjs, sanitised of personal data):
 //   We confirm that the following payment has been made into your account from J SOAP:
@@ -830,6 +887,14 @@ const nedbank = {
 // ─── THE REGISTRY ────────────────────────────────────────────────────────────
 // Adding a bank = adding a reader here + its domain to EFT_ALLOWED_DOMAINS in
 // eftCore.mjs. Nothing else changes.
+// Each reader claims its own layout (detect, unchanged) OR its bank's strong
+// evidence (evidenceClaims, above). layoutDetect stays reachable so a test can
+// tell which of the two claimed a document.
+for (const reader of [standardBank, fnb, capitec, absa, nedbank]) {
+  const layoutDetect = reader.detect;
+  reader.layoutDetect = layoutDetect;
+  reader.detect = (lines) => layoutDetect(lines) || evidenceClaims(reader.id, lines);
+}
 const EFT_READERS = [standardBank, fnb, capitec, absa, nedbank];
 
 /**
@@ -858,6 +923,11 @@ function selectReader({ fromDomain, lines }) {
  */
 function selectReaderByContent(lines) {
   if (!Array.isArray(lines)) return null;
+  // A layout match decides first, exactly as before; the evidence path is
+  // asked only when no layout matched (so no existing document changes
+  // reader), and still only when exactly one bank claims it.
+  const byLayout = EFT_READERS.filter((r) => r.layoutDetect(lines));
+  if (byLayout.length) return byLayout.length === 1 ? byLayout[0] : null;
   const claimants = EFT_READERS.filter((r) => r.detect(lines));
   return claimants.length === 1 ? claimants[0] : null;
 }
@@ -877,4 +947,4 @@ function noReaderReason(fromDomain) {
     : `No payment-notification reader exists for ${fromDomain} yet. The raw text below is the real format — build the reader from it (scripts/cardrecon/eftBanks.mjs).`;
 }
 
-module.exports = { EFT_READERS, selectReader, selectReaderByContent, noReaderReason, standardBankHeading };
+module.exports = { EFT_READERS, selectReader, selectReaderByContent, noReaderReason, standardBankHeading, banksEvidencedBy, evidenceClaims };
