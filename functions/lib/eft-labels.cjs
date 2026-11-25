@@ -42,6 +42,9 @@ const FIELD_LABELS = {
 // Fields where two DIFFERENT values under two different synonyms refuse:
 // the money and the destination may never be picked between.
 const AGREE = new Set(["amount", "account"]);
+// The bare "amount" and "date" labels are too generic to stand in for a
+// reader's own missing label (a fee line, a letter date): the readers' fallback
+// excludes them (FALLBACK_EXCLUDE, eft-banks.cjs). Detection still uses them.
 
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&").replace(/ /g, "\\s+");
 // "<label>" then a colon, whitespace, or end of line. "Reference" never
@@ -99,6 +102,8 @@ function validTxnId(v, label) {
   // first token; the rest is the template's number and version.
   const token = (label === "unique document no" ? s.split(/\s+\/\s+|\s+/)[0] : s);
   if (!/^[A-Za-z0-9][A-Za-z0-9-]{3,59}$/.test(token)) return null;
+  // A bank's id carries a digit; a word ("Details") is never one.
+  if (!/\d/.test(token)) return null;
   if ((token.replace(/[^A-Za-z0-9]/g, "")).length < 4) return null;
   return token;
 }
@@ -115,9 +120,12 @@ function candidates(lines, field, { nextLine = true } = {}) {
     const hit = labelOf(L[i]);
     if (!hit || hit.field !== field) continue;
     let value = hit.value, fromNext = false;
+    // The next line is a value only if it is not itself a label AND not a
+    // "Key : value" line: a blank reference followed by "Paid from Account
+    // Holder : J SOAP" stays blank, never becomes that line.
     if (!value && nextLine) {
       const next = flat(L[i + 1]);
-      if (next && !looksLikeLabel(next)) { value = next; fromNext = true; }
+      if (next && !looksLikeLabel(next) && !/^[^:]{1,40}\s:/.test(next) && !/^[^:]{1,40}:\s/.test(next)) { value = next; fromNext = true; }
     }
     if (value) out.push({ label: hit.label, value, fromNext });
   }
@@ -169,12 +177,17 @@ const FIELD_NAMES = {
  * @returns {{read:string[], missing:string[]}}
  */
 function fieldsSummary(lines, { dayFirst = true } = {}) {
+  // `missing` lists only what an approval REQUIRES (amount, destination
+  // account, transaction id); the optional date and reference are reported in
+  // `read` when found, never as missing.
   const read = [], missing = [];
-  for (const f of ["amount", "date", "account", "txnId", "reference"]) {
+  for (const f of ["amount", "account", "txnId", "date", "reference"]) {
     const r = labelledField(lines, f, { dayFirst });
-    (r.ok && r.value !== null ? read : missing).push(FIELD_NAMES[f]);
+    if (r.ok && r.value !== null) read.push(FIELD_NAMES[f]);
+    else if (REQUIRED.has(f)) missing.push(FIELD_NAMES[f]);
   }
   return { read, missing };
 }
+const REQUIRED = new Set(["amount", "account", "txnId"]);
 
 module.exports = { labelledField, fieldsSummary, labelOf, FIELD_LABELS, FIELD_NAMES, flatLine: flat };

@@ -40,17 +40,25 @@ const { parseRandsToCents } = require("./card-recon.cjs");
 // rule did not find (25 Nov 2026, eft-labels.cjs).
 const { labelledField, flatLine, fieldsSummary } = require("./eft-labels.cjs");
 
+// A bank's own transaction id, for a reader other than Capitec's: never a
+// per-DOCUMENT code (Capitec's SkyQR / Unique Document No.).
+// Same line only: a blank id (Absa prints "Transaction number:" empty) must
+// stay blank — its synthetic identity depends on it — never the next line.
+const BANK_ID_ONLY = { excludeLabels: ["skyqr reference", "unique document no"], nextLine: false };
+// The bare "amount" / "date" labels never stand in for a reader's own
+// (a fee line, a letter's date): only the specific synonyms do.
+const FALLBACK_EXCLUDE = { amount: ["amount"], date: ["date"] };
 /**
  * A reader's own value, else the shared extractor's — never instead of one
  * the reader read, never past a contradiction the reader refused.
  * @returns {{ok:true, value:any} | {ok:false, why:string}}
  */
-// A bank's own transaction id, for a reader other than Capitec's: never a
-// per-DOCUMENT code (Capitec's SkyQR / Unique Document No.).
-const BANK_ID_ONLY = { excludeLabels: ["skyqr reference", "unique document no"] };
-function orShared(own, lines, field, opts) {
+function orShared(own, lines, field, opts = {}) {
   if (!own.ok || (own.value !== null && own.value !== undefined && own.value !== "")) return own;
-  const shared = labelledField(lines, field, opts);
+  // A reader whose OWN label is the bare one (Capitec prints "Amount") may
+  // let the shared form read it with any whitespace (allowGeneric).
+  const excludeLabels = [...(opts.excludeLabels ?? []), ...(opts.allowGeneric ? [] : FALLBACK_EXCLUDE[field] ?? [])];
+  const shared = labelledField(lines, field, { ...opts, excludeLabels });
   return shared.ok ? { ok: true, value: shared.value } : shared;
 }
 
@@ -369,7 +377,7 @@ const fnb = {
     if (!moneyLines.length) {
       // No lone figure and no Cur/Amount line: a labelled amount on ONE line
       // ("Amount : R650.00") is the only other shape accepted.
-      const shared = labelledField(lines, "amount", FNB_SHARED);
+      const shared = labelledField(lines, "amount", { ...FNB_SHARED, excludeLabels: ["amount"] });
       if (!shared.ok) return { ok: false, reason: `FNB notification: ${shared.why}.` };
       if (shared.value !== null) moneyLines.push(String(shared.value).replace(/[\u00a0\u202f\u2009]/g, " ").trim());
     }
@@ -542,9 +550,19 @@ function capitecTimestamp(value) {
 // leading code. The code is used as TEXT, an identifier, exactly as a
 // notification number was; the QR's link is still never followed — a
 // document never vouches for itself.
+// KNOWN LIMIT (review of #995): both codes are per DOCUMENT. If Capitec ever
+// issued the payer's proof and the beneficiary's email of ONE payment with
+// different codes, the fingerprint would not link them (two numbers are two
+// payments — the house rule, eft-linked-copies.cjs); the copies would then be
+// caught only by the owner's review. The real proof and email are expected
+// to be one document; revisit with a real pair if that ever proves false.
 function capitecBankRef(lines) {
   const notification = labelledLine(lines, /^Notification number\s+(.+)$/i, "Notification number");
   if (!notification.ok || notification.value) return notification;
+  // Only the SkyQR layout falls back to its document codes: an OLDER-layout
+  // notice that lost its notification number stays id-less (held-no-bankref
+  // in the poller), exactly as before. (Architect review of #995.)
+  if (lines.some((l) => /made a payment to your account/i.test(String(l ?? "")))) return notification;
   // Only the two Capitec ids qualify here — never a generic label.
   const flatLines = lines.map(flatLine);
   const skyOnly = labelledLine(flatLines,
@@ -563,7 +581,14 @@ function capitecBankRef(lines) {
 // in front of it may not itself carry "payment" or "made" — so a name cannot
 // pose as the bank's words. Anything else: not immediate (null).
 function capitecSkyQrSentence(lines) {
-  const prose = lines.map((l) => String(l ?? "").replace(/[\u00a0\u2007\u2009\u202f\t]/g, " ")).join(" ").replace(/ {2,}/g, " ");
+  // POSITION-BOUND (architect review of #995): the bank's sentence stands
+  // ABOVE the payment details. Only the lines before the first labelled
+  // payment field are read — the payer-typed "Reference" (and every other
+  // field) sits below and can never supply the phrase.
+  const DETAIL = /^(?:beneficiary details|payment details|beneficiary name|account number|bank\b|payment date|amount\b|reference\b)/i;
+  const firstDetail = lines.findIndex((l) => DETAIL.test(flatLine(l)));
+  const head = firstDetail === -1 ? lines : lines.slice(0, firstDetail);
+  const prose = head.map((l) => String(l ?? "").replace(/[\u00a0\u2007\u2009\u202f\t]/g, " ")).join(" ").replace(/ {2,}/g, " ");
   const phrase = /which is intended to reflect instantly in the beneficiary['’‘`]?s account/gi;
   if ((prose.match(phrase) || []).length !== 1) return { payer: null, immediate: false };
   const m = /Please note that (.{1,120}?) has made an immediate payment, which is intended to reflect instantly in the beneficiary['’‘`]?s account/i.exec(prose);
@@ -601,7 +626,7 @@ const capitec = {
     }
 
     // THE AMOUNT — required, exact, single.
-    const amount = orShared(take(/^Amount\s+(.+)$/i, "Amount line"), lines, "amount");
+    const amount = orShared(take(/^Amount\s+(.+)$/i, "Amount line"), lines, "amount", { allowGeneric: true });
     if (!amount.ok) return { ok: false, reason: `Capitec notification: ${amount.why}.` };
     if (amount.value === null) return { ok: false, reason: "Capitec notification carries no Amount line." };
     const amountCents = parseRandsToCents(amount.value);
@@ -800,7 +825,11 @@ const absa = {
     // matching key. "Transaction number" is Absa's own id; kept apart.
     const reference = orShared(take(/^Reference on beneficiary statement:\s*(.*)$/i, "Reference on beneficiary statement"), lines, "reference");
     if (!reference.ok) return { ok: false, reason: `Absa notification: ${reference.why}.` };
-    const bankRef = orShared(take(/^Transaction number:\s*(.*)$/i, "Transaction number"), lines, "txnId", BANK_ID_ONLY);
+    let bankRef = orShared(take(/^Transaction number:\s*(.*)$/i, "Transaction number"), lines, "txnId", BANK_ID_ONLY);
+    // A blank number whose next line is a bare WORD ("Details") is still
+    // blank: an Absa transaction number carries a digit. (Architect review
+    // of #995 — the word would have become every such notice's identity.)
+    if (bankRef.ok && bankRef.value && !/\d/.test(bankRef.value)) bankRef = { ok: true, value: null };
     if (!bankRef.ok) return { ok: false, reason: `Absa notification: ${bankRef.why}.` };
     const beneficiaryName = take(/^Payment made to:\s*(.*)$/i, "Payment made to");
     const destBankName = take(/^Beneficiary bank name:\s*(.*)$/i, "Beneficiary bank name");

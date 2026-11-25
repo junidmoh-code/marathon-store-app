@@ -39,8 +39,9 @@ function fieldOfReason(reason) {
   if (/payment blocks|Trace ID lines|more than one payment/i.test(r)) return { field: null, why: "it holds more than one payment" };
   if (/amount/i.test(r)) return { field: FIELD_NAMES.amount, why: /different values|different amount/i.test(r) ? "printed twice with different values" : /parse/i.test(r) ? "not an exact rand amount" : /zero or negative/i.test(r) ? "zero or negative" : "not found" };
   if (/account/i.test(r)) return { field: FIELD_NAMES.account, why: /different values/i.test(r) ? "printed twice with different values" : "not found" };
-  if (/transaction id|Notification number|Reference number|Trace ID|Transaction number|SkyQR|Unique Document/i.test(r)) return { field: FIELD_NAMES.txnId, why: "printed twice with different values" };
-  if (/reference/i.test(r)) return { field: FIELD_NAMES.reference, why: "printed twice with different values" };
+  const twice = /different values/i.test(r) ? "printed twice with different values" : "not readable";
+  if (/transaction id|Notification number|Reference number|Trace ID|Transaction number|SkyQR|Unique Document/i.test(r)) return { field: FIELD_NAMES.txnId, why: twice };
+  if (/reference/i.test(r)) return { field: FIELD_NAMES.reference, why: twice };
   return { field: null, why: clip(redactAccountDigits(r), 160) };
 }
 
@@ -141,7 +142,8 @@ function unreadProofRecord({ gate, lines, readerId = null, at, actor, entryId, f
     // The reader that claimed it (null when none did — the poller's shape).
     reader: readerId,
     outcome: "refused-parse",
-    reason: clip(redactAccountDigits(`${extractionReason ?? gate.detail} Read: ${read}. Missing: ${missing}.`), 400),
+    // The Read / Missing tail always survives: the detail is clipped first.
+    reason: clip(redactAccountDigits(`${clip(extractionReason ?? gate.detail, 240)} Read: ${read}. Missing: ${missing}.`), 400),
     unreadProof: {
       source: "upload",
       code: gate.code,
