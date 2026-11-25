@@ -14,6 +14,8 @@ const { runHoldRevealSweep } = require("./lib/hold-reveal-sweep.cjs");
 const { notifyHoldAvailability } = require("./lib/hold-availability-notify.cjs");
 const { notifyOrderTomorrow } = require("./lib/order-tomorrow-notify.cjs");
 const { runLaybyExpiryNotify, TEMPLATE: LAYBY_EXPIRY_TEMPLATE } = require("./lib/layby-expiry-notify.cjs");
+const creditWhatsApp = require("./lib/credit-whatsapp-notify.cjs");
+const CREDIT_WHATSAPP_TEMPLATE = creditWhatsApp.TEMPLATE;
 const { notifyOrderPlaced } = require("./lib/order-push.cjs");
 const { deliverOutboxDoc } = require("./lib/outbox-deliver.cjs");
 
@@ -109,6 +111,11 @@ const TEMPLATE_BODIES = {
   // registered with Meta is docs/meta-templates/layby_expiry_3d.json (a test
   // holds the two byte-identical).
   layby_expiry_3d:   { params: 3, render: (p) => `Hi, your layby ${p[0]} at Marathon Club ${p[2]} expires on ${p[1]}. Please pay the balance or visit the store before then to keep it.` },
+  // {{1}} first name, {{2}} amount ("1,250"), {{3}} store, {{4}} customer code,
+  // + the URL button's suffix (the code's digits) — the body registered with
+  // Meta is docs/meta-templates/store_credit_issued.json (a test holds the two
+  // byte-identical). lib/credit-whatsapp-notify.cjs is its only producer.
+  store_credit_issued: { params: 4, button: true, render: (p) => `Hi ${p[0]}, R${p[1]} store credit has been added to your account at ${p[2]}. It never expires and can be used in any of our stores. Your customer code is ${p[3]}. Show this message at the till.` },
 };
 
 // Mask a phone number for logging — keep only the last 4 digits, never the full
@@ -145,7 +152,15 @@ function renderWhatsAppText(templateName, params = []) {
 // so the caller can decide whether to retry or fail the doc.
 // NOTE: token handling (metaToken secret + hardcoded WA_PHONE_ID) is unchanged;
 // moving the token to Secret Manager properly is a separate follow-up.
-async function sendViaMetaTemplate(to, templateName, templateParams = []) {
+async function sendViaMetaTemplate(to, templateName, templateParams = [], { buttonUrlParam = null } = {}) {
+  const components = templateParams.length
+    ? [{ type: "body", parameters: templateParams.map(p => ({ type: "text", text: String(p) })) }]
+    : [];
+  // A dynamic URL button (store_credit_issued): its suffix, button index 0.
+  // Absent for every other template, so their payload is unchanged.
+  if (buttonUrlParam) {
+    components.push({ type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: String(buttonUrlParam) }] });
+  }
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -153,9 +168,7 @@ async function sendViaMetaTemplate(to, templateName, templateParams = []) {
     template: {
       name: templateName,
       language: { code: "en" },
-      components: templateParams.length
-        ? [{ type: "body", parameters: templateParams.map(p => ({ type: "text", text: String(p) })) }]
-        : [],
+      components,
     },
   };
 
@@ -219,8 +232,13 @@ async function sendViaMetaTemplate(to, templateName, templateParams = []) {
 // directly. Invoked only via the authenticated onCall wrapper below; returns a
 // plain result object and throws HttpsError on failure (the callable protocol
 // maps those to a rejected client promise).
-async function enqueueWhatsApp(data) {
-  const { templateName, recipientPhone, templateParams = [] } = data || {};
+// `opts.dedupe` (default true) — the 90s identical-message guard below. Only a
+// producer with its own create-once claim may turn it off (the store-credit
+// WhatsApp dedupes on the ledger id, and two equal credits to one customer a
+// minute apart are two messages). The callable passes request.data alone, so
+// no client can reach this switch.
+async function enqueueWhatsApp(data, { dedupe = true } = {}) {
+  const { templateName, recipientPhone, templateParams = [], buttonUrlParam = null } = data || {};
 
   console.log("sendWhatsApp enqueue:", JSON.stringify({
     templateName,
@@ -246,6 +264,15 @@ async function enqueueWhatsApp(data) {
     throw new HttpsError("invalid-argument", rendered.error);
   }
 
+  // A template registered with a dynamic URL button must be given its suffix,
+  // and no other template may carry one (Meta refuses both mismatches).
+  const wantsButton = TEMPLATE_BODIES[templateName].button === true;
+  if (wantsButton !== (typeof buttonUrlParam === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(buttonUrlParam))) {
+    throw new HttpsError("invalid-argument", wantsButton
+      ? `Template "${templateName}" needs a button parameter`
+      : `Template "${templateName}" takes no button parameter`);
+  }
+
   const to           = normaliseSAPhone(recipientPhone);
   if (!to) {
     console.error("sendWhatsApp rejected unusable recipient phone:", maskPhone(recipientPhone));
@@ -264,7 +291,7 @@ async function enqueueWhatsApp(data) {
   // in memory — a composite where() would require a manual index.
   const DEDUPE_WINDOW_MS = 90 * 1000;
   const ACTIVE_STATUSES  = ["pending", "sending", "sent"];
-  try {
+  if (dedupe) try {
     const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - DEDUPE_WINDOW_MS);
     const recent = await admin.firestore()
       .collection("whatsapp_outbox")
@@ -298,6 +325,8 @@ async function enqueueWhatsApp(data) {
     renderedText,
     templateName,
     variables:  templateParams,
+    // Only on a button template — every other doc keeps its exact shape.
+    ...(wantsButton ? { buttonUrlParam } : {}),
     status:     "pending",
     provider:   null,
     createdAt:  admin.firestore.FieldValue.serverTimestamp(),
@@ -335,6 +364,12 @@ exports.sendWhatsApp = onCall(
     // above and could send any approved template, with free text, to any number
     // from the business account. Staff only: a live /users record.
     await require("./lib/require-staff-record.cjs").requireStaffRecord(admin.database(), request.auth, HttpsError);
+    // The store-credit message is sent ONLY by creditWhatsAppNotify/Sweep, for
+    // credits the returns desk issued (Junid's hard rule, 25 Nov 2026). No
+    // staff login may send it by hand.
+    if (request.data && request.data.templateName === CREDIT_WHATSAPP_TEMPLATE) {
+      throw new HttpsError("permission-denied", "This message is sent automatically for returns-desk credits only.");
+    }
     return enqueueWhatsApp(request.data);
   }
 );
@@ -578,6 +613,70 @@ exports.laybyExpiryNotify = onSchedule(
         const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) });
         return res.json();
       },
+    });
+  }
+);
+
+// ─── STORE CREDIT WHATSAPP — the returns desk's slip (Junid, 25 Nov 2026) ────
+// The Concrete iPad ("Jafer Till", marathon-pos-app's returns-only login) has
+// no printer; each store credit it issues pushes one entry to
+// /pos/credit_whatsapp_queue and the customer gets store_credit_issued from the
+// Meta-registered number (via enqueueWhatsApp → outboxInstantSend). Every
+// guard — the creator's flag, the real ledger txn, the ledgerId claim, the
+// template's approval — lives in lib/credit-whatsapp-notify.cjs (node-tested).
+//   firebase deploy --only functions:creditWhatsAppNotify,functions:creditWhatsAppSweep
+const fetchCreditTemplate = async () => {
+  const token = metaToken.value();
+  if (!token) return { error: { message: "meta-whatsapp-token not available to this function" } };
+  const url = `https://graph.facebook.com/v20.0/${WA_BUSINESS_ACCOUNT_ID}/message_templates`
+    + `?name=${encodeURIComponent(CREDIT_WHATSAPP_TEMPLATE)}&fields=name,status,language,category`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) });
+  return res.json();
+};
+// The producer for this one template: no 90s text dedupe (the ledgerId claim
+// is the dedupe, and two equal credits a minute apart are two messages).
+const enqueueCreditWhatsApp = (req) => enqueueWhatsApp(req, { dedupe: false });
+
+// The moment an entry lands. Not approved yet → it stays queued (no throw);
+// a transient failure releases its claim and leaves it for the sweep.
+exports.creditWhatsAppNotify = onValueCreated(
+  {
+    ref:            "/pos/credit_whatsapp_queue/{queueId}",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    retry:          false,   // the 15-minute sweep owns every retry
+    secrets:        [metaToken],
+  },
+  async (event) => {
+    await creditWhatsApp.notifyOne({
+      db: admin.database(),
+      enqueueWhatsApp: enqueueCreditWhatsApp,
+      fetchTemplates: fetchCreditTemplate,
+      queueId: event.params.queueId,
+    });
+  }
+);
+
+// The backlog, every 15 minutes: key-ordered and bounded (the queue holds only
+// what is still owed — settled entries are deleted), so the run after approval
+// lands sends everything that waited for it.
+exports.creditWhatsAppSweep = onSchedule(
+  {
+    schedule:       "every 15 minutes",
+    timeZone:       "Africa/Johannesburg",
+    region:         "europe-west1",
+    timeoutSeconds: 300,
+    memory:         "256MiB",
+    secrets:        [metaToken],
+    retryCount:     0,       // the next run is 15 minutes away; claims make it idempotent
+  },
+  async () => {
+    await creditWhatsApp.runSweep({
+      db: admin.database(),
+      enqueueWhatsApp: enqueueCreditWhatsApp,
+      fetchTemplates: fetchCreditTemplate,
     });
   }
 );
