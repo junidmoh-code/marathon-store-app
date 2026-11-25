@@ -231,6 +231,49 @@ function typedCheck(typedCents, readCents) {
   return { typedCents, readCents: Number.isInteger(readCents) ? readCents : null, differs };
 }
 
+// ─── THE TYPED TOTAL STANDS FOR THE SLIP'S OWN DAY (Junid, 25 Nov 2026) ─────
+// Marathon PE Till 2's Standard Bank PAX settles ITSELF at 18:50 (every batch
+// from #569, 13 Nov 2026, closes at 18:50:0x). Yasmin photographs the report at
+// about 17:10 — before tonight's settlement — so the photo is YESTERDAY's
+// batch. It is read and filed on yesterday, correctly; but the day she sent it
+// on had no figure until the next afternoon's photo, and its card sat on
+// "staff slip — being read". Junid's 16 Oct rule: a slip never waits on the
+// reader — the total typed on the Card Slip stands as the day's figure when
+//   · the photo turned out to be an EARLIER day's report (recorded on that
+//     day, or already on file), or
+//   · the photo has not been read TYPED_STANDS_AFTER_MS after it arrived
+//     (the reader is down or slow — it keeps trying).
+// (A photo given up on as unreadable is the existing fallback.) The typed
+// figure is a synthetic record: the real report of that day, read later,
+// displaces it (planSbFiling "covered"), so it never becomes a second card.
+const TYPED_STANDS_AFTER_MS = 5 * 60 * 1000;
+
+/** @returns {null | {kind:"earlier-report"|"not-read-yet", warning:string}} */
+function typedStandsFor({ final, typedCents, receivedAt, nowMs, jobDayYmd, recordedCloseYmd = null, batchKey = null }) {
+  if (!Number.isInteger(typedCents) || typeof jobDayYmd !== "string") return null;
+  const typed = `R${(typedCents / 100).toFixed(2)}`;
+  if (final === "recorded" && recordedCloseYmd && recordedCloseYmd < jobDayYmd) {
+    return {
+      kind: "earlier-report",
+      warning: `FROM TYPED TOTAL — the report photographed with this slip is batch #${batchKey ?? "?"}, which closed on ${recordedCloseYmd} and is filed on that day. This till's batch for ${jobDayYmd} closes at 18:50, after the photo, so the total typed on the Card Slip (${typed}) stands as ${jobDayYmd}'s figure until that report is read. Open the photo to check it.`,
+    };
+  }
+  if (final === "duplicate") {
+    return {
+      kind: "earlier-report",
+      warning: `FROM TYPED TOTAL — the report photographed with this slip is one already on file for an earlier day, so the total typed on the Card Slip (${typed}) stands as ${jobDayYmd}'s figure until that day's report is read. Open the photo to check it.`,
+    };
+  }
+  if (final === null && Number.isFinite(receivedAt) && Number.isFinite(nowMs) && nowMs - receivedAt >= TYPED_STANDS_AFTER_MS) {
+    return {
+      kind: "not-read-yet",
+      warning: `FROM TYPED TOTAL — the report photo has not been read yet (the reader keeps trying), so the total typed on the Card Slip (${typed}) stands as ${jobDayYmd}'s figure. If the photo is read later, its report replaces this. Open the photo to check it.`,
+    };
+  }
+  return null;
+}
+
 module.exports = {
   SB_READER_VERSION, DAY_MS, SEQUENCE_JOIN_MS, isSyntheticRecord, inForceByBatch, planSbFiling, sequenceTidProof, typedCheck, sastYmd,
+  TYPED_STANDS_AFTER_MS, typedStandsFor,
 };
