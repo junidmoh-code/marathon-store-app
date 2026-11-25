@@ -833,6 +833,9 @@ const absa = {
     if (!bankRef.ok) return { ok: false, reason: `Absa notification: ${bankRef.why}.` };
     const beneficiaryName = take(/^Payment made to:\s*(.*)$/i, "Payment made to");
     const destBankName = take(/^Beneficiary bank name:\s*(.*)$/i, "Beneficiary bank name");
+    // "Bank branch code: 051001" — supporting evidence for the bank only
+    // (eft-bank-alias.cjs); the account number decides (25 Nov 2026).
+    const branch = take(/^Bank branch code:\s*(.*)$/i, "Bank branch code");
     let payer = take(/^Payment made by:\s*(.*)$/i, "Payment made by");
     // The payer's own copy names no "Payment made by:" — the payer is the
     // addressee. Only when the document says it is that copy, and only when
@@ -871,6 +874,7 @@ const absa = {
       bankRef: bankRef.value ? clip(bankRef.value, 60) : null,
       beneficiaryName: beneficiaryName.ok && beneficiaryName.value ? clip(beneficiaryName.value, 120) : null,
       destBankName: destBankName.ok && destBankName.value ? clip(destBankName.value, 60) : null,
+      destBranchCode: branch.ok && /^\d[\d\s-]{4,10}$/.test(branch.value ?? "") ? branch.value.replace(/[\s-]/g, "") : null,
       accountMask: clip(account.value, 40),
       paymentType,
       immediate,

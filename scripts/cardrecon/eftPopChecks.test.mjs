@@ -54,6 +54,16 @@ describe("7a — paid into Junid's own FNB account", () => {
     }
   });
 
+  // Junid, 25 Nov 2026: a printed name nobody recognises is decided on the
+  // FULL account number (and logged); a masked number cannot carry that.
+  it("an UNRECOGNISED bank name is decided on the full account number, never on a masked one", () => {
+    const out = v(OURS, "FIRSTRND BNK");
+    expect(out).toMatchObject({ ok: true, bank: "fnb", unrecognisedBankName: "FIRSTRND BNK" });
+    expect(v("62900014321", "FIRSTRND BNK").ok).toBe(false);
+    expect(v("XXXXXXX4321", "FIRSTRND BNK").ok).toBe(false);
+    expect(v("..0004321", "FIRSTRND BNK").ok).toBe(false);
+  });
+
   it("a configured tail-only entry cannot vouch for a full printed number", () => {
     const tailOnly = parseAllowedAccounts("4321");
     const out = destinationVerdict({ accountMask: "1234567894321", destBankName: "FIRST NATIONAL BANK", allowedAccounts: tailOnly, configured: true });

@@ -802,8 +802,7 @@ export function immediacyVerdict({ parsed, reader, receivedAt, immediateOnly = f
   }
   if (id === "fnb") {
     // Intra-bank only: destination must be FNB (the same names 7a accepts).
-    const bank = String(parsed?.destBankName ?? "").toUpperCase().replace(/[^A-Z]/g, "");
-    if (FNB_BANK_NAMES.has(bank)) return { ok: true };
+    if (destinationBankOf(parsed?.destBankName) === "fnb") return { ok: true };
     // PAYSHAP (7 Nov 2026): FNB's own notice says the payment went over
     // PayShap, the real-time interbank rail — immediate into ANY bank,
     // including the immediate-only Standard Bank account. The reader sets
@@ -1166,6 +1165,9 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, dated
     accountMask: clip(maskAccountValue(parsed.accountMask), 40) || null,
     beneficiaryName: clip(parsed.beneficiaryName, 120) || null,
     destBankName: clip(parsed.destBankName, 60) || null,
+    // A printed bank name the shared normaliser did not know, admitted on the
+    // full account number (eft-destination.cjs) — flagged so it can be added.
+    ...(account?.ok === true && account.unrecognisedBankName ? { bankNameUnrecognised: true } : {}),
   };
   // THE IDENTITY WITHOUT A BANK ID (29 Oct 2026): an Absa notice that prints
   // no transaction number identifies itself by payer + account + day + amount
