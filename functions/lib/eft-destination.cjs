@@ -147,19 +147,26 @@ function noAllowlistReason(configured) {
 // EQUALS one of the shop's configured accounts on every digit. A masked number
 // cannot carry that weight and refuses as before. The ok verdict carries
 // `unrecognisedBankName` so the caller logs it for adding to the aliases.
-function unrecognisedBankVerdict({ accountMask, destBankName, allowedAccounts, configured }) {
-  const notOurs = `This payment was made to "${clip(destBankName, 60)}", which is not a bank the shop is paid into (its own First National Bank and Standard Bank accounts only).`;
-  const printed = String(accountMask ?? "");
+// "In full" means the printed number is digits, spaces and dashes ONLY (any
+// other character — X, *, •, …, # — is a mask) and at least
+// FULL_NUMBER_MIN_DIGITS long: a four-digit tail is never a full number,
+// whatever an allowlist entry holds. (Sonnet architect review, #998.)
+const FULL_NUMBER_MIN_DIGITS = 8;
+function unrecognisedBankVerdict({ accountMask, destBankName, onlyBank = null, allowedAccounts, configured }) {
+  const notOurs = destBankName
+    ? `This payment was made to "${clip(destBankName, 60)}", which is not a bank the shop is paid into (its own First National Bank and Standard Bank accounts only).`
+    : "The proof of payment names no bank the shop recognises and does not print the destination account in full, so it cannot be confirmed as paid into one of the shop's own accounts.";
+  const printed = String(accountMask ?? "").trim();
   const visible = printed.replace(/\D/g, "");
-  const masked = /[x*]/i.test(printed) || /\.{2,}/.test(printed);
-  if (masked || visible.length < 4) return { ok: false, reason: notOurs };
+  if (!/^[\d\s-]+$/.test(printed) || visible.length < FULL_NUMBER_MIN_DIGITS) return { ok: false, reason: notOurs };
   const policies = (Array.isArray(allowedAccounts) ? allowedAccounts : []).map(asPolicy).filter(Boolean);
   if (!policies.length) return { ok: false, reason: noAllowlistReason(configured) };
-  const hits = policies.filter((p) => p.account === visible);
+  // A branch code that named the bank narrows the match to that bank.
+  const hits = policies.filter((p) => p.account === visible && (!onlyBank || p.bank === onlyBank));
   if (!hits.length || new Set(hits.map((p) => p.bank)).size > 1) return { ok: false, reason: notOurs };
   return {
     ok: true, tail: visible.slice(-4), bank: hits[0].bank, immediateOnly: hits.some((p) => p.immediateOnly),
-    unrecognisedBankName: clip(destBankName, 60),
+    ...(destBankName ? { unrecognisedBankName: clip(destBankName, 60) } : {}),
   };
 }
 
@@ -185,7 +192,9 @@ function destinationVerdict({ accountMask, destBankName, destBranchCode = null, 
   if (!known && !destBankName) {
     return { ok: false, reason: "The proof of payment does not say which bank the money was paid to, so it cannot be confirmed as paid into one of the shop's own accounts." };
   }
-  if (!known) return unrecognisedBankVerdict({ accountMask, destBankName, allowedAccounts, configured });
+  // NO RECOGNISED NAME — whether or not a branch code named the bank — is
+  // decided on the full account number alone. (Architect review, #998.)
+  if (!named) return unrecognisedBankVerdict({ accountMask, destBankName, onlyBank: branched, allowedAccounts, configured });
   const destBank = known;
   const visible = String(accountMask ?? "").replace(/\D/g, "");
   if (visible.length < 4) {
@@ -216,9 +225,7 @@ function destinationVerdict({ accountMask, destBankName, destBranchCode = null, 
   if (hits.length) {
     // Two of the shop's accounts at one bank sharing every printed digit:
     // the strictest policy among them applies (immediate-only wins).
-    // A name nobody knows, but the branch code named the bank: still logged.
-    const unrecognised = !named && destBankName ? { unrecognisedBankName: clip(destBankName, 60) } : {};
-    return { ok: true, tail, bank: destBank, immediateOnly: hits.some((p) => p.immediateOnly), ...unrecognised };
+    return { ok: true, tail, bank: destBank, immediateOnly: hits.some((p) => p.immediateOnly) };
   }
   if (sameTail.every((p) => p.account.length < visible.length)) {
     return { ok: false, reason: `The document prints ${visible.length} digits of the destination account but ${EFT_ACCOUNTS_ENV_VAR} holds only the last ${Math.max(...sameTail.map((p) => p.account.length))} — put the shop's full account number there so every printed digit can be checked.` };

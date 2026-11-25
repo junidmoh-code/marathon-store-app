@@ -132,6 +132,17 @@ describe("the real Absa 'STD S.A.' notice of 25 Nov 2026", () => {
     expect(decide(absaStdSa({ branch: "250655" })).record.outcome).toBe("refused-account");
   });
 
+  it("an unknown name never rides on a mask of ANY kind, a short number, or a branch code (architect review)", () => {
+    const v = (accountMask, destBankName, destBranchCode = null, policies = POLICIES) => destinationVerdict({ accountMask, destBankName, destBranchCode, allowedAccounts: policies, configured: true });
+    const tailOnly = parseAccountPolicies("8534:standardbank");
+    for (const mask of ["•••• 8534", "…8534", "#######8534", "8534"]) expect(v(mask, "FOO BANK", null, tailOnly).ok, mask).toBe(false);
+    expect(v("xxxx8534", "FOO BANK", "051001").ok).toBe(false);
+    expect(v(SB_ACCOUNT, "FOO BANK", "051001")).toMatchObject({ ok: true, bank: "standardbank", unrecognisedBankName: "FOO BANK" });
+    expect(v(SB_ACCOUNT, "FOO BANK", "250655").ok).toBe(false); // the branch says FNB; the number is the Standard Bank one
+    expect(v(SB_ACCOUNT, null, "051001").ok).toBe(true);
+    expect(v("XXXXXXX8534", null, "051001").ok).toBe(false);
+  });
+
   it("the poller LOGS an unrecognised name it admitted, and passes the branch code", () => {
     const src = readFileSync(new URL("./email-poller.mjs", import.meta.url), "utf8");
     expect(src).toMatch(/destBranchCode: group\.parse\.destBranchCode/);
