@@ -38,8 +38,9 @@
 // (the console rule binds createdByUid to auth.uid). Anything else is deleted
 // unsent and logged. And the credit must be REAL: the ledger txn named by
 // ledgerId must exist under that customer, as a credit of exactly amountCents,
-// written by that same login. A ledger txn not there yet (an offline till
-// still syncing) leaves the entry queued; after MAX_AGE_MS it is dropped.
+// written by that same login, and the phone and code must be the customer
+// record's. A ledger txn not there yet leaves the entry queued; any entry older
+// than MAX_AGE_MS (7 days) is dropped unsent.
 //
 // ── ONE CREDIT, ONE MESSAGE, EVER ────────────────────────────────────────────
 // The layby notify's create-once claim (#385/#386), keyed on the LEDGER id:
@@ -47,7 +48,10 @@
 // Only the caller that wins the transaction may enqueue. A claim already
 // present is never taken over at any age. A retried push, a re-delivered
 // trigger, the trigger racing the sweep, an offline till resyncing — every
-// one of them meets the claim and sends nothing. A claim that is settled
+// one of them meets the claim and sends nothing. And the outbox doc id is
+// fixed per credit (credit_{ledgerId}, created with create()), so even a claim
+// taken over from a dead claimant (no outcome after 10 minutes) cannot enqueue
+// the credit twice. A claim that is settled
 // (notifiedAt / failedAt) also clears its duplicate queue entry; a claim in
 // flight leaves it alone (its owner deletes it, or releases the claim on a
 // transient failure so the next sweep re-claims).
@@ -65,6 +69,12 @@ const SENT = "pos/credit_whatsapp_sent";
 const RETURNS_ONLY_ROLE = "returnsOnly";
 const SWEEP_LIMIT = 100;
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// A claim with no outcome this long after it was taken is a dead claimant (a
+// crash between claim and enqueue). Taking it over is safe: the outbox doc id
+// is fixed per credit (outboxDocId) and created with create(), so a doc the
+// dead claimant DID write is found, never written twice.
+const STALE_CLAIM_MS = 10 * 60 * 1000;
+const outboxDocId = (ledgerId) => `credit_${ledgerId}`;
 
 // R1,250 style, without the R (the template carries it): whole rands bare,
 // cents only when there are some. Integer cents in, string out; null when the
@@ -139,8 +149,32 @@ async function creatorAllowed(db, uid) {
 async function ledgerState(db, e) {
   const txn = (await db.ref(`pos/creditLedger/${e.customerId}/txns/${e.ledgerId}`).get()).val();
   if (txn == null) return "missing";
-  if (txn.amount !== e.amountCents || txn.kind !== "credit" || (txn.staffUid != null && txn.staffUid !== e.createdByUid)) return "mismatch";
+  if (txn.amount !== e.amountCents || txn.kind !== "credit" || txn.staffUid !== e.createdByUid) return "mismatch";
   return "ok";
+}
+
+// "+27…" for any shape a stored phone takes; null when not an SA mobile.
+function saMobile(raw) {
+  let d = String(raw ?? "").replace(/\D/g, "");
+  if (d.length === 13 && d.startsWith("0027")) d = d.slice(2);
+  if (d.length === 11 && d.startsWith("27")) d = "0" + d.slice(2);
+  else if (d.length === 9 && !d.startsWith("0")) d = "0" + d;
+  return /^0(6\d|7\d|8[1-4])\d{7}$/.test(d) ? "+27" + d.slice(1) : null;
+}
+
+/**
+ * The recipient and code are the CUSTOMER'S, not whatever the entry says: the
+ * phone must be the record's phone (or, with none on the record, the phone
+ * the customer is keyed by), and the code must be the record's code when it
+ * has one. Null = matches; else the reason.
+ */
+async function customerMismatch(db, e) {
+  const rec = (await db.ref(`customers/${e.customerId}`).get()).val();
+  const phones = new Set([saMobile(rec && rec.phone), saMobile(e.customerId)].filter(Boolean));
+  if (rec && rec.phone && saMobile(rec.phone)) { if (saMobile(rec.phone) !== e.phone) return "phone_not_the_customers"; }
+  else if (!phones.has(e.phone)) return "phone_not_the_customers";
+  if (rec && typeof rec.code === "string" && rec.code.trim() && rec.code.trim().toUpperCase() !== String(e.customerCode).trim().toUpperCase()) return "code_not_the_customers";
+  return null;
 }
 
 /**
@@ -161,32 +195,36 @@ async function processEntry({ db, enqueueWhatsApp, queueId, approval, nowMs = Da
 
   const problem = entryProblem(entry);
   if (problem) return drop(problem);
+  // Too old to say "has been added" any more (and never left to clog the
+  // head of the key-ordered sweep): dropped in every state.
+  if (Number.isFinite(entry.createdAt) && nowMs - entry.createdAt > MAX_AGE_MS) return drop("too_old");
   // THE HARD RULE — before anything else is read or claimed.
   if (!(await creatorAllowed(db, entry.createdByUid))) return drop("creator_not_allowed", "error");
 
   // A settled claim on this ledger id → this entry is a duplicate.
   const claimRef = db.ref(`${SENT}/${entry.ledgerId}`);
   const existing = (await claimRef.get()).val();
+  let staleClaimedAt = null;
   if (existing != null) {
     if (existing.notifiedAt || existing.failedAt) { await entryRef.remove(); return { outcome: "duplicate", reason: "already_settled" }; }
-    return { outcome: "queued", reason: "claimed_in_flight" };
+    const at = Date.parse(existing.claimedAt);
+    if (!(Number.isFinite(at) && nowMs - at > STALE_CLAIM_MS)) return { outcome: "queued", reason: "claimed_in_flight" };
+    staleClaimedAt = existing.claimedAt;   // a dead claimant — taken over below
   }
 
   const ledger = await ledgerState(db, entry);
   if (ledger === "mismatch") return drop("ledger_mismatch", "error");
-  if (ledger === "missing") {
-    const age = Number.isFinite(entry.createdAt) ? nowMs - entry.createdAt : 0;
-    if (age > MAX_AGE_MS) return drop("ledger_never_landed");
-    return { outcome: "queued", reason: "ledger_not_yet_written" };
-  }
+  if (ledger === "missing") return { outcome: "queued", reason: "ledger_not_yet_written" };
+  const notHers = await customerMismatch(db, entry);
+  if (notHers) return drop(notHers, "error");
 
   if (!approval || !approval.approved) return { outcome: "queued", reason: approval?.reason || "template_not_approved" };
 
   const now = new Date(nowMs).toISOString();
   let claimed = false;
   try {
-    const res = await claimRef.transaction((cur) => (cur == null
-      ? { ledgerId: entry.ledgerId, queueId, customerId: entry.customerId, amountCents: entry.amountCents, claimedAt: now }
+    const res = await claimRef.transaction((cur) => (cur == null || (staleClaimedAt && cur.claimedAt === staleClaimedAt && !cur.notifiedAt && !cur.failedAt)
+      ? { ledgerId: entry.ledgerId, queueId, customerId: entry.customerId, amountCents: entry.amountCents, claimedAt: now, ...(staleClaimedAt ? { tookOverFrom: staleClaimedAt } : {}) }
       : undefined));
     claimed = res.committed && res.snapshot.val()?.claimedAt === now && res.snapshot.val()?.queueId === queueId;
   } catch (err) {
@@ -197,7 +235,7 @@ async function processEntry({ db, enqueueWhatsApp, queueId, approval, nowMs = Da
 
   let result;
   try {
-    result = await enqueueWhatsApp(templateRequest(entry));
+    result = await enqueueWhatsApp(templateRequest(entry), { docId: outboxDocId(entry.ledgerId) });
   } catch (err) {
     const terminal = !!(err && err.code === "invalid-argument" && err.details && err.details.unusableRecipient);
     const msg = String((err && err.message) || err).slice(0, 300);
@@ -274,6 +312,6 @@ async function runSweep({ db, enqueueWhatsApp, fetchTemplates, nowMs = Date.now(
 
 module.exports = {
   processEntry, notifyOne, runSweep, templateApproval, entryProblem, templateRequest,
-  formatRand, isSaMobileE164, codeDigits, creatorAllowed, ledgerState,
-  TEMPLATE, TEMPLATE_LANGUAGE, QUEUE, SENT, RETURNS_ONLY_ROLE, SWEEP_LIMIT, MAX_AGE_MS,
+  formatRand, isSaMobileE164, codeDigits, creatorAllowed, ledgerState, customerMismatch, outboxDocId,
+  TEMPLATE, STALE_CLAIM_MS, TEMPLATE_LANGUAGE, QUEUE, SENT, RETURNS_ONLY_ROLE, SWEEP_LIMIT, MAX_AGE_MS,
 };

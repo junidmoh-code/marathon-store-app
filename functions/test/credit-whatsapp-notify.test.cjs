@@ -72,22 +72,27 @@ const users = {
   uidOtherDesk: { posAccess: { isActive: true, role: "returnsOnly" } },
   uidOffDesk: { posAccess: { isActive: false, role: "returnsOnly", creditWhatsApp: true } },
 };
+const customers = { "0821234567": { name: "Thandi Mokoena", phone: "082 123 4567", code: "C-2291" } };
 const entry = (over = {}) => ({
   ledgerId: "LT1", customerId: "0821234567", phone: "+27821234567", firstName: "Thandi",
   amountCents: 125000, storeName: "Concrete", customerCode: "C-2291", createdAt: NOW - 1000, createdByUid: JAFER, ...over,
 });
 const ledger = (cust, id, over = {}) => ({ [cust]: { txns: { [id]: { txnId: id, amount: 125000, kind: "credit", source: "refund", staffUid: JAFER, ...over } } } });
 const world = ({ queue = { q1: entry() }, led = ledger("0821234567", "LT1"), extraUsers = {} } = {}) =>
-  fakeDb({ users: { ...users, ...extraUsers }, pos: { credit_whatsapp_queue: queue, creditLedger: led } });
+  fakeDb({ users: { ...users, ...extraUsers }, customers, pos: { credit_whatsapp_queue: queue, creditLedger: led } });
+
 
 function producer({ fail = null } = {}) {
   const calls = [];
-  const fn = async (req) => {
+  const opts = [];
+  const fn = async (req, o) => {
     calls.push(req);
+    opts.push(o);
     if (fail) { const e = fail(req, calls.length); if (e) throw e; }
     return { success: true, outboxId: `ob${calls.length}` };
   };
   fn.calls = calls;
+  fn.opts = opts;
   return fn;
 }
 const notify = (db, enq, queueId = "q1", fetchTemplates = APPROVED, nowMs = NOW) =>
@@ -105,6 +110,7 @@ test("a Jafer Till credit sends ONE store_credit_issued: name, R-amount, store, 
     templateName: "store_credit_issued", recipientPhone: "+27821234567",
     templateParams: ["Thandi", "1,250", "Concrete", "C-2291"], buttonUrlParam: "2291",
   }]);
+  assert.deepEqual(enq.opts, [{ docId: "credit_LT1" }], "the outbox doc id is fixed per credit");
   assert.equal(db.state.pos.credit_whatsapp_queue, undefined, "the settled entry leaves the queue");
   assert.equal(db.state.pos.credit_whatsapp_sent.LT1.notifiedAt, new Date(NOW).toISOString());
   assert.equal(db.state.pos.credit_whatsapp_sent.LT1.outboxId, "ob1");
@@ -158,11 +164,11 @@ test("the ledger write lands later → the sweep sends it then, once", async () 
   assert.equal(enq.calls.length, 1);
 });
 
-test("a ledger write that never lands is dropped after 7 days, unsent", async () => {
+test("any entry older than 7 days is dropped unsent (a ledger that never landed, an approval that never came)", async () => {
   const db = world({ led: {} });
   const enq = producer();
   const r = await notify(db, enq, "q1", APPROVED, NOW + C.MAX_AGE_MS + 5000);
-  assert.equal(r.reason, "ledger_never_landed");
+  assert.equal(r.reason, "too_old");
   assert.equal(enq.calls.length, 0);
   assert.equal(db.state.pos.credit_whatsapp_queue, undefined);
 });
@@ -171,6 +177,7 @@ for (const [why, over] of [
   ["a different amount", { amount: 5000 }],
   ["a redemption, not a credit", { kind: "redeem", amount: 125000 }],
   ["written by another login", { staffUid: "uidAmanda" }],
+  ["no staff on it", { staffUid: null }],
 ]) {
   test(`a ledger txn with ${why} → refused, never sent`, async () => {
     const db = world({ led: ledger("0821234567", "LT1", over) });
@@ -202,12 +209,45 @@ test("the trigger and the sweep on the same entry → one message", async () => 
 
 test("a claim in flight is never taken over and its entry is left for the owner", async () => {
   const db = world();
-  db.state.pos.credit_whatsapp_sent = { LT1: { ledgerId: "LT1", queueId: "q0", claimedAt: "2026-11-24T00:00:00.000Z" } };
+  db.state.pos.credit_whatsapp_sent = { LT1: { ledgerId: "LT1", queueId: "q0", claimedAt: new Date(NOW - 60_000).toISOString() } };
   const enq = producer();
   const r = await notify(db, enq);
   assert.equal(r.reason, "claimed_in_flight");
   assert.equal(enq.calls.length, 0);
   assert.ok(db.state.pos.credit_whatsapp_queue.q1);
+});
+
+test("a claim with no outcome after 10 minutes (dead claimant) is taken over — same outbox doc id, so never two docs", async () => {
+  const db = world();
+  db.state.pos.credit_whatsapp_sent = { LT1: { ledgerId: "LT1", queueId: "q0", claimedAt: new Date(NOW - C.STALE_CLAIM_MS - 1000).toISOString() } };
+  const enq = producer();
+  const r = await notify(db, enq);
+  assert.equal(r.outcome, "sent");
+  assert.deepEqual(enq.opts, [{ docId: "credit_LT1" }]);
+  assert.ok(db.state.pos.credit_whatsapp_sent.LT1.tookOverFrom);
+});
+
+for (const [why, rec, reason] of [
+  ["a phone that is not the customer's", { name: "T", phone: "0831112222", code: "C-2291" }, "phone_not_the_customers"],
+  ["a code that is not the customer's", { name: "T", phone: "0821234567", code: "C-9999" }, "code_not_the_customers"],
+]) {
+  test(`an entry carrying ${why} is dropped unsent`, async () => {
+    const db = world();
+    db.state.customers["0821234567"] = rec;
+    const enq = producer();
+    const r = await notify(db, enq);
+    assert.equal(r.reason, reason);
+    assert.equal(enq.calls.length, 0);
+  });
+}
+
+test("no customer record: the phone must be the one the customer is keyed by", async () => {
+  const db = world();
+  delete db.state.customers;
+  assert.equal((await notify(db, producer())).outcome, "sent");
+  const db2 = world({ queue: { q1: entry({ phone: "+27831112222" }) } });
+  delete db2.state.customers;
+  assert.equal((await notify(db2, producer())).reason, "phone_not_the_customers");
 });
 
 test("a transient enqueue failure releases the claim, keeps the entry, and the next sweep sends once", async () => {

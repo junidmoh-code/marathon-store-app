@@ -237,7 +237,11 @@ async function sendViaMetaTemplate(to, templateName, templateParams = [], { butt
 // WhatsApp dedupes on the ledger id, and two equal credits to one customer a
 // minute apart are two messages). The callable passes request.data alone, so
 // no client can reach this switch.
-async function enqueueWhatsApp(data, { dedupe = true } = {}) {
+// `opts.docId` — a deterministic outbox doc id, created with create() so a
+// second attempt for the same message (a retry after an ambiguous failure, a
+// stale claim taken over) can never mint a second doc: ALREADY_EXISTS is
+// answered as the same message. Only lib/credit-whatsapp-notify.cjs uses it.
+async function enqueueWhatsApp(data, { dedupe = true, docId = null } = {}) {
   const { templateName, recipientPhone, templateParams = [], buttonUrlParam = null } = data || {};
 
   console.log("sendWhatsApp enqueue:", JSON.stringify({
@@ -335,6 +339,22 @@ async function enqueueWhatsApp(data, { dedupe = true } = {}) {
     attempts:   0,
     lastError:  null,
   };
+
+  if (docId) {
+    const ref = admin.firestore().collection("whatsapp_outbox").doc(docId);
+    try {
+      await ref.create(outboxDoc);
+    } catch (err) {
+      if (err && (err.code === 6 || err.code === "already-exists")) {
+        console.log("WhatsApp already enqueued (same doc id):", JSON.stringify({ templateName, outboxId: docId }));
+        return { success: true, outboxId: docId, status: "existing", deduped: true };
+      }
+      console.error("Failed to create WhatsApp outbox doc:", err.message);
+      throw new HttpsError("internal", "Could not enqueue WhatsApp message");
+    }
+    console.log("WhatsApp enqueued:", JSON.stringify({ templateName, recipient: maskPhone(to), outboxId: docId }));
+    return { success: true, outboxId: docId, status: "pending" };
+  }
 
   try {
     const ref = await admin.firestore().collection("whatsapp_outbox").add(outboxDoc);
@@ -635,7 +655,9 @@ const fetchCreditTemplate = async () => {
 };
 // The producer for this one template: no 90s text dedupe (the ledgerId claim
 // is the dedupe, and two equal credits a minute apart are two messages).
-const enqueueCreditWhatsApp = (req) => enqueueWhatsApp(req, { dedupe: false });
+// The doc id is fixed per credit (credit_{ledgerId}) and created with create(),
+// so no retry or claim takeover can ever enqueue the same credit twice.
+const enqueueCreditWhatsApp = (req, { docId } = {}) => enqueueWhatsApp(req, { dedupe: false, docId });
 
 // The moment an entry lands. Not approved yet → it stays queued (no throw);
 // a transient failure releases its claim and leaves it for the sweep.
