@@ -3033,14 +3033,15 @@ async function processReadJob(db, jobId, deps = {}) {
   // second run, or a day already answered, writes nothing).
   if (!check && !(fellBack && fellBack.ok) && job.bank === STANDARD_BANK && Number.isInteger(job.typedCents)) {
     try {
-      let recordedCloseYmd = null;
+      let recordedCloseYmd = null, recordedTotalCents = null;
       if (final === "recorded" && outcome.batchKey) {
-        const closedAt = (await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${outcome.batchKey}/slip/closedAt`).once("value")).val();
-        recordedCloseYmd = sbSastYmd(Number(closedAt));
+        const slipNode = (await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${outcome.batchKey}/slip`).once("value")).val() || {};
+        recordedCloseYmd = sbSastYmd(Number(slipNode.closedAt));
+        recordedTotalCents = Number.isInteger(slipNode.totalCents) ? slipNode.totalCents : null;
       }
       const stands = typedStandsFor({
         final, typedCents: job.typedCents, receivedAt: job.receivedAt, nowMs: t, jobDayYmd: job.dayYmd,
-        recordedCloseYmd, batchKey: outcome.batchKey || null,
+        recordedCloseYmd, batchKey: outcome.batchKey || null, recordedTotalCents,
       });
       if (stands) {
         const typedDay = await (deps.typedFallback || recordTypedFallback)(db, done, outcome, t, { ...deps, warning: stands.warning, photoReadStatus: stands.kind });
@@ -3120,7 +3121,24 @@ async function recordTypedFallback(db, job, outcome, nowMs, deps = {}) {
     // THIS JOB'S OWN TYPED FIGURE already stands (it stood after five minutes
     // unread — typedStandsFor): the reader has now given up, so it is marked
     // "photo not read" where it stands, never recorded twice.
-    const ownKey = Object.keys(onDay).find((k) => onDay[k] && !onDay[k].displacedBy && onDay[k].fromTypedTotal && onDay[k].fromTypedTotal.jobId === job.jobId);
+    // Found by its mark — or, if the mark's own write was lost after the
+    // record landed, by the record itself: a typed staff-slip record of this
+    // job's amount carrying the FROM TYPED TOTAL warning. (Architect review, #999.)
+    const isOwn = (r) => r && !r.displacedBy && ((r.fromTypedTotal && r.fromTypedTotal.jobId === job.jobId)
+      || (!r.fromTypedTotal && r.capturedVia === "typed" && r.declaredTotal && r.declaredTotal.via === "staff-slip"
+        && r.declaredTotal.cents === job.typedCents && (r.warnings || []).some((w) => /^FROM TYPED TOTAL/.test(String(w)))));
+    const ownKey = Object.keys(onDay).find((k) => isOwn(onDay[k]));
+    if (ownKey && deps.photoReadStatus) {
+      // Already standing. The photo has since been read as an earlier day's
+      // report: the label says so instead of "not read yet". Never a second record.
+      const own = onDay[ownKey];
+      const why = deps.photoReadStatus;
+      if (!own.fromTypedTotal || (own.fromTypedTotal.why === "not-read-yet" && why === "earlier-report")) {
+        await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${ownKey}`).transaction((cur) => (cur === null ? null
+          : { ...cur, fromTypedTotal: { why, jobId: job.jobId || null }, warnings: [...(cur.warnings || []), ...(deps.warning && why !== (cur.fromTypedTotal && cur.fromTypedTotal.why) ? [deps.warning] : [])] }));
+      }
+      return { ok: true, batchKey: ownKey, already: true };
+    }
     if (ownKey && !deps.photoReadStatus) {
       const why = unreadReason(job, outcome);
       await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${ownKey}`).transaction((cur) => (cur === null ? null

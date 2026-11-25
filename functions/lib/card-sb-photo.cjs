@@ -249,13 +249,20 @@ function typedCheck(typedCents, readCents) {
 const TYPED_STANDS_AFTER_MS = 5 * 60 * 1000;
 
 /** @returns {null | {kind:"earlier-report"|"not-read-yet", warning:string}} */
-function typedStandsFor({ final, typedCents, receivedAt, nowMs, jobDayYmd, recordedCloseYmd = null, batchKey = null }) {
+function typedStandsFor({ final, typedCents, receivedAt, nowMs, jobDayYmd, recordedCloseYmd = null, batchKey = null, recordedTotalCents = null }) {
   if (!Number.isInteger(typedCents) || typeof jobDayYmd !== "string") return null;
   const typed = `R${(typedCents / 100).toFixed(2)}`;
   if (final === "recorded" && recordedCloseYmd && recordedCloseYmd < jobDayYmd) {
+    // The figure typed IS the photographed report's own total: probably
+    // yesterday's report copied, not today's terminal total. It still stands
+    // (Junid's rule), but the record says so. (Architect review, #999.)
+    const copied = Number.isInteger(recordedTotalCents) && recordedTotalCents === typedCents
+      ? ` CHECK IT: the typed total is exactly batch #${batchKey ?? "?"}'s total, so it may have been copied from that report rather than read off the terminal for ${jobDayYmd}.`
+      : "";
     return {
       kind: "earlier-report",
-      warning: `FROM TYPED TOTAL — the report photographed with this slip is batch #${batchKey ?? "?"}, which closed on ${recordedCloseYmd} and is filed on that day. This till's batch for ${jobDayYmd} closes at 18:50, after the photo, so the total typed on the Card Slip (${typed}) stands as ${jobDayYmd}'s figure until that report is read. Open the photo to check it.`,
+      copiedFromReport: !!copied,
+      warning: `FROM TYPED TOTAL — the report photographed with this slip is batch #${batchKey ?? "?"}, which closed on ${recordedCloseYmd} and is filed on that day. This till's batch for ${jobDayYmd} closes at 18:50, after the photo, so the total typed on the Card Slip (${typed}) stands as ${jobDayYmd}'s figure until that report is read. Open the photo to check it.${copied}`,
     };
   }
   if (final === "duplicate") {

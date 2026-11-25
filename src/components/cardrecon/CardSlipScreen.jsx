@@ -92,7 +92,7 @@ const S = {
   submit: { appearance: "none", boxSizing: "border-box", width: "100%", minHeight: 54, borderRadius: 12, cursor: "pointer",
             fontFamily: FONT, fontSize: 17, fontWeight: 700, color: "#05070D", background: "#54D97F", border: 0, marginTop: 6 },
   submitOff: { opacity: 0.35, cursor: "default" },
-  waiting: { fontSize: 13.5, fontWeight: 600, color: "#FFD479", textAlign: "center" },
+  waiting: { fontSize: 13.5, fontWeight: 600, color: "rgba(233, 238, 255, 0.7)", textAlign: "center" }, // neutral grey, never amber (Junid, 25 Nov 2026)
   sent: { display: "grid", gap: 6, justifyItems: "center", padding: "26px 14px", borderRadius: 18, textAlign: "center",
           background: "rgba(52,199,89,.08)", border: "1px solid rgba(52,199,89,.25)" },
   sentTitle: { fontSize: 21, fontWeight: 700, color: "#54D97F" },

@@ -154,3 +154,40 @@ test("the same report photographed again: a duplicate, and the typed figure is w
   assert.equal((await run(db, b.jobId, { ocr: reads(report()) }, SENT + 72000)).final, "duplicate");
   assert.equal(live(await node(db, `card_batches/pe/${TID}`)).length, 2, "#581 and one typed figure for 25 Nov");
 });
+
+test("architect review: a figure that stood 'not read yet' is relabelled when the photo turns out to be yesterday's report — still one record", async () => {
+  const db = world();
+  await send(db, "58,190.00");
+  const [job] = await jobs(db);
+  const down = async () => { const e = new Error("reader unavailable"); e.code = "unavailable"; throw e; };
+  await run(db, job.jobId, { ocr: down }, SENT + 60000);
+  const j2 = (await jobs(db))[0];
+  await run(db, job.jobId, { ocr: down, onArrival: false }, Math.max(j2.dueAt + 1, SENT + TYPED_STANDS_AFTER_MS + 1000));
+  const j3 = (await jobs(db))[0];
+  await run(db, job.jobId, { ocr: reads(report()), onArrival: false }, j3.dueAt + 1);
+  const recs = live(await node(db, `card_batches/pe/${TID}`));
+  const typed = recs.filter(([k]) => k !== "581");
+  assert.equal(typed.length, 1, "one typed record");
+  assert.equal(typed[0][1].fromTypedTotal.why, "earlier-report");
+  assert.ok(recs.some(([k]) => k === "581"), "#581 filed on 24 Nov");
+});
+
+test("architect review: a typed total equal to the photographed report's own total stands but says CHECK IT", () => {
+  const s = typedStandsFor({ final: "recorded", typedCents: 3184500, receivedAt: SENT, nowMs: SENT, jobDayYmd: "2026-11-25", recordedCloseYmd: "2026-11-24", batchKey: "581", recordedTotalCents: 3184500 });
+  assert.equal(s.copiedFromReport, true);
+  assert.match(s.warning, /CHECK IT: the typed total is exactly batch #581's total/);
+  assert.equal(typedStandsFor({ final: "recorded", typedCents: 5819000, receivedAt: SENT, nowMs: SENT, jobDayYmd: "2026-11-25", recordedCloseYmd: "2026-11-24", batchKey: "581", recordedTotalCents: 3184500 }).copiedFromReport, false);
+});
+
+test("architect review: a typed record whose mark was lost is still found by its own job — never a second record", async () => {
+  const db = world();
+  await send(db, "58,190.00");
+  const [job] = await jobs(db);
+  await run(db, job.jobId, { ocr: reads(report()) });
+  const [typedKey] = live(await node(db, `card_batches/pe/${TID}`)).find(([k]) => k !== "581");
+  await db.ref(`card_batches/pe/${TID}/${typedKey}/fromTypedTotal`).remove();
+  await send(db, "58,190.00", SENT + 60000);
+  const second = (await jobs(db)).find((j) => j.jobId !== job.jobId);
+  await run(db, second.jobId, { ocr: reads(report()) }, SENT + 72000);
+  assert.equal(live(await node(db, `card_batches/pe/${TID}`)).length, 2, "#581 and one typed record");
+});
