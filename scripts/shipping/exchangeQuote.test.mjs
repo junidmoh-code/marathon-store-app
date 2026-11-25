@@ -1,7 +1,8 @@
 // quoteExchange — the exchange desk's live two-way quote (Junid, 25 Nov 2026). Fakes only, never the network.
 import { describe, it, expect } from "vitest";
-import { quoteExchange, quoteRecord, parseItems } from "./exchangeQuote.mjs";
-import { bookReturn } from "./bookReturn.mjs";
+import { quoteExchange, quoteRecord, parseItems, ratesOnlyClient, runQuoteCli, flag } from "./exchangeQuote.mjs";
+import { bookReturn, planReturn } from "./bookReturn.mjs";
+import { planShipment } from "./bookShipment.mjs";
 import { fakeDb } from "./fakeDb.testutil.mjs";
 
 const ORDER_KEY = "18985060335765";
@@ -33,13 +34,14 @@ function fakeClient() {
     getRates: async (body) => {
       calls.push(["getRates", body]);
       if (body.collection_pickup_point_id) return { rates: [r(120.1, "L2DM - ECO")] };
+      if (body.delivery_pickup_point_id) return { rates: [r(80.25, "D2LM - ECO")] };
       if (String(body.delivery_address?.code) === "5600") return { rates: [r(95.5, "ECO")] };
       return { rates: [r(140.37, "ECO"), r(60, "L2DM - ECO")] };
     },
     createShipment: async (body) => { calls.push(["createShipment", body]); throw new Error("a quote must never create"); },
   };
 }
-const geocoder = async () => ({ lat: -32.8802, lng: 27.3937 });
+const geocoder = async () => ({ lat: -32.8802, lng: 27.3937, from: "address", by: "street" });
 const deps = (d, client) => ({ db: d, client, geocoder });
 const ONE = [{ pid: "p1", size: "6" }];
 
@@ -90,7 +92,8 @@ describe("quoteRecord / parseItems", () => {
     expect(rec.lines).toHaveLength(2);
     expect(rec.lines[0]).toMatchObject({ pid: "p2", size: "XL", sizeKey: "XL", qty: 1, isFootwear: false });
     const held = quoteRecord({ original: ORIGINAL({ shipping: { ...ORIGINAL().shipping, addressHold: { state: "confirmed" } } }), orderKey: ORDER_KEY, items: ONE });
-    expect(held.shipping.addressHold).toEqual({ state: "confirmed" });
+    expect(held.shipping).not.toHaveProperty("addressHold"); // reserve.js never copies it: the quote refuses when the booking would
+    expect(held.customer).toEqual({ name: "Pumeza Vitshima" });
   });
   it("refuses an item with no pid or an unsafe one", () => {
     expect(() => parseItems('[{"size":"7"}]', "returning")).toThrow(/no pid/);
@@ -132,5 +135,97 @@ describe("bookReturn collection: door (the customer's choice)", () => {
     const locker = await bookReturn(KEY, { db: live(), client: shipClient(), log: () => {}, now: () => 1000, geocoder });
     expect(locker).toMatchObject({ booked: true, mode: "locker_dropoff" });
     await expect(bookReturn(KEY, { db: live(), client: shipClient(), log: () => {}, now: () => 1000, geocoder, collection: "post" })).rejects.toThrow(/locker or door/);
+  });
+});
+
+describe("architect review of #997", () => {
+  it("parity: both legs are planned on the reserve-shaped record (lines = the replacement) and give the same code and rate as planReturn/planShipment", async () => {
+    const d = db();
+    const replacement = [{ pid: "p2", size: "XL", qty: 2 }];
+    const products = { p1: d.root.products.p1, p2: d.root.products.p2 };
+    // What reserve.js exchangeOrder writes once the exchange is on: the replacement lines, nothing else of the original.
+    const real = { ...quoteRecord({ original: ORIGINAL(), orderKey: ORDER_KEY, items: replacement, products }), key: "exchange-1952-1794647899318" };
+    const [ret, out] = [await planReturn(real, { db: d, client: fakeClient(), products, key: real.key, geocoder }), await planShipment(real, { db: d, client: fakeClient(), products, geocoder })];
+    const q = await quoteExchange({ orderKey: ORDER_KEY, returning: ONE, replacement, mode: "locker" }, deps(d, fakeClient()));
+    expect(q.returnLeg).toMatchObject({ service: ret.rate.code, rand: ret.rate.rate });
+    expect(q.outboundLeg).toEqual({ service: out.chosen.rate.code, rand: out.chosen.rate.rate });
+    // the parcel priced for the return is the replacement's (two folded tees), not the returning sneaker's shoebox
+    const client = fakeClient();
+    await quoteExchange({ orderKey: ORDER_KEY, returning: ONE, replacement, mode: "locker" }, deps(db(), client));
+    const lockerBody = client.calls.find((c) => c[0] === "getRates" && c[1].collection_pickup_point_id)[1];
+    expect(JSON.stringify(lockerBody.parcels)).toEqual(JSON.stringify(ret.payload.parcels));
+  });
+
+  it("a geocode failure is transient (tried again), not a refusal", async () => {
+    const out = await quoteExchange({ orderKey: ORDER_KEY, returning: ONE, replacement: ONE, mode: "locker" }, { db: db(), client: fakeClient(), geocoder: async () => null });
+    expect(out).toMatchObject({ ok: false, transient: true });
+    expect(out.reason).toMatch(/^return leg: the customer's address could not be placed/);
+  });
+
+  it("the outbound follows the shop's own delivery mode: door-to-locker when deliveryMode is not door", async () => {
+    const d = db({ cfg: { deliveryMode: "locker" } });
+    const out = await quoteExchange({ orderKey: ORDER_KEY, returning: ONE, replacement: ONE, mode: "locker" }, deps(d, fakeClient()));
+    expect(out).toMatchObject({ ok: true, outboundLeg: { service: "D2LM - ECO", rand: 80.25 } });
+  });
+
+  it("every outbound live blocker is reported (not only the ceiling)", async () => {
+    const out = await quoteExchange({ orderKey: ORDER_KEY, returning: ONE, replacement: ONE, mode: "door" }, deps(db({ cfg: { collectionContact: {} } }), fakeClient()));
+    expect(out.ok).toBe(true);
+    expect(out.blockers).toContain("outbound leg: collection_contact");
+  });
+
+  it("door refusals: no SA mobile (an email alone is not enough for a driver), and a parcel no box fits", async () => {
+    const noPhone = ORIGINAL({ customer: { name: "P" }, shipping: { address: { ...ORIGINAL().shipping.address, phone: "" } } });
+    const a = await quoteExchange({ orderKey: ORDER_KEY, returning: ONE, replacement: [], mode: "door" }, { ...deps(db({ original: noPhone }), fakeClient()), email: "p@example.com" });
+    expect(a).toMatchObject({ ok: false });
+    expect(a.reason).toMatch(/mobile number is missing/);
+    const tiny = { boxes: [{ id: "box-tiny", code: "TINY", label: "Tiny", lengthCm: 10, widthCm: 10, heightCm: 2, tareKg: 0.1, measured: true }] };
+    const b = await quoteExchange({ orderKey: ORDER_KEY, returning: ONE, replacement: [{ pid: "p2", size: "XL", qty: 10 }], mode: "door" }, deps(db({ cfg: tiny }), fakeClient()));
+    expect(b).toMatchObject({ ok: false });
+    expect(b.reason).toMatch(/no standard box fits/);
+  });
+
+  it("the CLI's client can only price: no createShipment", () => {
+    const c = ratesOnlyClient(fakeClient());
+    expect(Object.keys(c).sort()).toEqual(["getPickupPoints", "getRates"]);
+    expect(c.createShipment).toBeUndefined();
+  });
+
+  it("a flag given without a valid value is an error, never a silent default; absent = default", () => {
+    expect(flag(["--key", "x"], "mode", { allowed: ["locker", "door"] })).toEqual({ present: false, value: null });
+    expect(() => flag(["--mode"], "mode", { allowed: ["locker", "door"] })).toThrow(/needs a value/);
+    expect(() => flag(["--mode", "--phone", "1"], "mode", { allowed: ["locker", "door"] })).toThrow(/needs a value/);
+    expect(() => flag(["--collection", "post"], "collection", { allowed: ["locker", "door"] })).toThrow(/must be locker or door/);
+    expect(flag(["--collection", "door"], "collection", { allowed: ["locker", "door"] }).value).toBe("door");
+  });
+
+  describe("the CLI writes exactly one JSON line", () => {
+    const run = async (argv, makeDeps) => {
+      const lines = [];
+      const code = await runQuoteCli(argv, { makeDeps, write: (s) => lines.push(s) });
+      const text = lines.join("");
+      expect(text.endsWith("\n")).toBe(true);
+      expect(text.trimEnd().split("\n")).toHaveLength(1);
+      return { code, out: JSON.parse(text) };
+    };
+    const ok = async () => ({ db: db(), client: fakeClient(), geocoder });
+    it("on success", async () => {
+      const { code, out } = await run(["--order-key", ORDER_KEY, "--returning", JSON.stringify(ONE), "--replacement", JSON.stringify(ONE), "--mode", "door"], ok);
+      expect(code).toBe(0);
+      expect(out).toMatchObject({ ok: true, returnLeg: { mode: "door_collection" } });
+    });
+    it("on ok:false", async () => {
+      const { code, out } = await run(["--order-key", "123", "--returning", JSON.stringify(ONE)], ok);
+      expect(code).toBe(0);
+      expect(out).toEqual({ ok: false, reason: "no order at /online_orders/123" });
+    });
+    it("on a crash, with transient when known; and a bad --mode", async () => {
+      const { code, out } = await run(["--order-key", ORDER_KEY], async () => { const e = new Error("db down"); e.transient = true; throw e; });
+      expect(code).toBe(1);
+      expect(out).toEqual({ ok: false, error: "db down", transient: true });
+      const bad = await run(["--order-key", ORDER_KEY, "--mode"], ok);
+      expect(bad.code).toBe(1);
+      expect(bad.out.error).toMatch(/--mode needs a value/);
+    });
   });
 });

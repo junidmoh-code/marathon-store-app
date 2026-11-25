@@ -2,24 +2,28 @@
 // customer pays the price difference + live Courier Guy quote both ways")
 //
 // The exchange page (marathon-dm-agent, the exchange desk) has to show a customer what the courier costs BEFORE anything
-// is reserved, paid or booked. This prices the two legs exactly as they will later be booked, by the same code:
+// is booked. This prices the two legs exactly as they will later be booked, by the same code, ON THE SAME RECORD:
 //
-//   return leg    planReturn (bookReturn.mjs): the customer → our door, from the Courier Guy locker nearest them
-//                 (mode "locker") or collected from their door (mode "door", their own choice: planReturn collection)
-//   outbound leg  planShipment (bookShipment.mjs): our door → the customer, the replacement lines, as a packed exchange
-//                 record is booked by the poller's SHIP pass
+//   THE RECORD    the exchange record marathon-dm-agent src/jimmy/reserve.js exchangeOrder writes, rebuilt in memory and
+//                 nothing more: its lines are the REPLACEMENT items, shipping.address of the original order, customer
+//                 { name } only, exchange.contactPhone. No addressHold, no email: the quote refuses exactly when the
+//                 booking would (Sonnet architect review of #997).
+//   return leg    planReturn (bookReturn.mjs) on that record: bookReturn estimates the return parcel from the record's
+//                 lines (the replacement, the same kind of item coming back), the locker nearest the customer (mode
+//                 "locker") or a collection from their door (mode "door", their own choice). With no replacement (nothing
+//                 goes out) the returning items stand in for the lines.
+//   outbound leg  planShipment (bookShipment.mjs) on the same record, as the poller's SHIP pass books a packed exchange.
 //
-// Both are planned against an IN-MEMORY exchange record built from the original order the way marathon-dm-agent
-// src/jimmy/reserve.js exchangeOrder writes the real one (shipping.address of the original, exchange.contactPhone,
-// lines from /products/<pid>), so nothing is written: RATES ONLY, never a booking, never a claim, never a hold.
-// Reads: /online_orders/<orderKey> and /products/<pid> by exact path, /config/shipping. Never a whole node.
+// RATES ONLY: never a booking, a claim, a hold or a write. The CLI hands it a rates-only client (ratesOnlyClient: no
+// createShipment at all). Reads: /online_orders/<orderKey>, /products/<pid> by exact path, /config/shipping.
 //
-// The spend ceiling (maxChargeRand) is REPORTED (blockers), never a refusal: the customer pays the quote, and the booking
-// itself still enforces it later.
+// Blockers: the return leg's ceiling and every outbound live blocker (collection contact missing, the ceiling) are
+// REPORTED, never a refusal — the booking still enforces them. A parcel no box fits is a refusal (ok:false), on either leg.
 //
 // → { ok: true, returnLeg: { rand, service, mode, locker: { name, address, km } | null }, outboundLeg: { rand, service } | null,
 //     totalCents, blockers: [] }
 //   | { ok: false, reason, transient? }
+// THE CALLER MUST READ returnLeg.mode ("locker_dropoff" | "door_collection") to tell the customer how it comes back.
 import { planReturn } from "./bookReturn.mjs";
 import { planShipment } from "./bookShipment.mjs";
 import { assertSafeSegment, stockSizeKey as sizeKeyOf } from "../../src/utils/sizeKey.js";
@@ -48,7 +52,7 @@ export function parseItems(raw, what) {
   });
 }
 
-/** The exchange-shaped record the quote is planned on (reserve.js exchangeOrder's shape). Pure. */
+/** The exchange record the quote is planned on: reserve.js exchangeOrder's shape, nothing more. Pure. */
 export function quoteRecord({ original, orderKey, items, products = {}, phone = null }) {
   const n = str(original?.orderNumber ?? original?.order_number ?? original?.shopifyName).replace(/^#/, "").replace(/\D/g, "");
   const lines = [];
@@ -68,9 +72,9 @@ export function quoteRecord({ original, orderKey, items, products = {}, phone = 
   return {
     key: `exchange-${n || "0"}-${QUOTE_KEY_AT}`,
     orderNumber: `${n}-EX`, shopifyName: `#${n}-EX`,
-    ...(original?.customer?.name ? { customer: { name: original.customer.name, ...(original.customer.email ? { email: original.customer.email } : {}) } } : {}),
-    // The address AND its confirmation (CodeRabbit #997): addressGate accepts a confirmed mismatch only through shipping.addressHold.
-    ...(original?.shipping?.address ? { shipping: { address: original.shipping.address, ...(original.shipping.addressHold ? { addressHold: original.shipping.addressHold } : {}) } } : {}),
+    ...(original?.customer?.name ? { customer: { name: original.customer.name } } : {}),
+    // The address only, as reserve.js writes it (no addressHold: the booking's addressGate never sees one either).
+    ...(original?.shipping?.address ? { shipping: { address: original.shipping.address } } : {}),
     lines,
     status: "new",
     exchange: { kind: "exchange", by: "quote", paidAt: QUOTE_KEY_AT, contactPhone: contact || null, relatedOrders: [String(orderKey)] },
@@ -106,10 +110,10 @@ export async function quoteExchange({ orderKey, returning = [], replacement = []
   }
   const g = geocoder ? { geocoder } : {};
   const blockers = [];
+  // ONE record for both legs: the replacement lines (as reserve.js writes them); no replacement → the returning items.
+  const rec = quoteRecord({ original, orderKey: key, items: out.length ? out : back, products, phone });
 
-  // Return leg: the items coming back, as bookReturn plans them.
-  const retRec = quoteRecord({ original, orderKey: key, items: back, products, phone });
-  const ret = await planReturn(retRec, { db, client, products, email, key: retRec.key, collection: mode, ...g });
+  const ret = await planReturn(rec, { db, client, products, email, key: rec.key, collection: mode, ...g });
   if (!ret.ok) return { ok: false, reason: `return leg: ${ret.reason}`, ...(ret.transient ? { transient: true } : {}) };
   blockers.push(...(ret.blockers || []).map((b) => `return leg: ${b}`));
   const returnLeg = {
@@ -117,16 +121,60 @@ export async function quoteExchange({ orderKey, returning = [], replacement = []
     locker: ret.locker ? { name: ret.locker.name ?? null, address: ret.locker.address ?? null, km: ret.locker.km ?? null } : null,
   };
 
-  // Outbound leg: the replacement lines, as a packed exchange record is shipped.
   let outboundLeg = null;
   if (out.length) {
-    const outRec = quoteRecord({ original, orderKey: key, items: out, products, phone });
-    const sh = await planShipment(outRec, { db, client, products, ...g });
+    const sh = await planShipment(rec, { db, client, products, ...g });
     if (!sh.ok) return { ok: false, reason: `outbound leg: ${sh.reason}`, ...(sh.transient ? { transient: true } : {}) };
+    const live = sh.liveBlockers || [];
+    const noBox = live.find((b) => /no standard box fits/.test(b));
+    if (noBox) return { ok: false, reason: `outbound leg: ${noBox}` };
     const shipments = Array.isArray(sh.payloads) && sh.payloads.length ? sh.payloads.length : 1;
     outboundLeg = { rand: rand(sh.chosen.rate.rate * shipments), service: sh.chosen.rate.code };
-    blockers.push(...(sh.liveBlockers || []).filter((b) => /ceiling/.test(b)).map((b) => `outbound leg: ${b}`));
+    blockers.push(...live.map((b) => `outbound leg: ${b}`));
   }
   const totalCents = Math.ceil(Math.round((returnLeg.rand + (outboundLeg?.rand || 0)) * 10000) / 100);
   return { ok: true, returnLeg, outboundLeg, totalCents, blockers };
+}
+
+/** A client that can only price (rates, pickup points): no createShipment, so a quote can never book. Pure. */
+export function ratesOnlyClient(client) {
+  return Object.freeze({
+    getRates: (body) => client.getRates(body),
+    getPickupPoints: (q) => client.getPickupPoints(q),
+  });
+}
+
+/**
+ * The flag's value: absent → { present: false }; present with no value (last, or followed by another flag) → throws.
+ * A flag that is given must say what it means: never a silent default (architect review of #997). Pure.
+ */
+export function flag(argv, name, { allowed = null } = {}) {
+  const i = argv.indexOf(`--${name}`);
+  if (i < 0) return { present: false, value: null };
+  const v = argv[i + 1];
+  if (v == null || String(v).startsWith("--")) throw new Error(`--${name} needs a value${allowed ? ` (${allowed.join(" or ")})` : ""}`);
+  if (allowed && !allowed.includes(v)) throw new Error(`--${name} must be ${allowed.join(" or ")}, not "${v}"`);
+  return { present: true, value: v };
+}
+
+/**
+ * The CLI (exchange-quote.mjs): writes EXACTLY ONE JSON line, whatever happens. → the exit code (0: an answer, ok or
+ * not; 1: a crash, { ok: false, error, transient? }). makeDeps() builds { db, client } (the real ones in the CLI).
+ */
+export async function runQuoteCli(argv, { makeDeps, write = (s) => process.stdout.write(s) }) {
+  let out; let code = 0;
+  try {
+    const mode = flag(argv, "mode", { allowed: ["locker", "door"] });
+    const val = (n) => flag(argv, n).value;
+    const { db, client, geocoder } = await makeDeps();
+    out = await quoteExchange(
+      { orderKey: val("order-key"), returning: val("returning") ?? "[]", replacement: val("replacement") ?? "[]", mode: mode.present ? mode.value : "locker", phone: val("phone") },
+      { db, client: ratesOnlyClient(client), email: val("email"), ...(geocoder ? { geocoder } : {}) },
+    );
+  } catch (err) {
+    out = { ok: false, error: String(err?.message || err).slice(0, 400), ...(err?.transient ? { transient: true } : {}) };
+    code = 1;
+  }
+  write(`${JSON.stringify(out)}\n`);
+  return code;
 }

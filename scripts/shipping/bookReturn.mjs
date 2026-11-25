@@ -278,6 +278,10 @@ export const addressLine = (a) => [a?.street_address, a?.local_area, a?.city, a?
  *   2026: "auto-book the Courier Guy collection (locker or door per customer choice)"): no locker is looked for at all, a
  *   courier collects from their door (mode "door_collection", doorFallback { kind: "customer_choice" }). Every other guard
  *   is the same: the address gate, the return contact, the address placed on the map first, the ceiling (a blocker).
+ *   kind "customer_choice" lives only on /online_orders/<key>/returnShipping/doorFallback. Every no-locker retry reader
+ *   (bookShipment doorFallbackFor / DOOR_FALLBACK_KINDS, retry-no-locker, rebook-locker, unknownBooking, fast-ship) reads
+ *   the OUTBOUND shipping only, never returnShipping, so a customer's choice is never taken for a locker failure to retry.
+ *   The caller tells the customer how it comes back from `mode` (locker_dropoff | door_collection), never assumes a locker.
  */
 export const COLLECTIONS = Object.freeze(["locker", "door"]);
 export const CUSTOMER_CHOICE = Object.freeze({ reason: "customer chose door collection", kind: "customer_choice" });
