@@ -3,6 +3,10 @@
 // Called by Jimmy (marathon-dm-agent src/jimmy/returnBooking.js) from this checkout; prints ONE JSON line.
 //
 //   node scripts/shipping/book-return.mjs --key exchange-1793-1793333411004 [--email them@example.com] [--door-collection | --no-door-collection]
+//     [--collection locker|door]
+//
+// --collection door: the CUSTOMER chose a door collection on the exchange page (Junid, 25 Nov 2026): no locker is looked
+// for, a courier collects from their address (mode "door_collection", doorFallback.kind "customer_choice"). Default locker.
 //
 // No locker for the parcel (Junid, 24 Nov 2026): a courier collects from the customer's door instead, ONLY when
 // /config/shipping/returnDoorCollection is true or --door-collection is passed (a caller that reads `mode:
@@ -21,7 +25,9 @@ const key = arg("key");
 try {
   if (!key) throw new Error("--key exchange-<n>-<paidAtMs> is required");
   const doorCollection = process.argv.includes("--door-collection") ? true : process.argv.includes("--no-door-collection") ? false : null;
-  const out = await bookReturn(key, { email: arg("email"), doorCollection });
+  const collection = arg("collection") || "locker";
+  if (!["locker", "door"].includes(collection)) throw new Error("--collection must be locker or door");
+  const out = await bookReturn(key, { email: arg("email"), doorCollection, collection });
   process.stdout.write(`${JSON.stringify(out)}\n`);
   process.exit(0);
 } catch (err) {

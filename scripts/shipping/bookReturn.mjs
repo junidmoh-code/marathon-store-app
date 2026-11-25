@@ -274,8 +274,15 @@ export const addressLine = (a) => [a?.street_address, a?.local_area, a?.city, a?
  *   | { ok: true, payload, parcel, rate, blockers, locker: null, mode: "door_collection", doorFallback: { reason, kind }, collection }
  *   | { ok: false, reason, transient?, noLockerKind?, parcel }
  * doorCollection: true / false forces the no-locker door collection on / off; left out, /config/shipping/returnDoorCollection decides (default off).
+ * collection: "locker" (default, everything above) | "door" — THE CUSTOMER'S CHOICE on the exchange page (Junid, 25 Nov
+ *   2026: "auto-book the Courier Guy collection (locker or door per customer choice)"): no locker is looked for at all, a
+ *   courier collects from their door (mode "door_collection", doorFallback { kind: "customer_choice" }). Every other guard
+ *   is the same: the address gate, the return contact, the address placed on the map first, the ceiling (a blocker).
  */
-export async function planReturn(order, { db, client, products = null, email = null, key, geocoder = geocode, doorCollection = null }) {
+export const COLLECTIONS = Object.freeze(["locker", "door"]);
+export const CUSTOMER_CHOICE = Object.freeze({ reason: "customer chose door collection", kind: "customer_choice" });
+export async function planReturn(order, { db, client, products = null, email = null, key, geocoder = geocode, doorCollection = null, collection = "locker" }) {
+  if (!COLLECTIONS.includes(collection)) throw new Error(`planReturn: collection must be locker or door, not "${collection}"`);
   const raw = (await db.ref("config/shipping").get()).val();
   const cfg = mergeShippingConfig(raw);
   // A return is ALWAYS a locker drop-off, whatever the outgoing drop-box switch says.
@@ -310,6 +317,8 @@ export async function planReturn(order, { db, client, products = null, email = n
   // later), even for a parcel no locker takes, so it never gets a door collection.
   const at = await geocoder(from);
   if (!at) return { ok: false, transient: true, reason: "the customer's address could not be placed on a map (no nearest locker)", parcel };
+  // The customer chose a door collection: no locker search, straight to the door plan (it keeps its own checks).
+  if (collection === "door") return planDoorCollection(CUSTOMER_CHOICE.reason, CUSTOMER_CHOICE.kind);
   if (!parcel.fits || !parcel.dropBoxEligible) return noLocker("the parcel fits no Courier Guy locker", "too_big");
   let locker;
   try { locker = await nearestLocker(client, at, parcel.lockerSize); }
@@ -417,12 +426,14 @@ async function productsFor(db, order) {
 
 /**
  * @param {string} key      the exchange's /online_orders key (exchange-<n>-<paidAtMs>)
- * @param {object} [deps]   { db, client, products, log, now, email, doorCollection } — email: the customer's, for The Courier
- *                          Guy's notice; doorCollection: true / false forces the no-locker door collection (planReturn)
+ * @param {object} [deps]   { db, client, products, log, now, email, doorCollection, collection } — email: the customer's, for
+ *                          The Courier Guy's notice; doorCollection: true / false forces the no-locker door collection
+ *                          (planReturn); collection: "locker" (default) | "door" — the customer's own choice (planReturn)
  * → { booked: true, mode, ...returnShipping } | { skipped: true, reason, dryRun?, mode? }. Throws on a create that failed or may have run.
  */
 export async function bookReturn(key, deps = {}) {
-  const { db, client, products, log, now, email = null, geocoder, doorCollection = null } = await defaultDeps(deps);
+  const { db, client, products, log, now, email = null, geocoder, doorCollection = null, collection = "locker" } = await defaultDeps(deps);
+  if (!COLLECTIONS.includes(collection)) throw new Error(`bookReturn: collection must be locker or door, not "${collection}"`);
   if (!isExchangeKey(key)) throw new Error(`bookReturn: "${key}" is not an exchange key (exchange-<n>-<paidAtMs>)`);
   assertSafeSegment(key, "order key");
   const at = (p) => db.ref(`online_orders/${key}/${p}`);
@@ -436,7 +447,7 @@ export async function bookReturn(key, deps = {}) {
   const order = { ...((await db.ref(`online_orders/${key}`).get()).val() || {}), key };
   if (["cancelled", "closed"].includes(str(order.status))) return { skipped: true, reason: `the exchange is ${order.status}` };
 
-  const plan = await planReturn(order, { db, client, products, email, key, doorCollection, ...(geocoder ? { geocoder } : {}) });
+  const plan = await planReturn(order, { db, client, products, email, key, doorCollection, collection, ...(geocoder ? { geocoder } : {}) });
   if (!plan.ok) {
     log(`bookReturn ${key} REFUSED ${plan.reason}`);
     return {
