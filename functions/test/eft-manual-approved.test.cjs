@@ -1095,3 +1095,69 @@ test("UNREAD: a PDF no reader recognises, and a PDF with no text, are filed too;
   await rejects(upload(OWNER), "failed-precondition", "wrong-destination");
   assert.deepEqual(dbState.pool, {}, "someone else's money is a refusal, not an unread layout");
 });
+
+// ─── COMMIT 5 — THE APPROVED-PROOF BLOCK, END TO END, THROUGH THE POLLER ─────
+// Junid uploads the Capitec SkyQR proof; later the bank's emailed
+// notification of the SAME payment (same SkyQR reference, same amount)
+// arrives at the mini. The poller reads it with the SAME readers (it imports
+// scripts/cardrecon/eftBanks.mjs, which re-exports lib/eft-banks.cjs), passes
+// every gate (sender, destination, immediacy, date), builds the record — and
+// the fingerprint claim Junid's approval wrote turns it into held-duplicate:
+// never spendable, never searchable, refused at the settle.
+test("E2E: an approved Capitec SkyQR proof, then the bank's notification of it → held-duplicate, never floated", async () => {
+  reset(); pdfLines = CAPITEC_SKYQR; secretValue = SB_ACCOUNTS;
+  const approved = await upload(OWNER);
+  assert.equal(approved.reader, "capitec");
+
+  const core = await import("../../scripts/cardrecon/eftCore.mjs");
+  const banks = await import("../../scripts/cardrecon/eftBanks.mjs");
+  assert.equal(banks.EFT_READERS, EFT_READERS, "the poller's readers ARE the callable's readers — one module");
+
+  // The poller's own read plan, for a message from Capitec's sender.
+  const plan = core.noticeReadPlan({ sender: { reader: "capitec" }, offered: [{ lines: CAPITEC_SKYQR }], readers: banks.EFT_READERS });
+  assert.equal(plan.claimed.length, 1);
+  assert.equal(plan.mismatched.length, 0);
+  const parsed = plan.claimed[0].r.parse(CAPITEC_SKYQR);
+  assert.equal(parsed.ok, true, parsed.reason);
+
+  const account = core.destinationVerdict({
+    accountMask: parsed.accountMask, destBankName: parsed.destBankName,
+    allowedAccounts: core.parseAccountPolicies(SB_ACCOUNTS), configured: true,
+  });
+  assert.equal(account.ok, true, account.reason);
+  const receivedAt = Date.UTC(2026, 10, 24, 10, 35);
+  const timing = core.immediacyVerdict({ parsed, reader: "capitec", receivedAt, immediateOnly: account.immediateOnly === true });
+  assert.equal(timing.ok, true, timing.reason);
+  const dated = core.datedVerdict({ parsed, cutoff: { date: "2026-08-01", startMs: Date.UTC(2026, 6, 31, 22, 0) }, account, floors: {} });
+  assert.equal(dated.ok, true, dated.reason);
+  const record = core.eftPoolRecord({
+    message: { receivedAt, messageId: "<n1@capitecbank.co.za>", from: "Capitec <notifications@capitecbank.co.za>", subject: "Payment Notification" },
+    verdict: { pass: true, fromDomain: "capitecbank.co.za", dkimDomain: "capitecbank.co.za", detail: "dkim pass" },
+    parsed, account, timing, dated, reader: "capitec", rawText: CAPITEC_SKYQR.join("\n"), at: receivedAt,
+  });
+  assert.equal(record.outcome, "recorded", record.reason);
+  assert.equal(record.bankRef, "4000-4000-4a00");
+  assert.doesNotMatch(JSON.stringify(record.destination), /10100008534/, "the full account never lands");
+
+  // The poller's claim on the fingerprint meets Junid's approval.
+  const fp = paymentFingerprint({ reader: record.reader, bankRef: record.bankRef, syntheticRef: record.syntheticRef });
+  assert.equal(approved.key, approvedKeyOf(fp), "the same identity the approval claimed");
+  const claim = dbState.fingerprints[`eft_pool_fingerprints/${fp}`];
+  let seen = null;
+  assert.equal(fingerprintClaimStep("b".repeat(40), receivedAt, (d) => { seen = d; })(claim), undefined, "the approval's claim is never overwritten");
+  const held = core.applyFingerprintHold(record, { fingerprint: fp, holder: seen.holder, poolKey: "b".repeat(40), manualApproved: seen.manualApproved, spentBy: seen.spentBy });
+  assert.equal(held.outcome, "held-duplicate");
+  assert.equal(held.approvedByHand, approved.key);
+  assert.equal(held.status, undefined, "never spendable");
+  assert.equal(publicEftView(held), null, "never offered at a till");
+  assert.equal(claimHolderCheck({ poolKey: "b".repeat(40), holder: seen.holder, spentBy: seen.spentBy }).code, "duplicate-used", "refused at the settle");
+});
+
+test("E2E: the same notification from ANOTHER bank's sender is a mismatch, never read — the sender check is unchanged", async () => {
+  const core = await import("../../scripts/cardrecon/eftCore.mjs");
+  const banks = await import("../../scripts/cardrecon/eftBanks.mjs");
+  const plan = core.noticeReadPlan({ sender: { reader: "standardbank" }, offered: [{ lines: CAPITEC_SKYQR }], readers: banks.EFT_READERS });
+  assert.equal(plan.claimed.length, 0);
+  assert.equal(plan.mismatched.length, 1);
+  assert.equal(plan.mismatched[0].foreign, "capitec");
+});
