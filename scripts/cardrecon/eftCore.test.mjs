@@ -566,7 +566,9 @@ describe("the pool record", () => {
     expect(r.amountCents).toBe(123456);
     expect(r.destination.accountMask).toBe("XXXXXXXXXXXX4321");
     expect(r.status).toBeUndefined();
-    expect(r.reference).toBeUndefined(); // not a poolable payment; the fields that matter are the refusal's
+    // Kept since 25 Nov 2026 so a hand settlement can be matched on it
+    // (settledFingerprintPlan); still not poolable (outcome refused-account).
+    expect(r.reference).toBe("THANDI");
   });
 
   it("a parsed payment with NO account verdict at all cannot be stored as recorded", () => {

@@ -235,10 +235,13 @@ describe("settledFingerprintPlan / settledClaimStep — never the wrong money, n
   it("the script writes the fingerprint node and stamps the REFUSED record — never the manual entry", () => {
     const src = readFileSync(resolve(HERE, "claim-settled-bank-fingerprint.mjs"), "utf8");
     const writes = [...src.matchAll(/\)\.(set|update|remove|transaction|push)\(/g)];   // calls on a ref(…), not on arrays
-    expect(writes).toHaveLength(2);
-    // Exactly two write targets: the fingerprint node and the REFUSED record.
+    expect(writes).toHaveLength(3);
+    // Exactly three write targets: the fingerprint node, the REFUSED record,
+    // and (25 Nov 2026, Absa only) the blank-number identity's fingerprint node.
     const targets = [...src.matchAll(/db\.ref\(([^)]*)\)\.(set|update|remove|transaction|push)\(/g)].map((m) => m[1]);
-    expect(targets).toEqual(["path", "`${EFT_POOL_PATH}/${refusedKey}`"]);
+    expect(targets).toEqual(["path", "`${EFT_POOL_PATH}/${refusedKey}`", "spath"]);
+    expect(src).toMatch(/const spath = `\$\{EFT_FINGERPRINT_PATH\}\//);
+    expect(src).toMatch(/db\.ref\(spath\)\.transaction\(settledClaimStep/);
     expect(src).toMatch(/db\.ref\(path\)\.transaction\(settledClaimStep/);
     expect(src).toMatch(/const path = `\$\{EFT_FINGERPRINT_PATH\}\//);
   });
