@@ -188,7 +188,8 @@ import {
   dispatchHoldMs, sourceTabsFor, TRIAL_HUB, shopOfRecord, storedHubVerdict, warehouseTabKeys,
   insightsStoreOptions, insightsBucketKey, insightsStoreMatcher,
 } from "./utils/sectionRouting";
-import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequenceOrderKey, orderKeyFromInput } from "./utils/orderNumbering";
+import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequenceOrderKey } from "./utils/orderNumbering";
+import { lookupOrderByNumber, rankOrdersForNumber, parseTypedOrderNumber, saDayOf, orderWhenLabel, shortCustomerName } from "./utils/orderNumberLookup";
 import { siblingOrderShop, mergeSharedOrders, withSharedRange, boardShowsOrder, tvSectionForShop } from "./utils/sharedOrders";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests, useEngineConfig } from "./components/stock/useStock";
 import { policyKeepFor } from "./components/stock/saleRowPolicyCap";
@@ -15691,10 +15692,13 @@ function absTime(iso) {
 }
 
 
-function CustomerView({ orders, onExit }) {
+function CustomerView({ orders, shop = null, onExit }) {
   const [orderId, setOrderId] = useState("");
   const [found, setFound] = useState(null);
   const [searched, setSearched] = useState(false);
+  // More than one OPEN order with the typed number (orderNumberLookup.js):
+  // a short picker, staff tap the right one. null = no picker.
+  const [picks, setPicks] = useState(null);
   // Use the whole screen on desktop (≥1024px); phones keep the single column.
   const isWide = !useIsNarrow(1024);
   // Respect the Hub-2 dispatch hold on this customer-facing page: a READY order
@@ -15708,21 +15712,69 @@ function CustomerView({ orders, onExit }) {
   // its reveal, and later live status changes (Ready→Collected/OOS) stay hidden
   // until the customer re-searches. No-op when nothing is open.
   useEffect(() => {
-    setFound(prev => (prev ? (heldOrders.find(o => o.id === prev.id) || prev) : prev));
+    // Same key AND same createdAt: the number is a daily counter, so a newer
+    // order written over this key is a DIFFERENT order — the pane keeps the
+    // one the person chose rather than swapping to it silently.
+    setFound(prev => (prev ? (heldOrders.find(o => o.id === prev.id && o.createdAt === prev.createdAt) || prev) : prev));
   }, [heldOrders]);
 
+  // A typed NUMBER goes through the one lookup rule (utils/orderNumberLookup.js,
+  // Junid 26 Nov 2026): customer orders only — never a refill line "R007-22" —
+  // this shop first, open before finished, today's first; several open → a
+  // picker; an earlier day's order only when nothing else matched, and dated.
+  // Anything else typed (a full key) must match an order's key exactly.
   const doSearch = (idOverride) => {
     const raw = (idOverride ?? orderId).toString();
     const clean = raw.trim().replace(/^#/, "");
     if (!clean) return;
-    // orderKeyFromInput also reads a prefixed number ("p7" → "P007") — a Pine or
-    // Concrete order's own sequence. "7" → "007" exactly as before.
-    const o = heldOrders.find(o => o.id === clean.padStart(3, "0") || o.id === clean || o.id === orderKeyFromInput(clean));
     setOrderId(clean);
-    setFound(o || null);
     setSearched(true);
+    if (parseTypedOrderNumber(clean)) {
+      const res = lookupOrderByNumber(heldOrders, clean, { shop, nowMs: serverNowMs() });
+      setFound(res.kind === "one" ? res.options[0].order : null);
+      setPicks(res.kind === "pick" ? res.options : null);
+      return;
+    }
+    setPicks(null);
+    setFound(heldOrders.find(o => o.id === clean) || null);
   };
-  const reset = () => { setFound(null); setSearched(false); setOrderId(""); };
+  // A row tapped in a list (picker, rail, recent orders) IS the order — never
+  // re-resolved from its number, which another order may share.
+  const pickOrder = (o) => { setOrderId(o.id); setFound(o); setPicks(null); setSearched(true); };
+  const reset = () => { setFound(null); setSearched(false); setOrderId(""); setPicks(null); };
+
+  // An order from an EARLIER day is always shown with its date, so a recycled
+  // number can never pass for today's order.
+  const foundEarlier = found ? (saDayOf(Date.parse(found.createdAt || "")) ?? "") < (saDayOf(serverNowMs()) ?? "") : false;
+  const earlierMark = foundEarlier ? (
+    <div role="note" style={{ marginBottom: 12, background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.4)", color: "#FBBF24", borderRadius: 12, padding: "10px 14px", fontSize: 13, fontWeight: 700 }}>
+      Not today's order — placed {orderWhenLabel(found)}
+    </div>
+  ) : null;
+  const pickerList = picks ? (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(233,238,255,.75)", marginBottom: 10 }}>
+        {picks.length} orders have #{orderId}. Tap the right one.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {picks.map(({ order: o, earlier }) => {
+          const c = STATUS_CONFIG[o.status];
+          return (
+            <button key={`${o.id}:${o.createdAt || ""}`} onClick={() => pickOrder(o)} className="ot-press"
+                    style={{ width: "100%", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", borderRadius: 14, padding: 12, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 11, fontFamily: FONT }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 800, color: earlier ? "#FBBF24" : "#fff" }}>{orderWhenLabel(o)}</div>
+                <div style={{ fontSize: 12, color: "rgba(233,238,255,.6)", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {orderShopLabel(o) || "—"} · {shortCustomerName(o.customerName)} · {o.productName}
+                </div>
+              </div>
+              {c && <span style={{ flexShrink: 0, background: c.bg, color: c.color, border: `1px solid ${c.border}`, borderRadius: 999, padding: "3px 10px", fontSize: 11, fontWeight: 700 }}>{c.label}</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  ) : null;
 
   const cfg = found ? STATUS_CONFIG[found.status] : null;
 
@@ -15766,7 +15818,12 @@ function CustomerView({ orders, onExit }) {
   // ── FULL-SCREEN DESKTOP WORKSPACE (≥1024px) — search/recent rail + rich pane ──
   if (isWide) {
     const q = orderId.trim().toLowerCase();
-    const railList = (q ? heldOrders.filter(o => o.id.includes(q) || (o.customerName || "").toLowerCase().includes(q)) : heldOrders).slice(0, 60);
+    // A number lists only customer orders with that number (this shop first,
+    // open first, newest first) — a substring of the key used to pull in every
+    // refill line "R007-…" from other days. Anything else searches by name.
+    const railList = (q
+      ? (parseTypedOrderNumber(q) ? rankOrdersForNumber(heldOrders, q, { shop, nowMs: serverNowMs() }) : heldOrders.filter(o => (o.customerName || "").toLowerCase().includes(q)))
+      : heldOrders).slice(0, 60);
     const statusAt = found ? ({ [STATUS.INCOMING]: found.createdAt, [STATUS.READY]: found.readyAt, [STATUS.OUT_OF_STOCK]: found.outOfStockAt, [STATUS.COMING_TOMORROW]: found.comingTomorrowAt, [STATUS.COLLECTED]: found.collectedAt }[found.status] || found.updatedAt) : null;
     const subbed = found && found.sentSize && found.sentSize !== found.size ? found.sentSize : null;
     const tags = [];
@@ -15805,9 +15862,9 @@ function CustomerView({ orders, onExit }) {
             {railList.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "rgba(233,238,255,.4)", fontSize: 13 }}>No matching orders.</div>}
             {railList.map(o => {
               const c = STATUS_CONFIG[o.status];
-              const on = found && found.id === o.id;
+              const on = found && found.id === o.id && found.createdAt === o.createdAt;
               return (
-                <button key={o.id} className="ot-row" onClick={() => { setOrderId(o.id); setFound(o); setSearched(true); }}
+                <button key={`${o.id}:${o.createdAt || ""}`} className="ot-row" onClick={() => pickOrder(o)}
                   style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, cursor: "pointer", textAlign: "left", fontFamily: FONT,
                            background: on ? "rgba(74,127,255,.14)" : "transparent", border: on ? "1px solid rgba(74,127,255,.45)" : "1px solid transparent" }}>
                   <ProductPhoto productId={o.productId} url={o.productPhotoUrl} photo={o.productPhoto} size={40} radius={9} />
@@ -15824,8 +15881,11 @@ function CustomerView({ orders, onExit }) {
 
         {/* MAIN — detail or empty state */}
         <div style={{ minWidth: 0, overflow: "auto" }}>
-          {found && cfg ? (
+          {!found && picks ? (
+            <div style={{ padding: "36px 40px 60px", maxWidth: 640, margin: "0 auto" }}>{pickerList}</div>
+          ) : found && cfg ? (
             <div style={{ padding: "36px 40px 60px", maxWidth: 880, margin: "0 auto" }}>
+              {earlierMark}
               {/* HERO — compact, cohesive */}
               <div style={{ display: "flex", gap: 20, alignItems: "center", background: "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))", border: "1px solid rgba(255,255,255,.1)", borderRadius: 22, padding: 20, boxShadow: "0 26px 60px -36px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.08)", marginBottom: 16 }}>
                 <div style={{ width: 116, height: 116, borderRadius: 18, overflow: "hidden", border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 50, flexShrink: 0 }}>
@@ -15938,13 +15998,16 @@ function CustomerView({ orders, onExit }) {
         </div>
       )}
 
-      {searched && !found && (
+      {!found && pickerList}
+
+      {searched && !found && !picks && (
         <div style={{ maxWidth: isWide ? 460 : "100%", marginTop: 16, color: "#F87171", background: "rgba(248,113,113,.1)", border: "1px solid rgba(248,113,113,.35)", borderRadius: 14, padding: "14px 16px", fontSize: 13.5, textAlign: "center" }}>
           No order <b>#{orderId}</b> found. Double-check the number on your slip.
         </div>
       )}
 
       {/* Result */}
+      {found && cfg && earlierMark}
       {found && cfg && (
         <div style={{ display: isWide ? "grid" : "block", gridTemplateColumns: isWide ? "minmax(0, 460px) minmax(0, 1fr)" : undefined, gap: isWide ? 18 : 0, alignItems: "start" }}>
           {/* Hero card — photo, product, shop, status */}
@@ -16039,7 +16102,7 @@ function CustomerView({ orders, onExit }) {
             {heldOrders.slice(0, isWide ? 12 : 5).map(o => {
               const c = STATUS_CONFIG[o.status];
               return (
-                <button key={o.id} onClick={() => doSearch(o.id)} className="ot-press"
+                <button key={`${o.id}:${o.createdAt || ""}`} onClick={() => pickOrder(o)} className="ot-press"
                         style={{ width: "100%", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 14, padding: 10, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 11, fontFamily: FONT }}>
                   <ProductPhoto productId={o.productId} url={o.productPhotoUrl} photo={o.productPhoto} size={44} radius={10} />
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -17901,9 +17964,11 @@ function ReturnsView({ orders, products = [], onExit }) {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return last3DaysOrders;
-    return last3DaysOrders.filter(o =>
-      o.id.toLowerCase().includes(q) || (o.customerName || "").toLowerCase().includes(q)
-    );
+    // A number finds the customer orders WITH that number — newest first,
+    // open first (utils/orderNumberLookup.js, Junid 26 Nov 2026) — not every
+    // key that happens to contain the digits. Anything else searches by name.
+    if (parseTypedOrderNumber(q)) return rankOrdersForNumber(last3DaysOrders, q, { nowMs: serverNowMs() });
+    return last3DaysOrders.filter(o => (o.customerName || "").toLowerCase().includes(q));
   }, [last3DaysOrders, search]);
 
   // R1 (stock-integrity) — a confirmed return MOVES THE LEDGER, not just the log.
@@ -21804,7 +21869,7 @@ function AppInner() {
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} myShop={myShop} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={sharedOrders} onExit={() => setRole(null)} />);
   else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
-  else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={sharedOrders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={sharedOrders} shop={myShop} onExit={() => setRole(null)} />);
   else if (role === ROLES.BROADCAST_GROUPS) view = guard(ROLES.BROADCAST_GROUPS, <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />);
 
   // "This device's clock is wrong" — gated on ROLE, not on tree position. Being a
