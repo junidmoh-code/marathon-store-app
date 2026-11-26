@@ -549,6 +549,15 @@ describe("a return-only record (store credit / refund, nothing ships)", () => {
     expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
   });
 
+  it("a unit already put back by hand (ledger row, no arrival recorded) is not added a second time", async () => {
+    expect(returnPlan(roRecord(), KEY)).toMatchObject({ fromLines: true, fromFallback: false });
+    const db = world({ rec: roRecord(), peQty: 1, extra: { online_reservations: null, stock_movements: { a: { type: "adjustment", productId: PID_OUT, size: "11", qty: 1, to: "marathon-pe", ts: new Date(NOW - 5000).toISOString(), reason: "found in back" } } } });
+    expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/already shows/) });
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
+    // Junid's "add it anyway" still gets past a false match.
+    expect(await run(db, { force: true })).toMatchObject({ ok: true, done: true });
+  });
+
   it("a cancelled return-only record is still finished", () => {
     expect(notReadyWhy(roRecord({ status: "cancelled" }))).toMatch(/cancelled/);
   });

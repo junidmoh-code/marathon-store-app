@@ -290,7 +290,8 @@ export function judgeOrder(order, facts = {}, now = Date.now()) {
   // A RETURN-ONLY collection (store credit / refund instead of a replacement): nothing ships, so nothing is chased,
   // re-picked, nudged or escalated. It sits with the incoming returns until its item is back, then green.
   if (isReturnOnlyOrder(order)) {
-    return awaitingIncomingReturn(order)
+    // On the arrival alone: a record flagged only on its lines may carry no incoming/exchange block yet.
+    return !incomingArrivalDone(order)
       ? { group: "incoming", reason: "Waiting for the customer's return (store credit / refund, nothing ships)", detail: null, lines: [], actions: [], here: 0, total: 0 }
       : { group: "green", reason: null, detail: "Return only: back, nothing ships", lines: [], actions: [], here: 0, total: 0 };
   }

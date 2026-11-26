@@ -755,7 +755,7 @@ async function maintainOrder(ctx, id, order) {
     }
     const ownOther = {};
     before.forEach((l, i) => {
-      if (reroute.includes(i) || !l?.pid || !l.source?.locationId) return;
+      if (reroute.includes(i) || !l?.pid || !l.source?.locationId || isReturnOnlyLine(l)) return;
       const key = `${l.pid}|${l.sizeKey}`;
       (ownOther[key] ||= {})[l.source.locationId] = ((ownOther[key] || {})[l.source.locationId] || 0) + (Number(l.qty) || 0);
     });
@@ -929,6 +929,9 @@ async function maintainOrder(ctx, id, order) {
 async function keepReturnOnly(ctx, id, order) {
   const { db, now, enabled } = ctx;
   ctx.touched?.add(id);
+  // Holds FIRST (it wants none): a failure here throws before the record can close, so the next tick retries it —
+  // a closed record is never revisited, and a stray hold row must not outlive the close (CodeRabbit, #1018).
+  await syncHolds(ctx, id, order);
   const res = await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => {
     if (cur == null) return null;
     if (isTerminal(cur.status) || !isReturnOnlyOrder(cur)) return undefined;
@@ -940,9 +943,7 @@ async function keepReturnOnly(ctx, id, order) {
     return next;
   });
   const left = res.committed ? res.snapshot.val() : (res.snapshot?.val?.() ?? order);
-  if (!left) return null;
-  await syncHolds(ctx, id, left);
-  return left;
+  return left || null;
 }
 
 // A place rejected a website pick: note it beside the cell (never IN it — the

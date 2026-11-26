@@ -70,8 +70,8 @@ That line names the item COMING BACK. The rule is `isReturnOnlyOrder` / `isRetur
 - nothing ever ships: `bookShipment` refuses it (`returnOnly: true`), fast-ship ignores it, and a record packed anyway
   is flagged `courier_failed` ("this is a return-only record …") instead of booked;
 - the return collection still books (`scripts/shipping/book-return.mjs`, from the line), and the unit still goes back
-  into stock (POS Confirm arrival, or `exchangeReturn.mjs`, which plans from the returnOnly line and reports no
-  replacement); the order agent puts it with the incoming returns and takes no action on it.
+  into stock (POS Confirm arrival, or `exchangeReturn.mjs`, which plans from the returnOnly line, checks the ledger for
+  a unit already put back by hand first, and reports no replacement); the order agent puts it with the incoming returns and takes no action on it.
 Mixed records (outgoing lines plus a returnOnly line) are not written by the desk and are not supported for shipping:
 the poller skips the returnOnly line in routing, entries, holds, status and the agent, but `bookShipment` and the ship
 step refuse the whole record rather than count the returning item into an outbound parcel.

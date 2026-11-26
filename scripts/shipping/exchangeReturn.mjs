@@ -242,7 +242,9 @@ export function returnPlan(record, key, fallback = null) {
       items.push({ pid, size, sizeKey, title: str(it.title) || pid, origOrderKey: str(it.origOrderKey) || null, origLineIndex: Number.isInteger(it.origLineIndex) ? it.origLineIndex : null, movementId: movementIdFor(key, pid, sizeKey, n) });
     }
   }
-  return { ok: true, fromFallback: !own.length, items };
+  // fromLines: the plan came from a return-only record's own lines (no booked incoming.returning list). Its units are
+  // checked against the ledger for a by-hand restore first, like Jamie's fallback (CodeRabbit, #1018).
+  return { ok: true, fromFallback: !own.length, fromLines: !listed.length && own.length > 0, items };
 }
 
 /**
@@ -545,7 +547,7 @@ export async function confirmExchangeReturn(key, { db, dry = false, orderNumber 
 
   // A unit someone may already have put back (a by-hand arrival, or a return handed in with no record): the ledger since
   // the exchange was paid is read first, never twice. Junid's "add it anyway" (force) is the way past a false match.
-  if ((byHandOpen || plan.fromFallback) && !force) {
+  if ((byHandOpen || plan.fromFallback || plan.fromLines) && !force) {
     const since = checkSince(record, now());
     if (since == null) return { ok: false, notReady: true, key, reason: "the exchange has no payment time, so I can't check whether it was already put back by hand: nothing was added" };
     const rows = await rowsSince(db, since);

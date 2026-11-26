@@ -250,6 +250,10 @@ describe("the order agent", () => {
     const v = judgeOrder(returnRecord({ incoming: { arrival: { state: "done" } } }), { lines: {} }, NOW + 30 * 86400e3);
     expect(v).toMatchObject({ group: "green", actions: [], lines: [] });
   });
+  it("flagged only on its lines, with no incoming block yet: still incoming, not green", () => {
+    const bare = { status: "new", lines: [returnLine()] };
+    expect(judgeOrder(bare, { lines: {} }, NOW)).toMatchObject({ group: "incoming", actions: [] });
+  });
   it("a returning line on a mixed record is never judged", () => {
     const mixed = { status: "new", lines: [returnLine(), { pid: "TEE", size: "M", sizeKey: "M", qty: 1, source: { locationId: "marathon-pe", status: "handed" } }] };
     const v = judgeOrder(mixed, { lines: {} }, NOW);
