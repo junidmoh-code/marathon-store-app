@@ -106,9 +106,8 @@ export function lookupOrderByNumber(orders, typed, { shop = null, nowMs } = {}) 
 
   // Tiers, first non-empty wins. A record with no usable date is never
   // "today" — it can only ever show as an earlier, dated (unknown) one.
+  // Newest first puts today's open orders before older open ones.
   const open = pool.filter(isOpenOrder).sort(newestFirst).map(shape);
-  // Today's open first, then older open ones, each newest first.
-  open.sort((a, b) => Number(b.today) - Number(a.today));
   if (open.length) return { kind: open.length === 1 ? "one" : "pick", options: open, scope };
 
   const finished = pool.filter((o) => !isOpenOrder(o)).sort(newestFirst).map(shape);
