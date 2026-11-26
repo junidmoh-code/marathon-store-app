@@ -1,21 +1,14 @@
 {%- comment -%}
-  STORE CREDIT BAR (26 Nov 2026). A signed-in customer with a store credit balance sees one quiet line at the very
-  top of every theme page: "Your Marathon balance: R350 — ready to spend". Rendered from layout/theme.liquid, above
-  the announcement bar and header, so it is on every page the theme draws.
+  STORE CREDIT BAR (26 Nov 2026). A signed-in customer with store credit sees "Your Marathon balance: R 350 — ready
+  to spend" above the header on every page that uses layout/theme.liquid. Shop money format is "R {{amount}}", so
+  money_without_trailing_zeros prints "R 350".
 
-  Renders NOTHING unless all three hold:
-    - a customer is signed in (`customer` is nil for guests),
-    - they have a store credit account in the currency they are browsing in
-      (`customer.store_credit_account` is nil otherwise, per the Liquid docs),
-    - its balance is above zero.
+  Renders NOTHING for guests, for a customer with no store credit account in the browsing currency
+  (`customer.store_credit_account` is nil then, per the Liquid docs), or for a zero balance.
 
-  `balance` is a money object in the shopper's presentment currency, so the money filter formats it like every other
-  price on the site. The whole line links to the account page. The shop uses NEW customer accounts, so /account
-  redirects to Shopify's hosted account (shopify.com/73571270805/account), which shows the store credit balance on its
-  own — that page is not part of the theme and cannot carry this bar.
-
-  Store credit is spent at checkout under Payment as "Apply store credit", and only when the customer is signed in
-  there — the reason the line points at the account.
+  The line links to /account. The shop uses NEW customer accounts, so that is Shopify's hosted account page, which
+  shows the balance itself and is not part of the theme. Credit is spent at checkout ("Apply store credit" under
+  Payment) only when the customer is signed in there.
 
   Customer copy rule: no emojis, no staff names.
 {%- endcomment -%}
@@ -30,8 +23,6 @@
   </aside>
   <style>
     .mc-credit-bar {
-      position: relative;
-      z-index: 3;
       background: rgb(13 12 11);
       border-bottom: 1px solid rgb(255 255 255 / 0.08);
       font-family: var(--font-body-family);
@@ -53,7 +44,8 @@
       text-align: center;
       text-decoration: none;
     }
-    .mc-credit-bar__link, .mc-credit-bar__link span { font-style: normal; }
+    .mc-credit-bar__link { font-style: normal; }
+    .mc-credit-bar__note { white-space: nowrap; }
     .mc-credit-bar__amount {
       color: rgb(247 248 250);
       font-weight: 600;

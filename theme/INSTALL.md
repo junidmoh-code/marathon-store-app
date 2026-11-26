@@ -5,7 +5,13 @@
 > one-line `{%- render 'mc-credit-bar' -%}` above `{% sections 'header-group' %}` in
 > `layout/theme.liquid`. A signed-in customer with a store credit balance in the
 > currency they browse in sees "Your Marathon balance: R 350 — ready to spend" on
-> every theme page; guests and zero balances get nothing. Pushed with
+> every storefront page that uses `layout/theme.liquid` (not checkout, the
+> password or gift card pages, or the Shopify-hosted account); guests and zero
+> balances get nothing. Verified: `shopify theme check` clean; live site logged
+> out shows no bar and no Liquid errors; the bar's look was checked as a LOCAL
+> PREVIEW (live page HTML and CSS with the rendered snippet injected). It has
+> NOT yet been seen on a real signed-in customer with credit: check with the
+> next customer who has a balance, and with a zero-balance customer. Pushed with
 > `shopify theme push --only=<both files> --nodelete --allow-live`. The theme
 > library is at Shopify's 20-theme cap, so `theme duplicate` fails and there was
 > no preview copy. Rollback: push
