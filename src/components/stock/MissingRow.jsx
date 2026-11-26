@@ -135,7 +135,9 @@ export function SkeletonRow() {
  *           card), or null when this viewer may not mark a division
  * onPick (row, destId)   onSolve (row)   onDivision (row)   onPhoto (product)
  */
-function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = false, canAct = true, onPick, onSolve, divisionLabel = null, onDivision, onPhoto }) {
+// divisionPopup  true: ONE tap hands the card to onDivision, which asks in a
+//           popup first (Concrete on clothing, Junid 26 Nov 2026) — no arming.
+function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = false, canAct = true, onPick, onSolve, divisionLabel = null, divisionPopup = false, onDivision, onPhoto }) {
   const live = product || { id: row.pid, photoUrl: row.photo };
   const ready = canAct && !busy && selected.length > 0;
   // Armed = the first tap landed; a second within DIVISION_CONFIRM_MS marks.
@@ -145,6 +147,7 @@ function MissingRow({ row, product, twinProduct, selected = NO_PICK, busy = fals
   const disarm = () => { clearTimeout(armTimer.current); setArmed(false); };
   const tapDivision = () => {
     if (busy) return;
+    if (divisionPopup) { disarm(); onDivision?.(row); return; }   // the popup is the confirmation
     if (!armed) {
       setArmed(true);
       clearTimeout(armTimer.current);
