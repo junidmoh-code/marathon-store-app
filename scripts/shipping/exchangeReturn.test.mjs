@@ -394,14 +394,20 @@ describe("destinationFor (the owner rule, Junid 5 Nov 2026)", () => {
     expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "marathon-pe" } } })).toBe("hub2");
     expect(destinationFor({ product: shoe, size: "8", soldLoc: "trophy" })).toBe("hub2");
     expect(destinationFor({ product: shoe, size: "8", hubQty: { hub1: 5, hub2: 0 } })).toBe("hub2"); // never "whichever holds more"
-    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "hub3" } } })).toBe("hub2");
+    // Hub 3 is the hub it was picked from (Junid 12 + 26 Nov 2026, as the POS's pickedFromRoutes).
+    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "hub3" } } })).toBe("hub3");
+    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "concrete" } } })).toBe("hub2");
   });
   it("clothing goes back to the shop it was picked from, Marathon PE if unknown", () => {
     expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "trophy" } } })).toBe("trophy");
     expect(destinationFor({ product: { category: "Clothing" }, size: "M", soldLoc: "marathon-pe", origLine: { source: { locationId: "trophy" } } })).toBe("marathon-pe");
     expect(destinationFor({ product: { category: "Clothing" }, size: "M" })).toBe("marathon-pe");
     expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "elsewhere" } } })).toBe("marathon-pe");
-    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "hub2" } } })).toBe("marathon-pe"); // never a hub
+    // The place it was picked from (the POS's WEB_ORDER_DEDUCT_LOCATIONS: Hub 2, Concrete, Marathon Pine too); never Hub 1.
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "hub2" } } })).toBe("hub2");
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { deductFrom: "concrete" } })).toBe("concrete");
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "marathon-pine" } } })).toBe("marathon-pine");
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "hub1" } } })).toBe("marathon-pe");
     expect(destinationFor({ product: { category: "Clothing" }, size: "M", soldLoc: "hub1", origLine: { source: { locationId: "trophy" } } })).toBe("trophy");
     expect(destinationFor({ product: shoe, size: "M" })).toBe("marathon-pe"); // a slide in S/M/L is a shop item
   });
@@ -459,5 +465,33 @@ describe("a pid-less returning item and the movement's order reference", () => {
     const rec = record({ incoming: { ...record().incoming, returning: [{ title: "Nobody knows", size: "8", origOrderKey: "18966134358165" }] } });
     const db = world({ rec, orig: [{ pid: SNK, size: "8", title: "Nike Shox TL" }, { pid: "pX", size: "8", title: "Other" }] });
     expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/not recorded/) });
+  });
+});
+
+describe("26 Nov 2026: back where it was picked, and Junid's good is the condition check", () => {
+  it("a good run writes incoming/check { result: good } (the field the dm-agent reads) once the stock is back", async () => {
+    const db = world();
+    const out = await run(db);
+    expect(out).toMatchObject({ ok: true, done: true });
+    expect(at(db, `online_orders/${KEY}/incoming/check`)).toEqual({ result: "good", at: NOW, by: { uid: ACTOR, name: "Jimmy (Junid's word on WhatsApp)" }, via: "junid" });
+  });
+  it("a till's own good check is never overwritten; an arrival the till already finished gets one only when it has none", async () => {
+    const tillCheck = { result: "good", at: 5, by: { uid: "u-yusuf", name: "Yusuf" } };
+    const rec = record({ incoming: { ...record().incoming, arrival: { state: "done", at: 4, returnSaleId: "S-RET", by: { uid: "u-yusuf" } }, check: tillCheck } });
+    const db = world({ rec });
+    expect(await run(db)).toMatchObject({ ok: true, already: true });
+    expect(at(db, `online_orders/${KEY}/incoming/check`)).toEqual(tillCheck);
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11`) ?? null).toBeNull(); // never twice
+  });
+  it("clothing picked at Concrete goes back to Concrete when the pack sale deducted there; nothing shows it → withheld, never minted", async () => {
+    const orig = [{ pid: PID_OUT, size: "11", title: "Diesel", deductFrom: "concrete", source: { locationId: "concrete", status: "handed" } }];
+    const proven = world({ orig, extra: { stock_movements: { [`sold:-NsOrig:concrete:${PID_OUT}:11`]: { type: "sold", qty: 1, productId: PID_OUT, size: "11" } } } });
+    const ok = await run(proven);
+    expect(ok).toMatchObject({ ok: true, done: true, items: [{ pid: PID_OUT, to: "concrete" }] });
+    expect(at(proven, `stock/concrete/${PID_OUT}/11/qty`)).toBe(1);
+    const unproven = world({ orig });
+    const out = await run(unproven);
+    expect(out).toMatchObject({ ok: true, done: true, withheld: [{ pid: PID_OUT, why: "not_deducted_there" }] });
+    expect(at(unproven, `stock/concrete/${PID_OUT}/11`) ?? null).toBeNull();
   });
 });

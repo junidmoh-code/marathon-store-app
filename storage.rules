@@ -132,6 +132,25 @@ service firebase.storage {
       allow create: if isStaff();
       allow update, delete: if false;
     }
+    // ─── RETURN CONDITION PHOTOS ───────────────────────────────────────────
+    // returnChecks/{exchangeKey}/{at}-{n}.jpg — the photos Yusuf takes on the
+    // POS's Incoming exchanges card when a returned item is NOT in original
+    // condition (Junid, 26 Nov 2026; marathon-pos-app incomingExchanges.js
+    // recordNotOriginal). Their download URLs go on online_orders/<key>/
+    // incoming/check.photos; the marathon-dm-agent sends them to Junid with the
+    // urgent case (it reads with a service account, bypassing these rules).
+    //
+    // CREATE ONLY, images only, at most 10 MB each: evidence of a return's
+    // condition must not be replaceable from a till. Read is staff (the card
+    // shows them); the download URL's own token lets Junid open one from the
+    // case without signing in.
+    match /returnChecks/{allPaths=**} {
+      allow read: if isStaff();
+      allow create: if isStaff()
+                    && request.resource.size < 10 * 1024 * 1024
+                    && request.resource.contentType.matches('image/.*');
+      allow update, delete: if false;
+    }
   }
 }
 
