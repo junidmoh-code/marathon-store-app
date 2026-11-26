@@ -15750,7 +15750,14 @@ function CustomerView({ orders, shop = null, onExit }) {
   // An order from an EARLIER day is always shown with its date, so a recycled
   // number can never pass for today's order.
   const foundEarlier = found ? (saDayOf(Date.parse(found.createdAt || "")) ?? "") < (saDayOf(serverNowMs()) ?? "") : false;
-  const earlierMark = foundEarlier ? (
+  // The key now holds a NEWER order (the daily number came round again): the
+  // pane keeps the order the person chose, and says plainly it has been replaced.
+  const foundReplaced = !!found && heldOrders.some(o => o.id === found.id && o.createdAt !== found.createdAt);
+  const earlierMark = foundReplaced ? (
+    <div role="note" style={{ marginBottom: 12, background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.4)", color: "#FBBF24", borderRadius: 12, padding: "10px 14px", fontSize: 13, fontWeight: 700 }}>
+      #{found.id} now belongs to a newer order — this one was placed {orderWhenLabel(found)}. Track another order to see the new one.
+    </div>
+  ) : foundEarlier ? (
     <div role="note" style={{ marginBottom: 12, background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.4)", color: "#FBBF24", borderRadius: 12, padding: "10px 14px", fontSize: 13, fontWeight: 700 }}>
       {found.createdAt ? `Not today's order — placed ${orderWhenLabel(found)}` : "Not today's order — date unknown"}
     </div>

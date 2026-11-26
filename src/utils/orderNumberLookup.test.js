@@ -9,7 +9,11 @@ import {
 const NOW = Date.parse("2026-11-26T08:00:00Z");
 const o = (id, createdAt, status, destShop, extra = {}) => ({ id, createdAt, status, destShop, customerName: "Jo Soap", productName: "Shoe", ...extra });
 
-// The live case Junid hit: today's 007 at Trophy (out of stock) and older 007s.
+// /orders holds ONE record per key (set() overwrites), so two "007" keys never
+// sit in the same live feed. Two records with the same number reach a screen
+// only as different keys ("007" and "P007") or when a device still holds an
+// old copy beside the live one — the shapes below. TODAY_007 is the live record
+// of 26 Nov; OLD_007_PE is 23 Nov's, as a stale local copy would carry it.
 const TODAY_007 = o("007", "2026-11-26T06:42:20.274Z", "out_of_stock", "trophy");
 const OLD_007_PE = o("007", "2026-11-23T06:42:14.662Z", "ready", "marathon-pe");
 const REFILL_LINE = o("R007-22", "2026-11-21T09:00:42.404Z", "incoming", "marathon-pe", { customerName: "Shop Refill" });

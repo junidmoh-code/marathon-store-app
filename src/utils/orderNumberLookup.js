@@ -17,6 +17,11 @@
 //   5. Finished orders from EARLIER days only when nothing above matched, and
 //      always marked with their date (`earlier: true` on the option).
 //
+// /orders keeps one record per key (the next day's order overwrites it), so
+// this does not bring back an overwritten order: it separates different keys
+// with the same number ("007" / "P007") and dates any record that is not
+// today's — including an old copy a device may still hold.
+//
 // Pure: no Firebase, no clock. `nowMs` is injected (serverNowMs() on screens).
 // It only reads the list the screen already holds — it never widens a read.
 
