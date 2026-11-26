@@ -55,6 +55,22 @@ finished at Pack without a Courier Guy booking or any Shopify call: the Pack is 
 `incoming.stageText` reads "Coming in store: [name], #order, returning X, taking Y"; Confirm arrival on the returned
 item first, as for any exchange. Not collected by `holdUntil`: Jamie sets `release_requested` and the poller releases it.
 
+**Return-only exchange record** (Junid, 26 Nov 2026): a customer who takes store credit or a refund instead of a
+replacement gets a collection record from Jamie's exchange page (marathon-dm-agent `src/jimmy/exchangeDesk/desk.js`
+`returnRecordFor`): `exchange-<n>-<ms>` with `exchange.returnOnly === true` and its one line flagged `returnOnly: true`.
+That line names the item COMING BACK. The rule is `isReturnOnlyOrder` / `isReturnOnlyLine` in `src/utils/onlineOrders.js`:
+- the poller's keep pass (`keepReturnOnly`) routes nothing, mints no hub order (`/orders/{CODE}`), raises no strip entry,
+  writes no hold (`holdRowsFor` gives none; `syncHolds` removes a stray one) and estimates no parcel;
+- `deriveOrderStatus` keeps it `new` while the return is on its way (the status Jamie cancels from) and `closed` once
+  `incoming/arrival` is done, `incoming/check.result` is `good` and no `conditionHold` stands; never `needs_attention`
+  or `picking`;
+- nothing ever ships: `bookShipment` refuses it (`returnOnly: true`), fast-ship ignores it, and a record packed anyway
+  is flagged `courier_failed` ("this is a return-only record …") instead of booked;
+- the return collection still books (`scripts/shipping/book-return.mjs`, from the line), and the unit still goes back
+  into stock (POS Confirm arrival, or `exchangeReturn.mjs`, which plans from the returnOnly line and reports no
+  replacement); the order agent puts it with the incoming returns and takes no action on it.
+A returnOnly line on a mixed record is skipped the same way, line by line.
+
 ## `/online_orders/{orderId}`
 
 `orderId` is the Shopify order's numeric id (`legacyResourceId`), as a string.

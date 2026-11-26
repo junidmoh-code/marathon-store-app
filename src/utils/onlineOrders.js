@@ -151,6 +151,40 @@ export function heldUnits(cell, loc = null) {
   return n;
 }
 
+// ── RETURN-ONLY exchange records (Junid, 26 Nov 2026) ───────────────────────
+// A customer who takes store credit or a refund instead of a replacement gets
+// a collection record from Jamie's exchange page (marathon-dm-agent
+// src/jimmy/exchangeDesk/desk.js returnRecordFor): online_orders/exchange-<n>-<ms>
+// with exchange.returnOnly === true and lines carrying returnOnly: true. Its
+// line names the item COMING BACK, so the courier return can be booked
+// (scripts/shipping/bookReturn.mjs) and the unit put back into stock
+// (exchangeReturn.mjs). Nothing goes OUT: no routing, no hub order, no strip
+// entry, no hold, no parcel estimate and never an outbound shipment.
+export const isReturnOnlyLine = (line) => !!line && typeof line === "object" && line.returnOnly === true;
+const lineList = (order) => (Array.isArray(order?.lines) ? order.lines : Object.values(order?.lines || {})).filter((l) => l && typeof l === "object");
+/** The whole record is a return-only collection: flagged on the record, or every line flagged. PURE. */
+export function isReturnOnlyOrder(order) {
+  if (!order || typeof order !== "object") return false;
+  if (order.exchange && typeof order.exchange === "object" && order.exchange.returnOnly === true) return true;
+  const lines = lineList(order);
+  return lines.length > 0 && lines.every(isReturnOnlyLine);
+}
+/**
+ * A return-only record is finished once its item is back AND the hub's check
+ * says original condition: the arrival is done (incoming/arrival state "done",
+ * or the till's older returnSaleId), incoming/check.result is "good" and no
+ * condition hold stands. A disputed or unchecked return stays open. PURE.
+ */
+export function returnOnlyReceivedGood(order) {
+  const inc = order?.incoming;
+  if (!inc || typeof inc !== "object") return false;
+  const a = inc.arrival;
+  const arrived = !!a && typeof a === "object" && (a.state != null ? a.state === "done" : typeof a.returnSaleId === "string" && a.returnSaleId !== "");
+  if (!arrived) return false;
+  if (inc.conditionHold && typeof inc.conditionHold === "object") return false;
+  return inc.check?.result === "good";
+}
+
 /**
  * The status an open order should show, from its lines. Packed, cancelled and
  * fulfilled_elsewhere are terminal. `enabled` is /config/onlineOrders/enabled: while it is off no
@@ -159,7 +193,11 @@ export function heldUnits(cell, loc = null) {
 export function deriveOrderStatus(order, { enabled = false } = {}) {
   const status = order?.status;
   if (TERMINAL_STATUSES.includes(status) || status === ORDER_STATUS.RELEASE_REQUESTED) return status;
-  const lines = Array.isArray(order?.lines) ? order.lines.filter(Boolean) : Object.values(order?.lines || {}).filter(Boolean);
+  // A return-only collection has nothing to pick or pack: it waits ("new", the status Jamie's exchange page cancels
+  // from) until its item is back in good condition, then closes. Never needs attention, never picking.
+  if (isReturnOnlyOrder(order)) return returnOnlyReceivedGood(order) ? ORDER_STATUS.CLOSED : ORDER_STATUS.NEW;
+  // A returning line on a mixed record is not waited for (nothing ships for it).
+  const lines = (Array.isArray(order?.lines) ? order.lines.filter(Boolean) : Object.values(order?.lines || {}).filter(Boolean)).filter((l) => !isReturnOnlyLine(l));
   if (!lines.length) return ORDER_STATUS.NEEDS_ATTENTION;
   const st = (l) => l?.source?.status;
   if (lines.some((l) => ATTENTION_LINE_STATUSES.includes(st(l)))) return ORDER_STATUS.NEEDS_ATTENTION;

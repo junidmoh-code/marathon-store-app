@@ -97,6 +97,7 @@ import { isExchangeKey } from "./bookShipment.mjs";
 import { assertSafeSegment, stockSizeKey } from "../../src/utils/sizeKey.js";
 import { isFootwearLine } from "../../src/utils/footwearLine.js";
 import { reactivateUpdates } from "../../src/utils/deactivation.js";
+import { isReturnOnlyOrder, isReturnOnlyLine } from "../../src/utils/onlineOrders.js";
 
 const require = createRequire(import.meta.url);
 const { applyMovementAdmin, cellPath } = require("../../functions/lib/admin-movement.cjs");
@@ -215,7 +216,10 @@ export const stockRefFor = (orderNumber) => `${digits(orderNumber)}-EX`;
  * movementId }] } | { ok: false, why }. Pure.
  */
 export function returnPlan(record, key, fallback = null) {
-  const own = list(record?.incoming?.returning);
+  // A RETURN-ONLY record (store credit / refund instead of a replacement) names the item coming back on its own lines
+  // (returnOnly: true): that is the record's own word, as incoming.returning is, and comes before Jamie's fallback.
+  const listed = list(record?.incoming?.returning);
+  const own = listed.length ? listed : returnOnlyItems(record);
   const from = own.length ? own : list(fallback);
   if (!from.length) return { ok: false, why: "the exchange does not say which item is coming back" };
   const seen = new Map();
@@ -241,6 +245,16 @@ export function returnPlan(record, key, fallback = null) {
   return { ok: true, fromFallback: !own.length, items };
 }
 
+/**
+ * A return-only record's returning lines as returnPlan items (the whole record's lines when it is flagged on the
+ * record, else only the lines flagged returnOnly). The original order is the record's one related order. Pure.
+ */
+export function returnOnlyItems(record) {
+  const lines = list(record?.lines).filter((l) => isReturnOnlyOrder(record) || isReturnOnlyLine(l));
+  const related = Array.isArray(record?.exchange?.relatedOrders) ? record.exchange.relatedOrders.map(str).filter(Boolean) : [];
+  return lines.map((l) => ({ pid: str(l.pid), size: l.size ?? "_", ...(str(l.sizeKey) ? { sizeKey: str(l.sizeKey) } : {}), title: str(l.title) || str(l.pid), qty: Number(l.qty) || 1, origOrderKey: related.length === 1 ? related[0] : null }));
+}
+
 /** Is this exchange ready for its return to be confirmed? → null (ready) or the reason it is not. Pure. */
 export function notReadyWhy(record, { orderNumber = null } = {}) {
   if (!record || typeof record !== "object") return "there is no exchange record in the app for it";
@@ -249,7 +263,10 @@ export function notReadyWhy(record, { orderNumber = null } = {}) {
   if (!record.exchange || typeof record.exchange !== "object") return "the record is not an exchange";
   if (!(Number(record.exchange.paidAt) > 0)) return "the exchange is not paid yet";
   if (FINISHED.has(str(record.status))) return `the exchange record is ${record.status}`;
-  if (!list(record.lines).some((l) => l.pid)) return "no replacement is reserved on it";
+  if (isReturnOnlyOrder(record)) {
+    // Store credit / refund instead of a replacement: nothing is reserved; the line names the item coming back.
+    if (!list(record.lines).some((l) => l.pid)) return "the return-only record does not name the item coming back";
+  } else if (!list(record.lines).some((l) => l.pid && !isReturnOnlyLine(l))) return "no replacement is reserved on it";
   return null;
 }
 
@@ -279,7 +296,9 @@ export function priorArrivalRow(rows, { pid, sizeKey, key }) {
  */
 export function replacementCheck({ record, cells = {}, holds = {}, saleId = null, saleExists = false }) {
   const packed = str(record?.status) === "packed";
-  const lines = list(record?.lines).filter((l) => l.pid).map((l) => {
+  // A return-only record has no replacement: nothing is held, packed, deducted or shipped for it.
+  if (isReturnOnlyOrder(record)) return { lines: [], packed, saleId: saleId || null, deducted: "none", returnOnly: true, text: "return only (store credit / refund instead of a replacement): no replacement, nothing is deducted or shipped" };
+  const lines = list(record?.lines).filter((l) => l.pid && !isReturnOnlyLine(l)).map((l) => {
     const sizeKey = str(l.sizeKey) || stockSizeKey(l.size ?? "_");
     const loc = str(l.source?.locationId) || null;
     const hold = holds[`${l.pid}/${sizeKey}`] || null;
@@ -310,7 +329,7 @@ const checkSince = (record, now) => {
 
 async function checkReplacement(db, key, record) {
   const cells = {}, holds = {};
-  for (const l of list(record?.lines).filter((x) => x.pid)) {
+  for (const l of list(record?.lines).filter((x) => x.pid && !isReturnOnlyLine(x) && !isReturnOnlyOrder(record))) {
     const sizeKey = str(l.sizeKey) || stockSizeKey(l.size ?? "_");
     const loc = str(l.source?.locationId);
     if (loc) cells[`${loc}/${l.pid}/${sizeKey}`] = (await read(db, `${cellPath(loc, l.pid, l.size, sizeKey)}/qty`)) ?? 0;

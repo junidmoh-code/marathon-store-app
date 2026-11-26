@@ -4,7 +4,7 @@
 // written. The contract is docs/ONLINE-ORDERS.md.
 import {
   orderLabel, ONLINE_PICK_KIND, PACKER_INSTRUCTION, PACKING_STORE, ORDER_STATUS, LINE_STATUS,
-  ATTENTION_KIND, HOLDING_STATUSES, deriveOrderStatus,
+  ATTENTION_KIND, HOLDING_STATUSES, deriveOrderStatus, isReturnOnlyOrder, isReturnOnlyLine,
 } from "../../../src/utils/onlineOrders.js";
 import { addressSig } from "../../../src/shipping/orderShipment.js";
 
@@ -233,8 +233,12 @@ export function holdRowsFor(order) {
   // climbing the escalation chain (they ship in a follow-up when they come good).
   const packed = order?.status === ORDER_STATUS.PACKED;
   if (!HOLDING_STATUSES.includes(order?.status) && !packed) return rows;
+  // A return-only collection (store credit / refund instead of a replacement) holds nothing: its line is the item
+  // coming BACK, not a unit on a shelf (src/utils/onlineOrders.js isReturnOnlyOrder).
+  if (isReturnOnlyOrder(order)) return rows;
   for (const line of linesOf(order)) {
     if (!line?.pid || !line.sizeKey) continue;
+    if (isReturnOnlyLine(line)) continue;
     // A RE-SENT item (a second parcel, `reship`) was sold and deducted by an earlier pack sale: it is in the packer's
     // hands, not on any shelf, so it holds nothing (a hold would hide a unit the cell no longer counts).
     if (line.reship) continue;

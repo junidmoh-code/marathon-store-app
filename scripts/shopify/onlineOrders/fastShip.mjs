@@ -24,7 +24,7 @@
 //
 // The tick stays the fallback: an order this listener misses (process down, a
 // throw, a lock it lost) is still pending, and the next tick ships it.
-import { ONLINE_ORDERS_PATH, ORDER_STATUS, orderLabel } from "../../../src/utils/onlineOrders.js";
+import { ONLINE_ORDERS_PATH, ORDER_STATUS, orderLabel, isReturnOnlyOrder } from "../../../src/utils/onlineOrders.js";
 import { shipPendingOrder, ownsOrderAt } from "./poll.mjs";
 
 export const PENDING_QUERY = { child: "fulfilState", value: "pending" };
@@ -88,6 +88,8 @@ export function createFastShipper(deps) {
   /** Called for every child the pending query reports (added or changed). */
   function consider(id, order) {
     if (!order || order.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return null;
+    // A return-only collection never ships; the tick's shipOrder flags one that got packed anyway.
+    if (isReturnOnlyOrder(order)) return null;
     // Our own writes while shipping fire child_changed: one run per order at a time.
     if (inFlight.has(id)) return inFlight.get(id);
     const p = run(id, order, clock()).finally(() => inFlight.delete(id));
