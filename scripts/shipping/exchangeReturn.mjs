@@ -35,6 +35,11 @@
 //            never a shop, never "whichever hub holds more". A re-run after a crash reuses the place its own claim
 //            recorded, so a unit never lands on two cells;
 //   anything else → that place when it is in section 2, else the Marathon PE shop.
+// SINCE 26 NOV 2026 (Junid, the POS's condition check; the POS's pickedFromRoutes since 12 Nov): footwear goes back to
+// Hub 1, Hub 2 or Hub 3 (the one it was picked from), clothing to Marathon PE, Trophy, Hub 2, Concrete or Marathon Pine
+// (the one it was picked from); a place outside section 2 only on the pack sale's own ledger row there, else withheld
+// ("not_deducted_there"). Junid's "good" also writes incoming/check { result: "good", via: "junid" } (markGoodCheck),
+// the POS's condition-check field the marathon-dm-agent reads to release the money.
 // A returning item with no app product id (the website's title only) is resolved against the original order's lines by
 // name, as the POS's Incoming exchanges does (resolveReturningLine, marathon-pos-app #594). Every movement carries
 // link.ref "<n>-EX", the POS's stockRef.
@@ -99,8 +104,15 @@ const { applyMovementAdmin, cellPath } = require("../../functions/lib/admin-move
 export const RETURN_TO = "marathon-pe"; // Junid: "back into stock at Marathon PE" (the shop, for everything but sneakers)
 export const SECTION_HUBS = Object.freeze(["hub1", "hub2"]); // Marathon PE's hubs (section 2), the footwear route
 export const SECTION = Object.freeze(["marathon-pe", "trophy", "hub1", "hub2"]);
-export const SECTION_SHOPS = Object.freeze(["marathon-pe", "trophy"]); // clothing goes back to a shop, never a hub (CodeRabbit, #842)
-export const PLACE = Object.freeze({ "marathon-pe": "Marathon PE", trophy: "Trophy", hub1: "Hub 1", hub2: "Hub 2" });
+export const SECTION_SHOPS = Object.freeze(["marathon-pe", "trophy"]); // (kept for old callers)
+// BACK WHERE IT WAS PICKED (Junid, 12 + 26 Nov 2026; the POS's pickedFromRoutes, marathon-pos-app incomingExchanges.js):
+// footwear to the hub it was picked from (Hub 3 included), clothing to the place it was picked from (the POS's
+// WEB_ORDER_DEDUCT_LOCATIONS: Marathon PE, Trophy, Hub 2, Concrete, Marathon Pine). A place outside section 2 is credited
+// only when the original pack sale's ledger row shows it deducted there (never a unit minted on a guess).
+export const PICKED_HUBS = Object.freeze(["hub1", "hub2", "hub3"]);
+export const PICKED_PLACES = Object.freeze(["marathon-pe", "trophy", "hub2", "concrete", "marathon-pine"]);
+export const RETURN_PLACES = Object.freeze([...new Set([...SECTION, ...PICKED_HUBS, ...PICKED_PLACES])]);
+export const PLACE = Object.freeze({ "marathon-pe": "Marathon PE", trophy: "Trophy", hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", concrete: "Concrete", "marathon-pine": "Marathon Pine" });
 export const ACTOR = "system:jimmy-exchange-return";
 export const VIA = "jimmy";
 export const SENTINEL_PLAN = Object.freeze([{ saleId: "jimmy-exchange-return", lineId: "jimmy", qty: 0, refundedBefore: 0, note: "Jimmy is putting this return back: ask Junid, never tap again" }]);
@@ -140,8 +152,8 @@ export const movementIdFor = (key, pid, sizeKey, n) => `exret_${key}_${pid}_${si
 export const FOOTWEAR_UNKNOWN_HUB = "hub2";
 export function destinationFor({ product, size, origLine = null, soldLoc = null }) {
   const picked = [str(soldLoc), str(origLine?.deductFrom), str(origLine?.source?.locationId)].filter(Boolean);
-  if (isFootwearLine(product, size)) return picked.find((l) => SECTION_HUBS.includes(l)) || FOOTWEAR_UNKNOWN_HUB;
-  return picked.find((l) => SECTION_SHOPS.includes(l)) || RETURN_TO;
+  if (isFootwearLine(product, size)) return picked.find((l) => PICKED_HUBS.includes(l)) || FOOTWEAR_UNKNOWN_HUB;
+  return picked.find((l) => PICKED_PLACES.includes(l)) || RETURN_TO;
 }
 
 // ── A returning item with no app product id (the website's title only), resolved against the original order's lines the
@@ -253,7 +265,7 @@ export function arrivalState(arrival) {
 export function priorArrivalRow(rows, { pid, sizeKey, key }) {
   for (const [id, m] of Object.entries(rows || {})) {
     if (!m || m.productId !== pid || stockSizeKey(m.size ?? "_") !== sizeKey || !ARRIVALS.has(m.type)) continue;
-    if (!SECTION.includes(str(m.to))) continue;
+    if (!RETURN_PLACES.includes(str(m.to))) continue;
     if (m.link?.orderId === key || String(id).startsWith("exret_")) continue;
     return { id, type: m.type, to: m.to, ts: m.ts || null, reason: m.reason || null };
   }
@@ -321,10 +333,10 @@ async function ledgerUnit(db, it) {
  * Each unit's facts: its product (must exist), its original line (must be on one of the exchange's original orders when
  * the list is Jimmy's fallback), where it goes back. → { ok, units } | { ok: false, why }.
  */
-/** The original sale's ledger row for one product/size (the till's soldCellLookup, section 2 only). → { loc, soldQty, shortfall } | null */
+/** The original sale's ledger row for one product/size (the till's soldCellLookup, every picked place). → { loc, soldQty, shortfall } | null */
 async function soldCellOf(db, saleId, pid, sizeKey) {
   if (!saleId) return null;
-  for (const loc of SECTION) {
+  for (const loc of RETURN_PLACES) {
     const row = await read(db, `stock_movements/sold:${saleId}:${loc}:${pid}:${sizeKey}`).catch(() => null);
     if (row) return { loc, soldQty: Number(row.qty) || 0, shortfall: Number(row.shortfall) || 0 };
   }
@@ -384,11 +396,13 @@ async function resolveUnits(db, key, record, plan, { priorTo = {} } = {}) {
       cells[cellKey] = { sold, refunded, left: sold ? Math.max(0, sold.soldQty - sold.shortfall - refunded) : Infinity };
     }
     const c = cells[cellKey];
-    const to = SECTION.includes(str(priorTo[it.movementId])) ? priorTo[it.movementId] : destinationFor({ product, size: it.size, origLine, soldLoc: c.sold?.loc || null });
+    const to = RETURN_PLACES.includes(str(priorTo[it.movementId])) ? priorTo[it.movementId] : destinationFor({ product, size: it.size, origLine, soldLoc: c.sold?.loc || null });
+    // Outside section 2 only on the sale's own ledger row there: a place nothing shows deducted is never credited.
+    const unproven = !SECTION.includes(to) && c.sold?.loc !== to;
     // Capped at what the sale deducted (no negative cells, 11 Sep 2026): the part it never covered is withheld.
-    const withheld = c.left <= 0;
+    const withheld = unproven || c.left <= 0;
     if (!withheld) c.left -= 1;
-    const why = withheld ? (c.refunded > 0 ? "refunded" : "shortfall") : null;
+    const why = withheld ? (unproven ? "not_deducted_there" : c.refunded > 0 ? "refunded" : "shortfall") : null;
     units.push({ ...it, to, place: PLACE[to] || to, deactivated: product.deactivated != null, ...(withheld ? { withheld: true, why } : {}) });
   }
   return { ok: true, units };
@@ -493,6 +507,7 @@ export async function confirmExchangeReturn(key, { db, dry = false, orderNumber 
   if (st === "done" && !byHandOpen) {
     // His "good" lifts a hold even when the till confirmed the arrival first (round-2 review 1).
     const released = hold && !dry ? await releaseHold(db, key, record) : false;
+    if (!dry) await markGoodCheck(db, key, record, now);
     const mine = list(arrival.stockReturned).length > 0 || arrival.via === VIA;
     const items = mine ? list(arrival.stockReturned).map((it) => ({ ...it, place: PLACE[it.to] || it.to, already: true })) : await tillUnits(db, arrival);
     return { ok: true, already: true, key, orderNumber: n, by: mine ? "jimmy" : "till", ...(hold ? { heldBefore: true, released } : {}), arrival: { at: arrival.at || null, by: arrival.by?.name || null, returnSaleId: arrival.returnSaleId || null, receiptNumber: arrival.receiptNumber || null }, items, replacement: await checkReplacement(db, key, record) };
@@ -608,7 +623,30 @@ export async function confirmExchangeReturn(key, { db, dry = false, orderNumber 
     throw new Error(`a till took over #${n}'s arrival while the stock went back (${stockReturned.map((u) => u.movementId).join(", ")}): check it on the POS before anything else is put back`);
   }
   const released = hold ? await releaseHold(db, key, record) : false;
+  await markGoodCheck(db, key, record, now);
   return { ok: true, done: true, key, orderNumber: n, items: out, replacement, reason: reasonFor(n), ...(reactivated.length ? { reactivated } : {}), ...(hold ? { heldBefore: true, released } : {}), ...(byHandOpen ? { byHand: true } : {}), ...(withheld.length ? { withheld } : {}) };
+}
+
+/**
+ * His "good" is the condition check (Junid, 26 Nov 2026): incoming/check = { result: "good", at, by, via: "junid" }, the
+ * POS's field the marathon-dm-agent reads to release the customer's refund / replacement / credit. Only when no "good"
+ * check is there yet (a till's own check is never overwritten). A failure is reported, never undoes the stock.
+ */
+async function markGoodCheck(db, key, record, now) {
+  if (record?.incoming?.check?.result === "good") return false;
+  try {
+    // A transaction on the check as it is NOW (architect review, #1017): an existing good check is kept; a till's
+    // not_original one (its reason and photos, the evidence) is kept under `previous`, never lost.
+    const next = { result: "good", at: now(), by: { uid: ACTOR, name: "Jimmy (Junid's word on WhatsApp)" }, via: "junid" };
+    const r = await db.ref(`online_orders/${key}/incoming/check`).transaction((cur) => {
+      if (cur && typeof cur === "object" && cur.result === "good") return undefined;
+      return cur && typeof cur === "object" ? { ...next, previous: cur } : next;
+    });
+    return !!r?.committed;
+  } catch (err) {
+    console.warn(`exchangeReturn: ${key} is back in stock but its "good" check was not recorded: ${err?.message || err}`);
+    return false;
+  }
 }
 
 /**
