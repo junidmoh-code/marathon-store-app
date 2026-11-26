@@ -121,6 +121,16 @@ test("/pos/config/{store}/tills (the POS's Add-till records) merges over the reg
   assert.equal(s.find((x) => x.storeId === "pe").source, "pos-fallback");
 });
 
+test("activeTillsOf (the slip check): registry by id or alias, plus Add-till records; a deactivated till is not a till", () => {
+  const { activeTillsOf } = require("../lib/pos-tills.cjs");
+  const ids = (x) => x.map((t) => t.tillId);
+  assert.deepEqual(ids(activeTillsOf(SEED_REGISTRY, "concrete", null)), ["till-1", "till-2", "till-3"]);
+  assert.deepEqual(ids(activeTillsOf(SEED_REGISTRY, "marathon-pe", null)), ["till-1", "till-2", "till-3"]);
+  assert.deepEqual(ids(activeTillsOf(SEED_REGISTRY, "pine", { "till-2": { tillId: "till-2", name: "Till 2", active: true } })), ["till-1", "till-2"]);
+  assert.deepEqual(ids(activeTillsOf(SEED_REGISTRY, "trophy", { "till-2": { active: false } })), ["till-1"]);
+  assert.deepEqual(ids(activeTillsOf(SEED_REGISTRY, "hub2", { "till-1": { tillId: "till-1" } })), []);
+});
+
 test("placement: Concrete Till 1, 2 and 3 are accepted; a till Concrete does not have, and the location id, are refused", () => {
   const stores = posStores({});
   assert.equal(planAdd(term(), null, { stores, now: NOW }).ok, true);

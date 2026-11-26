@@ -2442,7 +2442,11 @@ async function handleSlip(db, request, deps = {}) {
   const placeTill = here.tillId || terminal.tillId;
   // The store's tills are the registry's plus the POS's Add-till records
   // (/pos/config/{store}/tills — one small read by key, lib/pos-tills.cjs).
-  const placeConfig = /^[a-z0-9-]{1,40}$/.test(String(placeStore)) ? (await db.ref(`pos/config/${placeStore}/tills`).once("value")).val() : null;
+  // A failed read falls back to the registry's tills alone — never a throw.
+  let placeConfig = null;
+  if (/^[a-z0-9-]{1,40}$/.test(String(placeStore))) {
+    try { placeConfig = (await db.ref(`pos/config/${placeStore}/tills`).once("value")).val(); } catch (err) { console.warn(`slip: pos/config/${placeStore}/tills unread (${err && err.message}) — registry tills only`); }
+  }
   if (!activeTillsOf(await loadNetwork(db), placeStore, placeConfig).some((t) => t.tillId === placeTill)) {
     console.error(`CARD_SLIP_ORPHAN_TILL uid=${uid} tid=${picked} till=${placeStore}/${placeTill}: not a POS till — slip refused`);
     return reject(`${here.label || terminal.label || picked} is not set up as a till in the POS, so its slip would not reach Card Recon — nothing was recorded. Tell Junid.`);

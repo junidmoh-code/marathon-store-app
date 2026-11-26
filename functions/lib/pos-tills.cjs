@@ -23,7 +23,7 @@
 // PURE: the callable does the reads and hands them in.
 "use strict";
 
-const { storesOf, SEED_REGISTRY } = require("./network-registry.cjs");
+const { storesOf, tillsFor, locationOf, SEED_REGISTRY } = require("./network-registry.cjs");
 
 // The three original outlets keep the positions they have always had in the
 // store picker (PE, Pine, Trophy) — the same order the POS keeps them in. Any
@@ -111,9 +111,11 @@ function posStores(configured = {}, registry = SEED_REGISTRY) {
   });
 }
 
-/** One store's offerable (active) tills: registry + its /pos/config records. */
+/** One store's offerable (active) tills: registry (any id or alias, as tillsFor) + its /pos/config records. */
 function activeTillsOf(registry, storeId, rawConfig) {
-  return mergeTills(registryTillsOf(registry || SEED_REGISTRY)[storeId] || [], rawConfig).filter((t) => t.active);
+  const l = locationOf(registry || SEED_REGISTRY, storeId);
+  if (!l || l.type !== "store") return [];
+  return mergeTills(tillsFor(registry || SEED_REGISTRY, storeId), rawConfig).filter((t) => t.active);
 }
 
 module.exports = { ORIGINAL_ORDER, POS_STORES, TILLS_FALLBACK, posStoresOf, registryTillsOf, readConfiguredTills, mergeTills, activeTillsOf, posStores };
