@@ -133,7 +133,14 @@ export default function Transfer({ products, registry, actorRole }) {
   // back to the instant one-step move. Receiving open transfers is unaffected.
   const transitOn = useTransitConfig()?.enabled !== false;
 
-  const flash = (kind, text, ms = 3000) => { setToast({ kind, text }); setTimeout(() => setToast(null), ms); };
+  // One live timer: an earlier toast's timer must not cut a later (longer) one short.
+  const toastTimer = useRef(null);
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
+  const flash = (kind, text, ms = 3000) => {
+    setToast({ kind, text });
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), ms);
+  };
   const productsById = useMemo(() => {
     const m = {}; (products || []).forEach((p) => { if (p && p.id) m[p.id] = p; }); return m;
   }, [products]);

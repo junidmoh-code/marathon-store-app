@@ -2,7 +2,8 @@
 // The real Transfer screen, driven the way a person drives it (a restored
 // cart → Destination → Confirm), from Central, Hub 2 and Hub 3 to each of the
 // eight locations. Every write the screen makes goes through the REAL Firebase
-// SDK's update() validation (offline — nothing leaves the machine): the
+// SDK's update() validation (offline — nothing leaves the machine) — the
+// screen's own writes; applyMovement is mocked here and judged elsewhere: the
 // 24–26 Nov outage was an SDK refusal on the device, so a fake update() that
 // accepts anything could never have caught it.
 //
@@ -16,7 +17,9 @@
 //   createdAt write-once
 //   lines/$pid/$sizeKey  number > 0
 // The RTDB emulator could not run on the build Mac (no Java runtime), so this
-// is the rule's shape asserted directly, field by field.
+// is the rule's shape asserted directly, field by field, with the live
+// /locations ids standing in for the rule's root.child('locations') lookup
+// (the users/{uid} and stockRole checks are the caller's, not the doc's).
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
@@ -43,6 +46,7 @@ const PRODUCTS = [{ id: PID, name: "Adidas Argentina Tiro Travel Windbreaker", c
 const writes = [];                       // every patch the REAL SDK accepted
 let rejectTransfersWith = null;          // simulate a server refusal on /transfers
 let draft = null;
+let existingDoc = null;                  // what get(transfers/{id}) returns
 let pushN = 0;
 
 vi.mock("firebase/database", async () => {
@@ -56,7 +60,7 @@ vi.mock("firebase/database", async () => {
     ref: (_db, path) => ({ path: path ?? "" }),
     child: (r, p) => ({ path: r.path ? `${r.path}/${p}` : p }),
     push: () => ({ key: `-TID${++pushN}` }),
-    get: () => Promise.resolve({ exists: () => false, val: () => null }),
+    get: () => Promise.resolve({ exists: () => !!existingDoc, val: () => existingDoc }),
     onValue: () => () => {},
     update: (r, patch) => {
       // The real SDK's path + value validation; it throws on the device for
@@ -108,9 +112,9 @@ const button = (root, re) => {
 };
 const flush = async () => { for (let i = 0; i < 20; i++) await act(async () => { await Promise.resolve(); }); };
 
-async function sendOne(from, to) {
+async function sendOne(from, to, { transferId = null } = {}) {
   draft = {
-    from, to, refillId: null, transferId: null, lineResults: {},
+    from, to, refillId: null, transferId, lineResults: {},
     basket: { [`${PID}__S`]: { productId: PID, productName: PRODUCTS[0].name, size: "S", qty: 1 } },
   };
   let r;
@@ -129,6 +133,7 @@ beforeEach(() => {
   writes.length = 0;
   applyMovement.mockClear();
   rejectTransfersWith = null;
+  existingDoc = null;
 });
 
 describe.each(["central", "hub2", "hub3"])("a manual transfer from %s", (from) => {
@@ -170,5 +175,30 @@ describe("a refused transit record says WHY", () => {
     const msg = await sendOne("central", "hub1");
     expect(msg).toMatch(/Couldn't create the transit record — nothing was sent\. Check connection and retry\. \(PERMISSION_DENIED: Permission denied\)/);
     expect(applyMovement).not.toHaveBeenCalled();
+  });
+});
+
+describe("a retried transit send (the doc already exists)", () => {
+  it("merges the lines into the same doc — leaf paths the real SDK accepts", async () => {
+    existingDoc = { status: "dispatched", from: "central", to: "hub1", reason: "manual", createdAt: "2026-11-26T07:00:00.000Z", lines: { other: { M: 1 } } };
+    const msg = await sendOne("central", "hub1", { transferId: "-TIDOLD" });
+    expect(msg).toMatch(/in transit to/);
+    const keys = writes.flatMap((p) => Object.keys(p));
+    expect(keys).toContain(`transfers/-TIDOLD/lines/${PID}/S`);
+    expect(keys.some((k) => /^transfers\/-TIDOLD\/stamps\//.test(k))).toBe(true);
+    expect(keys).not.toContain("transfers/-TIDOLD");
+    expect(applyMovement.mock.calls[0][0]).toMatchObject({ to: "in_transit", transitTo: "hub1", link: { transferId: "-TIDOLD" } });
+  });
+
+  it("a changed destination with nothing sent drops the stale doc and writes a fresh one to the new place", async () => {
+    existingDoc = { status: "dispatched", from: "central", to: "hub2", reason: "manual", createdAt: "2026-11-26T07:00:00.000Z", lines: { [PID]: { S: 1 } } };
+    const msg = await sendOne("central", "trophy", { transferId: "-TIDSTALE" });
+    expect(msg).toMatch(/in transit to/);
+    expect(writes.some((p) => p["transfers/-TIDSTALE"] === null)).toBe(true);
+    const fresh = writes.flatMap((p) => Object.entries(p)).filter(([k, v]) => /^transfers\/[^/]+$/.test(k) && v);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0][0]).not.toBe("transfers/-TIDSTALE");
+    expect(fresh[0][1].to).toBe("trophy");
+    assertLiveTransferRule(fresh[0][1]);
   });
 });
