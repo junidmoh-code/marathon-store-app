@@ -183,7 +183,7 @@ import { wallAllows, storesOf, backStockHubsOf } from "./utils/networkRegistry";
 import { useMySections } from "./utils/useMySections";
 import {
   fallbackHub, hubOfRecord, placementHub, servingHubFor, usesSection2Hubs, stockHubIds, crHubIds, hubLabel as registryHubLabel,
-  warehouseHubGroups, hubAllowedForViewer, shopsOfHub, orderIsAtHub, orderPlacementCheck, sectionStamp,
+  warehouseHubGroups, hubAllowedForViewer, shopsOfHub, orderIsAtHub, hubOrderField, orderPlacementCheck, sectionStamp,
   dispatchHoldMs, sourceTabsFor, TRIAL_HUB, shopOfRecord, storedHubVerdict, warehouseTabKeys,
   insightsStoreOptions, insightsBucketKey, insightsStoreMatcher,
 } from "./utils/sectionRouting";
@@ -1155,6 +1155,48 @@ function useOrders(scopeShop = null, enabled = true) {
   const pendingForScope = useMemo(() => Object.assign([], { settled: false, scope: scopeShop }), [scopeShop]);
   if (orders.scope !== scopeShop) return pendingForScope;
   return orders;
+}
+
+// ─── ONE HUB'S ORDERS (Junid, 26 Nov 2026) ───────────────────────────────────
+// The hub Orders card used to read the WHOLE /orders node (4.4 MB on 26 Nov).
+// It now asks for the selected hub's orders only — orderByChild(hub field)
+// .equalTo(hub), indexed in the live rules — and a device with the offline
+// mirror filters its local copy the same way (orderIsAtHub), downloading nothing.
+// Measured 26 Nov: Hub 1 805 KB, Hub 2 3,110 KB (its clothing refill lines),
+// Hub 3 488 KB, against 4,402 KB for the whole node.
+function useHubOrders(hub, network) {
+  const authReady = useAuthReady() && !!hub;
+  const [orders, setOrders] = useState(() => Object.assign([], { settled: false, scope: hub }));
+  const mirrored = useMirroredPath("orders", authReady);
+  const live = mirrored.verdict === "fallback";
+  const field = hub ? hubOrderField(network, hub) : null;
+  const shape = useCallback((data) => Object.assign(
+    Object.values(data || {})
+      .filter((o) => o && typeof o === "object" && !Array.isArray(o))
+      .filter((o) => orderIsAtHub(network, o, hub))
+      .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt)),
+    { settled: true, scope: hub },
+  ), [network, hub]);
+
+  useEffect(() => {
+    if (live || !mirrored.settled || !hub) return;
+    setOrders(shape(mirrored.value));
+  }, [live, mirrored.settled, mirrored.value, hub, shape]);
+
+  useEffect(() => {
+    if (!authReady || !live || !field) return undefined;
+    const readRef = query(ref(database, "orders"), orderByChild(field), equalTo(hub));
+    const unsub = subscribeLiveQuery(childQueryKey("orders", field, hub), () => readRef,
+      (snap) => setOrders(shape(snap.val())),
+      (err) => {
+        console.warn(`Firebase read error on /orders (${field}=${hub}):`, err);
+        setOrders((prev) => (prev.scope === hub ? Object.assign(prev.slice(), { settled: prev.settled === true, error: true, scope: hub }) : Object.assign([], { settled: false, error: true, scope: hub })));
+      });
+    return () => unsub();
+  }, [authReady, live, field, hub, shape]);
+
+  const pending = useMemo(() => Object.assign([], { settled: false, scope: hub }), [hub]);
+  return orders.scope === hub ? orders : pending;
 }
 
 // ─── TV ORDERS (BANDWIDTH-SCOPED) ────────────────────────────────────────────
@@ -12943,7 +12985,36 @@ function TomorrowActionButton({ order, product, onOutcome, hideWhenOOS = false }
 // "Schedule for Tomorrow".
 
 const SEND_CONFIRM_MS = 15000;
-function WarehouseView({ products = [], orders: liveOrders, onExit }) {
+function WarehouseView({ products = [], onExit }) {
+  const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
+  // The display ROW LEDGER (/settings/displayRows). The send closes whatever is
+  // open for that wall in the same write that opens the new row, so it needs to
+  // know what IS open — and it must read it from a live subscription rather
+  // than a fetch at tap time, because a fetch at tap time is a read the
+  // operator waits on with a shoe in their hand. Subscribed only while the
+  // Refills tab is the one on screen.
+  //
+  // ITS READINESS IS LOAD-BEARING, not decoration. An unanswered subscription
+  // and an empty ledger are the same null, so a Send confirmed before the node
+  // has answered would close NOTHING and open a second row beside the one
+  // already there — manufacturing the exact duplicate the ledger exists to
+  // surface. The send refuses until it has actually been read.
+  // (Spec-conformance review.)
+  const displayRowsState = useDisplayRowsState(mainTab === "refills");
+  const displayRows = displayRowsState.value;
+  const [filter, setFilter] = useState("incoming");
+  const [onHoldExpanded, setOnHoldExpanded] = useState(false);
+  // THE HUB THIS DEVICE WORKS AS is whatever localStorage.warehouseHub says —
+  // staff pick it, and a push deep link can write it. It is only HONOURED when
+  // it is a hub this viewer's sections allow: anything else (the other
+  // section's hub, a stale or made-up id) reads as "no hub picked" and the
+  // picker below, which only offers allowed hubs, is shown instead.
+  const { canSee: canSeeHub, registry: whNet } = useMySections();
+  const [storedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
+  const selectedHub = hubAllowedForViewer(whNet, canSeeHub, storedHub) ? storedHub : null;
+  // This hub's orders only (useHubOrders) — the app-wide whole-node read is
+  // switched off while this card is open (Junid 26 Nov 2026).
+  const liveOrders = useHubOrders(selectedHub, whNet);
   // Orders this device has just sent, shown as sent at once while the write
   // runs (markSentAndPrint). An entry stops applying the moment the live
   // record has left Incoming, or if it is a different order (number reused).
@@ -12972,32 +13043,6 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
     const stale = keys.filter((k) => { const o = (liveOrders || []).find((x) => x?.id === k); return !!o && ((o.status !== STATUS.INCOMING && o.status !== STATUS.COMING_TOMORROW) || (o.createdAt ?? null) !== optimisticSent[k].createdAt); });
     if (stale.length) setOptimisticSent((m) => { const n = { ...m }; for (const k of stale) delete n[k]; return n; });
   }, [liveOrders, optimisticSent]);
-  const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
-  // The display ROW LEDGER (/settings/displayRows). The send closes whatever is
-  // open for that wall in the same write that opens the new row, so it needs to
-  // know what IS open — and it must read it from a live subscription rather
-  // than a fetch at tap time, because a fetch at tap time is a read the
-  // operator waits on with a shoe in their hand. Subscribed only while the
-  // Refills tab is the one on screen.
-  //
-  // ITS READINESS IS LOAD-BEARING, not decoration. An unanswered subscription
-  // and an empty ledger are the same null, so a Send confirmed before the node
-  // has answered would close NOTHING and open a second row beside the one
-  // already there — manufacturing the exact duplicate the ledger exists to
-  // surface. The send refuses until it has actually been read.
-  // (Spec-conformance review.)
-  const displayRowsState = useDisplayRowsState(mainTab === "refills");
-  const displayRows = displayRowsState.value;
-  const [filter, setFilter] = useState("incoming");
-  const [onHoldExpanded, setOnHoldExpanded] = useState(false);
-  // THE HUB THIS DEVICE WORKS AS is whatever localStorage.warehouseHub says —
-  // staff pick it, and a push deep link can write it. It is only HONOURED when
-  // it is a hub this viewer's sections allow: anything else (the other
-  // section's hub, a stale or made-up id) reads as "no hub picked" and the
-  // picker below, which only offers allowed hubs, is shown instead.
-  const { canSee: canSeeHub, registry: whNet } = useMySections();
-  const [storedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
-  const selectedHub = hubAllowedForViewer(whNet, canSeeHub, storedHub) ? storedHub : null;
   // …AND A HUB THAT IS NOT ALLOWED DOES NOT STAY ON THE DEVICE. Not honouring
   // it was enough to keep the screen right, but the id sat in localStorage for
   // good — a Section 2 device went on carrying "hub3" from a mis-tapped link.
@@ -21608,7 +21653,9 @@ function AppInner() {
   const activeStoreState = useActiveStore();
   const activeShopForMe = activeStoreState.uid === authUser?.uid ? activeStoreState.activeShop : null;
   const myShop = isSuperAdmin || !permRecord?.destShop ? null : (activeShopForMe || permRecord.destShop);
-  const orders = useOrders(myShop);
+  // Off while the hub Orders card is open: it reads its own hub's orders only
+  // (useHubOrders), so the whole node is not downloaded behind it (26 Nov 2026).
+  const orders = useOrders(myShop, role !== ROLES.WAREHOUSE);
   // Pine and Concrete share their orders: the sibling's feed joins the three
   // screens that show a customer's order (utils/sharedOrders.js). Everything
   // else keeps the shop's own feed. Marathon PE / Trophy have no sibling, read
@@ -22012,7 +22059,7 @@ function AppInner() {
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} myShop={myShop} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} myShop={myShop} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={sharedOrders} onExit={() => setRole(null)} />);
-  else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={sharedOrders} shop={myShop} onExit={() => setRole(null)} />);
   else if (role === ROLES.BROADCAST_GROUPS) view = guard(ROLES.BROADCAST_GROUPS, <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />);
 
