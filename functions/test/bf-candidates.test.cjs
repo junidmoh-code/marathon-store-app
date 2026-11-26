@@ -523,3 +523,25 @@ test("the card's posting words: Waiting X of 30 until the 30 is met and Tue 24 N
   assert.deepEqual(core.postingState(n(31), { startedAt: tue }, tue + 1), { started: true, onSale: 31, need: 30, waiting: null, banner: null });
   assert.equal(core.postingState(n(31), { startedAt: 5 }, NOW).started, false, "never today");
 });
+
+// ── REPOST (Junid, 26 Nov 2026): a product's sale posts to the groups ONCE; only his Repost tap posts it again ──
+test("On sale: 'posted' at any version (an extension never makes it unposted); a Repost tap after the post shows as queued", () => {
+  const sales = { d: { salePrice: 80, start: NOW - 1000, end: END, setAt: NOW - 1000, extendedAt: NOW - 10, name: "New arrival", kind: "clothing" } };
+  const v = (posted, reposts) => core.viewList({ items: ITEMS, sales, posted, reposts }, { tab: "onsale", nowMs: NOW }).rows[0];
+  assert.deepEqual(v({ d: { version: NOW - 1000, at: NOW - 500, groups: 15 } }).posted, { at: NOW - 500, groups: 15 }, "posted under the older version: still posted");
+  assert.equal(v({ d: { version: NOW - 1000, at: NOW - 500 } }).repostQueued, false);
+  assert.equal(v({ d: { version: NOW - 1000, at: NOW - 500 } }, { d: { at: NOW - 600 } }).repostQueued, false, "a tap before the post is used up");
+  assert.equal(v({ d: { version: NOW - 1000, at: NOW - 500 } }, { d: { at: NOW - 100 } }).repostQueued, true);
+  assert.equal(v({}, { d: { at: NOW - 100 } }).posted, null, "never posted: nothing to repost");
+});
+
+test("repostSale: only a product on sale now that has already posted; writes repost/{pid} = { at, by }", async () => {
+  const db = world();
+  await X.putOnSale(db, { pids: ["a", "b"], price: 150 }, "junid", NOW);
+  await db.ref(`${R}/posted/a`).set({ at: NOW + 10, version: NOW, album: "k" });
+  const r = await X.repostSale(db, { pids: ["a", "b", "c"] }, "junid", NOW + 20);
+  assert.deepEqual(r.done, ["a"]);
+  assert.deepEqual(r.refused.map((x) => [x.pid, x.refusal]), [["b", "not posted yet: it posts by itself"], ["c", "not on sale now"]]);
+  assert.deepEqual(await get(db, `${R}/repost/a`), { at: NOW + 20, by: "junid" });
+  assert.equal(await get(db, `${R}/repost/b`), null);
+});

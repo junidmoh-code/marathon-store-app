@@ -94,7 +94,7 @@ export function readPrice(text) {
   return { price: Math.round(n * 100) / 100 };
 }
 
-function Row({ r, names, thumb, waiting, selecting, ticked, onTick, onSale, onExtend, onEnd, onRemove, busy, making, failed, onGenerate, onReplace, onUseCurrent }) {
+function Row({ r, names, thumb, waiting, selecting, ticked, onTick, onSale, onExtend, onEnd, onRemove, onRepost, busy, making, failed, onGenerate, onReplace, onUseCurrent }) {
   const chosen = r.photoChoice && r.photoChoice.use === "generated";
   const locs = locsLine(r.locs, names);
   const [text, setText] = useState("");
@@ -132,7 +132,7 @@ function Row({ r, names, thumb, waiting, selecting, ticked, onTick, onSale, onEx
         {r.sale && (
           <div style={{ marginTop: 6, color: AMBER, fontWeight: 700, fontSize: "0.84rem" }}>
             🔥 {price(r.sale.price)} · On sale until {r.sale.until}
-            <span style={{ color: r.posted ? GREEN : GRAY, fontWeight: 600 }}> · {r.posted ? "Posted to the groups" : !r.photo ? "No photo: not posting" : waiting || "Queued to post"}</span>
+            <span style={{ color: r.posted ? (r.repostQueued ? BLUE_L : GREEN) : GRAY, fontWeight: 600 }}> · {r.posted ? (r.repostQueued ? "Repost queued: posts once more" : "Posted to the groups") : !r.photo ? "No photo: not posting" : waiting || "Queued to post"}</span>
           </div>
         )}
         {!selecting && (
@@ -143,6 +143,7 @@ function Row({ r, names, thumb, waiting, selecting, ticked, onTick, onSale, onEx
             <button type="button" style={{ ...(r.sale ? bBlue : bGreen), opacity: typed.price ? 1 : 0.45 }} disabled={busy || !typed.price} onClick={put}>{r.sale ? "Edit price" : "Put on sale"}</button>
             {r.sale && <button type="button" style={bGray} disabled={busy} onClick={() => onExtend([r.pid])}>Extend</button>}
             {r.sale && <button type="button" style={bRed} disabled={busy} onClick={() => onEnd([r.pid])}>Remove from sale</button>}
+            {r.sale && r.posted && !r.repostQueued && onRepost && <button type="button" data-testid={`sale-repost-${r.pid}`} style={bGreen} disabled={busy} onClick={() => onRepost([r.pid])}>Repost</button>}
             <button type="button" style={bGray} disabled={busy} onClick={() => onRemove([r.pid])}>Not for sale</button>
           </div>
         )}
@@ -307,6 +308,15 @@ export default function BfCandidatesScreen({ api, onExit }) {
     const gone = r.flatMap((o) => o.done || []);
     if (shown.current.tab === "onsale") { setRows((cur) => cur.filter((x) => !gone.includes(x.pid))); setView((v) => (v && v.counts ? { ...v, counts: { ...v.counts, onSale: Math.max(0, (v.counts.onSale || 0) - gone.length) } } : v)); }
     say(`${n} removed from the sale: back to normal prices.${n ? alertLine((r[0] || {}).stores) : ""}`);
+    done();
+  };
+  // REPOST (Junid, 26 Nov): a sale posts to the groups once; this tap posts it once more, and only this tap.
+  const doRepost = async (pids) => {
+    const r = await withBusy(pids, "Queuing the repost…", async () => [await api.repost(pids)]);
+    if (!r) return;
+    const ok = r.flatMap((o) => o.done || []), refused = r.flatMap((o) => o.refused || []);
+    setRows((cur) => cur.map((x) => (ok.includes(x.pid) ? { ...x, repostQueued: true } : x)));
+    say(ok.length ? `Repost queued: posts once more to the groups.${refused.length ? ` ${refused.length} not queued: ${refused[0].refusal}.` : ""}` : `Not queued: ${refused.length ? refused[0].refusal : "try again"}.`);
     done();
   };
   const doRemove = async (pids) => {
@@ -522,7 +532,7 @@ export default function BfCandidatesScreen({ api, onExit }) {
         )}
         {rows.map((r) => (
           <Row key={r.pid} r={r} names={names} thumb={api.thumb} waiting={view && view.posting && view.posting.waiting} selecting={selecting} ticked={ticks.has(r.pid)} onTick={tick} busy={busyPids.has(r.pid) || !!working} making={making[r.pid]} failed={failed[r.pid]} onGenerate={generate} onReplace={replace} onUseCurrent={useCurrent}
-            onSale={(rs, p, after) => saveSale(rs.map((x) => x.pid), p, null, after)} onExtend={(pids) => setDialog({ type: "extend", pids, n: pids.length })} onEnd={doEnd} onRemove={doRemove} />
+            onSale={(rs, p, after) => saveSale(rs.map((x) => x.pid), p, null, after)} onExtend={(pids) => setDialog({ type: "extend", pids, n: pids.length })} onEnd={doEnd} onRemove={doRemove} onRepost={doRepost} />
         ))}
         {view && view.more && <button type="button" style={bGray} onClick={more}>Show more ({(view.total || 0) - rows.length} more)</button>}
         {view && view.meta && view.meta.builtAt && <div style={{ color: GRAY, fontSize: "0.72rem", textAlign: "center", marginTop: 6 }}>List built {new Date(view.meta.builtAt).toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</div>}

@@ -4,8 +4,8 @@
 // quantity, no paper bags): its taps are New Arrivals' own approvals, so
 // approving here or on the New Arrivals card is ONE approval; its photos are
 // made by New Arrivals' own studio. Approved splits New Arrivals / Normal and
-// keeps every product after posting ("Posted n× · last …"); Repost queues the
-// ticked ones for the next slot — nothing reposts by itself. MAIN = 13 or more on
+// keeps every product after posting ("Posted n× · last …"); Repost (on each posted
+// row, or for the ticked ones) queues it for ONE more post — nothing reposts by itself (Junid, 26 Nov 2026). MAIN = 13 or more on
 // hand: every 30+ product first (with "Approve all 30+"), then 13–29. "Show
 // under 13" adds the rest. Per product: Approve, Reject, Use current photo,
 // Generate / Regenerate. Reject removes it (and it stays rejected); undo from
@@ -274,6 +274,7 @@ function Row({ r, busy, gen, on, selectMode, selected }) {
           {a.noPrice && <span data-testid={`noprice-${r.pid}`} style={{ alignSelf: "center", color: AMBER, fontSize: 11, fontWeight: 700, padding: "0 4px" }}>No price, set price first</span>}
           {a.backToReview && <button data-testid={`back-${r.pid}`} disabled={busy} onClick={() => on.reset(r)} style={sm}>Back to review</button>}
           <button data-testid={`reject-${r.pid}`} disabled={busy} onClick={() => on.reject(r)} style={{ ...sm, color: RED }}>Reject</button>
+          {r.tab === "approved" && r.postedN > 0 && !r.repostQueued && on.repost && <button data-testid={`repost-${r.pid}`} disabled={busy} onClick={() => on.repost(r)} style={{ ...bGreen, padding: "4px 10px", fontSize: 11, minHeight: 28 }}>Repost</button>}
           {a.useCurrent && <button data-testid={`use-current-${r.pid}`} disabled={busy} onClick={() => on.use(r, "current")} style={a.useCurrentPrimary ? { ...bBlue, padding: "4px 8px", fontSize: 11, minHeight: 28 } : sm}>Use current photo</button>}
           {a.useAi && <button data-testid={`use-ai-${r.pid}`} disabled={busy} onClick={() => on.use(r, "generated")} style={sm}>Use AI photo</button>}
           {(a.generate || a.regenerate) && <button data-testid={`generate-${r.pid}`} disabled={!!gen || r.generating} onClick={() => on.generate(r)} style={a.generate ? { ...bBlue, padding: "4px 8px", fontSize: 11, minHeight: 28 } : sm}>{a.regenerate ? "Regenerate" : "Generate"}{r.srcId ? " from your photo" : ""}</button>}
@@ -935,6 +936,13 @@ export default function BlackFridayScreen({ api, onExit }) {
     approve: (r) => run(() => api.approve(r.pid, r.section, sigOfRow(r)), { undo: (x) => (x && x.undo ? { text: `Approved ${r.name}`, reverse: undoWith(x.undo) } : null) }),
     reject: (r) => run(() => api.reject(r.pid, r.section), { undo: (x) => (x && x.undo ? { text: `Rejected ${r.name}`, reverse: undoWith(x.undo) } : null) }),
     reset: (r) => run(() => api.reset(r.pid)),
+    // REPOST (Junid, 26 Nov 2026): a product posted to the Marathon Club groups never posts again by itself; this tap
+    // puts it back in the queue for ONE more post.
+    repost: (r) => run(async () => {
+      const x = await api.repost([r.pid]);
+      if (x && (x.done || []).includes(r.pid)) return { ok: true, pid: r.pid, row: { ...r, repostQueued: true } };
+      return { ok: false, refusal: `${r.name}: not queued — ${((x && x.refused) || [])[0]?.refusal || "try again"}` };
+    }),
     use: (r, use) => {
       // With his own photo on the card, "Use current photo" is THAT photo (= the replaced one); on a New Arrival it approves it.
       if (use === "current" && r.srcId && r.sig !== r.srcId) {

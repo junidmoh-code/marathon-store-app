@@ -17,6 +17,7 @@ function fakeApi(rows, over = {}) {
     extendAll: vi.fn(async () => ({ ok: true, done: ["a"], until: "Mon 7 Dec" })),
     end: vi.fn(async (pids) => ({ ok: true, done: pids })),
     remove: vi.fn(async (pids) => ({ ok: true, done: pids })),
+    repost: vi.fn(async (pids) => ({ ok: true, done: pids, refused: [] })),
     restore: vi.fn(async (pids) => ({ ok: true, done: pids })),
     removed: vi.fn(async () => ({ ok: true, removed: [{ pid: "z", name: "Old Tee" }] })),
     photoMark: vi.fn(async () => ({ ok: true, since: 1000 })),
@@ -131,6 +132,19 @@ describe("BF Candidates card", () => {
     await type(field(r, "New end date"), "2026-12-07");
     await press(buttons(dialog(r), "Extend")[0]);
     expect(api.extend).toHaveBeenCalledWith(["a"], "2026-12-07");
+  });
+
+  it("On sale: Repost only on a sale already posted (Junid, 26 Nov); one tap queues it once and the row says so", async () => {
+    const sale = { price: 150, until: "Mon 30 Nov", end: 1, start: 0, setAt: 0 };
+    const api = fakeApi([row({ sale, posted: { at: 5, groups: 15 } }), row({ pid: "b", name: "Tee B", sale, posted: null })]);
+    api.list = vi.fn(async () => answer([row({ sale, posted: { at: 5, groups: 15 } }), row({ pid: "b", name: "Tee B", sale, posted: null })], { tab: "onsale" }));
+    const r = await mount(api);
+    const rep = r.root.findAll((n) => n.type === "button" && n.props["data-testid"] && String(n.props["data-testid"]).startsWith("sale-repost-"));
+    expect(rep.map((n) => n.props["data-testid"])).toEqual(["sale-repost-a"]);
+    expect(all(r)).toContain("Posted to the groups");
+    await press(rep[0]);
+    expect(api.repost).toHaveBeenCalledWith(["a"]);
+    expect(all(r)).toContain("Repost queued");
   });
 
   it("Not for sale removes the row; Removed (n) lists it with Undo", async () => {
