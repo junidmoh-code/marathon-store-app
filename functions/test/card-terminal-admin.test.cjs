@@ -24,22 +24,22 @@ test("the POS stores are pe / pine / trophy, by trading name, with their real ti
     ["pe", "Marathon PE", "till-1,till-2,till-3"],
     ["pine", "Marathon Pine", "till-1"],
     ["trophy", "Trophy", "till-1,till-2"],
-    ["concrete", "Concrete", "till-1,till-2"],
+    ["concrete", "Concrete", "till-1,till-2,till-3"],
   ]);
   assert.ok(stores.every((s) => s.source === "pos-fallback"));
 });
 
-test("a seeded /pos/config/{store}/tills wins over the fallback, as it does in the POS", () => {
-  const s = posStores({ pine: { a: { tillId: "till-1", name: "Till 1" }, b: { tillId: "till-2", name: "Till 2" } } });
+test("/pos/config/{store}/tills merges over the fallback, as it does in the POS", () => {
+  const s = posStores({ pine: { "till-2": { tillId: "till-2", name: "Till 2" } } });
   assert.deepEqual(s.find((x) => x.storeId === "pine").tills.map((t) => t.tillId), ["till-1", "till-2"]);
   assert.equal(s.find((x) => x.storeId === "pine").source, "pos-config");
 });
 
 test("the fallback is marathon-pos-app's TILLS_FALLBACK as of origin/main 908da4f (21 Sept 2026)", () => {
   // Pinned rather than read from a sibling checkout, which may be stale.
-  // pe / pine / trophy exactly as pinned then; Concrete (2 tills) is the registry's addition.
+  // pe / pine / trophy exactly as pinned then; Concrete (3 tills since 26 Nov 2026) is the registry's addition.
   assert.deepEqual(Object.fromEntries(Object.entries(TILLS_FALLBACK).map(([k, v]) => [k, v.map((t) => t.tillId)])),
-    { pe: ["till-1", "till-2", "till-3"], pine: ["till-1"], trophy: ["till-1", "till-2"], concrete: ["till-1", "till-2"] });
+    { pe: ["till-1", "till-2", "till-3"], pine: ["till-1"], trophy: ["till-1", "till-2"], concrete: ["till-1", "till-2", "till-3"] });
 });
 
 // ── the TID ──────────────────────────────────────────────────────────────────

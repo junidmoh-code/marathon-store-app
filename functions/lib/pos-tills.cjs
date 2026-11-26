@@ -17,8 +17,8 @@
 // The storeId is still the POS's own short id ("pe", "pine", "trophy",
 // "concrete"), never the registry's location id: it is the JOIN KEY.
 //
-// /pos/config/{storeId}/tills still wins over the registry's tills where it is
-// seeded, exactly as before (it is unseeded for every store as of 21 Sept 2026).
+// /pos/config/{storeId}/tills (the POS's Add-till records) is merged over the
+// registry's tills — see mergeTills below.
 //
 // PURE: the callable does the reads and hands them in.
 "use strict";
@@ -59,14 +59,37 @@ function registryTillsOf(registry) {
 const POS_STORES = Object.freeze(posStoresOf(SEED_REGISTRY).map((s) => Object.freeze({ storeId: s.storeId, label: s.label })));
 const TILLS_FALLBACK = Object.freeze(registryTillsOf(SEED_REGISTRY));
 
-/** A /pos/config/{storeId}/tills value → [{tillId, name}], or null if unusable. */
+// ── /pos/config/{storeId}/tills — THE POS's "Add till" RECORDS (26 Nov 2026) ──
+// The POS Settings → Tills screen writes one record per till here, keyed by
+// the till id: { tillId, name, active }. They are MERGED over the registry's
+// tills, never a replacement: a record for a seed till renames or deactivates
+// it, a record for a new id adds a till, and a seed till with no record is
+// untouched. A deactivated till (active === false) is not offered anywhere a
+// till is chosen. Same rule as marathon-pos-app src/shared/tillConfig.js.
+const TILL_ID_RE = /^till-[1-9][0-9]{0,2}$/;
+const tillNo = (id) => Number(String(id).slice(5));
+
+/** A raw /pos/config/{storeId}/tills value → [{tillId, name, active}] (valid records only). */
 function readConfiguredTills(raw) {
-  const list = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? Object.values(raw) : null;
-  if (!list) return null;
-  const out = list
-    .filter((t) => t && typeof t.tillId === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(t.tillId))
-    .map((t) => ({ tillId: t.tillId, name: typeof t.name === "string" && t.name.trim() ? t.name.trim() : t.tillId }));
-  return out.length ? out : null;
+  const list = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? Object.entries(raw).map(([k, v]) => (v && typeof v === "object" && !v.tillId ? { ...v, tillId: k } : v)) : [];
+  const out = [];
+  for (const t of list) {
+    if (!t || typeof t.tillId !== "string" || !TILL_ID_RE.test(t.tillId) || out.some((x) => x.tillId === t.tillId)) continue;
+    out.push({ tillId: t.tillId, name: typeof t.name === "string" && t.name.trim() ? t.name.trim().slice(0, 24) : null, active: t.active !== false });
+  }
+  return out;
+}
+
+/** Seed tills + configured records → the merged list, deactivated tills included (active flag). */
+function mergeTills(seedTills, raw) {
+  const cfg = readConfiguredTills(raw);
+  const out = (seedTills || []).map((t) => {
+    const c = cfg.find((x) => x.tillId === t.tillId);
+    return { tillId: t.tillId, name: (c && c.name) || t.name || t.tillId, active: c ? c.active : true };
+  });
+  const added = cfg.filter((c) => !out.some((t) => t.tillId === c.tillId)).sort((a, b) => tillNo(a.tillId) - tillNo(b.tillId));
+  for (const c of added) out.push({ tillId: c.tillId, name: c.name || `Till ${tillNo(c.tillId)}`, active: c.active });
+  return out;
 }
 
 /**
@@ -77,15 +100,20 @@ function readConfiguredTills(raw) {
 function posStores(configured = {}, registry = SEED_REGISTRY) {
   const tills = registryTillsOf(registry);
   return posStoresOf(registry).map((s) => {
-    const fromConfig = readConfiguredTills(configured[s.storeId]);
+    const hasConfig = readConfiguredTills(configured[s.storeId]).length > 0;
     return {
       ...s,
-      tills: fromConfig || (tills[s.storeId] || []).map((t) => ({ ...t })),
+      tills: mergeTills(tills[s.storeId] || [], configured[s.storeId]).filter((t) => t.active).map((t) => ({ tillId: t.tillId, name: t.name })),
       // "pos-fallback" is the name this source has always had on the wire; it
-      // now means "the registry's tills", which is what the POS falls back to.
-      source: fromConfig ? "pos-config" : "pos-fallback",
+      // means "the registry's tills" (no Add-till records for the store).
+      source: hasConfig ? "pos-config" : "pos-fallback",
     };
   });
 }
 
-module.exports = { ORIGINAL_ORDER, POS_STORES, TILLS_FALLBACK, posStoresOf, registryTillsOf, readConfiguredTills, posStores };
+/** One store's offerable (active) tills: registry + its /pos/config records. */
+function activeTillsOf(registry, storeId, rawConfig) {
+  return mergeTills(registryTillsOf(registry || SEED_REGISTRY)[storeId] || [], rawConfig).filter((t) => t.active);
+}
+
+module.exports = { ORIGINAL_ORDER, POS_STORES, TILLS_FALLBACK, posStoresOf, registryTillsOf, readConfiguredTills, mergeTills, activeTillsOf, posStores };

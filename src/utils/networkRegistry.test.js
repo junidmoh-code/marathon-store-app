@@ -41,7 +41,7 @@ describe("the model", () => {
   });
 
   it("gives Concrete two tills and keeps the tills the POS has today", () => {
-    expect(tillsFor(SEED, "concrete").map((t) => t.tillId)).toEqual(["till-1", "till-2"]);
+    expect(tillsFor(SEED, "concrete").map((t) => t.tillId)).toEqual(["till-1", "till-2", "till-3"]);
     expect(tillsFor(SEED, "pe").map((t) => t.tillId)).toEqual(["till-1", "till-2", "till-3"]);
     expect(tillsFor(SEED, "trophy").map((t) => t.tillId)).toEqual(["till-1", "till-2"]);
     expect(tillsFor(SEED, "pine").map((t) => t.tillId)).toEqual(["till-1"]);
@@ -330,7 +330,7 @@ describe("a damaged node", () => {
     expect(tillsFor(normalizeNetwork(objTills), "concrete")).toHaveLength(2);
     // a store whose tills were all deleted keeps the seed's, never zero
     const noTills = { ...stored, locations: { ...stored.locations, concrete: { ...stored.locations.concrete, tills: undefined } } };
-    expect(tillsFor(normalizeNetwork(noTills), "concrete")).toHaveLength(2);
+    expect(tillsFor(normalizeNetwork(noTills), "concrete")).toHaveLength(3);
   });
 });
 
