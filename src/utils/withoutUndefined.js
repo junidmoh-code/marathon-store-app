@@ -15,5 +15,7 @@ export function withoutUndefined(value) {
 // A Firebase write-argument error (undefined value, bad key) is a code bug to
 // log quietly, never a banner a cashier or picker has to read (main.jsx).
 export function isFirebaseArgumentError(msg) {
-  return /(value|first|second) argument contains (undefined|NaN|an invalid key|a function)|argument contains undefined in property/i.test(String(msg ?? ""));
+  // Only the undefined-value case (the one withoutUndefined exists for). NaN,
+  // bad keys and functions are other bugs and keep their banner.
+  return /argument contains undefined in property/i.test(String(msg ?? ""));
 }
