@@ -273,7 +273,7 @@ export default function Transfer({ products, registry, actorRole }) {
     setDraftToRestore(null);
     if (id === from) return;
     setFrom(id); setBasket({}); setOpenId(null); setRefillId(null);
-    setTransferId(null); setLineResults({}); setLastAttempt(null);
+    setTransferId(null); setLineResults({}); setLastAttempt(null); setSendFailed(false);
     if (to === id) setTo("");
   };
 
@@ -356,6 +356,7 @@ export default function Transfer({ products, registry, actorRole }) {
     setTransferId(d.transferId || null);
     setLineResults(d.lineResults || {});
     setLastAttempt(null);
+    setSendFailed(false);
     setDraftToRestore(null);
   };
   const discardDraft = () => { clearDraft(); setDraftToRestore(null); };

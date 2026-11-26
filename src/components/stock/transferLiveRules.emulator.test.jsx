@@ -137,6 +137,11 @@ async function send(acc, from, to, { refillId = null } = {}) {
 const d = ON ? describe : describe.skip;
 const { applyProposedTransferRules } = await import("../../../scripts/emulator/proposedTransferRules.mjs");
 const LIVE = ON ? JSON.parse(fs.readFileSync(RULES, "utf8")) : null;
+// Once Junid has pasted the change, the LIVE rules already accept stock
+// managers: the refusal tests flip to "lands", and the patch (which refuses a
+// drifted console) is not re-applied.
+const PASTED = ON && JSON.stringify(LIVE).includes("child('stock_management').val() === true ||");
+const dProposed = ON && !PASTED ? describe : describe.skip;
 
 async function landed(from, to) {
   expect(await rest("GET", `stock/${from}/${PID}/S/qty`)).toBe(4);
@@ -181,8 +186,9 @@ d("LIVE console rules × real Transfer screen", () => {
 
   // THE 26 NOV FAILURE: the transit record is refused by
   // /transfers/$transferId/.write (stockRole must match warehouse|store|admin).
-  it.each(["noStockRole", "posStockManager"])("Central → Marathon PE as %s is REFUSED by the live rules — and says why", async (k) => {
+  it.each(["noStockRole", "posStockManager"])("Central → Marathon PE as %s is REFUSED by the live rules — and says why (until the paste)", async (k) => {
     const msg = await send(ACCOUNTS[k], "central", "marathon-pe");
+    if (PASTED) { expect(msg).toMatch(/Sent 1 line/); await landed("central", "marathon-pe"); return; }
     expect(msg).toMatch(/Couldn't create the transit record — nothing was sent\. Check connection and retry\. \(PERMISSION_DENIED/);
     expect(msg).toMatch(/stock role is (not set|"pos") — moving stock needs warehouse, store or admin/);
     await nothingMoved("central");
@@ -192,12 +198,13 @@ d("LIVE console rules × real Transfer screen", () => {
 
   it.each(["noStockRole", "posStockManager"])("a one-step send as %s is refused on the movement — not called 'network'", async (k) => {
     const msg = await send(ACCOUNTS[k], "hub1", "marathon-pe");
+    if (PASTED) { expect(msg).toMatch(/Transferred 1 line/); return; }
     expect(msg).toMatch(/Transfer incomplete — 0\/1 moved.*PERMISSION_DENIED/);
     expect(await rest("GET", `stock/hub1/${PID}/S/qty`)).toBe(5);
   });
 });
 
-d("LIVE rules + the proposed paste (scripts/emulator/proposedTransferRules.mjs)", () => {
+dProposed("LIVE rules + the proposed paste (scripts/emulator/proposedTransferRules.mjs)", () => {
   beforeAll(async () => { await rest("PUT", ".settings/rules", applyProposedTransferRules(LIVE).rules); });
   beforeEach(async () => { await rest("PUT", "", seed()); });
 
