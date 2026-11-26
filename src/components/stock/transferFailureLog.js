@@ -22,10 +22,14 @@ export const TRANSFER_FAILURES_PATH = "logs/transferFailures";
 const str = (v, n) => (v == null ? null : String(v).slice(0, n));
 
 export function transferFailureRecord({ error, reason, role, from, to, productId, lines, stage }) {
-  const code = error?.code ? String(error.code).replace(/^database\//, "") : (reason || null);
+  // A movement failure arrives as a string ("PERMISSION_DENIED: …"): take
+  // the code from its head so the log says why, not just "write_failed".
+  const text = typeof error === "string" ? error : (error?.message || "");
+  const fromText = /^([A-Z][A-Z_]{3,}):/.exec(text)?.[1] || (/permission[_ ]denied/i.test(text) ? "PERMISSION_DENIED" : null);
+  const code = error?.code ? String(error.code).replace(/^database\//, "") : (fromText || reason || null);
   return {
     code: str(code || "unknown", 60),
-    message: str(error?.message || error || reason || "", 300),
+    message: str(text || (error && typeof error === "object" ? JSON.stringify(error) : error) || reason || "", 300),
     uid: auth.currentUser?.uid || null,
     role: str(role, 30),
     from: str(from, 40),

@@ -239,4 +239,27 @@ d("LIVE rules + the proposed paste (scripts/emulator/proposedTransferRules.mjs)"
     expect(typeof list[0].atMs).toBe("number");
     expect(typeof list[0].build).toBe("string");
   });
+
+  it("a one-step refusal is logged at the movement stage with the real code", async () => {
+    await send(ACCOUNTS.posTill, "hub1", "marathon-pe");
+    let rows = null;
+    for (let i = 0; i < 20 && !rows; i++) { rows = await rest("GET", "logs/transferFailures"); if (!rows) await new Promise((r) => setTimeout(r, 50)); }
+    const list = Object.values(rows || {});
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ code: "PERMISSION_DENIED", stage: "movement", from: "hub1", to: "marathon-pe", role: "pos" });
+  });
+
+  // The paste widens TRANSFERS only: a stock manager with no stockRole still
+  // cannot book a receipt or an adjustment on the ledger.
+  it.each(["received", "adjustment", "opening"])("NARROW: a no-stockRole stock manager still cannot write a %s movement", async (type) => {
+    const { initializeApp } = await vi.importActual("firebase/app");
+    const dbm = await vi.importActual("firebase/database");
+    const a = ACCOUNTS.noStockRole;
+    const app = initializeApp({ projectId: NS, databaseURL: `${BASE}?ns=${NS}` }, `narrow-${type}-${Math.random()}`);
+    const db = dbm.getDatabase(app);
+    dbm.connectDatabaseEmulator(db, HOST, Number(PORT), { mockUserToken: { sub: a.uid, user_id: a.uid, email: a.email, email_verified: true, firebase: { sign_in_provider: "password" } } });
+    const mv = { type, productId: PID, size: "S", qty: 1, actor: a.uid, ts: "2026-11-26T09:00:00.000Z", to: "hub1", ...(type === "adjustment" ? { reason: "x" } : {}) };
+    await expect(dbm.set(dbm.ref(db, `stock_movements/narrow_${type}`), mv)).rejects.toThrow(/permission/i);
+  });
 });
+

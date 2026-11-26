@@ -29,6 +29,11 @@ const SIGNED = "auth != null && auth.token.firebase.sign_in_provider != 'anonymo
 const ROLE_TRANSFER = "root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)";
 const SUPERS = "((auth.token.email === 'gunidmoh@gmail.com' || auth.token.email === 'jafermohammed340@gmail.com') && auth.token.email_verified === true)";
 
+// The live strings these blocks replace, exactly (26 Nov 2026). The patch
+// refuses to run if the console has drifted, so a paste can never silently
+// drop a condition someone added since.
+const LIVE_STOCK_WRITE = `${SIGNED} && root.child('users').child(auth.uid).child('stockRole').exists()`;
+const LIVE_PROV_WRITE = `${LIVE_STOCK_WRITE} && newData.exists()`;
 const STOCK_WRITE = `${SIGNED} && (${SM} || root.child('users').child(auth.uid).child('stockRole').exists())`;
 
 export const TRANSFER_FAILURES_RULE = {
@@ -82,11 +87,13 @@ export function applyProposedTransferRules(liveRulesDoc) {
 
   // 3. The stock cells a transfer moves (stockRole exists → or stock_management).
   const cell = R.stock.$loc.$pid.$size;
+  if (cell[".write"] !== LIVE_STOCK_WRITE) throw new Error("live /stock cell .write changed — re-derive the patch");
   set("stock/$loc/$pid/$size/.write", cell, ".write", STOCK_WRITE);
 
   // 4. Stock provenance counters written beside a move.
   for (const k of ["s", "k", "u"]) {
     const node = R.stock_provenance.$loc.$pid[k];
+    if (node[".write"] !== LIVE_PROV_WRITE) throw new Error(`live stock_provenance ${k} .write changed — re-derive the patch`);
     set(`stock_provenance/$loc/$pid/${k}/.write`, node, ".write", `${STOCK_WRITE} && newData.exists()`);
   }
 
@@ -103,6 +110,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const live = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
   const { changes } = applyProposedTransferRules(live);
   for (const c of changes) {
-    console.log(`\n### ${c.path}\n${JSON.stringify(c.after, null, 2)}`);
+    console.log(`\n### ${c.path}\n--- live now:\n${c.before === undefined ? "(absent — new block)" : JSON.stringify(c.before, null, 2)}\n--- paste:\n${JSON.stringify(c.after, null, 2)}`);
   }
 }
