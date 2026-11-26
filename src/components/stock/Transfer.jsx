@@ -40,7 +40,8 @@ import FilterPicker from "./FilterPicker";
 import { serverNowIso } from "../../utils/serverTime";
 import { setUpdateBusy } from "../../update/updateChecker";
 import { stampAt } from "../../device/deviceStamp";
-import { transitDocCreatePatch, errorReason } from "./transitDoc";
+import { transitDocCreatePatch, errorReason, deniedHint } from "./transitDoc";
+import { logTransferFailure } from "./transferFailureLog";
 
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found", not a
 // mis-pathed read. (Mirrors the POS barcodeLookup reader.)
@@ -103,15 +104,20 @@ export default function Transfer({ products, registry, actorRole }) {
   const [picking, setPicking] = useState(false);         // destination sheet open
   const [sizePrompt, setSizePrompt] = useState(null);    // { product } awaiting a size after a scan
   const [busy, setBusy] = useState(false);
+  // The last send was refused (transit record or any line). A cart stuck on
+  // a failure is NOT a job in hand for the updater: it is saved as a draft
+  // and offered back after a reload — and the new build may be the fix.
+  // Holding the reload there kept a phone on a broken build (26 Nov 2026).
+  const [sendFailed, setSendFailed] = useState(false);
   // A basket with lines in it is a job in hand: the auto-updater must not
   // reload over it and a device quarantine must not cover it
   // (src/device/quarantine.js).
   useEffect(() => {
     // `busy` too: a Clear tapped while the writes are still going must not
     // let anything reload or cover the screen before they land.
-    setUpdateBusy("transfer-basket", Object.keys(basket).length > 0 || !!busy);
+    setUpdateBusy("transfer-basket", (Object.keys(basket).length > 0 && !sendFailed) || !!busy);
     return () => setUpdateBusy("transfer-basket", false);
-  }, [basket, busy]);
+  }, [basket, busy, sendFailed]);
   const [toast, setToast] = useState(null);
   // Stable transfer id for the CURRENT cart. Minted at the first Confirm and kept
   // across retries so every line's movement id is deterministic (idempotent retry).
@@ -184,7 +190,8 @@ export default function Transfer({ products, registry, actorRole }) {
     [lines, lineResults],
   );
   const stockFails = failedLines.filter((l) => lineResults[keyOf(l.productId, l.size)]?.kind === "stock").length;
-  const networkFails = failedLines.length - stockFails;
+  const deniedFails = failedLines.filter((l) => lineResults[keyOf(l.productId, l.size)]?.kind === "denied").length;
+  const networkFails = failedLines.length - stockFails - deniedFails;
 
   // Cart grouped ONE card per product, sizes broken out underneath (M×2, L×1 …) —
   // mirrors the Clothing-Sold grouped card. The underlying per-size basket lines are
@@ -255,7 +262,7 @@ export default function Transfer({ products, registry, actorRole }) {
   // Full reset of the transfer session (cart + idempotency context + persisted draft).
   const clearBasket = () => {
     setBasket({}); setRefillId(null);
-    setTransferId(null); setLineResults({}); setLastAttempt(null);
+    setTransferId(null); setLineResults({}); setLastAttempt(null); setSendFailed(false);
     clearDraft();
   };
 
@@ -266,7 +273,7 @@ export default function Transfer({ products, registry, actorRole }) {
     setDraftToRestore(null);
     if (id === from) return;
     setFrom(id); setBasket({}); setOpenId(null); setRefillId(null);
-    setTransferId(null); setLineResults({}); setLastAttempt(null);
+    setTransferId(null); setLineResults({}); setLastAttempt(null); setSendFailed(false);
     if (to === id) setTo("");
   };
 
@@ -349,6 +356,7 @@ export default function Transfer({ products, registry, actorRole }) {
     setTransferId(d.transferId || null);
     setLineResults(d.lineResults || {});
     setLastAttempt(null);
+    setSendFailed(false);
     setDraftToRestore(null);
   };
   const discardDraft = () => { clearDraft(); setDraftToRestore(null); };
@@ -368,6 +376,7 @@ export default function Transfer({ products, registry, actorRole }) {
     if (from === to) return flash("err", "Source and destination must differ.");
     if (!lines.length) return flash("err", "Add at least one quantity.");
     setBusy(true);
+    setSendFailed(false);
 
     // Reuse the cart's transferId across retries so movement ids stay deterministic.
     let tId = transferId;
@@ -418,9 +427,11 @@ export default function Transfer({ products, registry, actorRole }) {
         }
       } catch (e) {
         setBusy(false);
+        setSendFailed(true);
+        logTransferFailure({ error: e, role: actorRole, from, to, productId: lines[0]?.productId, lines: lines.length, stage: "transit-record" });
         // The real reason is always shown: a bare "check connection" hid a
         // client-side SDK refusal for two days (26 Nov 2026).
-        return flash("err", `Couldn't create the transit record — nothing was sent. Check connection and retry. (${errorReason(e)})`, 8000);
+        return flash("err", `Couldn't create the transit record — nothing was sent. Check connection and retry. (${errorReason(e)}${deniedHint(e, actorRole)})`, 8000);
       }
     }
 
@@ -459,10 +470,14 @@ export default function Transfer({ products, registry, actorRole }) {
         results[k] = { status: "sent" };
         sent++;
       } else {
+        // A refusal by the rules is not "network": say so, and say why.
+        const denied = /permission[_ ]denied/i.test(String(res.error || ""));
         const kind = res.reason === "insufficient_stock" ? "stock"
+          : denied ? "denied"
           : res.reason === "write_failed" ? "network" : "other";
-        results[k] = { status: "failed", reason: res.reason, kind };
+        results[k] = { status: "failed", reason: res.reason, kind, ...(res.error ? { error: String(res.error).slice(0, 160) } : {}) };
         failed.push({ key: k });
+        logTransferFailure({ error: res.error || null, reason: res.reason, role: actorRole, from, to, productId: ln.productId, lines: 1, stage: "movement" });
       }
       setLineResults({ ...results });
       saveDraft({ from, to, refillId, transferId: tId, basket: snapshot, lineResults: results });
@@ -516,7 +531,10 @@ export default function Transfer({ products, registry, actorRole }) {
       for (const [key, ln] of Object.entries(snapshot)) if (results[key]?.status !== "sent") remaining[key] = ln;
       setBasket(remaining);
       saveDraft({ from, to, refillId, transferId: tId, basket: remaining, lineResults: results });
-      flash("err", `Transfer incomplete — ${sent}/${lines.length} moved, ${failed.length} saved to retry`);
+      setSendFailed(true);
+      const first = results[failed[0]?.key] || {};
+      const why = first.error || first.reason || "";
+      flash("err", `Transfer incomplete — ${sent}/${lines.length} moved, ${failed.length} saved to retry${why ? ` (${why}${first.kind === "denied" ? deniedHint(new Error(why), actorRole) : ""})` : ""}`, 8000);
     }
   };
 
@@ -572,6 +590,7 @@ export default function Transfer({ products, registry, actorRole }) {
           <div style={{ fontSize: 12, color: GRAY, marginBottom: 8 }}>
             {failedLines.length} line{failedLines.length === 1 ? "" : "s"} saved — already-moved lines are done and won’t re-send.
           </div>
+          {deniedFails > 0 && <div style={{ fontSize: 12, color: "#FFB4B4", marginBottom: 4 }}>{deniedFails} refused by the database (permission){deniedHint({ code: "PERMISSION_DENIED" }, actorRole)} — retrying won’t help until that is fixed.</div>}
           {networkFails > 0 && <div style={{ fontSize: 12, color: "#FFB4B4", marginBottom: 4 }}>{networkFails} didn’t send (network) — tap Retry.</div>}
           {stockFails > 0 && <div style={{ fontSize: 12, color: AMBER, marginBottom: 4 }}>{stockFails} exceed stock at {labelFor(from, registry)} — lower the qty, then retry.</div>}
           <button onClick={doTransfer} disabled={busy || !to} style={{ ...bGreen, marginTop: 6, padding: "8px 14px", opacity: to ? 1 : 0.5 }}>
@@ -609,7 +628,7 @@ export default function Transfer({ products, registry, actorRole }) {
                         <div style={{ minWidth: 62 }}><SizeChip size={s.size} /></div>
                         <div style={{ flex: 1, fontSize: 10.5, color: failedLine ? (lr.kind === "stock" ? AMBER : "#FF8B8B") : (s.over ? AMBER : GRAY) }}>
                           {failedLine
-                            ? (lr.kind === "stock" ? "not enough stock — lower qty" : lr.kind === "network" ? "didn’t send — retry" : "failed — retry")
+                            ? (lr.kind === "stock" ? "not enough stock — lower qty" : lr.kind === "denied" ? "refused (permission)" : lr.kind === "network" ? "didn’t send — retry" : "failed — retry")
                             : <>{s.here} at source{s.over ? " · over!" : ""}</>}
                         </div>
                         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>

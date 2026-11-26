@@ -39,3 +39,13 @@ export function errorReason(e) {
   const text = code && !msg.toUpperCase().includes(code.toUpperCase()) ? `${code}: ${msg}` : (msg || code);
   return text.length > 160 ? `${text.slice(0, 157)}…` : text;
 }
+
+// When the database refused the write, name the account's stock role — the
+// live rules let only warehouse|store|admin move stock, and an account opened
+// into Stock by the stock_management permission alone is refused (26 Nov 2026).
+export function deniedHint(e, role) {
+  const text = `${e?.code || ""} ${e?.message || ""}`;
+  if (!/permission[_ ]denied/i.test(text)) return "";
+  if (role === "warehouse" || role === "store" || role === "admin") return "";
+  return ` · this account's stock role is ${role ? `"${role}"` : "not set"} — moving stock needs warehouse, store or admin`;
+}

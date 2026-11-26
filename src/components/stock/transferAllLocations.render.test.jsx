@@ -86,7 +86,8 @@ vi.mock("./transferDraft", async () => {
   const real = await vi.importActual("./transferDraft");
   return { ...real, loadDraft: () => draft, saveDraft: () => {}, clearDraft: () => {} };
 });
-vi.mock("../../update/updateChecker", () => ({ setUpdateBusy: () => {} }));
+const busyCalls = [];
+vi.mock("../../update/updateChecker", () => ({ setUpdateBusy: (k, v) => busyCalls.push([k, v]), CURRENT_VERSION: "test-build" }));
 vi.mock("./barcodeListener", () => ({ installBarcodeListener: () => () => {}, subscribeBarcode: () => () => {} }));
 
 const { default: Transfer } = await import("./Transfer.jsx");
@@ -200,5 +201,29 @@ describe("a retried transit send (the doc already exists)", () => {
     expect(fresh[0][0]).not.toBe("transfers/-TIDSTALE");
     expect(fresh[0][1].to).toBe("trophy");
     assertLiveTransferRule(fresh[0][1]);
+  });
+});
+
+describe("a cart stuck on a failure does not pin the phone to its build", () => {
+  it("the basket stops holding the auto-updater once a send is refused", async () => {
+    busyCalls.length = 0;
+    rejectTransfersWith = Object.assign(new Error("PERMISSION_DENIED: Permission denied"), { code: "PERMISSION_DENIED" });
+    draft = {
+      from: "central", to: "hub1", refillId: null, transferId: null, lineResults: {},
+      basket: { [`${PID}__S`]: { productId: PID, productName: PRODUCTS[0].name, size: "S", qty: 1 } },
+    };
+    let r;
+    await act(async () => { r = TestRenderer.create(<Transfer products={PRODUCTS} registry={LIVE_LOCATIONS} actorRole="pos" />); });
+    await act(async () => { button(r.root, /^Restore cart$/).props.onClick(); });
+    const held = busyCalls.filter(([k]) => k === "transfer-basket").at(-1);
+    expect(held).toEqual(["transfer-basket", true]);            // a live cart holds the reload
+    await act(async () => { button(r.root, /^Destination/).props.onClick(); });
+    await act(async () => { button(r.root, /^Confirm →/).props.onClick(); });
+    await flush();
+    const after = busyCalls.filter(([k]) => k === "transfer-basket").at(-1);
+    expect(after).toEqual(["transfer-basket", false]);          // refused → the new build may load
+    const toast = r.root.findAll((n) => typeof n.type === "string" && n.children?.some((c) => typeof c === "string" && /Couldn't/.test(c))).map(textOf).join("");
+    expect(toast).toMatch(/stock role is "pos" — moving stock needs warehouse, store or admin/);
+    act(() => r.unmount());
   });
 });
