@@ -112,6 +112,10 @@ const read = async (db, path) => (await db.ref(path).once("value")).val();
  */
 async function holdRejection(db, rej, { nowMs = Date.now(), markDirty = null } = {}) {
   if (!rej || !keyOk(rej.loc) || !keyOk(rej.pid) || !keyOk(rej.sizeKey) || !STORE_HOLD_KINDS.includes(rej.kind) || tMs(rej.at) == null) return { held: false, why: "bad_request" };
+  // These holds wait for a shelf check. With the routine off
+  // (/config/onlineOrders/shelfChecks/off, Junid 26 Nov 2026) nothing would
+  // ever check them, so none is written.
+  if ((await read(db, "config/onlineOrders/shelfChecks/off")) === true) return { held: false, why: "shelf_checks_off" };
   const cell = await read(db, `stock/${rej.loc}/${rej.pid}/${rej.sizeKey}`);
   const otw = (await readOnTheWay(db, { loc: rej.loc, pid: rej.pid, sizeKey: rej.sizeKey, cell, nowMs })).qty;
   const path = `${CELL_HOLDS_PATH}/${rej.pid}/${rej.sizeKey}/${rej.loc}`;
