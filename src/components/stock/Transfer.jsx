@@ -40,6 +40,7 @@ import FilterPicker from "./FilterPicker";
 import { serverNowIso } from "../../utils/serverTime";
 import { setUpdateBusy } from "../../update/updateChecker";
 import { stampAt } from "../../device/deviceStamp";
+import { transitDocCreatePatch, errorReason } from "./transitDoc";
 
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found", not a
 // mis-pathed read. (Mirrors the POS barcodeLookup reader.)
@@ -132,7 +133,7 @@ export default function Transfer({ products, registry, actorRole }) {
   // back to the instant one-step move. Receiving open transfers is unaffected.
   const transitOn = useTransitConfig()?.enabled !== false;
 
-  const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 3000); };
+  const flash = (kind, text, ms = 3000) => { setToast({ kind, text }); setTimeout(() => setToast(null), ms); };
   const productsById = useMemo(() => {
     const m = {}; (products || []).forEach((p) => { if (p && p.id) m[p.id] = p; }); return m;
   }, [products]);
@@ -393,19 +394,13 @@ export default function Transfer({ products, registry, actorRole }) {
           docSnap = null;
         }
         if (!docSnap || !docSnap.exists()) {
-          const linesObj = {};
-          for (const ln of lines) {
-            if (!linesObj[ln.productId]) linesObj[ln.productId] = {};
-            linesObj[ln.productId][stockSizeKey(ln.size)] = ln.qty;
-          }
-          await update(ref(database), {
-            [`transfers/${tId}`]: {
-              status: "dispatched", from, to, reason: "manual",
-              createdAt: serverNowIso(), createdBy: auth.currentUser?.uid || null,
-              lines: linesObj,
-            },
-            ...stampAt(`transfers/${tId}`, "dispatch"),
-          });
+          // The stamp rides INSIDE the doc (transitDoc.js): a separate
+          // transfers/{tId}/stamps/… path beside the whole doc is refused by
+          // the SDK — the 24–26 Nov 2026 outage.
+          await update(ref(database), transitDocCreatePatch({
+            tId, from, to, lines,
+            createdAt: serverNowIso(), createdBy: auth.currentUser?.uid || null,
+          }));
         } else {
           // Retry with an existing doc: merge THIS attempt's lines in (per-path
           // update, never a node set — already-sent lines from earlier attempts
@@ -414,9 +409,11 @@ export default function Transfer({ products, registry, actorRole }) {
           for (const ln of lines) mergeLines[`transfers/${tId}/lines/${ln.productId}/${stockSizeKey(ln.size)}`] = ln.qty;
           await update(ref(database), { ...mergeLines, ...stampAt(`transfers/${tId}`, "dispatch-retry") });
         }
-      } catch {
+      } catch (e) {
         setBusy(false);
-        return flash("err", "Couldn't create the transit record — nothing was sent. Check connection and retry.");
+        // The real reason is always shown: a bare "check connection" hid a
+        // client-side SDK refusal for two days (26 Nov 2026).
+        return flash("err", `Couldn't create the transit record — nothing was sent. Check connection and retry. (${errorReason(e)})`, 8000);
       }
     }
 
