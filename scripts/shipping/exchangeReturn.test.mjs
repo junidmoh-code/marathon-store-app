@@ -537,5 +537,19 @@ describe("a return-only record (store credit / refund, nothing ships)", () => {
     const again = await run(db);
     expect(again).toMatchObject({ ok: true, already: true });
     expect(Object.keys(at(db, "stock_movements"))).toEqual([MV]);
+    // The poller then closes it (back and good): a re-run still answers "already back", never "closed".
+    await db.ref(`online_orders/${KEY}/status`).set("closed");
+    expect(await run(db)).toMatchObject({ ok: true, already: true });
+  });
+
+  it("the till confirmed it by hand and the poller closed it: Junid's \"good\" still puts the unit back, once", async () => {
+    const db = world({ rec: roRecord({ status: "closed", incoming: { arrival: { state: "done", byHand: { by: "Yusuf" }, at: NOW - 1000 }, check: { result: "good" } } }), peQty: 0, extra: { online_reservations: null } });
+    const out = await run(db);
+    expect(out).toMatchObject({ ok: true, done: true, byHand: true, items: [{ to: RETURN_TO, before: 0, after: 1 }] });
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
+  });
+
+  it("a cancelled return-only record is still finished", () => {
+    expect(notReadyWhy(roRecord({ status: "cancelled" }))).toMatch(/cancelled/);
   });
 });

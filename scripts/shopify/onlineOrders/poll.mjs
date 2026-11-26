@@ -58,7 +58,7 @@ import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder, fetchShipp
 import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey, doorRetryDue, doorHandBackDue, claimDoorRetry, handBackBooked, isOwnCourier } from "./shipping.mjs";
 import { sweepUnknownBookings, RELEASED_PATH as UNKNOWN_RELEASED_PATH } from "../../shipping/unknownBooking.mjs";
 // The held-courier text (scripts/shipping/exchangeReturn.mjs releases an order carrying exactly this when Junid says good).
-export const RETURN_ONLY_COURIER_TEXT = "this is a return-only record (store credit / refund instead of a replacement): nothing ships for it";
+export const RETURN_ONLY_COURIER_TEXT = "this is a return-only record, or carries a returning line (store credit / refund instead of a replacement): nothing ships for it";
 export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
 import { mintHubCode } from "./orderRefs.mjs";
 import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
@@ -1334,7 +1334,7 @@ async function shipOrder(ctx, id, order) {
   // A RETURN-ONLY collection (store credit / refund instead of a replacement) NEVER ships: nothing goes out. A record
   // that got packed anyway is an anomaly a person must see (the Pack sold the returning item): no courier, no Shopify,
   // the order flagged "Packed, courier not booked" with the reason. The POS Retry re-checks it and is refused again.
-  if (isReturnOnlyOrder(order)) {
+  if (isReturnOnlyOrder(order) || linesOf(order).some(isReturnOnlyLine)) {
     const why = RETURN_ONLY_COURIER_TEXT;
     await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
       fulfilState: "courier_failed",
@@ -1344,6 +1344,7 @@ async function shipOrder(ctx, id, order) {
       attentionOpen: true,
       updatedAt: now,
     });
+    ctx.summary.courierFailed = (ctx.summary.courierFailed || 0) + 1;
     log(`  ✗ ${orderLabel(order)}: return-only record — nothing ships, courier not booked`);
     return;
   }

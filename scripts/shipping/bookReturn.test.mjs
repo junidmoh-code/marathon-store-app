@@ -159,6 +159,12 @@ describe("bookReturn", () => {
     expect((await bookReturn(KEY, deps(d, client))).skipped).toBe(true);
     expect(client.creates()).toHaveLength(1);
   });
+  it("a return-only record still unpaid (awaitingPayment, paidAt null, as the desk first writes it) books nothing", async () => {
+    const exchange = EXCHANGE({ status: "new", exchange: { paidAt: null, awaitingPayment: true, returnOnly: true }, lines: [{ pid: "p1", title: "Diesel", size: "7", qty: 1, returnOnly: true }] });
+    const client = fakeClient();
+    expect(await bookReturn(KEY, deps(db({ exchange }), client))).toMatchObject({ skipped: true, reason: expect.stringMatching(/no paid exchange/) });
+    expect(client.calls).toEqual([]);
+  });
   for (const live of [false, "true", 1, null]) {
     it(`live=${JSON.stringify(live)} is a dry run: no create`, async () => {
       const client = fakeClient();

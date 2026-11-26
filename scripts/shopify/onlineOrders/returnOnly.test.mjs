@@ -99,6 +99,24 @@ describe("the shared rule (src/utils/onlineOrders.js)", () => {
     expect(returnOnlyReceivedGood(returnRecord())).toBe(false);
   });
 
+  it("Junid's own \"good condition\" (exchangeReturn.mjs: arrival via jimmy, units returned, no check) closes it too", () => {
+    const jimmy = { state: "done", via: "jimmy", stockReturned: [{ movementId: "exret_x" }] };
+    expect(deriveOrderStatus(returnRecord({ incoming: { arrival: jimmy } }))).toBe("closed");
+    expect(deriveOrderStatus(returnRecord({ incoming: { arrival: jimmy, check: { result: "not_original" } } }))).toBe("new");
+    expect(deriveOrderStatus(returnRecord({ incoming: { arrival: jimmy, conditionHold: { at: 1 } } }))).toBe("new");
+    expect(deriveOrderStatus(returnRecord({ incoming: { arrival: { state: "done", via: "jimmy" } } }))).toBe("new");
+  });
+
+  it("a by-hand arrival whose stock step is still open does not close it, even checked good", () => {
+    const byHand = { state: "done", byHand: { by: "Yusuf" } };
+    expect(deriveOrderStatus(returnRecord({ incoming: { arrival: byHand, check: { result: "good" } } }))).toBe("new");
+    expect(deriveOrderStatus(returnRecord({ incoming: { arrival: { ...byHand, via: "jimmy", stockReturned: [{ movementId: "m" }] }, check: { result: "good" } } }))).toBe("closed");
+  });
+
+  it("unpaid (awaitingPayment, paidAt null, as first written) is simply new", () => {
+    expect(deriveOrderStatus(returnRecord({}, { awaitingPayment: true, paidAt: null }), { enabled: true })).toBe("new");
+  });
+
   it("a returning line on a mixed record is not waited for", () => {
     const mixed = { status: "new", lines: [returnLine(), { pid: "TEE", size: "M", sizeKey: "M", qty: 1, source: { locationId: "hub2", status: "handed" } }], exchange: { kind: "exchange" } };
     expect(isReturnOnlyOrder(mixed)).toBe(false);
@@ -157,6 +175,23 @@ describe("the poller's keep pass", () => {
     expect(outbound(f)).toEqual([]);
   });
 
+  it("a cancelled or closed return-only record is left exactly as it is", async () => {
+    for (const status of ["cancelled", "closed"]) {
+      const f = fakeDb(world(returnRecord({ status })));
+      const before = JSON.stringify(rec(f));
+      await runOrdersPoll(deps(f));
+      expect(JSON.stringify(rec(f))).toBe(before);
+      expect(outbound(f)).toEqual([]);
+    }
+  });
+
+  it("Jamie's desk cancelling it between ticks wins: the poller never writes over a cancel", async () => {
+    const f = fakeDb(world());
+    await f.db.ref(`online_orders/${EX}`).update({ status: "cancelled", cancelReason: "exchange page: expired" });
+    await runOrdersPoll(deps(f));
+    expect(rec(f).status).toBe("cancelled");
+  });
+
   it("an ordinary exchange record beside it is still routed and held (the rule is per record)", async () => {
     const other = "exchange-2302-1764150000001";
     const f = fakeDb(world(returnRecord(), {}));
@@ -175,6 +210,17 @@ describe("never an outbound shipment", () => {
     expect(courier.calls).toEqual([]);
     expect(rec(f)).toMatchObject({ fulfilState: "courier_failed", courierError: RETURN_ONLY_COURIER_TEXT, attentionOpen: true, attention: { kind: "courier_failed" } });
     expect(rec(f).shipping.courierBooking).toBeUndefined();
+  });
+
+  it("a mixed record carrying a returning line is refused too, never shipped half-right", async () => {
+    const courier = fakeCourier();
+    const mixed = returnRecord({ status: "packed", fulfilState: "pending", lines: [returnLine(), { pid: "SNK", size: "8", sizeKey: "8", qty: 1, title: "Air Runner", source: { locationId: "hub2", status: "handed" } }] }, { returnOnly: undefined });
+    const f = fakeDb(world(mixed));
+    await runOrdersPoll(deps(f, { courier }));
+    expect(courier.calls).toEqual([]);
+    expect(rec(f).fulfilState).toBe("courier_failed");
+    const res = await bookShipment({ ...mixed, key: EX }, { db: f.db, client: courier, log: () => {}, now: () => NOW });
+    expect(res).toMatchObject({ skipped: true, returnOnly: true });
   });
 
   it("fast-ship never takes it up", async () => {

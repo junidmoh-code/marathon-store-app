@@ -170,19 +170,31 @@ export function isReturnOnlyOrder(order) {
   return lines.length > 0 && lines.every(isReturnOnlyLine);
 }
 /**
- * A return-only record is finished once its item is back AND the hub's check
- * says original condition: the arrival is done (incoming/arrival state "done",
- * or the till's older returnSaleId), incoming/check.result is "good" and no
- * condition hold stands. A disputed or unchecked return stays open. PURE.
+ * A return-only record is finished once its item is back in stock AND said to
+ * be in original condition, with no condition hold standing:
+ *   back      incoming/arrival state "done" (or the till's older returnSaleId),
+ *             but NOT a by-hand arrival whose stock step is still open (byHand
+ *             set, nothing returned yet: exchangeReturn.mjs must still run it);
+ *   good      incoming/check.result "good" (the hub's check), or, with no
+ *             check at all, Junid's own "good condition" through
+ *             exchangeReturn.mjs (arrival via "jimmy" with units returned).
+ * A disputed, unchecked or held return stays open. The check is taken as
+ * final: a closed record is not reopened by a later hold. PURE.
  */
 export function returnOnlyReceivedGood(order) {
   const inc = order?.incoming;
   if (!inc || typeof inc !== "object") return false;
   const a = inc.arrival;
-  const arrived = !!a && typeof a === "object" && (a.state != null ? a.state === "done" : typeof a.returnSaleId === "string" && a.returnSaleId !== "");
+  if (!a || typeof a !== "object") return false;
+  const returned = Array.isArray(a.stockReturned) ? a.stockReturned.length > 0 : !!a.stockReturned && Object.keys(a.stockReturned).length > 0;
+  const saleId = typeof a.returnSaleId === "string" && a.returnSaleId !== "";
+  const arrived = a.state != null ? a.state === "done" : saleId;
   if (!arrived) return false;
+  if (a.byHand != null && !returned && !saleId && a.via !== "jimmy") return false;
   if (inc.conditionHold && typeof inc.conditionHold === "object") return false;
-  return inc.check?.result === "good";
+  const check = inc.check?.result;
+  if (check != null) return check === "good";
+  return a.via === "jimmy" && returned;
 }
 
 /**

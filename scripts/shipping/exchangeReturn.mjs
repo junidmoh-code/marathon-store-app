@@ -262,7 +262,9 @@ export function notReadyWhy(record, { orderNumber = null } = {}) {
   if (n && digits(record.orderNumber) !== n) return `the exchange record is for #${record.orderNumber}, not #${n}`;
   if (!record.exchange || typeof record.exchange !== "object") return "the record is not an exchange";
   if (!(Number(record.exchange.paidAt) > 0)) return "the exchange is not paid yet";
-  if (FINISHED.has(str(record.status))) return `the exchange record is ${record.status}`;
+  // A return-only record closes itself once its item is back and checked good: a re-run must still answer "already
+  // back" (and a by-hand arrival's stock step is never left behind by the close), so closed is not "finished" for it.
+  if (FINISHED.has(str(record.status)) && !(isReturnOnlyOrder(record) && str(record.status) === "closed")) return `the exchange record is ${record.status}`;
   if (isReturnOnlyOrder(record)) {
     // Store credit / refund instead of a replacement: nothing is reserved; the line names the item coming back.
     if (!list(record.lines).some((l) => l.pid)) return "the return-only record does not name the item coming back";
