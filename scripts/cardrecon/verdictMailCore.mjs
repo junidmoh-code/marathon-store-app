@@ -40,28 +40,32 @@ export function verdictSenderOk(user) {
 export const EFT_VERDICT_SUBJECT_PREFIX = "[EFT confirmer]";
 
 // ── DIALLING IT BACK ─────────────────────────────────────────────────────────
-// EFT_VERDICT_EMAILS in the mini's .env: "all" (the default — every verdict)
-// or "rejected" (REJECTED only; APPROVED emails stop). A value this does not
-// understand falls back to ALL with a warning: a typo should cost Junid extra
-// emails, never a rejection he did not hear about — and it must never stop
-// the poller, which would stop the payments.
+// EFT_VERDICT_EMAILS in the mini's .env: "off" (THE DEFAULT since Junid's quiet
+// rule, 26 Nov 2026 — a verdict is a business event, not an outage, so none is
+// emailed to him), "rejected" (REJECTED only) or "all" (every verdict). A value
+// this does not understand falls back to OFF with a warning — and it must never
+// stop the poller, which would stop the payments. The guide reply to the person
+// who sent a slip is NOT governed by this (it is the customer's, not Junid's).
 export const EFT_VERDICT_MODE_ENV_VAR = "EFT_VERDICT_EMAILS";
-export const VERDICT_MODES = ["all", "rejected"];
+export const VERDICT_MODES = ["off", "all", "rejected"];
 
-/** @returns {{mode:"all"|"rejected", warning:string|null}} */
+/** @returns {{mode:"off"|"all"|"rejected", warning:string|null}} */
 export function parseVerdictMode(raw) {
   const v = String(raw ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
-  if (!v || v === "all") return { mode: "all", warning: null };
+  if (!v || v === "off" || v === "none" || v === "0") return { mode: "off", warning: null };
+  if (v === "all") return { mode: "all", warning: null };
   if (v === "rejected" || v === "rejectedonly") return { mode: "rejected", warning: null };
   return {
-    mode: "all",
-    warning: `${EFT_VERDICT_MODE_ENV_VAR} reads "${oneLine(raw, 40)}", which is not "all" or "rejected" — sending every verdict.`,
+    mode: "off",
+    warning: `${EFT_VERDICT_MODE_ENV_VAR} reads "${oneLine(raw, 40)}", which is not "off", "all" or "rejected" — sending no verdict emails (Junid's quiet rule).`,
   };
 }
 
 /** Whether this verdict is emailed under this mode. */
 export function shouldSendVerdict(verdict, mode) {
-  return mode === "rejected" ? verdict === "REJECTED" : true;
+  if (mode === "all") return true;
+  if (mode === "rejected") return verdict === "REJECTED";
+  return false;
 }
 
 // The checks, in the order the confirmer runs them, named the way Junid reads

@@ -18,6 +18,9 @@ import { judgeOrder, linesOf, lineIsHere, PLACE } from "./judge.mjs";
 import { dayKey, hhmm, sast, SUMMARY_HOUR } from "./hours.mjs";
 import { CELL_HOLDS_PATH, cellHeld, readPickableRules } from "../../shopify/pickableStock.mjs";
 
+/** Junid's quiet rule (26 Nov 2026): the day's summary is not sent to Jamie. */
+export const DAILY_SUMMARY_TO_JAMIE = false;
+
 export const AGENT_ROOT = "online_order_agent";
 export const MAX_NUDGES_PER_RUN = 5;
 export const MAX_ESCALATIONS_PER_RUN = 3;
@@ -272,7 +275,10 @@ export async function runOrderAgent(deps) {
     if (!sent) {
       const text = summaryText({ day, dayOrders, orders, outcomes: result.outcomes, counts: chase?.todayCounts ? chase.todayCounts(day) : null, logToday: await get(db, `${AGENT_ROOT}/counts/${day}`) });
       result.summary = text;
-      if (commit && chase?.available !== false) {
+      // JUNID'S QUIET RULE (26 Nov 2026): the daily summary is a pure report and
+      // no longer goes to Jamie's chase queue (Junid's app/WhatsApp). The text is
+      // still built and logged; flip DAILY_SUMMARY_TO_JAMIE to send it again.
+      if (commit && DAILY_SUMMARY_TO_JAMIE && chase?.available !== false) {
         const id = `daily_summary:-:-:${day}`;
         const ok = chase.insert({ id, at: now, kind: "daily_summary", order_key: "-", order_number: null, line_index: null, reason: text, evidence: JSON.stringify({ day }) });
         if (ok || chase.exists?.(id)) await db.ref(`${AGENT_ROOT}/days/${day}/summarySentAt`).set(now);

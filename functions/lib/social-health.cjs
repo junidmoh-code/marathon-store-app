@@ -638,10 +638,22 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
     : (nothingPublished || publisherDead || generatorProducedNothing || owesMore ||
        generatorOff || generatorMissing || slotMissed || stillVerdict.silent) ? "silent" : "degraded";
 
+  // ── JUNID'S QUIET RULE (26 Nov 2026): ONLY "THE ENGINE IS DOWN" PAGES ────
+  // Junid may hear about a system that has STOPPED, never about one item that
+  // failed. `outage` is the narrow part of "silent": the publisher stopped
+  // ticking, nothing at all published when something was owed, or the
+  // generator did not run / made nothing (it is down even while yesterday's
+  // backlog drains). A missed slot, a short surface, the daily still alone or
+  // a generator switched off on purpose stay "silent" in the day's record but
+  // do not page. socialHealthScan and the mini's social-alarm-mail read this.
+  const outage = reasons.length > 0 &&
+    (publisherDead || nothingPublished || generatorProducedNothing || generatorMissing);
+
   return {
     saDate,
     ok: reasons.length === 0,
     severity,
+    outage,
     reasons,
     // Which still format was planned and posted today, and whether it fell
     // back: null when there is no daily still.

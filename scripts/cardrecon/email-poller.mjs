@@ -89,6 +89,7 @@ import {
 } from "./eftCore.mjs";
 import { EFT_READERS, noReaderReason, unreadSummary } from "./eftBanks.mjs";
 import { envelopeCandidateKeys, groupEftPayments, eftPaymentKey, applyEvictions } from "./eftCore.mjs";
+import { appendQuietHeld } from "../lib/quietHeld.mjs";
 
 // firebase-admin is BORROWED from functions/, the way every other script on the
 // mini borrows it (scripts/shopify, scripts/social). One copy, one version.
@@ -583,16 +584,14 @@ async function run() {
   // next tick, and the row is already in his report regardless.
   if (!cfg.dryRun) {
     try {
-      const transport = nodemailer.createTransport({
-        host: cfg.smtpHost, port: cfg.smtpPort, secure: cfg.smtpPort === 465,
-        auth: { user: cfg.user, pass: cfg.password },
-        // Short, because this runs BEFORE the mailbox: a dead SMTP host must
-        // cost seconds, not the tick. (Sonnet review, #707.)
-        connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000,
-      });
+      // JUNID'S QUIET RULE (26 Nov 2026): an unread slip is a failure of ONE
+      // item, not an outage — the notice is held for Fable's daily review
+      // (~/marathon-dm-agent/data/quiet-held.jsonl), not emailed. It asks for a
+      // manual entry, so it is held as needing a decision; the row is in his
+      // report regardless. The server still closes it as delivered.
       const round = await deliverNotices({
         call: async (data) => callCapture(await getToken(), data),
-        send: (mail) => transport.sendMail(mail),
+        send: async (mail) => appendQuietHeld({ channel: "email", source: "marathon-store-app:scripts/cardrecon/email-poller.mjs (card-unread notice)", subject: mail.subject, text: mail.text, needsDecision: true }),
         from: cfg.user,
       });
       if (round.refusal) console.warn(`⚠ card recon notices: ${round.refusal}`);
@@ -1226,7 +1225,7 @@ const MAX_EFT_PDFS = 8;
 // lost: the record is the truth and stands regardless.
 let verdictSend = null;
 let verdictFrom = null;
-let verdictMode = "all";
+let verdictMode = "off";
 const verdictQueue = [];
 
 function emailVerdict(record, poolKey) {

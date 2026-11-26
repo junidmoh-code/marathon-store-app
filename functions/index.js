@@ -3934,11 +3934,11 @@ exports.refusalWriteoffDigest = onSchedule(
   { schedule: "40 19 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 540 },
   async () => {
     const digest = require("./lib/writeoff-digest.cjs");
-    await digest.runDigestAndConfirm({
-      // Gmail SMTP via the mini FIRST (the route that reaches Junid, 1 Nov 2026),
-      // the Monitoring alert email second.
-      db: admin.database(), nowMs: Date.now(), channels: [digest.emailViaMiniOutbox(admin.database()), digest.emailViaAlertLog()], api: digest.monitoringApi(),
-    });
+    // JUNID'S QUIET RULE (26 Nov 2026): a daily report — archived for the
+    // Health card, emailed by NO route (not the mini's outbox, not the
+    // Monitoring alert, whose policy is disabled). The emailing run was
+    // runDigestAndConfirm with channels [emailViaMiniOutbox, emailViaAlertLog].
+    await digest.runDigestHeld({ db: admin.database(), nowMs: Date.now() });
   }
 );
 
@@ -4487,8 +4487,13 @@ exports.cardTillSilenceScan = onSchedule(
     }
     // THE ALARM FIRST, the state write second: a write that throws must not
     // swallow a silent till's email. (CodeRabbit, #799.)
+    // JUNID'S QUIET RULE (26 Nov 2026): a silent till is a business event,
+    // not an outage — logged WITHOUT the marker, so the "Card till silence
+    // alarm" policy never emails it (the line is kept on /card_till_silence
+    // below). What still emails: this check FAILING (failureLine above) and
+    // this check STOPPING (cardReconHealthScan's staleCheckLine).
     if (verdict.silent.length) {
-      console.error(tillSilence.alarmLine(verdict.silent));
+      console.log(`cardTillSilenceScan (quiet rule, not emailed): ${tillSilence.alarmLine(verdict.silent).replace(tillSilence.MARKER, "").trim()}`);
     } else {
       console.log(`cardTillSilenceScan: every till that took card money ${verdict.days.at(-1)} → ${verdict.days[0]} has a batch.`);
     }
@@ -4535,7 +4540,15 @@ exports.shopifyInventoryHealthScan = onSchedule(
     await db.ref("shopify_inventory_health/watchdog").set({
       ...verdict.state, ok: verdict.ok, passAgeMinutes: verdict.passAgeMinutes, inWindow: verdict.inWindow,
     });
-    for (const alarm of verdict.alarms) console.error(shopifyInventoryHealth.alarmLine(alarm));
+    // JUNID'S QUIET RULE (26 Nov 2026): only an OUTAGE pages — the sync has
+    // stopped passing ([pass]) or the nightly sweep has stopped reporting
+    // ([sweepStale]). What the sweep FOUND ([sweep], oversell fixed) and
+    // products stuck on their own ([stuck]) are business, logged WITHOUT the
+    // marker so Cloud Monitoring never emails them.
+    for (const alarm of verdict.alarms) {
+      if (shopifyInventoryHealth.isOutageAlarm(alarm)) console.error(shopifyInventoryHealth.alarmLine(alarm));
+      else console.log(`shopifyInventoryHealthScan (quiet rule, not emailed): [${alarm.kind}] ${alarm.message}`);
+    }
     if (!verdict.alarms.length) {
       console.log(`shopifyInventoryHealthScan: ${verdict.ok ? "ok" : "not ok (already alerted)"} · last pass ${verdict.passAgeMinutes ?? "never"} min ago`);
     }
@@ -6655,6 +6668,9 @@ exports.socialHealthScan = onSchedule(
       checkedAt: nowMs,
       ok: verdict.ok,
       severity: verdict.severity,
+      // Junid's quiet rule (26 Nov 2026): the narrow "engine is down" verdict
+      // that alone pages (here and in the mini's social-alarm-mail).
+      outage: verdict.outage === true,
       reasons: verdict.reasons.length ? verdict.reasons : null,
       counts: verdict.counts,
       // Which still posted today and whether the lookbook fell back. An
@@ -6685,8 +6701,11 @@ exports.socialHealthScan = onSchedule(
     // ticking. That is the shape of "down", and it is the shape that was
     // actually happening at 01:16 this morning when the publisher stalled for
     // 625 minutes and nothing on this earth would have told him.
-    if (verdict.severity !== "silent") {
-      console.log(`socialHealthScan ${saDate}: ${verdict.severity} (not paging)`, verdict.reasons);
+    // JUNID'S QUIET RULE (26 Nov 2026): narrower still — only an OUTAGE
+    // (publisher stopped, nothing published, generator down) pages. A missed
+    // slot or a short surface is one item, recorded above, not paged.
+    if (!verdict.outage) {
+      console.log(`socialHealthScan ${saDate}: ${verdict.severity} (not paging — not an outage)`, verdict.reasons);
       return;
     }
 

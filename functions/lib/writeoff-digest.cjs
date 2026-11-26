@@ -305,7 +305,38 @@ async function runDigestAndConfirm({ db, nowMs, channels, api, confirm = confirm
   return { ...res, delivery };
 }
 
+// ── JUNID'S QUIET RULE (26 Nov 2026) ─────────────────────────────────────────
+// Only three things may reach Junid (a return-condition dispute, a refund that
+// could not be paid out automatically, a system that is DOWN). The write-off
+// digest is a daily report, so it is no longer emailed by any route: the run
+// still builds it, archives it and clears the queue, and the Health card shows
+// the list with outcome "held" — nothing goes to the mini's outbox or the
+// Monitoring alert. runDigestAndConfirm (the emailing run) stays for a
+// deliberate switch back.
+const HELD_DETAIL = "Junid's quiet rule (26 Nov 2026): kept on the card, not emailed";
+function heldOnCardChannel() {
+  return { name: "held", deliver: async () => ({ ok: true, detail: HELD_DETAIL }) };
+}
+async function runDigestHeld({ db, nowMs, log = console.log }) {
+  let res;
+  try {
+    res = await runDigest({ db, nowMs, channels: [heldOnCardChannel()] });
+  } catch (e) {
+    await recordStatus(db, { atMs: nowMs, outcome: "error", why: String(e?.message || e).slice(0, 300) }).catch(() => {});
+    throw e;
+  }
+  if (!res.sent) {
+    await recordStatus(db, { atMs: nowMs, outcome: res.reason });
+    log(`refusalWriteoffDigest: ${res.reason}`);
+    return res;
+  }
+  await recordStatus(db, { atMs: nowMs, outcome: "held", count: res.digest.count, units: res.digest.units, archiveKey: res.archiveKey });
+  log(`refusalWriteoffDigest: ${res.digest.count} write-off(s) archived — not emailed (Junid's quiet rule)`);
+  return res;
+}
+
 module.exports = {
+  runDigestHeld, heldOnCardChannel, HELD_DETAIL,
   buildDigest, runDigest, runDigestAndConfirm, emailViaAlertLog, emailViaMiniOutbox, lineFor, judgeDelivery, monitoringApi, confirmDelivery, recordStatus,
   MARKER, QUEUE, RECORDS, ARCHIVE, STATUS, POLICY_NAME, RECIPIENT, EMAIL_MAX_CHARS,
   OUTBOX, MAIL_TO, MAIL_SUBJECT_PREFIX, RULE_DAYS,

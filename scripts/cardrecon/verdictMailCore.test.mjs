@@ -184,13 +184,24 @@ describe("REJECTED — every reason the confirmer can refuse names its check", (
 });
 
 describe("the ALL / REJECTED-only switch", () => {
-  it("defaults to ALL; reads rejected in the obvious spellings; a typo means ALL, with a warning", () => {
-    expect(parseVerdictMode(undefined)).toEqual({ mode: "all", warning: null });
+  it("defaults to OFF (Junid's quiet rule, 26 Nov 2026); reads all / rejected in the obvious spellings; a typo means OFF, with a warning", () => {
+    expect(parseVerdictMode(undefined)).toEqual({ mode: "off", warning: null });
+    expect(parseVerdictMode("")).toEqual({ mode: "off", warning: null });
+    expect(parseVerdictMode("off").mode).toBe("off");
     expect(parseVerdictMode("ALL").mode).toBe("all");
     for (const v of ["rejected", "Rejected", "rejected-only", "REJECTED_ONLY"]) expect(parseVerdictMode(v)).toEqual({ mode: "rejected", warning: null });
     const typo = parseVerdictMode("rejectd");
-    expect(typo.mode).toBe("all");
+    expect(typo.mode).toBe("off");
     expect(typo.warning).toMatch(/EFT_VERDICT_EMAILS/);
+  });
+
+  it("OFF sends no verdict at all", async () => {
+    expect(shouldSendVerdict("APPROVED", "off")).toBe(false);
+    expect(shouldSendVerdict("REJECTED", "off")).toBe(false);
+    const sent = [];
+    const out = await drainVerdictEmails({ queue: [{ record: { outcome: "refused-auth", amountCents: 100 }, poolKey: "r" }], mode: "off", from: "marathon6631@gmail.com", send: async (m) => { sent.push(m); } });
+    expect(sent).toEqual([]);
+    expect(out.skipped).toBe(1);
   });
 
   it("ALL sends both verdicts; REJECTED-only sends rejections only", () => {

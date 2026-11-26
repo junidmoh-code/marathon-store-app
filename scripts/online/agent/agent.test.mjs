@@ -92,6 +92,15 @@ describe("first message", () => {
     expect(on.wa[0].text).toMatch(/reply to the email/);
   });
 
+  it("Junid's quiet rule (26 Nov 2026): a handoff that is not unpaid money is held (holdForJunid), never emailed", async () => {
+    const f = fakeDb(world({ order: { customer: { name: "X", phone: "+2782" } } }));
+    const h = harness(f);
+    const held = [];
+    await h.run({ holdForJunid: async (m) => { held.push(m); } });
+    expect(h.junid).toEqual([]);
+    expect(held[0].subject).toMatch(/no email/);
+  });
+
   it("no email on the order → no conversation with the customer; Junid is told", async () => {
     const f = fakeDb(world({ order: { customer: { name: "X", phone: "+2782" } } }));
     const h = harness(f);

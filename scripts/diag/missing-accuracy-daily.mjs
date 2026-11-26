@@ -8,42 +8,29 @@
 //      missingAccuracy.harness.test.jsx): every card on both divisions and
 //      both kinds, and every "Not listed" row, against the true figure
 //      computed from the raw nodes;
-//   3. an EMAIL to Junid ONLY IF any figure differs, naming the products.
-//      Email only — never WhatsApp. Nothing is written to the database.
+//   3. ONLY IF any figure differs, a held line for Fable's daily review
+//      (Junid's quiet rule, 26 Nov 2026 — it used to email Junid). Nothing is
+//      written to the database.
 //
 //   node scripts/diag/missing-accuracy-daily.mjs            the real run
-//   node scripts/diag/missing-accuracy-daily.mjs --dry-run  prints the mail it would send
+//   node scripts/diag/missing-accuracy-daily.mjs --dry-run  prints the line it would hold
 //
-// Mail: Gmail SMTP as the shop mailbox (CARD_RECON_IMAP_USER / _PASSWORD from
-// MISSING_ACCURACY_ENV, default ~/marathon-store-app/.env), nodemailer from
-// MISSING_ACCURACY_MAILER (default ~/marathon-store-app/scripts/cardrecon) —
-// the route the write-off digest uses, the one that reaches Junid.
+// No mail (Junid's quiet rule, 26 Nov 2026): a mismatch or a failed run is one
+// line in ~/marathon-dm-agent/data/quiet-held.jsonl (scripts/lib/quietHeld.mjs).
 // launchd: scripts/diag/com.marathon.missingaccuracy.plist (07:15 daily).
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
-import { createRequire } from "module";
 import { spawnSync } from "child_process";
 import { homedir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { adminRequire } from "../adminRequire.mjs";
 import { readMapPaged } from "../lib/rtdbPaged.mjs";
+import { appendQuietHeld } from "../lib/quietHeld.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DRY = process.argv.includes("--dry-run");
-const MAIL_TO = "gunidmoh@gmail.com";              // Junid reads this one (with a G)
-const MAIL_FROM = "marathon6631@gmail.com";
 const OUT_DIR = process.env.MISSING_ACCURACY_DIR || join(homedir(), "missing-accuracy-runs");
 const stamp = () => new Date().toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg", hour12: false });
-
-function loadEnv(file) {
-  if (!existsSync(file)) return;
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
-    if (!m || line.trim().startsWith("#") || process.env[m[1]] !== undefined) continue;
-    const q = m[2].match(/^(["'])(.*?)\1\s*(?:#.*)?$/);
-    process.env[m[1]] = q ? q[2] : m[2].replace(/\s+#.*$/, "").trim();
-  }
-}
 
 async function auditOnce(tag = "") {
   const day = new Date().toISOString().slice(0, 10);
@@ -110,33 +97,24 @@ try {
       "",
       "Nothing was changed. Full result on the mini: " + out.file,
     ];
-    const mail = { from: `"Missing Products check" <${MAIL_FROM}>`, to: MAIL_TO, subject: `[Missing Products] ${out.wrong + (out.notListed?.wrong || 0)} number(s) differ from live data`, text: lines.join("\n") };
-    if (DRY) console.log(`WOULD MAIL ${MAIL_TO}\nSubject: ${mail.subject}\n\n${mail.text}`);
+    // JUNID'S QUIET RULE (26 Nov 2026): a daily check's result is a report, not
+    // an outage — held for Fable's daily review (recordOnly), never emailed.
+    const subject = `[Missing Products] ${out.wrong + (out.notListed?.wrong || 0)} number(s) differ from live data`;
+    if (DRY) console.log(`WOULD HOLD for Fable\nSubject: ${subject}\n\n${lines.join("\n")}`);
     else {
-      loadEnv(process.env.MISSING_ACCURACY_ENV || join(homedir(), "marathon-store-app", ".env"));
-      const user = process.env.CARD_RECON_IMAP_USER, pass = process.env.CARD_RECON_IMAP_PASSWORD;
-      if (!user || !pass) throw new Error("CARD_RECON_IMAP_USER / CARD_RECON_IMAP_PASSWORD not set");
-      if (String(user).trim().toLowerCase() !== MAIL_FROM) throw new Error("not sending as a different mailbox than the shop's");
-      const nodemailer = createRequire(join(process.env.MISSING_ACCURACY_MAILER || join(homedir(), "marathon-store-app", "scripts", "cardrecon"), "package.json"))("nodemailer");
-      const t = nodemailer.createTransport({ host: "smtp.gmail.com", port: 465, secure: true, auth: { user, pass }, connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 20000 });
-      const info = await t.sendMail(mail);
-      console.log(`${stamp()}  mailed ${MAIL_TO} — ${info?.messageId || "no id"}`);
+      appendQuietHeld({ channel: "email", source: "marathon-store-app:scripts/diag/missing-accuracy-daily.mjs", subject, text: lines.join("\n"), needsDecision: false });
+      console.log(`${stamp()}  held for Fable's review (quiet rule): ${subject}`);
     }
   } else console.log(`${stamp()}  every number matches — no mail`);
 } catch (e) {
   console.error(`${stamp()}  missing-accuracy-daily: ${e?.message || e}`);
   code = 1;
-  // A check that could not run is not "every number matches": say so, once a day, by email.
+  // A check that could not run is not "every number matches" — but one failed
+  // run is not an outage either (Junid's quiet rule, 26 Nov 2026): held for
+  // Fable's review, never emailed.
   if (!DRY) {
-    try {
-      loadEnv(process.env.MISSING_ACCURACY_ENV || join(homedir(), "marathon-store-app", ".env"));
-      const user = process.env.CARD_RECON_IMAP_USER, pass = process.env.CARD_RECON_IMAP_PASSWORD;
-      if (user && pass && String(user).trim().toLowerCase() === MAIL_FROM) {
-        const nodemailer = createRequire(join(process.env.MISSING_ACCURACY_MAILER || join(homedir(), "marathon-store-app", "scripts", "cardrecon"), "package.json"))("nodemailer");
-        const t = nodemailer.createTransport({ host: "smtp.gmail.com", port: 465, secure: true, auth: { user, pass }, connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 20000 });
-        await t.sendMail({ from: `"Missing Products check" <${MAIL_FROM}>`, to: MAIL_TO, subject: "[Missing Products] the daily number check could not run", text: `The daily check of the Missing Products numbers did not complete today: ${String(e?.message || e).slice(0, 500)}\n\nNothing was changed. Log on the mini: ~/missing-accuracy-runs/daily.err.log` });
-      }
-    } catch { /* the log has it */ }
+    try { appendQuietHeld({ channel: "email", source: "marathon-store-app:scripts/diag/missing-accuracy-daily.mjs", subject: "[Missing Products] the daily number check could not run", text: `The daily check of the Missing Products numbers did not complete today: ${String(e?.message || e).slice(0, 500)}\n\nNothing was changed. Log on the mini: ~/missing-accuracy-runs/daily.err.log`, needsDecision: false }); }
+    catch { /* the log has it */ }
   }
 } finally {
   await admin.app().delete().catch(() => {});

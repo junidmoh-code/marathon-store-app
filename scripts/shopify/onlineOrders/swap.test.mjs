@@ -457,6 +457,22 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(h.mails.filter((m) => /owed back to us/.test(m.subject))).toHaveLength(1);
   });
 
+  it("Junid's quiet rule (26 Nov 2026): a credit left to do by hand reaches Junid (sendRefundFailed); owed back to us is held (send)", async () => {
+    const { f, h } = await ingested();
+    const kept = [];
+    const sendRefundFailed = async (m) => { kept.push(m); };
+    h.mails.length = 0;
+    await ask(f, 1, "POLO", "M");
+    await h.tick({ sendRefundFailed });
+    expect(kept.filter((m) => /PLEASE DO THIS BY HAND/.test(m.subject))).toHaveLength(1);
+    expect(h.mails.filter((m) => /PLEASE DO THIS BY HAND/.test(m.subject))).toHaveLength(0);
+    await f.db.ref("online_orders/9001/lines/1/resolution/money/state").set("done");
+    await ask(f, 1, "TEE", "M", { rid: "r2" });
+    await h.tick({ sendRefundFailed });
+    expect(h.mails.filter((m) => /owed back to us/.test(m.subject))).toHaveLength(1);
+    expect(kept.filter((m) => /owed back to us/.test(m.subject))).toHaveLength(0);
+  });
+
   it("review of #909: owed back to us, cleared by a swap, then owed again is emailed again", async () => {
     const { f, h } = await ingested();
     await ask(f, 1, "POLO", "M");

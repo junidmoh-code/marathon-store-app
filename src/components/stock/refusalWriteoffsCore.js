@@ -108,6 +108,8 @@ export function digestStatusLine(status, nowMs) {
   if (nowMs - Number(status.atMs) > DIGEST_STALE_MS) {
     return { tone: "fail", text: `The daily email has not run since ${at} — nothing has been sent since then.` };
   }
+  // Junid's quiet rule (26 Nov 2026): the digest is kept here, never emailed.
+  if (status.outcome === "held") return { tone: "ok", text: `Not emailed (Junid's quiet rule): ${Number(status.count) || 0} write-off(s) on ${at} are in the list below.` };
   if (status.outcome === "error") return { tone: "fail", text: `The daily email failed on ${at}: ${status.why || "unknown error"}. Nothing was sent.` };
   if (status.outcome === "nothing_new" || status.outcome === "no_records") return { tone: "ok", text: `Nothing new to email on ${at}.` };
   // Any other non-sent outcome (e.g. no_channel_delivered) is a failure, never

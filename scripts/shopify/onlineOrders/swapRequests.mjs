@@ -107,9 +107,13 @@ async function settleDifference(ctx, id, req, out) {
   const order = { ...fresh, ref: orderLabel(fresh) };
   const line = linesOf(fresh)[i];
   const who = req.by?.name || "the packer";
-  const tell = async (subject, lines) => {
-    if (!ctx.send) { ctx.log(`  ⚠ ${order.ref}: Junid NOT emailed (no mail sender on this machine): ${subject}`); return; }
-    try { await ctx.send({ subject, text: lines.join("\n") }); }
+  // JUNID'S QUIET RULE (26 Nov 2026): money that could not be paid out
+  // automatically (a credit to do by hand) still reaches him (ctx.sendRefundFailed);
+  // anything else (collect extra from the customer) is held for Fable's review (ctx.send).
+  const tell = async (subject, lines, { refundFailed = false } = {}) => {
+    const send = refundFailed ? (ctx.sendRefundFailed || ctx.send) : ctx.send;
+    if (!send) { ctx.log(`  ⚠ ${order.ref}: Junid NOT emailed (no mail sender on this machine): ${subject}`); return; }
+    try { await send({ subject, text: lines.join("\n") }); }
     catch (e) { ctx.log(`  ✗ ${order.ref}: Junid not emailed (${String(e?.message || e)}): ${subject}`); }
   };
   if (out.creditCents > 0) {
@@ -120,12 +124,12 @@ async function settleDifference(ctx, id, req, out) {
       db: ctx.db, get: ctx.get, now: ctx.now, log: ctx.log,
       summary: { credits: 0, refunds: 0, junid: 0 },
       scopes: async () => new Set(),
-      notifyJunid: async (m) => tell(m.subject, [m.text, "", `Swapped at the POS by ${who}: ${out.summary}`]),
+      notifyJunid: async (m, o) => tell(m.subject, [m.text, "", `Swapped at the POS by ${who}: ${out.summary}`], { refundFailed: o?.refundFailed === true }),
     };
     const slot = await money(agentCtx, id, order, i, line, "credit", out.creditCents, `swap difference — swapped at the POS by ${who}`);
     // The line's one money slot was already used (an earlier credit): the
     // guard refused a second one — Junid still has to hear what is owed.
-    if (!slot) await tell(`Website order ${order.ref}: ${rands(out.creditCents)} owed to the customer — NOT recorded (the line already has a money action)`, [out.summary, `Swapped at the POS by ${who}. Check the order and settle the difference by hand.`]);
+    if (!slot) await tell(`Website order ${order.ref}: ${rands(out.creditCents)} owed to the customer — NOT recorded (the line already has a money action)`, [out.summary, `Swapped at the POS by ${who}. Check the order and settle the difference by hand.`], { refundFailed: true });
     return;
   }
   if (out.extraCents > 0 && req.priceDecision === "customer_pays") {
@@ -161,7 +165,11 @@ export async function mailLineMoneyChanges(ctx, id, order) {
       if (!v || typeof v !== "object" || v.mailedAt || v.state === "done" || !voidNeedsMail(v)) continue;
       const amt = Math.max(0, Math.round(Number(v.amountCents) || 0));
       if (!amt) continue;
-      if (!ctx.send) { ctx.log(`  ⚠ ${ref}: cancelled ${rands(amt)} ${v.kind || "money"} task NOT emailed (no mail sender); retried next tick`); continue; }
+      // JUNID'S QUIET RULE: a cancelled task that MAY have moved money is his (a refund
+      // not settled automatically — ctx.sendRefundFailed); a cancelled by-hand task
+      // ("manual": nothing moved unless he did it) is held for Fable's review (ctx.send).
+      const voidSend = v.state === "manual" ? ctx.send : (ctx.sendRefundFailed || ctx.send);
+      if (!voidSend) { ctx.log(`  ⚠ ${ref}: cancelled ${rands(amt)} ${v.kind || "money"} task NOT emailed (no mail sender); retried next tick`); continue; }
       // Claimed once (a crash or a second poller never mails twice).
       const claim = await ctx.db.ref(`${base}/moneyVoided/${k}/mailedAt`).transaction((cur) => (cur == null ? ctx.now : undefined));
       if (!claim.committed) continue;
@@ -170,7 +178,7 @@ export async function mailLineMoneyChanges(ctx, id, order) {
         ? `If you ALREADY did it in Shopify, tell Jamie "money #${num} went": it is then recorded and anything too much is recorded as owed back to us.`
         : `It may or may not have gone through (${v.state}): check Shopify. If it went, tell Jamie "money #${num} went".`;
       try {
-        await ctx.send({ subject: `Website order ${ref}: CANCEL the ${rands(amt)} ${v.kind || "money"} — not needed any more`, text: [
+        await voidSend({ subject: `Website order ${ref}: CANCEL the ${rands(amt)} ${v.kind || "money"} — not needed any more`, text: [
           `Line ${i + 1}: the customer's item changed (now ${l.title || l.pid}${l.size && l.size !== "_" ? ` size ${l.size}` : ""}, ${rands((Number(l.unitPriceCents) || 0) * (Number(l.qty) || 1))}).`,
           `The ${rands(amt)} ${v.kind || "money"} task (${v.why || "swap difference"}) is cancelled: do NOT do it.${nowMoney}`,
           mayHaveGone,

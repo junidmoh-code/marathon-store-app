@@ -32,6 +32,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chatJSON, modelReady } from "./ollama.mjs";
 import { send as sendMail } from "./mail.mjs";
+import { appendQuietHeld } from "../scripts/lib/quietHeld.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(path.join(HERE, "../functions/package.json"));
@@ -306,10 +307,18 @@ async function main() {
   }
   log(`variety ledger (${LEDGER}), last ${ls.PAIR_DAYS} days:`);
   for (const l of ls.ledgerLines(ledger, today)) console.log(`   ${l}`);
-  if (missed.length && !DRY) await alert(`Stylist: no outfit picked for ${today}`, [`The local stylist on the Mac mini made no pick for ${today}:`, "", ...missed, "", "The lookbook (if today is a lookbook day) posts the current style instead, and the outfit post is skipped. No paid model stood in.", `Log: ~/.marathon-stylist/logs/stylist-${today}.log on the Mac mini.`].join("\n"));
+  // JUNID'S QUIET RULE (26 Nov 2026): "no pick" is one item, not an outage —
+  // held for Fable's daily review, not emailed (the cloud falls back by itself).
+  if (missed.length && !DRY) hold(`Stylist: no outfit picked for ${today}`, [`The local stylist on the Mac mini made no pick for ${today}:`, "", ...missed, "", "The lookbook (if today is a lookbook day) posts the current style instead, and the outfit post is skipped. No paid model stood in.", `Log: ~/.marathon-stylist/logs/stylist-${today}.log on the Mac mini.`].join("\n"));
 }
 
-/** Tell Junid by email; never fails the run. */
+/** Junid's quiet rule: a report held for Fable's daily review; never fails the run. */
+function hold(subject, text) {
+  try { appendQuietHeld({ channel: "email", source: "marathon-store-app:stylist/run.mjs", subject, text, needsDecision: false }); log(`held for Fable's review (quiet rule): ${subject}`); }
+  catch (e) { log(`not held: ${e.message}`); }
+}
+
+/** Tell Junid by email (only a stopped service: the local model is down); never fails the run. */
 async function alert(subject, text) {
   try { const i = await sendMail({ subject, text }); log(`alert emailed (${i.messageId})`); } catch (e) { log(`alert NOT emailed: ${e.message}`); }
 }
@@ -343,6 +352,7 @@ async function review(world, start, ledger) {
 main().then(() => process.exit(0), async (e) => {
   log(`FAILED: ${e && e.stack || e}`);
   // A failure before the pick loop (catalogue, Fashion-CLIP) is a day with no pick too (CodeRabbit on #832).
-  if (!DRY && !(e && e.alerted)) await alert("Stylist: the scheduled run failed", `${String(e && e.stack || e).slice(0, 1500)}\n\nNo pick was written; the lookbook day posts the current style and the outfit post is skipped. Log: ~/.marathon-stylist/logs/ on the Mac mini.`);
+  // Quiet rule: one failed run (the 05:40 retry follows; the cloud falls back) is held, not emailed.
+  if (!DRY && !(e && e.alerted)) hold("Stylist: the scheduled run failed", `${String(e && e.stack || e).slice(0, 1500)}\n\nNo pick was written; the lookbook day posts the current style and the outfit post is skipped. Log: ~/.marathon-stylist/logs/ on the Mac mini.`);
   process.exit(1);
 });
