@@ -31,7 +31,8 @@ describe("wiring", () => {
   });
   it("one reject button: the card's button reads Out of stock, the Tomorrow slot hides its duplicate", () => {
     expect(APP).not.toContain("Mark as Out of Stock\n");
-    expect(APP).toContain("product={whProductsById[order.productId]} hideWhenOOS");
-    expect(APP).toContain("if (hideWhenOOS && offersOOS && !busy) return null;");
+    // Schedule for Tomorrow itself is gone (Junid 26 Nov 11:32), and on-hold can never be written.
+    expect(APP).not.toContain("<TomorrowActionButton order={order}");
+    expect(APP).toContain("if (status === STATUS.COMING_TOMORROW) { console.warn(");
   });
 });
