@@ -102,6 +102,10 @@ function whatsappHeld() {
 }
 void whatsappJunid;
 
+// A refund that could not be paid out must still reach Junid: say so loudly
+// when this machine has no mail sender for it (Sonnet review, #1016).
+if (COMMIT && !mailSender()) console.error("⚠ NO MAIL SENDER (CARD_RECON_IMAP_USER / _PASSWORD or nodemailer missing): a refund that could not be paid out would be HELD, not emailed to Junid — fix .env");
+
 const started = Date.now();
 try {
   const summary = await runOrdersPoll({

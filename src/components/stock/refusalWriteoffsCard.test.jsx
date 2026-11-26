@@ -183,3 +183,11 @@ describe("Written off after refusal — the daily email's status", () => {
     expect(health).toContain("digestStatusLine(digestStatus.value, digestNowMs)");
   });
 });
+
+describe("Junid's quiet rule (26 Nov 2026): the digest is held on the card", () => {
+  it("outcome held reads ok and says it was not emailed", () => {
+    const l = digestStatusLine({ atMs: Date.parse("2026-11-26T17:40:00Z"), outcome: "held", count: 3 }, Date.parse("2026-11-26T18:00:00Z"));
+    expect(l.tone).toBe("ok");
+    expect(l.text).toMatch(/^Not emailed \(Junid's quiet rule\): 3 write-off/);
+  });
+});
