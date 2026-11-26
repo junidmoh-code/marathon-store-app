@@ -101,7 +101,7 @@ const drive = (db, enqueue, { orderId = "042", before = "incoming", after = "com
   notifyOrderTomorrow({ db, enqueueWhatsApp: enqueue, orderId, before, after, nowIso: NOW });
 
 // ── 1 · THE MESSAGE FIRES — exactly one, with the order number ───────────────
-test("1 · an order marked COMING TOMORROW enqueues exactly one order_tomorrow", async () => {
+test.skip("1 · an order marked COMING TOMORROW enqueues exactly one order_tomorrow", async () => {
   const db = fakeDb({ orders: { "042": order() } });
   const enqueue = spy();
   const res = await drive(db, enqueue);
@@ -118,7 +118,7 @@ test("1 · an order marked COMING TOMORROW enqueues exactly one order_tomorrow",
   assert.equal(db.state.orders["042"].tomorrowNotifyOutboxId, "ob1");
 });
 
-test("1b · the restored call matches the one e115cde deleted — template and arity", () => {
+test.skip("1b · the restored call matches the one e115cde deleted — template and arity", () => {
   // The deleted line was:
   //   sendWhatsAppTemplate(order.customerPhone, "order_tomorrow", [order.id])
   // Same template, same single param. renderWhatsAppText refuses a wrong param
@@ -132,7 +132,7 @@ test("1b · the restored call matches the one e115cde deleted — template and a
 });
 
 // ── 2 · INTO THE STATE TWICE ENQUEUES ONE, NOT TWO ──────────────────────────
-test("2 · re-entering COMING TOMORROW enqueues ONE, not two", async () => {
+test.skip("2 · re-entering COMING TOMORROW enqueues ONE, not two", async () => {
   // tomorrow → ready → tomorrow. The second entry is a genuine transition, so
   // guard 1 lets it through; the tomorrowNotifiedAt stamp is what refuses it.
   const db = fakeDb({ orders: { "042": order() } });
@@ -146,7 +146,7 @@ test("2 · re-entering COMING TOMORROW enqueues ONE, not two", async () => {
   assert.equal(enqueue.calls.length, 1, "one message across both entries");
 });
 
-test("2b · a double-tap on the SAME button enqueues one, not two", async () => {
+test.skip("2b · a double-tap on the SAME button enqueues one, not two", async () => {
   const db = fakeDb({ orders: { "042": order() } });
   const enqueue = spy();
   await drive(db, enqueue);
@@ -155,7 +155,7 @@ test("2b · a double-tap on the SAME button enqueues one, not two", async () => 
   assert.equal(enqueue.calls.length, 1);
 });
 
-test("2c · two deliveries racing the SAME write: only the claim winner sends", async () => {
+test.skip("2c · two deliveries racing the SAME write: only the claim winner sends", async () => {
   // frozenReads: BOTH invocations read the order before either wrote, so the
   // cheap already-handled pre-check cannot separate them. The create-once claim
   // is the only guard left standing — and it is the one that has to hold, since
@@ -175,7 +175,7 @@ test("2c · two deliveries racing the SAME write: only the claim winner sends", 
     `the CLAIM must be what refuses the loser, got ${JSON.stringify([a.skipped, b.skipped])}`);
 });
 
-test("2c-ms · two deliveries in the SAME MILLISECOND: still one message", async () => {
+test.skip("2c-ms · two deliveries in the SAME MILLISECOND: still one message", async () => {
   // CodeRabbit #386 read the claim's identity as the timestamp and argued that
   // two invocations sharing a millisecond would both see
   // `res.snapshot.val() === now` and both send. The value comparison IS true for
@@ -196,7 +196,7 @@ test("2c-ms · two deliveries in the SAME MILLISECOND: still one message", async
     `the CLAIM must refuse the loser even at the same ms, got ${JSON.stringify([a.skipped, b.skipped])}`);
 });
 
-test("2d · a redelivered trigger event (tomorrow → tomorrow) is not a transition", async () => {
+test.skip("2d · a redelivered trigger event (tomorrow → tomorrow) is not a transition", async () => {
   const db = fakeDb({ orders: { "042": order() } });
   const enqueue = spy();
   const res = await drive(db, enqueue, { before: "coming_tomorrow" });
@@ -204,7 +204,7 @@ test("2d · a redelivered trigger event (tomorrow → tomorrow) is not a transit
   assert.equal(res.skipped, "no_transition");
 });
 
-test("2e · an unresolved claim is NEVER taken over — it is stamped for a human", async () => {
+test.skip("2e · an unresolved claim is NEVER taken over — it is stamped for a human", async () => {
   const db = fakeDb({ orders: { "042": order({ tomorrowNotifyClaimedAt: "2026-08-19T08:59:00.000Z" }) } });
   const enqueue = spy();
   const res = await drive(db, enqueue);
@@ -214,7 +214,7 @@ test("2e · an unresolved claim is NEVER taken over — it is stamped for a huma
 });
 
 // ── 3 · NO PHONE — nothing enqueued, nothing thrown ─────────────────────────
-test("3 · an order with no customer phone enqueues nothing and does not throw", async () => {
+test.skip("3 · an order with no customer phone enqueues nothing and does not throw", async () => {
   for (const phone of [undefined, null, ""]) {
     const db = fakeDb({ orders: { "042": order({ customerPhone: phone }) } });
     const enqueue = spy();
@@ -227,7 +227,7 @@ test("3 · an order with no customer phone enqueues nothing and does not throw",
   }
 });
 
-test("3b · an order that vanished (daily reset) enqueues nothing and does not throw", async () => {
+test.skip("3b · an order that vanished (daily reset) enqueues nothing and does not throw", async () => {
   const db = fakeDb({ orders: {} });
   const enqueue = spy();
   const res = await drive(db, enqueue);
@@ -235,7 +235,7 @@ test("3b · an order that vanished (daily reset) enqueues nothing and does not t
   assert.equal(res.skipped, "order_gone");
 });
 
-test("3c · a flip-and-revert messages nobody — the LIVE record is what counts", async () => {
+test.skip("3c · a flip-and-revert messages nobody — the LIVE record is what counts", async () => {
   // The event says coming_tomorrow, but by the time we read, staff had already
   // moved it on. Nothing is promised to a customer whose order is not held.
   const db = fakeDb({ orders: { "042": order({ status: "ready" }) } });
@@ -246,7 +246,7 @@ test("3c · a flip-and-revert messages nobody — the LIVE record is what counts
 });
 
 // ── 4 · THE OTHER THREE ORDER MESSAGES ARE UNAFFECTED ───────────────────────
-test("4 · no other order transition wakes this trigger", async () => {
+test.skip("4 · no other order transition wakes this trigger", async () => {
   // order_placed / order_ready / rder_out_of_stock still fire from the client on
   // their own transitions. This trigger is scoped to ONE state, so every other
   // transition must fall out at the first guard having touched nothing.
@@ -260,7 +260,7 @@ test("4 · no other order transition wakes this trigger", async () => {
   }
 });
 
-test("4b · the other three sends are still the CLIENT's, on their own transitions", () => {
+test.skip("4b · the other three sends are still the CLIENT's, on their own transitions", () => {
   // Restoring the fourth message must neither move nor duplicate the three that
   // never broke. They stay exactly where they have always been, in updateStatus.
   const app = readFileSync(join(__dirname, "..", "..", "src", "App.jsx"), "utf8");
@@ -274,7 +274,7 @@ test("4b · the other three sends are still the CLIENT's, on their own transitio
 });
 
 // ── 5 · PR #385's FULFIL MESSAGE IS INDEPENDENT AND NOT DOUBLED ─────────────
-test("5 · this trigger never touches a refill request, so #385 cannot be disturbed", async () => {
+test.skip("5 · this trigger never touches a refill request, so #385 cannot be disturbed", async () => {
   const db = fakeDb({
     orders: { "042": order() },
     refill_requests: { "onhold_2026-08-19_042": { status: "open", holdLink: { orderId: "042", notifyOnFulfil: true, customerPhone: "0821234567", customerName: "Thandi" } } },
@@ -288,7 +288,7 @@ test("5 · this trigger never touches a refill request, so #385 cannot be distur
   });
 });
 
-test("5b · the full held journey sends TWO DIFFERENT messages, one each, in order", async () => {
+test.skip("5b · the full held journey sends TWO DIFFERENT messages, one each, in order", async () => {
   // This is the duplicate question, pinned. A held customer hears twice:
   //   at hold-placed  order_tomorrow  "scheduled for tomorrow"
   //   at fulfil       order_ready     "ready to collect"          (PR #385)
@@ -319,7 +319,7 @@ test("5b · the full held journey sends TWO DIFFERENT messages, one each, in ord
   assert.equal(new Set(enqueue.calls.map(c => c.templateName)).size, 2);
 });
 
-test("5c · re-driving BOTH triggers after the journey adds nothing", async () => {
+test.skip("5c · re-driving BOTH triggers after the journey adds nothing", async () => {
   const db = fakeDb({
     orders: { "042": order() },
     refill_requests: {
@@ -344,7 +344,7 @@ test("5c · re-driving BOTH triggers after the journey adds nothing", async () =
 });
 
 // ── 6 · FAILURE HANDLING ────────────────────────────────────────────────────
-test("6 · an unusable number is TERMINAL — stamped, claim kept, never retried", async () => {
+test.skip("6 · an unusable number is TERMINAL — stamped, claim kept, never retried", async () => {
   const db = fakeDb({ orders: { "042": order() } });
   const err = new Error("recipientPhone is not a usable phone number");
   err.code = "invalid-argument"; err.details = { unusableRecipient: true };
@@ -363,7 +363,7 @@ test("6 · an unusable number is TERMINAL — stamped, claim kept, never retried
   assert.equal(enqueue.calls.length, 1);
 });
 
-test("6e · a failing claim transaction enqueues nothing and RETHROWS for the retry", async () => {
+test.skip("6e · a failing claim transaction enqueues nothing and RETHROWS for the retry", async () => {
   // The claim is the only door to the producer. If the transaction itself is
   // refused — rules, a network fault — the answer is to send nothing AND to be
   // loud, so the trigger re-drives it. Swallowing the error would read as
@@ -382,7 +382,7 @@ test("6e · a failing claim transaction enqueues nothing and RETHROWS for the re
   assert.equal(o.tomorrowNotifyFailedAt, undefined);
 });
 
-test("6b · a TRANSIENT failure releases the claim and rethrows, so the retry re-sends", async () => {
+test.skip("6b · a TRANSIENT failure releases the claim and rethrows, so the retry re-sends", async () => {
   const db = fakeDb({ orders: { "042": order() } });
   let fail = true;
   const enqueue = spy(() => { if (fail) throw new Error("outbox unavailable"); return { success: true, outboxId: "ob9" }; });
@@ -397,7 +397,7 @@ test("6b · a TRANSIENT failure releases the claim and rethrows, so the retry re
   assert.equal(enqueue.calls.length, 2, "one refused attempt, then one real send");
 });
 
-test("6c · a template-contract failure stays RETRYABLE, not terminal", async () => {
+test.skip("6c · a template-contract failure stays RETRYABLE, not terminal", async () => {
   // invalid-argument WITHOUT unusableRecipient is a deploy bug (arity drift),
   // not a bad number. Treating it as terminal would silently drop every
   // tomorrow notification behind one bad deploy.
@@ -411,7 +411,7 @@ test("6c · a template-contract failure stays RETRYABLE, not terminal", async ()
   assert.equal(db.state.orders["042"].tomorrowNotifyClaimedAt, undefined, "claim released for the retry");
 });
 
-test("6d · ENQUEUED but the stamp failed: the claim is KEPT, so nothing re-sends", async () => {
+test.skip("6d · ENQUEUED but the stamp failed: the claim is KEPT, so nothing re-sends", async () => {
   // The enqueue and the bookkeeping are separate awaits. A failure of the
   // SECOND must never release the claim — that is the exact 2-5 copies incident.
   const db = fakeDb({ orders: { "042": order() } },
@@ -426,4 +426,15 @@ test("6d · ENQUEUED but the stamp failed: the claim is KEPT, so nothing re-send
   const again = await drive(db, enqueue, { before: "ready" });
   assert.equal(again.skipped, "claim_unresolved", "the kept claim is what refuses it");
   assert.equal(enqueue.calls.length, 1, "still one message");
+});
+
+// NO ON-HOLD ORDERS (Junid, 26 Nov 2026 11:32): the message is never sent. The
+// send-path tests above are kept, skipped, for the day the rule changes.
+test("a coming_tomorrow write sends nothing and touches nothing", async () => {
+  let enqueued = 0, reads = 0;
+  const db = { ref: () => { reads++; return { get: async () => ({ val: () => ({ status: STATE, customerPhone: "0821234567" }) }) }; } };
+  const res = await notifyOrderTomorrow({ db, enqueueWhatsApp: async () => { enqueued++; }, orderId: "007", before: "incoming", after: STATE });
+  assert.deepStrictEqual(res, { sent: false, skipped: "on_hold_removed" });
+  assert.strictEqual(enqueued, 0);
+  assert.strictEqual(reads, 0);
 });
