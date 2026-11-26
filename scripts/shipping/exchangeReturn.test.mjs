@@ -483,6 +483,13 @@ describe("26 Nov 2026: back where it was picked, and Junid's good is the conditi
     expect(at(db, `online_orders/${KEY}/incoming/check`)).toEqual(tillCheck);
     expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11`) ?? null).toBeNull(); // never twice
   });
+  it("Junid's good after a till's not_original keeps the till's evidence under previous", async () => {
+    const tillCheck = { result: "not_original", reason: "dirty", photos: ["https://a", "https://b"], at: 5, by: { uid: "u-yusuf" } };
+    const rec = record({ incoming: { ...record().incoming, arrival: { state: "done", at: 4, returnSaleId: "S-RET", by: { uid: "u-yusuf" } }, check: tillCheck } });
+    const db = world({ rec });
+    await run(db);
+    expect(at(db, `online_orders/${KEY}/incoming/check`)).toMatchObject({ result: "good", via: "junid", previous: tillCheck });
+  });
   it("clothing picked at Concrete goes back to Concrete when the pack sale deducted there; nothing shows it → withheld, never minted", async () => {
     const orig = [{ pid: PID_OUT, size: "11", title: "Diesel", deductFrom: "concrete", source: { locationId: "concrete", status: "handed" } }];
     const proven = world({ orig, extra: { stock_movements: { [`sold:-NsOrig:concrete:${PID_OUT}:11`]: { type: "sold", qty: 1, productId: PID_OUT, size: "11" } } } });

@@ -635,8 +635,14 @@ export async function confirmExchangeReturn(key, { db, dry = false, orderNumber 
 async function markGoodCheck(db, key, record, now) {
   if (record?.incoming?.check?.result === "good") return false;
   try {
-    await db.ref(`online_orders/${key}/incoming/check`).set({ result: "good", at: now(), by: { uid: ACTOR, name: "Jimmy (Junid's word on WhatsApp)" }, via: "junid" });
-    return true;
+    // A transaction on the check as it is NOW (architect review, #1017): an existing good check is kept; a till's
+    // not_original one (its reason and photos, the evidence) is kept under `previous`, never lost.
+    const next = { result: "good", at: now(), by: { uid: ACTOR, name: "Jimmy (Junid's word on WhatsApp)" }, via: "junid" };
+    const r = await db.ref(`online_orders/${key}/incoming/check`).transaction((cur) => {
+      if (cur && typeof cur === "object" && cur.result === "good") return undefined;
+      return cur && typeof cur === "object" ? { ...next, previous: cur } : next;
+    });
+    return !!r?.committed;
   } catch (err) {
     console.warn(`exchangeReturn: ${key} is back in stock but its "good" check was not recorded: ${err?.message || err}`);
     return false;
