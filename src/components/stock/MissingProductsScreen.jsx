@@ -465,6 +465,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // the visit comes back by itself (Sonnet architect review, PR #964).
   useEffect(() => {
     const drop = Object.keys(gone).filter((k) => {
+      if (busy[k]) return false;   // its Solve is still running behind the screen (CodeRabbit, #1014)
       const [sec, kind, pid] = k.split(":");
       const id = bucketId(Number(sec), kind);
       return sliced.complete[id] && !(sliced.rows[id] || []).some((r) => r.pid === pid);
@@ -789,10 +790,23 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const [confirmMove, setConfirmMove] = useState(null);   // the row being asked about
   useEffect(() => {
     if (!confirmMove || typeof window === "undefined") return undefined;
-    const onKey = (e) => { if (e.key === "Escape") setConfirmMove(null); };
+    // Escape cancels; Tab stays on Cancel / Yes (CodeRabbit, #1014). Focus goes
+    // back to where it was when the popup closes.
+    const opener = typeof document !== "undefined" ? document.activeElement : null;
+    const onKey = (e) => {
+      if (e.key === "Escape") { setConfirmMove(null); return; }
+      if (e.key !== "Tab") return;
+      const pair = [confirmCancelRef.current, confirmYesRef.current].filter(Boolean);
+      if (!pair.length) return;
+      e.preventDefault();
+      const i = pair.indexOf(document.activeElement);
+      pair[(i + (e.shiftKey ? pair.length - 1 : 1) + pair.length) % pair.length].focus();
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => { window.removeEventListener("keydown", onKey); try { opener?.focus?.(); } catch { /* gone */ } };
   }, [confirmMove]);
+  const confirmCancelRef = useRef(null);
+  const confirmYesRef = useRef(null);
   act.current.division = (row) => {
     if (inFlight.current.has(row.pid) || !canMark || gone[row.key]) return;
     const to = divisionTargetOf(listKindOf(ctx.current.network, row.section));
@@ -1025,9 +1039,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
               Move {String(confirmMove.name).replace(/\u00a0/g, " ")} to Concrete only? It will leave the Marathon list.
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-              <button type="button" data-action="confirm-cancel" autoFocus onClick={() => setConfirmMove(null)}
+              <button type="button" ref={confirmCancelRef} data-action="confirm-cancel" autoFocus onClick={() => setConfirmMove(null)}
                 style={{ flex: 1, height: 48, borderRadius: 12, background: "transparent", border: "1px solid rgba(255,255,255,.25)", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: FONT }}>Cancel</button>
-              <button type="button" data-action="confirm-yes" onClick={() => {
+              <button type="button" ref={confirmYesRef} data-action="confirm-yes" onClick={() => {
                 const r = confirmMove; setConfirmMove(null);
                 // Still on the list? (solved or hidden on another device while the popup was open → nothing)
                 if (!rowNow.current(r)) { say({ ok: false, text: "This product left the list meanwhile — nothing changed." }); return; }
