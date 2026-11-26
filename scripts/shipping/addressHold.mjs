@@ -34,6 +34,7 @@ import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { checkAddress, checkLockerArea, addressFingerprint, addressParts, LOCKER_AREA_KM } from "./addressCheck.mjs";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
+import { appendQuietHeld } from "../lib/quietHeld.mjs";
 
 export const HOLD_INDEX = "shipping_recon/addressHolds";
 export const HOLD_REASON_PREFIX = "address check: ";
@@ -140,7 +141,16 @@ export function jimmyQueue({ dir = process.env.COURIER_JIMMY_DIR || join(homedir
   });
 }
 
-const JUNID = "27813995333";
+const JUNID = "27813995333"; // kept for a deliberate switch back (Junid's quiet rule holds the line)
+void JUNID;
+
+/** Junid's line, held (Junid's quiet rule): → 0 (counts as delivered) | null when the file refused. */
+export function holdLine(text, ref, { append = appendQuietHeld } = {}) {
+  try {
+    append({ channel: "whatsapp", source: "marathon-store-app:scripts/shipping/addressHold.mjs", subject: `Courier Guy NOT booked, address held (${ref})`, text, needsDecision: true });
+    return 0;
+  } catch { return null; }
+}
 export const MAX_ASK_REFUSALS = 3;
 
 /**
@@ -148,7 +158,7 @@ export const MAX_ASK_REFUSALS = 3;
  * BEFORE the send (a crash can lose a question, never send it twice); a refused send releases it for the next pass.
  * → [{ key, asked, outboxId, junid }]
  */
-export async function sweepAddressHolds({ db, queue = jimmyQueue(), now = () => Date.now(), log = () => {} }) {
+export async function sweepAddressHolds({ db, queue = jimmyQueue(), holdForJunid = holdLine, now = () => Date.now(), log = () => {} }) {
   const open = (await db.ref(HOLD_INDEX).get()).val() ?? {};
   const out = [];
   for (const key of Object.keys(open)) {
@@ -188,7 +198,8 @@ export async function sweepAddressHolds({ db, queue = jimmyQueue(), now = () => 
         const claim = await holdRef.transaction((cur) => (cur && cur.sig === hold.sig && !cur.junidAt ? { ...cur, junidAt: at } : undefined));
         if (claim?.committed) {
           const line = junidText(order, fresh, key);
-          const sent = await queue(["--kind", "junid", "--to", JUNID, "--text", line, "--ref", `address-hold-${key}`]);
+          // JUNID'S QUIET RULE (26 Nov 2026): held for Fable's daily review, not queued to Junid's WhatsApp.
+          const sent = await holdForJunid(line, `address-hold-${key}`);
           await db.ref(`shipping_recon/junidLines/${key}-address`).set({ orderId: key, text: line, at, ...(sent != null ? { sentAt: at } : {}) });
           // Not queued: the courier-recon runner sends the junidLines row (it has no sentAt), so it is never lost.
           row.junid = sent != null;

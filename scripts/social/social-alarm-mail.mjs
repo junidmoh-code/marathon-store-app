@@ -32,7 +32,9 @@ import { adminRequire } from "../adminRequire.mjs";
 import { readSecret } from "./secrets.mjs";
 import {
   MAIL_TO, SHOP_MAILBOX, dedupe, healthAlert, healthStaleAlert, mailFor, publisherAlerts, retryAlert, runErrorAlert, saDate, tokenAlerts,
+  isOutageAlert, heldNeedsDecision,
 } from "./socialAlarmCore.mjs";
+import { appendQuietHeld } from "../lib/quietHeld.mjs";
 
 if (process.env.SOCIAL_ALARM_MAIL === "0") process.exit(0);
 const DRY = process.argv.includes("--dry-run");
@@ -96,8 +98,22 @@ try {
     } catch (e) { log(`token check could not run: ${String(e?.message || e).slice(0, 160)}`); }
   }
 
-  const { toSend, sent } = dedupe(alerts.filter(Boolean), state.sent, nowMs);
+  const { toSend: due, sent } = dedupe(alerts.filter(Boolean), state.sent, nowMs);
   state.sent = sent;
+  // JUNID'S QUIET RULE (26 Nov 2026): only an outage is emailed; every other
+  // cause is held for Fable's daily review (once, like a send).
+  const toSend = due.filter(isOutageAlert);
+  for (const a of due.filter((x) => !isOutageAlert(x))) {
+    if (DRY) { console.log(`WOULD HOLD for Fable: ${a.subject}`); continue; }
+    try {
+      appendQuietHeld({ channel: "email", source: "marathon-store-app:scripts/social/social-alarm-mail.mjs", subject: a.subject, text: a.body, needsDecision: heldNeedsDecision(a) });
+      state.sent[a.key] = Date.now();
+      log(`held "${a.subject}" for Fable's review (quiet rule)`);
+    } catch (e) {
+      code = 1;
+      log(`NOT held "${a.subject}": ${String(e?.message || e).slice(0, 200)}`);
+    }
+  }
   if (toSend.length) {
     const user = process.env.CARD_RECON_IMAP_USER;
     const pass = process.env.CARD_RECON_IMAP_PASSWORD;

@@ -90,7 +90,9 @@ function policyBody(channelName) {
       },
     }],
     combiner: "OR",
-    enabled: true,
+    // JUNID'S QUIET RULE (26 Nov 2026): this email is not an outage alert, so the
+    // policy is kept DISABLED — a re-run of this installer never switches it back on.
+    enabled: false,
     notificationChannels: [channelName],
     alertStrategy: { notificationRateLimit: { period: "300s" }, autoClose: "1800s" },
   };
@@ -117,7 +119,7 @@ async function ensurePolicy(channelName) {
     if (live?.filter !== FILTER) drift.push(`filter: ${live?.filter}`);
     if (live?.labelExtractors?.digest !== want.conditions[0].conditionMatchedLog.labelExtractors.digest) drift.push("label extractor");
     if (!(found.notificationChannels || []).includes(channelName)) drift.push("notification channel");
-    if (found.enabled === false) drift.push("disabled");
+    if (found.enabled !== false) drift.push("enabled (Junid's quiet rule: it must stay OFF)");
     if (VERIFY) {
       if (drift.length) return fail(`policy "${POLICY_NAME}" has drifted: ${drift.join("; ")}`);
       log(`✓ alert policy "${POLICY_NAME}"`);

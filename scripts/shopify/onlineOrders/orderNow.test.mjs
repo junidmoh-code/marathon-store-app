@@ -311,13 +311,12 @@ describe("Order it now — after a release", () => {
     expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ qty: 3, status: "open" });
   });
 
-  it("WhatsApp down → Junid is emailed instead", async () => {
+  it("WhatsApp down → NO email fallback any more (Junid's quiet rule, 26 Nov 2026); the mark comes off for the next try", async () => {
     const mails = [];
     const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "open", qty: 3, createdFrom: { source: "scan" } }, requests: { "0_0": tap(0, shox()) } }));
     await runOrdersPoll({ ...deps(f), send: async (m) => { mails.push(m); }, whatsappJunid: async () => { throw new Error("WhatsApp queue down"); } });
     const ours = mails.filter((m) => /a request needs your eye/.test(m.subject));
-    expect(ours).toHaveLength(1);
-    expect(ours[0].text).toMatch(/could not tell which part/);
+    expect(ours).toHaveLength(0);
   });
 });
 

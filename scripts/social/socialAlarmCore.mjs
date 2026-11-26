@@ -58,7 +58,11 @@ export function stableReason(r) {
  * day: social_health/days/{date} as socialHealthScan writes it.
  */
 export function healthAlert(day, date) {
-  if (!day || day.ok || day.severity !== "silent") return null;
+  // Junid's quiet rule (26 Nov 2026): only an OUTAGE (socialHealthScan's
+  // `outage`: publisher stopped, nothing published, generator down). A record
+  // written before that field existed falls back to "silent".
+  const outage = typeof day?.outage === "boolean" ? day.outage : day?.severity === "silent";
+  if (!day || day.ok || !outage) return null;
   const reasons = asList(day.reasons);
   if (!reasons.length) return null;
   const causes = reasons.filter((r) => !CONSEQUENCE.test(r));
@@ -214,4 +218,19 @@ export function mailFor(alert, from) {
     subject: alert.subject,
     text: `${alert.body}\n\n(Sent by the social alarm mailer on the Mac mini: scripts/social/social-alarm-mail.mjs.)\n`,
   };
+}
+
+// ── JUNID'S QUIET RULE (26 Nov 2026) ─────────────────────────────────────────
+// Only "nothing is posting / the engine stopped" may still email Junid: the
+// health check's outage, the health check itself going stale, and the Meta
+// token being INVALID (nothing can post — the publisher is logged out). Every
+// other cause (a run that threw once, a failed post, the retry, a token that
+// expires in a few days) is held for Fable's daily review instead.
+const OUTAGE_KEY = /^(health|health-stale|token-invalid):/;
+export function isOutageAlert(a) {
+  return Boolean(a && OUTAGE_KEY.test(String(a.key || "")));
+}
+/** A held cause that asks Junid to DO something (renew the token). */
+export function heldNeedsDecision(a) {
+  return /^token-expiry:/.test(String(a?.key || ""));
 }

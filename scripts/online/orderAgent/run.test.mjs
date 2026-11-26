@@ -117,7 +117,7 @@ describe("one committed run", () => {
     expect(rows(q)).toEqual([]);
   });
 
-  it("from 18:00 the day's summary is queued for Junid once", async () => {
+  it("from 18:00 the day's summary is built but NOT queued for Junid (quiet rule, 26 Nov 2026)", async () => {
     const f = fakeDb(world());
     const q = mkQueue();
     const at = T("2026-11-14T16:05:00Z");
@@ -125,7 +125,7 @@ describe("one committed run", () => {
     expect(r.summary).toMatch(/^Website orders, 2026-11-14 \(order agent\)\nTurned green: none\nShipped: none\nChased: /);
     expect(r.summary).toMatch(/Still red \(2\):\n- #2085: Item unavailable — re-picking at Marathon PE/);
     await runOrderAgent({ db: f.db, chase: q, now: at + 10 * 60e3, commit: true });
-    expect(rows(q).filter((x) => x.kind === "daily_summary").length).toBe(1);
+    expect(rows(q).filter((x) => x.kind === "daily_summary").length).toBe(0);
   });
 });
 

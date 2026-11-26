@@ -1116,3 +1116,17 @@ describe("orders already refused for no locker: doorRetryDue and retry-no-locker
     expect(one.rows.map((r) => r.key)).toEqual(["1003"]);
   });
 });
+
+// Junid's quiet rule (26 Nov 2026): courier-recon lines are held, not WhatsApped.
+import { heldSender } from "./courier-recon.mjs";
+import { describe as d2, it as i2, expect as e2 } from "vitest";
+d2("courier-recon heldSender (quiet rule)", () => {
+  i2("holds every line; only an address-hold line needs a decision; counts as delivered", async () => {
+    const rows = [];
+    const send = heldSender({ append: (r) => rows.push(r) });
+    e2(await send("ceiling line", "courier-ceiling-123")).toBe(true);
+    e2(await send("address line", "courier-ceiling-123-address")).toBe(true);
+    e2(await send("weekly", "courier-week-2026-11-23")).toBe(true);
+    e2(rows.map((r) => [r.channel, r.needsDecision])).toEqual([["whatsapp", false], ["whatsapp", true], ["whatsapp", false]]);
+  });
+});

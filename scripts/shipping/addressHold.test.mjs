@@ -68,37 +68,44 @@ describe("the ONE question and Junid's line", () => {
     expect(askText(ORDER(), g.hold, "19024021749909")).toBe("Hi Prosperity, about your Marathon Club order #2316: your address says Umlazi but the postal code is 1475 (Vosloorus, Gauteng). Which is right, so your parcel goes to the right place?");
   });
 
-  it("the sweep asks once (lifecycle/order_first, ref address:<key>) and tells Junid once; a second pass sends nothing", async () => {
+  it("the sweep asks once (lifecycle/order_first, ref address:<key>) and HOLDS Junid's line once (quiet rule); a second pass sends nothing", async () => {
     const g = addressGate(ORDER());
     const db = fakeDb({ online_orders: { 19024021749909: ORDER({ addressHold: { ...g.hold, at: 1 } }) }, shipping_recon: { addressHolds: { 19024021749909: { at: 1, state: "asking" } } } });
     const sent = [];
+    const held = [];
     const queue = async (args) => { sent.push(args); return sent.length + 100; };
-    const out = await sweepAddressHolds({ db, queue, now: () => 5 });
+    const holdForJunid = async (text, ref) => { held.push([text, ref]); return 0; };
+    const out = await sweepAddressHolds({ db, queue, holdForJunid, now: () => 5 });
     expect(out).toEqual([{ key: "19024021749909", asked: true, outboxId: 101, junid: true }]);
     expect(sent[0]).toEqual(["--to", "0682705674", "--kind", "lifecycle", "--sub", "order_first", "--ref", "address:19024021749909", "--text", expect.stringMatching(/your address says Umlazi but the postal code is 1475/)]);
-    expect(sent[1].slice(0, 4)).toEqual(["--kind", "junid", "--to", "27813995333"]);
+    // Junid's line never reaches Jamie's outbox any more: it is held for Fable's review.
+    expect(sent).toHaveLength(1);
+    expect(held).toEqual([[expect.stringMatching(/Courier Guy NOT booked, address held/), "address-hold-19024021749909"]]);
     expect(db.root.online_orders["19024021749909"].shipping.addressHold).toMatchObject({ askedAt: 5, outboxId: 101 });
     expect(db.root.shipping_recon.junidLines["19024021749909-address"]).toMatchObject({ sentAt: 5 });
-    await sweepAddressHolds({ db, queue, now: () => 9 });
-    expect(sent).toHaveLength(2);
+    await sweepAddressHolds({ db, queue, holdForJunid, now: () => 9 });
+    expect(sent).toHaveLength(1);
+    expect(held).toHaveLength(1);
   });
 
-  it("a refused send is released and asked again next pass; after 3 refusals Junid hears it was NOT asked", async () => {
+  it("a refused send is released and asked again next pass; after 3 refusals Junid's held line says it was NOT asked", async () => {
     const g = addressGate(ORDER());
     const db = fakeDb({ online_orders: { 19024021749909: ORDER({ addressHold: { ...g.hold, at: 1 } }) }, shipping_recon: { addressHolds: { 19024021749909: { at: 1 } } } });
     const sent = [];
-    const queue = async (args) => { sent.push(args); return args.includes("junid") ? 7 : null; };
-    const out = await sweepAddressHolds({ db, queue, now: () => 5 });
+    const held = [];
+    const queue = async (args) => { sent.push(args); return null; };
+    const holdForJunid = async (text) => { held.push(text); return 0; };
+    const out = await sweepAddressHolds({ db, queue, holdForJunid, now: () => 5 });
     expect(out[0]).toMatchObject({ asked: false });
     expect(db.root.online_orders["19024021749909"].shipping.addressHold.askedAt ?? null).toBeNull();
-    await sweepAddressHolds({ db, queue, now: () => 6 });
-    expect(sent.filter((a) => a.includes("junid"))).toHaveLength(0);
-    await sweepAddressHolds({ db, queue, now: () => 7 });
-    const junid = sent.filter((a) => a.includes("junid"));
-    expect(junid).toHaveLength(1);
-    expect(junid[0].join(" ")).toMatch(/NOT asked \(jimmy-send refused 3 times/);
-    await sweepAddressHolds({ db, queue, now: () => 8 });
-    expect(sent).toHaveLength(4);
+    await sweepAddressHolds({ db, queue, holdForJunid, now: () => 6 });
+    expect(held).toHaveLength(0);
+    await sweepAddressHolds({ db, queue, holdForJunid, now: () => 7 });
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatch(/NOT asked \(jimmy-send refused 3 times/);
+    await sweepAddressHolds({ db, queue, holdForJunid, now: () => 8 });
+    expect(sent).toHaveLength(3);
+    expect(held).toHaveLength(1);
   });
 });
 

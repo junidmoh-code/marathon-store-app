@@ -172,12 +172,22 @@ function assessInventoryHealth({ nowMs, health }) {
   };
 }
 
+/** Junid's quiet rule (26 Nov 2026): the alarms that mean a system STOPPED —
+ *  the sync has not passed, or the nightly sweep has not reported. Only these
+ *  carry the marker; [sweep] (what the sweep found) and [stuck] (products that
+ *  failed on their own) are business and are logged without it. */
+const OUTAGE_KINDS = Object.freeze(["pass", "sweepStale"]);
+function isOutageAlarm(alarm) {
+  return OUTAGE_KINDS.includes(alarm && alarm.kind);
+}
+
 /** The log line Cloud Monitoring matches and emails. The marker is load-bearing. */
 function alarmLine(alarm) {
   return `SHOPIFY_STOCK_ALARM [${alarm.kind}] ${alarm.message}`;
 }
 
 module.exports = {
+  isOutageAlarm, OUTAGE_KINDS,
   assessInventoryHealth, sweepProblems, alarmLine,
   PASS_STALE_MS, SWEEP_STALE_MS, REALARM_MS, PASS_WINDOW_START_MIN, PASS_WINDOW_END_MIN,
 };

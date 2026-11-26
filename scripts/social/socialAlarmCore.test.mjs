@@ -117,3 +117,22 @@ test("fix lines do not misfire on stray numbers or words", () => {
   assert.equal(fixFor("maxOutputTokens exceeded"), null);
   assert.equal(fixFor("order 14029 failed"), null);
 });
+
+// ── Junid's quiet rule (26 Nov 2026): only "nothing is posting" emails ───────
+test("quiet rule: a silent day that is NOT an outage (one missed slot) is not mailed", async () => {
+  const { isOutageAlert } = await import("./socialAlarmCore.mjs");
+  const notDown = { ok: false, severity: "silent", outage: false, reasons: ["the 18:00 reel has not landed (20 min past the slot)"] };
+  assert.equal(healthAlert(notDown, "d"), null);
+  const down = { ok: false, severity: "silent", outage: true, reasons: ["the publisher has not ticked for 90 minutes"] };
+  assert.equal(isOutageAlert(healthAlert(down, "d")), true);
+  // a record from before the field existed still pages on silent
+  assert.notEqual(healthAlert({ ok: false, severity: "silent", reasons: ["x"] }, "d"), null);
+});
+
+test("quiet rule: health, health-stale and token-invalid are outages; run errors, failed posts, retries and token expiry are held", async () => {
+  const { isOutageAlert, heldNeedsDecision } = await import("./socialAlarmCore.mjs");
+  for (const k of ["health:d:[]", "health-stale:d", "token-invalid:d"]) assert.equal(isOutageAlert({ key: k }), true, k);
+  for (const k of ["run-error:d:06:00 reel run", "publish-failed:d:x", "publisher-failing:d", "retry-broken:d:fire", "token-expiry:expires_at:1"]) assert.equal(isOutageAlert({ key: k }), false, k);
+  assert.equal(heldNeedsDecision({ key: "token-expiry:expires_at:1" }), true);
+  assert.equal(heldNeedsDecision({ key: "run-error:d:x" }), false);
+});

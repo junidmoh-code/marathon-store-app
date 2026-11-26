@@ -132,14 +132,16 @@ export async function releaseOnlinePiece(ctx, { orderId, orderRef, lineIndex, es
 }
 
 /**
- * WhatsApp to Junid (ctx.whatsappJunid); email (ctx.send) when WhatsApp is
- * missing or fails; ONCE per request record (`once` = a path to mark), so a
- * second tap on the same line does not send it again. Never throws.
+ * WhatsApp to Junid (ctx.whatsappJunid — on the live poll that is the quiet
+ * rule's held line, never a real WhatsApp); ONCE per request record (`once` =
+ * a path to mark), so a second tap on the same line does not send it again.
+ * Never throws. JUNID'S QUIET RULE (26 Nov 2026): the old email fallback is
+ * gone — these lines are not his any more (they go to Fable's review).
  */
 export async function tellJunid(ctx, text, { once = null } = {}) {
   const log = ctx.log || (() => {});
   // No channel on this run: nothing is marked, so a run that has one still tells him.
-  if (!ctx.whatsappJunid && !ctx.send) { log(`  ⚠ Junid NOT told (no WhatsApp or mail on this run): ${text.split("\n")[0]}`); return false; }
+  if (!ctx.whatsappJunid) { log(`  ⚠ Junid NOT told (no WhatsApp on this run): ${text.split("\n")[0]}`); return false; }
   let marked = false;
   if (once) {
     try {
@@ -150,13 +152,10 @@ export async function tellJunid(ctx, text, { once = null } = {}) {
   }
   try {
     if (ctx.whatsappJunid) { await ctx.whatsappJunid(text); log(`  ✉ WhatsApp to Junid: ${text.split("\n")[0]}`); return true; }
-  } catch (e) { log(`  ✗ WhatsApp to Junid failed (${String(e?.message || e)}) — emailing instead`); }
-  try {
-    if (ctx.send) { await ctx.send({ subject: "Website order: a request needs your eye", text }); log(`  ✉ emailed Junid: ${text.split("\n")[0]}`); return true; }
-  } catch (e) { log(`  ✗ email to Junid failed (${String(e?.message || e)})`); }
+  } catch (e) { log(`  ✗ WhatsApp to Junid failed (${String(e?.message || e)})`); }
   // Nothing got through: the mark comes off, so the next attempt tries again.
   if (marked) { try { await ctx.db.ref(once).set(null); } catch { /* the next tick re-marks */ } }
-  log(`  ⚠ Junid NOT told — both WhatsApp and email failed: ${text.split("\n")[0]}`);
+  log(`  ⚠ Junid NOT told — WhatsApp failed: ${text.split("\n")[0]}`);
   return false;
 }
 

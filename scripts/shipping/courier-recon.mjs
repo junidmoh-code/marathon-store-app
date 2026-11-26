@@ -21,6 +21,7 @@ import { pathToFileURL } from "node:url";
 import { createCourierClient, fileLogger } from "./courier-client.mjs";
 import { adminDb } from "./adminDb.mjs";
 import { runReconcile } from "./reconcile.mjs";
+import { appendQuietHeld } from "../lib/quietHeld.mjs";
 
 export const JUNID_WHATSAPP = "27813995333";
 
@@ -37,6 +38,22 @@ export function jimmySender({ dir = process.env.COURIER_JIMMY_DIR || join(homedi
   });
 }
 
+/**
+ * JUNID'S QUIET RULE (26 Nov 2026): the over-ceiling lines and the Monday weekly
+ * line are business reports, not outages — they are written to
+ * ~/marathon-dm-agent/data/quiet-held.jsonl for Fable's daily review instead of
+ * Junid's WhatsApp. An address-hold line (ref …-address) asked him to act, so it
+ * is held with needsDecision. → true (the line counts as delivered).
+ */
+export function heldSender({ log = () => {}, append = appendQuietHeld } = {}) {
+  return async (text, ref) => {
+    const decide = /-address$/.test(String(ref));
+    append({ channel: "whatsapp", source: "marathon-store-app:scripts/shipping/courier-recon.mjs", kind: null, subject: `courier recon ${ref}`, text, needsDecision: decide });
+    log(`recon: line held for Fable's review (${ref}): ${text}`);
+    return true;
+  };
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.includes("--adjustments")) {
     const rows = Object.values((await adminDb().ref("shipping_recon/adjustments").get()).val() ?? {}).sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
@@ -47,7 +64,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const log = (line) => { console.log(line); fileLogger()(line); };
   const real = adminDb();
   const db = dry ? dryDb(real) : real;
-  const sendJunid = dry ? async (text, ref) => { log(`DRY would send (${ref}): ${text}`); return false; } : jimmySender({ log });
+  // jimmySender() stays for a deliberate switch back; the quiet rule holds the lines.
+  const sendJunid = dry ? async (text, ref) => { log(`DRY would hold (${ref}): ${text}`); return false; } : heldSender({ log });
   const out = await runReconcile({ db, client: createCourierClient({ log: fileLogger() }), sendJunid, now: Date.now(), log });
   log(`courier-recon ${dry ? "DRY " : ""}${JSON.stringify(out)}`);
   process.exit(0);

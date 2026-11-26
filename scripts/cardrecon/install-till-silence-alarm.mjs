@@ -302,14 +302,17 @@ async function verifyMarkerInSource() {
     lib.includes("return `${MARKER} ${parts.join("),
     lib.includes("return `${MARKER} The till silence check itself FAILED"),
     lib.includes("return `${MARKER} The 07:30 till silence check ${since}"),
-    src.includes("console.error(tillSilence.alarmLine(verdict.silent));"),
+    // Junid's quiet rule (26 Nov 2026): a silent till is logged WITHOUT the
+    // marker (business, not an outage); only the failed and stale check page.
+    !src.includes("console.error(tillSilence.alarmLine(verdict.silent));"),
+    src.includes(".replace(tillSilence.MARKER, \"\")"),
     src.includes("console.error(tillSilence.failureLine(err));"),
     src.includes("console.error(tillStale);"),
   ];
   if (pins.includes(false)) {
-    return fail(`cardTillSilenceScan no longer emits the ${MARKER} marker the alert policy matches`);
+    return fail(`cardTillSilenceScan no longer emits the ${MARKER} marker the alert policy matches only for a failed or stale check (quiet rule)`);
   }
-  log("✓ functions/index.js + lib/till-silence.cjs still emit the marker (silent till, failed check, stale check)");
+  log("✓ functions/index.js + lib/till-silence.cjs emit the marker only for a failed or stale check (a silent till is logged quietly — Junid's quiet rule)");
 }
 
 async function emitTestAlarm() {

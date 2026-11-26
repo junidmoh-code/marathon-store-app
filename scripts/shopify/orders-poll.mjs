@@ -24,6 +24,7 @@ import "./env.mjs";
 import { serverNowMs } from "./publishNode.mjs";
 import { runOrdersPoll } from "./onlineOrders/poll.mjs";
 import { recordingDb } from "./onlineOrders/recordingDb.mjs";
+import { heldMailSender } from "../lib/quietHeld.mjs";
 
 const COMMIT = process.argv.includes("--commit");
 // Dry run only: --pretend-go-live=2026-10-20T00:00:00Z shows how orders from
@@ -93,6 +94,18 @@ function whatsappJunid() {
   };
 }
 
+// The WhatsApp line is held, not queued in Jamie's outbox (Junid's quiet rule).
+// whatsappJunid() above stays for a deliberate switch back.
+function whatsappHeld() {
+  const hold = heldMailSender({ source: "marathon-store-app:scripts/shopify/onlineOrders/onlinePiece.mjs", channel: "whatsapp" });
+  return async (text) => { await hold({ subject: "Website order: a request needs your eye", text: String(text) }); };
+}
+void whatsappJunid;
+
+// A refund that could not be paid out must still reach Junid: say so loudly
+// when this machine has no mail sender for it (Sonnet review, #1016).
+if (COMMIT && !mailSender()) console.error("⚠ NO MAIL SENDER (CARD_RECON_IMAP_USER / _PASSWORD or nodemailer missing): a refund that could not be paid out would be HELD, not emailed to Junid — fix .env");
+
 const started = Date.now();
 try {
   const summary = await runOrdersPoll({
@@ -100,8 +113,15 @@ try {
     pretendGoLiveMs,
     graphql: NO_SHOPIFY ? null : graphql,
     nowMs: () => serverNowMs(liveDb),
-    send: COMMIT ? mailSender() : null,
-    whatsappJunid: COMMIT ? whatsappJunid() : null,
+    // JUNID'S QUIET RULE (26 Nov 2026): only a refund that could not be paid
+    // out automatically still emails him (sendRefundFailed — the swap path's
+    // "may or may not have gone through" / "do it by hand" money). Every other
+    // message this poll used to send him (attention, expensive waybill,
+    // escalations, collect-extra, owed-back, the online-piece WhatsApp) is held
+    // in ~/marathon-dm-agent/data/quiet-held.jsonl for Fable's daily review.
+    send: COMMIT ? heldMailSender({ source: "marathon-store-app:scripts/shopify/orders-poll.mjs", decide: (m) => !/^Waybill R/.test(String(m?.subject || "")) }) : null,
+    sendRefundFailed: COMMIT ? mailSender() : null,
+    whatsappJunid: COMMIT ? whatsappHeld() : null,
     increment: (n) => admin.database.ServerValue.increment(n),
     resolveAssignment,
     // A shop whose website strip is switched off is never routed to (it could
