@@ -1517,7 +1517,7 @@ function dateStrToLocal(s) {
 //   emptyMessage — string shown when all buckets are empty
 //   includeOlder — when true, items older than 2-days-ago land in an "Older"
 //                  bucket (default collapsed). When false, they're dropped.
-function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, includeOlder = false, keyOf = null, columns = 1 }) {
+function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, includeOlder = false, keyOf = null, columns = 1, overflowing = null }) {
   // Read initial open state from sessionStorage. Default: today open, rest closed.
   const STORAGE_KEY = `dayCollapsible:${sectionKey}`;
   const [openMap, setOpenMap] = useState(() => {
@@ -1587,7 +1587,14 @@ function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, i
                 <polyline points="6 9 12 15 18 9"/>
               </svg>
             </div>
-            <div style={{ maxHeight: open ? 5000 : 0, overflow:"hidden", transition:"max-height 150ms ease" }}>
+            {/* SMOOTH ON HUB TABLETS (Junid, 26 Nov 2026). A closed day renders
+                nothing (it used to build every card hidden: Hub 2 had ~300 cards
+                in Yesterday re-rendered on each update), and an open day has no
+                height cap (the old 5000px max-height cut the end of a long list
+                off — staff could not scroll to the last orders). Each card skips
+                layout and paint while off screen (content-visibility), so a long
+                list scrolls like a short one and still scrolls to its very end. */}
+            {open && (
               <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 8px 12px", ...(columns > 1
                      ? { display:"grid", gridTemplateColumns:`repeat(${columns}, minmax(0,1fr))`, gap:12, alignItems:"start" }
                      : { display:"flex", flexDirection:"column", gap:10 }) }}>
@@ -1595,12 +1602,15 @@ function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, i
                     fallback reuses component state across neighbours when items
                     sharing a timestamp shift position (fine for stateless rows). */}
                 {s.items.map((item, i) => (
-                  <div key={keyOf ? keyOf(item) : (dateOf(item) ? `${dateOf(item)}-${i}` : i)}>
+                  <div key={keyOf ? keyOf(item) : (dateOf(item) ? `${dateOf(item)}-${i}` : i)}
+                       // A card with a menu open hangs outside its box; paint
+                       // containment would clip it, so it renders normally then.
+                       style={overflowing && overflowing(item) ? undefined : { contentVisibility:"auto", containIntrinsicSize:"auto 240px" }}>
                     {renderItem(item)}
                   </div>
                 ))}
               </div>
-            </div>
+            )}
           </div>
         );
       })}
@@ -13085,7 +13095,9 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
   };
   const [nowTick, setNowTick] = useState(() => serverNowMs());
   useEffect(() => {
-    const id = setInterval(() => setNowTick(serverNowMs()), 30 * 1000);
+    // Once a minute (was 30 s): every tick re-renders the whole queue, and no
+    // reading on it needs finer than a minute (Junid 26 Nov 2026, tablets).
+    const id = setInterval(() => setNowTick(serverNowMs()), 60 * 1000);
     return () => clearInterval(id);
   }, []);
   // ── Layby (warehouse side) ───────────────────────────────────────────────
@@ -14483,6 +14495,7 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
               // every render, so a date key would remount its card each tick and
               // drop a half-typed reject reason (CodeRabbit, #830).
               keyOf={(o) => (o.isLayby ? `layby:${o._pull?.pullId || o._pull?.key || o.id}` : `${queueDateOf(o) || ""}:${o.id}`)}
+              overflowing={(o) => menuOpenId === o.id || pickerOpenId === o.id}
               emptyMessage="No orders in the last 3 days."
               renderItem={(order) => {
             // Layby pull request — render the real PullCard inline (same L-xxxxx
