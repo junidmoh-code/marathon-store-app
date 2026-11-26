@@ -74,6 +74,16 @@ export function listedForDivision(product, listKind) {
   return !mark || mark === listKind;
 }
 
+/** The division a card's button moves a product TO, from the list it is on. */
+export const divisionTargetOf = (listKind) => (listKind === "concrete" ? "marathon" : "concrete");
+
+/**
+ * May a card of `rowKind` ("sneakers" | "clothing") offer the button that
+ * moves it to `to`? Footwear is never moved to Concrete from Missing Products
+ * (Junid, 26 Nov 2026); every other button is as it was.
+ */
+export const divisionAllowed = (rowKind, to) => !(rowKind === "sneakers" && to === "concrete");
+
 /** The multi-path update that sets / clears the Marathon mark. PURE. */
 export function buildMarathonUpdate({ pid, on, uid, nowMs }) {
   assertSafeSegment(pid, "productId");

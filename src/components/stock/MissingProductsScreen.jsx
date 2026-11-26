@@ -55,7 +55,7 @@ import { useSneakerRequest } from "./MissingFootwear";
 import { shopDestinations, shopsAreExclusive, destinationProblem } from "./divisionDestinations";
 import { otherMarathonHub, marathonHubSeated, marathonSolveRefusal, SEATS_PATH, DIVISION_SHOPS } from "./concreteDivision";
 import { undoSneakerRequest, shopOwnersNow } from "./missingActions";
-import { withDivisionMarks, listedForDivision, markDivision, undoDivision, clearDivision, restoreMarks, liveMarksOf, CONCRETE_INDEX_PATH, MARATHON_INDEX_PATH } from "./divisionMark";
+import { withDivisionMarks, listedForDivision, divisionTargetOf, divisionAllowed, markDivision, undoDivision, clearDivision, restoreMarks, liveMarksOf, CONCRETE_INDEX_PATH, MARATHON_INDEX_PATH } from "./divisionMark";
 import { ref, update, get, query, orderByChild, equalTo, runTransaction } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { unhideUpdate } from "./hiddenProductsCore";
@@ -734,7 +734,8 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     const c = ctx.current;
     const product = c.byId.get(row.pid);
     if (!product) return;
-    const to = listKindOf(c.network, row.section) === "concrete" ? "marathon" : "concrete";
+    const to = divisionTargetOf(listKindOf(c.network, row.section));
+    if (!divisionAllowed(row.kind, to)) return;   // (no button is drawn; a stale tap does nothing)
     const name = to === "concrete" ? "Concrete" : "Marathon";
     inFlight.current.add(row.pid);
     setBusy((b) => ({ ...b, [row.key]: "division" }));
@@ -784,6 +785,15 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const onPick = useCallback((row, dest) => act.current.pick(row, dest), []);
   const onSolve = useCallback((row) => act.current.solve(row), []);
   const onDivision = useCallback((row) => act.current.division(row), []);
+  // NO CONCRETE BUTTON ON SNEAKERS (Junid, 26 Nov 2026 — a kids' shoe was
+  // moved to Concrete by a mistaken tap): Marathon's footwear cards carry no
+  // division button at all. Clothing keeps it; Concrete's cards keep
+  // "Marathon". Existing marks are untouched.
+  const divisionLabelFor = (row) => {
+    if (!canMark) return null;
+    const to = divisionTargetOf(listKindOf(network, row.section));
+    return divisionAllowed(row.kind, to) ? (to === "concrete" ? "Concrete" : "Marathon") : null;
+  };
   const onPhoto = useCallback((p) => { const url = primaryPhotoUrl(p) || p?.photoUrl; if (url) setLightbox(url); }, []);
 
   // The hidden tab lists every hidden product against the cards still missing.
@@ -903,7 +913,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
                     <Slot leaving={d.leaving} entering={d.entering} data-slot={d.key}>
                       <MissingRow row={d.row} product={byId.get(d.row.pid)} twinProduct={d.row.twin ? byId.get(d.row.twin) : null}
                         selected={d.leaving ? NO_PICK : chosen(d.row)} busy={!!busy[d.key]} canAct={canAct} onPick={onPick} onSolve={onSolve} onPhoto={onPhoto}
-                        divisionLabel={canMark ? (listKindOf(network, d.row.section) === "concrete" ? "Marathon" : "Concrete") : null} onDivision={onDivision} />
+                        divisionLabel={divisionLabelFor(d.row)} onDivision={onDivision} />
                     </Slot>
                   </React.Fragment>
                 ))}
