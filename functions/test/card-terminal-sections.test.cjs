@@ -82,12 +82,12 @@ test("SECTION 2 AND PINE, EXACTLY AS THE TYPED LIST HAD THEM", () => {
   }
 });
 
-test("Concrete is a POS store with two tills, in Section 1; every store says its section", () => {
+test("Concrete is a POS store with three tills, in Section 1; every store says its section", () => {
   const s = posStores({});
   assert.deepEqual(s.map((x) => [x.storeId, x.section, x.location]), [
     ["pe", 2, "marathon-pe"], ["pine", 1, "marathon-pine"], ["trophy", 2, "trophy"], ["concrete", 1, "concrete"],
   ]);
-  assert.deepEqual(s.find((x) => x.storeId === "concrete").tills, [{ tillId: "till-1", name: "Till 1" }, { tillId: "till-2", name: "Till 2" }]);
+  assert.deepEqual(s.find((x) => x.storeId === "concrete").tills, [{ tillId: "till-1", name: "Till 1" }, { tillId: "till-2", name: "Till 2" }, { tillId: "till-3", name: "Till 3" }]);
   // The POS id resolves through the registry to the same section.
   for (const x of s) assert.equal(sectionOf(SEED_REGISTRY, x.storeId), x.section, x.storeId);
 });
@@ -112,18 +112,31 @@ test("a store with no POS id (or a hub) is never offered", () => {
   assert.equal(posStoresOf(R).some((x) => x.storeId === "hub2" || x.storeId === "central"), false);
 });
 
-test("a seeded /pos/config/{store}/tills still wins, for Concrete as for the others", () => {
+test("/pos/config/{store}/tills (the POS's Add-till records) merges over the registry's tills: add, rename, deactivate", () => {
   const s = posStores({ concrete: [{ tillId: "till-9", name: "Nine" }] });
-  assert.deepEqual(s.find((x) => x.storeId === "concrete").tills, [{ tillId: "till-9", name: "Nine" }]);
+  assert.deepEqual(s.find((x) => x.storeId === "concrete").tills, [{ tillId: "till-1", name: "Till 1" }, { tillId: "till-2", name: "Till 2" }, { tillId: "till-3", name: "Till 3" }, { tillId: "till-9", name: "Nine" }]);
+  const r = posStores({ concrete: { "till-2": { name: "Back counter" }, "till-3": { tillId: "till-3", active: false }, "till-4": { tillId: "till-4", name: "Till 4" }, junk: { tillId: "../x" } } });
+  assert.deepEqual(r.find((x) => x.storeId === "concrete").tills, [{ tillId: "till-1", name: "Till 1" }, { tillId: "till-2", name: "Back counter" }, { tillId: "till-4", name: "Till 4" }]);
   assert.equal(s.find((x) => x.storeId === "concrete").source, "pos-config");
   assert.equal(s.find((x) => x.storeId === "pe").source, "pos-fallback");
 });
 
-test("placement: Concrete Till 1 and Till 2 are accepted; a till Concrete does not have, and the location id, are refused", () => {
+test("activeTillsOf (the slip check): registry by id or alias, plus Add-till records; a deactivated till is not a till", () => {
+  const { activeTillsOf } = require("../lib/pos-tills.cjs");
+  const ids = (x) => x.map((t) => t.tillId);
+  assert.deepEqual(ids(activeTillsOf(SEED_REGISTRY, "concrete", null)), ["till-1", "till-2", "till-3"]);
+  assert.deepEqual(ids(activeTillsOf(SEED_REGISTRY, "marathon-pe", null)), ["till-1", "till-2", "till-3"]);
+  assert.deepEqual(ids(activeTillsOf(SEED_REGISTRY, "pine", { "till-2": { tillId: "till-2", name: "Till 2", active: true } })), ["till-1", "till-2"]);
+  assert.deepEqual(ids(activeTillsOf(SEED_REGISTRY, "trophy", { "till-2": { active: false } })), ["till-1"]);
+  assert.deepEqual(ids(activeTillsOf(SEED_REGISTRY, "hub2", { "till-1": { tillId: "till-1" } })), []);
+});
+
+test("placement: Concrete Till 1, 2 and 3 are accepted; a till Concrete does not have, and the location id, are refused", () => {
   const stores = posStores({});
   assert.equal(planAdd(term(), null, { stores, now: NOW }).ok, true);
   assert.equal(planAdd(term({ tillId: "till-2" }), null, { stores, now: NOW }).ok, true);
-  assert.match(planAdd(term({ tillId: "till-3" }), null, { stores, now: NOW }).reason, /Concrete has no till "till-3"/);
+  assert.equal(planAdd(term({ tillId: "till-3" }), null, { stores, now: NOW }).ok, true);
+  assert.match(planAdd(term({ tillId: "till-4" }), null, { stores, now: NOW }).reason, /Concrete has no till "till-4"/);
   assert.match(planAdd(term({ storeId: "marathon-concrete" }), null, { stores, now: NOW }).reason, /not a POS store/);
   assert.match(planAdd(term({ storeId: "concrete-stockroom" }), null, { stores, now: NOW }).reason, /not a POS store/);
 });

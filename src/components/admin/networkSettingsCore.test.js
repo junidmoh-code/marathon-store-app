@@ -187,7 +187,7 @@ describe("Concrete at the till — the POS switches", () => {
   it("starts with every switch off and no recycler", () => {
     expect(posSwitchState(R, null)).toEqual({
       flags: { cashRecon: false, cashierPriceEdit: false }, recyclerTill: null,
-      tills: [{ tillId: "till-1", name: "Till 1" }, { tillId: "till-2", name: "Till 2" }],
+      tills: [{ tillId: "till-1", name: "Till 1" }, { tillId: "till-2", name: "Till 2" }, { tillId: "till-3", name: "Till 3" }],
     });
   });
 
@@ -222,7 +222,7 @@ describe("Concrete at the till — the POS switches", () => {
     // No Receipt Return is held as its own change: its switch cannot be set from this card
     expect(posFlagUpdate(R, "noSlipReturns", true, NOW, "o").ok).toBe(false);
     expect(posFlagUpdate(R, "cashRecon", "yes", NOW, "o").ok).toBe(false);
-    expect(recyclerTillUpdate(R, "till-3", NOW, "o").ok).toBe(false);
+    expect(recyclerTillUpdate(R, "till-4", NOW, "o").ok).toBe(false);
     expect(posFlagUpdate(R, "cashRecon", true, NOW, "o", "hub3").ok).toBe(false);
     expect(recyclerTillUpdate(R, "till-1", NOW, "o", "nowhere").ok).toBe(false);
   });
