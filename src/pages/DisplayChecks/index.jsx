@@ -44,7 +44,6 @@ import TodayView from "./TodayView";
 import AvailabilityView from "./AvailabilityView";
 import AnalyticsView from "./AnalyticsView";
 import SettingsView from "./SettingsView";
-import ShelfChecksPanel from "../../components/online/ShelfChecksPanel.jsx";
 import { useTodayFeedSources } from "./useDisplayChecks";
 import { dcSession, bindDcSession } from "./session";
 
@@ -52,7 +51,7 @@ const TABS = [
   { key: "today", label: "Today", manager: false },
   // The shop's daily shelf check (Junid, 24 Nov 2026 evening): its own tab, shown once Junid has switched the shop on
   // (/config/onlineOrders/shelfChecks/shops/<shop>/on). Junid and Jafer see it either way, with a note when off.
-  { key: "shelf", label: "Shelf check", manager: false, shelf: true },
+  // Shelf check tab REMOVED (Junid, 26 Nov 2026 11:15: the shelf-check routine is off everywhere).
   { key: "availability", label: "Availability", manager: false },
   { key: "analytics", label: "Analytics", manager: true },
   { key: "settings", label: "Settings", manager: true },
@@ -232,7 +231,7 @@ export default function DisplayChecks({ onExit, products }) {
       </div>
       {/* Mounted for every shop (it is what says whether the tab shows); polled only while in front. */}
       <div style={{ display: tab === "shelf" ? "block" : "none" }}>
-        <ShelfChecksPanel loc={store} mode="tab" active={tab === "shelf"} onStatus={({ on }) => setShelfOnBy((m) => (m[store] === on ? m : { ...m, [store]: on }))} />
+        {/* Shelf check removed (Junid 26 Nov 2026). */}
       </div>
       <div style={{ display: tab === "availability" ? "block" : "none" }}>
         <AvailabilityView store={store} products={products} wide={wide} active={tab === "availability"} />

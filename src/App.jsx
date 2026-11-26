@@ -103,7 +103,6 @@ import DisplayRegistrationCard from "./components/stock/DisplayRegistrationCard"
 // are precomputed once a day inside refillHealthScan; the screen reads one
 // small node per store and nothing else.
 import StockAuditView from "./components/stock/StockAuditView";
-import ShelfChecksPanel from "./components/online/ShelfChecksPanel.jsx";
 import { WebOrderBanner } from "./components/online/WebOrderBadge.jsx";
 import { hubQueueDay } from "./utils/onlineOrders.js";
 import { stockAuditVisibleForViewer } from "./config/stockAudit";
@@ -12960,7 +12959,7 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
     if (!keys.length) return liveOrders;
     return Object.assign((liveOrders || []).map((o) => {
       const p = optimisticSent[o?.id];
-      return p && p.createdAt === (o.createdAt ?? null) && o.status === STATUS.INCOMING ? { ...o, ...p.patch } : o;
+      return p && p.createdAt === (o.createdAt ?? null) && (o.status === STATUS.INCOMING || o.status === STATUS.COMING_TOMORROW) ? { ...o, ...p.patch } : o;
     }), { settled: liveOrders?.settled, scope: liveOrders?.scope, error: liveOrders?.error });
   }, [liveOrders, optimisticSent]);
   // Drop entries the live list has caught up with.
@@ -12970,7 +12969,7 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
     // Only when the live record has LEFT Incoming, or the number now belongs to
     // another order. A missing row is a scope or hub switch mid-write, not an
     // answer (architect review of #1002).
-    const stale = keys.filter((k) => { const o = (liveOrders || []).find((x) => x?.id === k); return !!o && (o.status !== STATUS.INCOMING || (o.createdAt ?? null) !== optimisticSent[k].createdAt); });
+    const stale = keys.filter((k) => { const o = (liveOrders || []).find((x) => x?.id === k); return !!o && ((o.status !== STATUS.INCOMING && o.status !== STATUS.COMING_TOMORROW) || (o.createdAt ?? null) !== optimisticSent[k].createdAt); });
     if (stale.length) setOptimisticSent((m) => { const n = { ...m }; for (const k of stale) delete n[k]; return n; });
   }, [liveOrders, optimisticSent]);
   const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
@@ -13436,7 +13435,23 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
   // Website orders arrive here as ordinary /orders records (customer "Shopify",
   // the order's three-letter code as the number) — the same queue, the same
   // Mark as Sent; dispatch moves no stock for them (dispatchSkipsStock).
-  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill"), ...hubLaybyOrders];
+  // ON HOLD LEAVES THE CARD (Junid, 26 Nov 2026 11:15). An order on hold
+  // (Schedule for Tomorrow → coming_tomorrow) is not shown anywhere — no box,
+  // no tab — until its day, when it is back in Incoming at the top with no
+  // staff action. Display only: the record is untouched (its status stays
+  // coming_tomorrow until a person acts on it from Incoming).
+  const todaySa = getSADateString();
+  const heldDue = (o) => o.status === STATUS.COMING_TOMORROW && (() => {
+    const t = Date.parse(o.comingTomorrowAt || o.updatedAt || "");
+    if (!Number.isFinite(t)) return true;   // no date: never hide it for good
+    return new Date(t + 2 * 60 * 60 * 1000).toISOString().slice(0, 10) < todaySa;
+  })();
+  const hubOrders = [
+    ...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill")
+      .filter(o => o.status !== STATUS.COMING_TOMORROW || heldDue(o))
+      .map(o => (o.status === STATUS.COMING_TOMORROW ? { ...o, status: STATUS.INCOMING, _heldDue: true } : o)),
+    ...hubLaybyOrders,
+  ];
 
   // extraPatch is merged into the Firebase update — used to stamp sentSize when
   // the warehouse picks a substitute size. Insights/restock logs continue to
@@ -13742,7 +13757,7 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
       sendingRef.current.delete(flightKey);
       setTimeout(() => {
         const live = (liveOrdersRef.current || []).find((x) => x?.id === key && (x.createdAt ?? null) === (order.createdAt ?? null));
-        if (live && live.status === STATUS.INCOMING) undo(`#${order.id} did not save — check the connection and tap Retry.`);
+        if (live && (live.status === STATUS.INCOMING || live.status === STATUS.COMING_TOMORROW)) undo(`#${order.id} did not save — check the connection and tap Retry.`);
       }, SEND_CONFIRM_MS);
     };
     return markSentWithTransfer(order, extraPatch).then((transfer) => {
@@ -14367,7 +14382,8 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
     return { ok, fail, errors };
   };
 
-  const onHoldOrders = hubOrders.filter(o => o.status === STATUS.COMING_TOMORROW);
+  // The ON HOLD box is gone (Junid 26 Nov 2026); kept empty so nothing renders it.
+  const onHoldOrders = [];
 
   const queueFilters = [
     { key:"incoming",     label:"Incoming",     count: hubOrders.filter(o=>o.status===STATUS.INCOMING).length },
@@ -14389,7 +14405,8 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
   const webWaitingPick = (o) => o.channel === "online" && o.status === STATUS.INCOMING;
   const filtered = hubOrders
     .filter(o => filter === "all" ? o.status !== STATUS.COMING_TOMORROW : o.status === filter)
-    .sort((a, b) => (webWaitingPick(b) - webWaitingPick(a))
+    // A held order back on its day leads the list (Junid 26 Nov 2026), then website picks.
+    .sort((a, b) => ((b._heldDue === true) - (a._heldDue === true)) || (webWaitingPick(b) - webWaitingPick(a))
       || (webWaitingPick(a) ? (queueDateOf(a) || "").localeCompare(queueDateOf(b) || "") : (queueDateOf(b) || "").localeCompare(queueDateOf(a) || "")));
 
   // Tally for the incoming pill at top right
@@ -14482,11 +14499,11 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
             {/* This hub's daily shelf checks (Junid, 24 Nov 2026). Website picks still to be pulled are NOT
                 repeated in a box of their own (Junid, 24 Nov 2026 evening): they lead the list below, in the
                 Today group whatever day they came in, bold, with their three-letter code and waiting time. */}
-            <ShelfChecksPanel loc={selectedHub} />
+            {/* SHELF CHECK card removed (Junid, 26 Nov 2026 11:15: routine off everywhere). */}
             <DayCollapsible
               sectionKey={`wh-${filter}`}
               items={filtered}
-              dateOf={(o) => hubQueueDay(o, webWaitingPick, queueDateOf, serverNowIso())}
+              dateOf={(o) => hubQueueDay(o, (x) => webWaitingPick(x) || x._heldDue === true, queueDateOf, serverNowIso())}
               columns={isWide ? 2 : 1}
               // Cards here are STATEFUL now (TomorrowActionButton holds a
               // Central probe); the date-index fallback key would hand one
@@ -14940,10 +14957,7 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
               <div style={{ fontSize:18, fontWeight:800, color:"#9DBCFF", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{incomingCount}</div>
               <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>Incoming</div>
             </div>
-            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
-              <div style={{ fontSize:18, fontWeight:800, color: onHoldOrders.length ? "#F59E0B" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{onHoldOrders.length}</div>
-              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>On hold</div>
-            </div>
+            {/* "On hold" tile removed (Junid 26 Nov 2026). */}
           </div>
         </aside>
         {/* MAIN */}
@@ -17940,7 +17954,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         {/* WEBSITE ORDERS THAT REACHED CENTRAL (Junid, 24 Nov 2026): Central is the last stop of every
             website line's chain. The same strip as a shop's Display Checks — pull the piece, tap Found or
             Not found; a found piece goes on the next morning stock run. Shown above every tab. */}
-        <ShelfChecksPanel loc="central" />
+        {/* SHELF CHECK card removed (Junid, 26 Nov 2026). */}
         {tab==="hub1refill" && hubTabContent("hub1")}
         {tab==="clothing" && hubTabContent("hub2")}
         {/* Shop tabs — first-batch requests from Central (request rows only). */}

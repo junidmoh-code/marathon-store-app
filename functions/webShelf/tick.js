@@ -32,6 +32,12 @@ async function runTick(db, { nowMs = Date.now(), io = {} } = {}) {
   // On the way FIRST: the rejections below are judged against it.
   try { out.onTheWay = await O.trackOnTheWay(db, { nowMs, readSince: io.readSince || ledgerSince(db), log }); }
   catch (e) { console.error("[shelf-tick] on the way failed:", e && e.message ? e.message : e); out.onTheWayError = String((e && e.message) || e); }
+  // Shelf checks off (Junid, 26 Nov 2026): no list is built and no rejection
+  // is held for a check. On the way above keeps running — the website
+  // write-down and its self-restore still read it.
+  let off = false;
+  try { off = (await db.ref("config/onlineOrders/shelfChecks/off").once("value")).val() === true; } catch { off = false; }
+  if (off) { log("shelf checks off — rejections not held"); out.rejections = { skipped: "off" }; return out; }
   try {
     out.rejections = await R.scanRejections(db, { nowMs, readInsights: io.readInsights || insightsFrom(db), readRequests: io.readRequests || requestsResolvedSince(db), markDirty: io.markDirty || markDirty(db), log });
     log(`rejections: ${out.rejections.rejections} read (${out.rejections.insights} log rows, ${out.rejections.requests} requests), ${out.rejections.held} shelves held`);
