@@ -20,6 +20,12 @@ function defaultTransport() {
 }
 
 // order: { id, productId, productName, size, sentSize?, customerName? }
+// THE ONE SETTING (Junid, 26 Nov 2026): sending an order prints NO label and
+// never touches the printer. The print code below is kept, untouched, for the
+// day it returns — flip this to true. The ⋮ "Reprint label" menu still prints
+// on demand; only the send-time print is off.
+export const SEND_PRINTS_LABEL = false;
+
 export async function printDispatchLabel(order, transport = defaultTransport()) {
   try {
     if (!order?.productId) return { ok: false, error: "Order has no product to label." };

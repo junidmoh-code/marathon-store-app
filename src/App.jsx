@@ -210,7 +210,8 @@ import InitialDistributionWizard from "./components/stock/InitialDistributionWiz
 import { ensureBarcodes } from "./components/stock/barcodeStore";
 import { attachPrintedBarcode, readBarcodeOwners, inspectPrintedBarcode, labelIsRedundant } from "./components/stock/printedBarcodeStore";
 import { PRINTED_ALREADY, PRINTED_CONFLICT, PRINTED_SIZE_MISMATCH } from "./utils/eanBarcode";
-import { printDispatchLabel } from "./components/stock/printDispatch";
+import { printDispatchLabel, SEND_PRINTS_LABEL } from "./components/stock/printDispatch";
+import { withoutUndefined } from "./utils/withoutUndefined";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { dispatchSkipsStock } from "./utils/dispatchStockPolicy";
@@ -1313,17 +1314,34 @@ function writeOrder(order) {
 // Every action carries the device stamp — who, on which device, when — under
 // orders/{id}/stamps, one key per action (src/device/deviceStamp.js).
 function updateOrder(id, patch) {
-  return update(ref(database, `orders/${id}`), stampPatch(patch, orderActionName(patch))).catch((err) => {
-    console.warn(`Firebase updateOrder(${id}) failed:`, err);
-  });
+  // Undefined values dropped first: update() throws on them synchronously,
+  // which escaped as a red banner (Junid 26 Nov 2026). A real failure is
+  // logged, never thrown at the person who tapped.
+  try {
+    return update(ref(database, `orders/${id}`), withoutUndefined(stampPatch(patch, orderActionName(patch)))).catch((err) => {
+      console.warn(`Firebase updateOrder(${id}) failed:`, err);
+    });
+  } catch (err) {
+    console.warn(`Firebase updateOrder(${id}) refused:`, err?.message || err);
+    return Promise.resolve();
+  }
 }
 
 // ─── INSIGHTS LOG ────────────────────────────────────────────────────────────
 // Permanently appended — never deleted. Each entry is pushed to /insights_log
 // with a Firebase-generated chronological key.
 function logInsight(entry) {
-  push(ref(database, "insights_log"), entry)
-    .catch(err => console.warn("logInsight failed:", err));
+  // A website order has no customerPhone: an undefined field made push() throw
+  // synchronously ("push failed: value argument contains undefined in property
+  // 'insights_log.customerPhone'") and the throw reached staff as a red banner
+  // and stopped the Send mid-way (Junid 26 Nov 2026). Undefined is dropped; any
+  // failure is logged quietly.
+  try {
+    push(ref(database, "insights_log"), withoutUndefined(entry))
+      .catch(err => console.warn("logInsight failed:", err));
+  } catch (err) {
+    console.warn("logInsight refused:", err?.message || err);
+  }
 }
 
 // Whole-node readers share ONE subscription via InsightsLogProvider — this hook
@@ -12830,7 +12848,7 @@ const WH_TAB_ICON = {
 // An unresolvable row (no productId/size, unreadable cell) keeps today's
 // Tomorrow behaviour — fail-open, because a false OOS wrongly messages the
 // customer while a false Tomorrow merely keeps the human's own promise.
-function TomorrowActionButton({ order, product, onOutcome }) {
+function TomorrowActionButton({ order, product, onOutcome, hideWhenOOS = false }) {
   // sentSize is what physically left when a substitute was sent; the promise
   // (and the refill request updateStatus raises) draws on the same cell.
   const gateSize = order.sentSize ?? order.size ?? null;
@@ -12890,6 +12908,8 @@ function TomorrowActionButton({ order, product, onOutcome }) {
       setBusy(false);
     }
   };
+  // The card's own "Out of stock" button is the one reject button (Junid 26 Nov 2026).
+  if (hideWhenOOS && offersOOS && !busy) return null;
   return (
     <button onClick={tap} disabled={busy}
             title={offersOOS ? "Central has none of this size — this will mark the order out of stock" : undefined}
@@ -12905,8 +12925,34 @@ function TomorrowActionButton({ order, product, onOutcome }) {
     </button>
   );
 }
+// ONE REJECT BUTTON (Junid, 26 Nov 2026): when Central has none, this button
+// used to read "Out of stock" right beside the card's own "Out of stock" — two
+// buttons for one action. The card's button is the one (it runs the same
+// updateStatus out-of-stock path; the website chain move and single-piece
+// write-down follow from that status on the poller). So in that case this slot
+// shows nothing (hideWhenOOS); with Central holding the size it is
+// "Schedule for Tomorrow".
 
-function WarehouseView({ products = [], orders, onExit }) {
+function WarehouseView({ products = [], orders: liveOrders, onExit }) {
+  // Orders this device has just sent, shown as sent at once while the write
+  // runs (markSentAndPrint). An entry stops applying the moment the live
+  // record has left Incoming, or if it is a different order (number reused).
+  const [optimisticSent, setOptimisticSent] = useState({});
+  const orders = useMemo(() => {
+    const keys = Object.keys(optimisticSent);
+    if (!keys.length) return liveOrders;
+    return Object.assign((liveOrders || []).map((o) => {
+      const p = optimisticSent[o?.id];
+      return p && p.createdAt === (o.createdAt ?? null) && o.status === STATUS.INCOMING ? { ...o, ...p.patch } : o;
+    }), { settled: liveOrders?.settled, scope: liveOrders?.scope, error: liveOrders?.error });
+  }, [liveOrders, optimisticSent]);
+  // Drop entries the live list has caught up with.
+  useEffect(() => {
+    const keys = Object.keys(optimisticSent);
+    if (!keys.length) return;
+    const stale = keys.filter((k) => { const o = (liveOrders || []).find((x) => x?.id === k); return !o || o.status !== STATUS.INCOMING; });
+    if (stale.length) setOptimisticSent((m) => { const n = { ...m }; for (const k of stale) delete n[k]; return n; });
+  }, [liveOrders, optimisticSent]);
   const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
   // The display ROW LEDGER (/settings/displayRows). The send closes whatever is
   // open for that wall in the same write that opens the new row, so it needs to
@@ -13649,12 +13695,36 @@ function WarehouseView({ products = [], orders, onExit }) {
     return transfer;
   };
 
-  const markSentAndPrint = async (order, extraPatch = {}) => {
+  // SEND IS INSTANT (Junid, 26 Nov 2026). The card moves the moment Send is
+  // pressed (optimisticSent, applied to the list this view renders); the
+  // transfer and the status write run in the background in the same order as
+  // before (A3: transfer first). Only a real failure brings the card back,
+  // with a plain message and Retry. No label is printed on send
+  // (SEND_PRINTS_LABEL, printDispatch.js) — the printer is never contacted.
+  const markSentAndPrint = (order, extraPatch = {}) => {
     const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
-    const transfer = await markSentWithTransfer(order, extraPatch);
-    // A skipped footwear transfer still gets its label — the parcel physically
-    // travels to the shop exactly as before; only the ledger move is gone.
-    if (!transfer.moved && !transfer.skipped) return;  // recordDispatchTransfer already raised the explaining toast
+    const key = order.id;
+    setOptimisticSent((m) => ({ ...m, [key]: { createdAt: order.createdAt ?? null, patch: { status: STATUS.READY, readyAt: serverNowIso(), ...extraPatch } } }));
+    const undo = (text) => {
+      setOptimisticSent((m) => { const n = { ...m }; delete n[key]; return n; });
+      if (text) setPrintToast({ kind: "err", text, retry: () => { setPrintToast(null); markSentAndPrint(order, extraPatch); } });
+    };
+    return markSentWithTransfer(order, extraPatch).then((transfer) => {
+      // The refusal already explained itself (paused toast / "NOT sent — hub shows 0").
+      if (transfer?.blockSend) { undo(null); return transfer; }
+      if (!SEND_PRINTS_LABEL) return transfer;
+      // A skipped footwear transfer still gets its label — the parcel physically
+      // travels to the shop exactly as before; only the ledger move is gone.
+      if (!transfer.moved && !transfer.skipped) return transfer;
+      sendTimeLabel(order, sentSize);
+      return transfer;
+    }).catch((err) => {
+      console.warn(`Send failed for #${order.id}:`, err?.message || err);
+      undo(`#${order.id} did not save — check the connection and tap Retry.`);
+    });
+  };
+  // Kept for the day SEND_PRINTS_LABEL returns; nothing calls it while it is false.
+  const sendTimeLabel = (order, sentSize) => {
     printDispatchLabel({ ...order, sentSize })
       .then((res) => {
         const diag = res?.diag ? ` [${res.diag}]` : "";
@@ -13795,7 +13865,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           // Unreachable for a footwear line: allowNegative bypasses the floor,
           // and the floor is the only source of this reason. So this branch
           // cannot change sneaker behaviour.
-          setPrintToast({ kind: "err", text: `#${order.id} NOT sent — ${HUB_LABELS[fromHub] || fromHub} shows ${res.available ?? 0} on this size. Mark it Out of Stock instead.` });
+          setPrintToast({ kind: "err", text: `#${order.id} NOT sent — ${HUB_LABELS[fromHub] || fromHub} shows ${res.available ?? 0} on this size. Tap Out of stock instead.` });
           setTimeout(() => setPrintToast(null), 9000);
           return { moved: false, reason: "insufficient_stock", blockSend: true };
         }
@@ -14654,9 +14724,9 @@ function WarehouseView({ products = [], orders, onExit }) {
                           <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)}
                                   style={{ padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B" }}>
                             <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                            Mark as Out of Stock
+                            Out of stock
                           </button>
-                          <TomorrowActionButton order={order} product={whProductsById[order.productId]}
+                          <TomorrowActionButton order={order} product={whProductsById[order.productId]} hideWhenOOS
                             onOutcome={(kind) => updateStatus(order, kind === "out_of_stock" ? STATUS.OUT_OF_STOCK : STATUS.COMING_TOMORROW)} />
                           <button onClick={() => subAvailable && setPickerOpenId(order.id)}
                                   disabled={!subAvailable}
@@ -14881,6 +14951,12 @@ function WarehouseView({ products = [], orders, onExit }) {
                       background: printToast.kind === "ok" ? "rgba(0,150,70,.92)" : "rgba(150,30,30,.94)",
                       color:"#fff", border:"1px solid rgba(255,255,255,.18)", boxShadow:"0 6px 24px rgba(0,0,0,.4)" }}>
           {printToast.text}
+          {printToast.retry && (
+            <button onClick={printToast.retry} style={{ marginLeft:10, padding:"5px 12px", borderRadius:8, border:"1px solid rgba(255,255,255,.5)", background:"rgba(255,255,255,.15)", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer" }}>Retry</button>
+          )}
+          {printToast.retry && (
+            <button onClick={() => setPrintToast(null)} aria-label="Dismiss" style={{ marginLeft:6, padding:"5px 8px", borderRadius:8, border:0, background:"transparent", color:"#fff", fontSize:13, cursor:"pointer" }}>✕</button>
+          )}
         </div>
       )}
       {/* TOP BAR */}

@@ -1,3 +1,4 @@
+import { isFirebaseArgumentError } from "./utils/withoutUndefined";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./appShell.css";
@@ -34,8 +35,11 @@ if (typeof window !== "undefined") {
       el.appendChild(line);
     } catch { /* ignore */ }
   };
-  window.addEventListener("error", (e) => showFatal(String(e?.message || e?.error || e) + (e?.filename ? `  (${e.filename}:${e.lineno})` : "")));
-  window.addEventListener("unhandledrejection", (e) => showFatal("Promise: " + String(e?.reason?.message || e?.reason || e)));
+  // A Firebase write-argument error (an undefined field) is a code bug to log,
+  // never a red banner on a staff screen (Junid 26 Nov 2026).
+  const quiet = (msg) => { if (isFirebaseArgumentError(msg)) { console.warn("[quiet]", msg); return true; } return false; };
+  window.addEventListener("error", (e) => { const m = String(e?.message || e?.error || e); if (quiet(m)) return; showFatal(m + (e?.filename ? `  (${e.filename}:${e.lineno})` : "")); });
+  window.addEventListener("unhandledrejection", (e) => { const m = String(e?.reason?.message || e?.reason || e); if (quiet(m)) return; showFatal("Promise: " + m); });
 }
 
 // A tapped push notification lands here as /?push=order&hub=…&order=… .
