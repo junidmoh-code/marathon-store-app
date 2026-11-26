@@ -75,6 +75,7 @@ const { isPortalDay } = require("../lib/card-portal.cjs");
 const { SB_READER_VERSION, planSbFiling, sequenceTidProof, typedCheck: sbTypedCheck, typedStandsFor, sastYmd: sbSastYmd } = require("../lib/card-sb-photo.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { activeTillsOf } = require("../lib/pos-tills.cjs");
+const { locationOf } = require("../lib/network-registry.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
 const { tillAt, windowTill } = require("../lib/card-terminal-placements.cjs");
 const { SLIP_SCOPE_FIELD, readSlipScope, slipScopeAllows } = require("../lib/card-slip-scope.cjs");
@@ -2443,11 +2444,14 @@ async function handleSlip(db, request, deps = {}) {
   // The store's tills are the registry's plus the POS's Add-till records
   // (/pos/config/{store}/tills — one small read by key, lib/pos-tills.cjs).
   // A failed read falls back to the registry's tills alone — never a throw.
+  // The records are keyed by the store's POS id, whatever id the row carries.
+  const placeRegistry = await loadNetwork(db);
+  const placePosId = (locationOf(placeRegistry, placeStore) || {}).posId || placeStore;
   let placeConfig = null;
-  if (/^[a-z0-9-]{1,40}$/.test(String(placeStore))) {
-    try { placeConfig = (await db.ref(`pos/config/${placeStore}/tills`).once("value")).val(); } catch (err) { console.warn(`slip: pos/config/${placeStore}/tills unread (${err && err.message}) — registry tills only`); }
+  if (/^[a-z0-9-]{1,40}$/.test(String(placePosId))) {
+    try { placeConfig = (await db.ref(`pos/config/${placePosId}/tills`).once("value")).val(); } catch (err) { console.warn(`slip: pos/config/${placePosId}/tills unread (${err && err.message}) — registry tills only`); }
   }
-  if (!activeTillsOf(await loadNetwork(db), placeStore, placeConfig).some((t) => t.tillId === placeTill)) {
+  if (!activeTillsOf(placeRegistry, placeStore, placeConfig).some((t) => t.tillId === placeTill)) {
     console.error(`CARD_SLIP_ORPHAN_TILL uid=${uid} tid=${picked} till=${placeStore}/${placeTill}: not a POS till — slip refused`);
     return reject(`${here.label || terminal.label || picked} is not set up as a till in the POS, so its slip would not reach Card Recon — nothing was recorded. Tell Junid.`);
   }

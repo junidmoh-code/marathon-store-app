@@ -40,7 +40,7 @@ describe("the model", () => {
     for (const id of ["marathon-pine", "concrete", "hub3"]) expect(isLive(SEED, id), id).toBe(false);
   });
 
-  it("gives Concrete two tills and keeps the tills the POS has today", () => {
+  it("gives Concrete three tills (26 Nov 2026) and keeps the tills the POS has today", () => {
     expect(tillsFor(SEED, "concrete").map((t) => t.tillId)).toEqual(["till-1", "till-2", "till-3"]);
     expect(tillsFor(SEED, "pe").map((t) => t.tillId)).toEqual(["till-1", "till-2", "till-3"]);
     expect(tillsFor(SEED, "trophy").map((t) => t.tillId)).toEqual(["till-1", "till-2"]);
