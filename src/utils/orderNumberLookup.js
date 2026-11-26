@@ -55,13 +55,15 @@ export function parseTypedOrderNumber(typed) {
 export function orderMatchesNumber(order, want) {
   if (!order || !want) return false;
   if (order.channel === "online") return false;
+  // Soft-deleted orders answer to nothing (same three flags App.jsx treats as gone).
+  if (order.deleted || order.removed || order.archived) return false;
   const p = parseOrderKey(order.id);
   if (p.kind !== "order") return false;
   if (p.number !== want.number) return false;
   return want.prefix == null || p.prefix === want.prefix;
 }
 
-export const isOpenOrder = (o) => OPEN.has(o?.status) && !o?.deleted && !o?.removed;
+export const isOpenOrder = (o) => OPEN.has(o?.status) && !o?.deleted && !o?.removed && !o?.archived;
 
 const newestFirst = (a, b) => (createdMs(b) || 0) - (createdMs(a) || 0);
 
@@ -141,7 +143,7 @@ export function rankOrdersForNumber(orders, typed, { shop = null, nowMs } = {}) 
     });
 }
 
-/** "Wed 26 Nov · 08:42" in South African time, for a picker row or a date mark. */
+/** "Thu 26 Nov · 08:42" in South African time, for a picker row or a date mark. */
 export function orderWhenLabel(order) {
   const t = createdMs(order);
   if (!Number.isFinite(t)) return "date unknown";

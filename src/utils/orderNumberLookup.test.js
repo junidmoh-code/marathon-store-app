@@ -89,6 +89,27 @@ describe("lookupOrderByNumber", () => {
     expect(r.options[0].earlier).toBe(true);
   });
 
+  it("soft-deleted orders answer to nothing", () => {
+    for (const flag of ["deleted", "removed", "archived"]) {
+      expect(lookupOrderByNumber([o("007", "2026-11-26T07:00:00Z", "collected", "trophy", { [flag]: true })], "007", { nowMs: NOW }).kind).toBe("none");
+    }
+  });
+
+  it("a typed prefix keeps to that sequence; a malformed createdAt is never today's", () => {
+    const pine = o("P007", "2026-11-26T07:00:00Z", "incoming", "marathon-pine");
+    expect(lookupOrderByNumber([TODAY_007, pine], "P7", { nowMs: NOW }).options.map((x) => x.order)).toEqual([pine]);
+    const bad = o("007", "garbage", "collected", "trophy");
+    expect(lookupOrderByNumber([bad], "007", { nowMs: NOW }).options[0].earlier).toBe(true);
+  });
+
+  it("this shop's old finished order wins over another shop's open one (shop first, as asked)", () => {
+    const oldHere = o("007", "2026-11-23T07:00:00Z", "collected", "marathon-pe");
+    const openThere = o("007", "2026-11-26T07:00:00Z", "incoming", "trophy");
+    const r = lookupOrderByNumber([openThere, oldHere], "007", { shop: "marathon-pe", nowMs: NOW });
+    expect(r.options.map((x) => x.order)).toEqual([oldHere]);
+    expect(r.options[0].earlier).toBe(true);
+  });
+
   it("nothing for a refill number, a word, or no match", () => {
     expect(lookupOrderByNumber([REFILL_LINE], "R007", { nowMs: NOW }).kind).toBe("none");
     expect(lookupOrderByNumber([REFILL_LINE], "007", { nowMs: NOW }).kind).toBe("none");

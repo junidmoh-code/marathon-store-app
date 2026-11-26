@@ -15699,6 +15699,9 @@ function CustomerView({ orders, shop = null, onExit }) {
   // More than one OPEN order with the typed number (orderNumberLookup.js):
   // a short picker, staff tap the right one. null = no picker.
   const [picks, setPicks] = useState(null);
+  // The number the picker answers for — not the live input, which may be
+  // edited after the search.
+  const [pickedNumber, setPickedNumber] = useState("");
   // Use the whole screen on desktop (≥1024px); phones keep the single column.
   const isWide = !useIsNarrow(1024);
   // Respect the Hub-2 dispatch hold on this customer-facing page: a READY order
@@ -15733,10 +15736,11 @@ function CustomerView({ orders, shop = null, onExit }) {
       const res = lookupOrderByNumber(heldOrders, clean, { shop, nowMs: serverNowMs() });
       setFound(res.kind === "one" ? res.options[0].order : null);
       setPicks(res.kind === "pick" ? res.options : null);
+      setPickedNumber(clean);
       return;
     }
     setPicks(null);
-    setFound(heldOrders.find(o => o.id === clean) || null);
+    setFound(heldOrders.find(o => o.id === clean || o.id === clean.toUpperCase()) || null);
   };
   // A row tapped in a list (picker, rail, recent orders) IS the order — never
   // re-resolved from its number, which another order may share.
@@ -15748,19 +15752,23 @@ function CustomerView({ orders, shop = null, onExit }) {
   const foundEarlier = found ? (saDayOf(Date.parse(found.createdAt || "")) ?? "") < (saDayOf(serverNowMs()) ?? "") : false;
   const earlierMark = foundEarlier ? (
     <div role="note" style={{ marginBottom: 12, background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.4)", color: "#FBBF24", borderRadius: 12, padding: "10px 14px", fontSize: 13, fontWeight: 700 }}>
-      Not today's order — placed {orderWhenLabel(found)}
+      {found.createdAt ? `Not today's order — placed ${orderWhenLabel(found)}` : "Not today's order — date unknown"}
     </div>
   ) : null;
+  // Each row shows the order as it is NOW (status moves while the picker is
+  // open): the snapshot is re-found in the live list by number + createdAt.
+  const livePick = (o) => heldOrders.find(x => x.id === o.id && x.createdAt === o.createdAt) || o;
   const pickerList = picks ? (
-    <div style={{ marginTop: 16 }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(233,238,255,.75)", marginBottom: 10 }}>
-        {picks.length} orders have #{orderId}. Tap the right one.
+    <div role="group" aria-label={`Orders with number ${pickedNumber}`} style={{ marginTop: 16 }}>
+      <div role="status" style={{ fontSize: 13, fontWeight: 700, color: "rgba(233,238,255,.75)", marginBottom: 10 }}>
+        {picks.length} orders have #{pickedNumber}. Tap the right one.
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {picks.map(({ order: o, earlier }) => {
+        {picks.map(({ order: snap, earlier }, i) => {
+          const o = livePick(snap);
           const c = STATUS_CONFIG[o.status];
           return (
-            <button key={`${o.id}:${o.createdAt || ""}`} onClick={() => pickOrder(o)} className="ot-press"
+            <button key={`${o.id}:${o.createdAt || i}`} onClick={() => pickOrder(o)} className="ot-press"
                     style={{ width: "100%", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", borderRadius: 14, padding: 12, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 11, fontFamily: FONT }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 800, color: earlier ? "#FBBF24" : "#fff" }}>{orderWhenLabel(o)}</div>
@@ -15822,7 +15830,7 @@ function CustomerView({ orders, shop = null, onExit }) {
     // open first, newest first) — a substring of the key used to pull in every
     // refill line "R007-…" from other days. Anything else searches by name.
     const railList = (q
-      ? (parseTypedOrderNumber(q) ? rankOrdersForNumber(heldOrders, q, { shop, nowMs: serverNowMs() }) : heldOrders.filter(o => (o.customerName || "").toLowerCase().includes(q)))
+      ? (parseTypedOrderNumber(q) ? rankOrdersForNumber(heldOrders, q, { shop, nowMs: serverNowMs() }) : heldOrders.filter(o => String(o.id).toLowerCase() === q || (o.customerName || "").toLowerCase().includes(q)))
       : heldOrders).slice(0, 60);
     const statusAt = found ? ({ [STATUS.INCOMING]: found.createdAt, [STATUS.READY]: found.readyAt, [STATUS.OUT_OF_STOCK]: found.outOfStockAt, [STATUS.COMING_TOMORROW]: found.comingTomorrowAt, [STATUS.COLLECTED]: found.collectedAt }[found.status] || found.updatedAt) : null;
     const subbed = found && found.sentSize && found.sentSize !== found.size ? found.sentSize : null;
@@ -17968,7 +17976,7 @@ function ReturnsView({ orders, products = [], onExit }) {
     // open first (utils/orderNumberLookup.js, Junid 26 Nov 2026) — not every
     // key that happens to contain the digits. Anything else searches by name.
     if (parseTypedOrderNumber(q)) return rankOrdersForNumber(last3DaysOrders, q, { nowMs: serverNowMs() });
-    return last3DaysOrders.filter(o => (o.customerName || "").toLowerCase().includes(q));
+    return last3DaysOrders.filter(o => String(o.id).toLowerCase() === q || (o.customerName || "").toLowerCase().includes(q));
   }, [last3DaysOrders, search]);
 
   // R1 (stock-integrity) — a confirmed return MOVES THE LEDGER, not just the log.
