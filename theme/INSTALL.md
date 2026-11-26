@@ -1,5 +1,19 @@
 # Marathon Club storefront — install, preview, publish, revert
 
+> **Update 2026-11-26 — store credit bar.** Live theme `Marathon — free shipping
+> R2,000 (21 Nov)` (#190805508245) got `snippets/mc-credit-bar.liquid` (new) and a
+> one-line `{%- render 'mc-credit-bar' -%}` above `{% sections 'header-group' %}` in
+> `layout/theme.liquid`. A signed-in customer with a store credit balance in the
+> currency they browse in sees "Your Marathon balance: R 350 — ready to spend" on
+> every theme page; guests and zero balances get nothing. Pushed with
+> `shopify theme push --only=<both files> --nodelete --allow-live`. The theme
+> library is at Shopify's 20-theme cap, so `theme duplicate` fails and there was
+> no preview copy. Rollback: push
+> `theme/backups/2026-11-26-store-credit-bar/layout/theme.liquid` (the live file
+> as it was before) over `layout/theme.liquid`. The orphaned snippet renders
+> nothing on its own. The shop uses NEW customer accounts (Shopify-hosted
+> /account), which already show the balance and cannot be themed.
+
 > **Update 2026-11-01 — PostHog (PR #835). LIVE theme is now
 > `Marathon — photo-first + PostHog` (#189947707541).** It was duplicated with
 > the CLI from the theme that was actually live, `MSA 2026-10-22
