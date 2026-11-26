@@ -43,6 +43,7 @@ import { PUBLISH_PATH, SYNC_PATH, storeNode, STORE, IS_MARATHON, STORES } from "
 import {
   ONLINE_ORDERS_PATH, ONLINE_RESERVATIONS_PATH, ONLINE_ORDERS_CONFIG_PATH, PACKING_STORE, orderLabel,
   ORDER_STATUS, LINE_STATUS, ATTENTION_KIND, COURIER_COMPANY, HOLDING_STATUSES, TERMINAL_STATUSES, deriveOrderStatus,
+  isReturnOnlyOrder, isReturnOnlyLine,
 } from "../../../src/utils/onlineOrders.js";
 import { stockSizeKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "../../../src/utils/sizeKey.js";
 import { productIsFootwear } from "../../../src/utils/footwearLine.js";
@@ -57,6 +58,7 @@ import { fetchOrdersUpdatedSince, fetchOrderById, addTrackingToOrder, fetchShipp
 import { bookShipment, readLive, estimateForOrder, estimateSig, isExchangeKey, doorRetryDue, doorHandBackDue, claimDoorRetry, handBackBooked, isOwnCourier } from "./shipping.mjs";
 import { sweepUnknownBookings, RELEASED_PATH as UNKNOWN_RELEASED_PATH } from "../../shipping/unknownBooking.mjs";
 // The held-courier text (scripts/shipping/exchangeReturn.mjs releases an order carrying exactly this when Junid says good).
+export const RETURN_ONLY_COURIER_TEXT = "this is a return-only record, or carries a returning line (store credit / refund instead of a replacement): nothing ships for it";
 export const HOLD_COURIER_TEXT = "Junid said the returned item is not in good condition: nothing ships until he tells Jimmy otherwise";
 import { mintHubCode } from "./orderRefs.mjs";
 import { normalizeNetwork, locationOf, SEED_REGISTRY } from "../../../src/utils/networkRegistry.js";
@@ -221,6 +223,13 @@ export async function runOrdersPoll(deps) {
       ctx.touched.add(id);
       let order = order0;
       try {
+        // A RETURN-ONLY collection (store credit / refund instead of a replacement): none of the request appliers,
+        // routing, escalation or chain moves below apply — its line is the item coming back (keepReturnOnly).
+        if (isReturnOnlyOrder(order)) {
+          await keepReturnOnly(ctx, id, order);
+          ctx.summary.kept++;
+          continue;
+        }
         // The POS "Replace" (swapRequests.mjs) first: the rest of the pass
         // then raises the new line's hub order / strip entry and its hold.
         if (order?.swapRequests && await applySwapRequests(ctx, id, order)) {
@@ -728,13 +737,15 @@ async function maintainOrder(ctx, id, order) {
   const { db, now, enabled } = ctx;
   ctx.touched?.add(id);
   if (!order || isTerminal(order.status)) return null;
+  if (isReturnOnlyOrder(order)) return keepReturnOnly(ctx, id, order);
   const before = linesOf(order);
 
   // (a) RE-ROUTE what Resolve sent back. The first piece keeps the line's
   // index (its basket tick and history stay put); extra pieces are appended.
   const changed = new Map();
   const appended = [];
-  const reroute = before.map((l, i) => (l?.source?.status === LINE_STATUS.REROUTE ? i : -1)).filter((i) => i >= 0);
+  // A returning line (returnOnly) is never routed: nothing goes out for it.
+  const reroute = before.map((l, i) => (l?.source?.status === LINE_STATUS.REROUTE && !isReturnOnlyLine(l) ? i : -1)).filter((i) => i >= 0);
   if (reroute.length) {
     const resolvedList = [];
     for (const i of reroute) {
@@ -744,7 +755,7 @@ async function maintainOrder(ctx, id, order) {
     }
     const ownOther = {};
     before.forEach((l, i) => {
-      if (reroute.includes(i) || !l?.pid || !l.source?.locationId) return;
+      if (reroute.includes(i) || !l?.pid || !l.source?.locationId || isReturnOnlyLine(l)) return;
       const key = `${l.pid}|${l.sizeKey}`;
       (ownOther[key] ||= {})[l.source.locationId] = ((ownOther[key] || {})[l.source.locationId] || 0) + (Number(l.qty) || 0);
     });
@@ -805,7 +816,7 @@ async function maintainOrder(ctx, id, order) {
   for (let i = 0; i < before.length; i++) {
     const l = changed.get(i) || before[i];
     const keys = l?.source?.orderKeys;
-    if (!Array.isArray(keys) || !keys.length || l.source.status !== LINE_STATUS.PICK) continue;
+    if (!Array.isArray(keys) || !keys.length || l.source.status !== LINE_STATUS.PICK || isReturnOnlyLine(l)) continue;
     const records = [];
     for (const k of keys) {
       const r = await ctx.get(`orders/${k}`);
@@ -847,7 +858,7 @@ async function maintainOrder(ctx, id, order) {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const st = line?.source?.status;
-      if ((st !== LINE_STATUS.PICK && st !== LINE_STATUS.DISPLAY) || line.source.entryKey) continue;
+      if ((st !== LINE_STATUS.PICK && st !== LINE_STATUS.DISPLAY) || line.source.entryKey || isReturnOnlyLine(line)) continue;
       const entry = await createEntry(ctx, id, { ...order, lines }, i, line);
       if (entry) entryKeys.set(i, entry);
     }
@@ -900,6 +911,39 @@ async function maintainOrder(ctx, id, order) {
   // The order as this pass left it, for the caller's escalation check. null
   // when the order is gone (the caller then reads exactly, as it always did).
   return committed ?? null;
+}
+
+// ── A RETURN-ONLY collection record (Junid, 26 Nov 2026) ─────────────────────
+// Store credit or a refund instead of a replacement: Jamie's exchange page
+// writes exchange-<n>-<ms> with exchange.returnOnly (src/utils/onlineOrders.js
+// isReturnOnlyOrder). Its line is the item COMING BACK. Nothing is routed, no
+// hub order or strip entry is raised, nothing is held and no parcel is
+// estimated or ever booked outbound. The keep pass only keeps its status
+// honest — "new" while the return is on its way (the status Jamie cancels
+// from), "closed" once the item is back and checked good — never
+// needs_attention, and lets syncHolds take back any hold row (it wants none).
+// The return collection itself is booked by Jamie through book-return.mjs, and
+// the unit goes back into stock through the POS's Confirm arrival or
+// exchangeReturn.mjs; neither runs here.
+// → the order as left (the transaction's server value), or null when it is gone.
+async function keepReturnOnly(ctx, id, order) {
+  const { db, now, enabled } = ctx;
+  ctx.touched?.add(id);
+  // Holds FIRST (it wants none): a failure here throws before the record can close, so the next tick retries it —
+  // a closed record is never revisited, and a stray hold row must not outlive the close (CodeRabbit, #1018).
+  await syncHolds(ctx, id, order);
+  const res = await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).transaction((cur) => {
+    if (cur == null) return null;
+    if (isTerminal(cur.status) || !isReturnOnlyOrder(cur)) return undefined;
+    const status = deriveOrderStatus(cur, { enabled });
+    if (status === cur.status) return undefined;
+    const next = { ...cur, status, updatedAt: now };
+    // Left by an older tick that did not know the flag: a return-only record never needs attention.
+    if (cur.status === ORDER_STATUS.NEEDS_ATTENTION) { delete next.attention; delete next.attentionOpen; }
+    return next;
+  });
+  const left = res.committed ? res.snapshot.val() : (res.snapshot?.val?.() ?? order);
+  return left || null;
 }
 
 // A place rejected a website pick: note it beside the cell (never IN it — the
@@ -1288,6 +1332,23 @@ async function shipOrder(ctx, id, order) {
   const { db, now, log } = ctx;
   ctx.touched?.add(id);
   if (order?.status !== ORDER_STATUS.PACKED || order.fulfilState !== "pending") return;
+  // A RETURN-ONLY collection (store credit / refund instead of a replacement) NEVER ships: nothing goes out. A record
+  // that got packed anyway is an anomaly a person must see (the Pack sold the returning item): no courier, no Shopify,
+  // the order flagged "Packed, courier not booked" with the reason. The POS Retry re-checks it and is refused again.
+  if (isReturnOnlyOrder(order) || linesOf(order).some(isReturnOnlyLine)) {
+    const why = RETURN_ONLY_COURIER_TEXT;
+    await db.ref(`${ONLINE_ORDERS_PATH}/${id}`).update({
+      fulfilState: "courier_failed",
+      "fulfil/state": "courier_failed",
+      courierError: why,
+      attention: { kind: ATTENTION_KIND.COURIER_FAILED, reason: `Packed, but ${why}`, at: now },
+      attentionOpen: true,
+      updatedAt: now,
+    });
+    ctx.summary.courierFailed = (ctx.summary.courierFailed || 0) + 1;
+    log(`  ✗ ${orderLabel(order)}: return-only record — nothing ships, courier not booked`);
+    return;
+  }
   // JUNID'S CONDITION HOLD (30 Oct 2026, scripts/shipping/exchangeReturn.mjs): he told Jimmy the exchange's returned
   // item is NOT in good condition ("nothing ships"). The replacement is not booked while the hold stands: the order
   // shows "Packed, courier not booked" with the reason, and the POS Retry re-checks it. His later "good" clears it.
@@ -1761,6 +1822,10 @@ async function closeHubOrders(ctx, order) {
 
 async function refreshEstimate(ctx, id, order) {
   if (!order || isTerminal(order.status) || order.status === ORDER_STATUS.PACKED) return;
+  // A return-only collection ships nothing: no parcel to estimate.
+  if (isReturnOnlyOrder(order)) return;
+  // A returning line on a mixed record is not in the outbound parcel.
+  if (linesOf(order).some(isReturnOnlyLine)) order = { ...order, lines: linesOf(order).filter((l) => !isReturnOnlyLine(l)) };
   // Nothing to ship (every line cancelled): no estimate, and no error each tick.
   if (!linesOf(order).some((l) => l?.pid && (Number(l.qty) || 0) > 0 && l.source?.status !== LINE_STATUS.CANCELLED)) return;
   try {

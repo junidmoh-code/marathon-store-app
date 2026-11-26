@@ -79,6 +79,10 @@ import { mergeShippingConfig } from "../../src/shipping/shippingConfig.js";
 import { chooseRate } from "../../src/shipping/chooseService.js";
 import { orderLines, deliveryAddress, deliveryContact, orderRef, orderKey as keyOf } from "../../src/shipping/orderShipment.js";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
+import { isReturnOnlyOrder, isReturnOnlyLine } from "../../src/utils/onlineOrders.js";
+// A record mixing outgoing lines with a returning (returnOnly) line is not supported for shipping: the returning item
+// would be counted into the outbound parcel. Refused like a return-only record, never booked half-right.
+const hasReturnOnlyLine = (order) => (Array.isArray(order?.lines) ? order.lines : Object.values(order?.lines || {})).some(isReturnOnlyLine);
 import { quoteParcel, tcgParcels, lockerCollection } from "./quote.mjs";
 import { fileLogger } from "./courier-client.mjs";
 import { planLockerDelivery, lockerAddressPayload } from "./lockerDelivery.mjs";
@@ -275,6 +279,7 @@ export async function planShipment(order, { db, client, products = null, geocode
 
 // ── OWN COURIER (Junid, 24 Nov 2026) ─────────────────────────────────────────
 export const OWN_COURIER_TAG = "own-courier";
+export const RETURN_ONLY_REASON = "return-only record (store credit / refund instead of a replacement): nothing ships for it — the return collection is booked by book-return.mjs";
 export const OWN_COURIER_REASON = "own courier: the customer books their own courier and sends the waybill — never booked with Courier Guy";
 /** Does the customer bring their own courier (shipping/ownCourier, written at ingestion from the Shopify tag)? Pure. */
 export function isOwnCourier(order) {
@@ -444,6 +449,12 @@ export async function bookShipment(order, deps = {}) {
   // An order that already carries a booking is never booked again.
   if (order?.shipping?.shipmentId) {
     return { skipped: true, reason: "already booked", shipping: order.shipping };
+  }
+  // A RETURN-ONLY collection record (store credit / refund instead of a replacement, Junid 26 Nov 2026): its line is
+  // the item coming BACK. Nothing ever goes out for it; its collection is bookReturn.mjs's, never this.
+  if (isReturnOnlyOrder(order) || hasReturnOnlyLine(order)) {
+    log(`bookShipment ${key} REFUSED return-only record (nothing ships)`);
+    return { skipped: true, returnOnly: true, reason: RETURN_ONLY_REASON };
   }
   // OWN COURIER: the customer books their own courier; nothing is ever booked with Courier Guy for it.
   if (isOwnCourier(order)) {

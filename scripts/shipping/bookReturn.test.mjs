@@ -140,6 +140,31 @@ describe("bookReturn", () => {
     expect(again).toMatchObject({ skipped: true, reason: "return already booked" });
     expect(client.creates()).toHaveLength(1);
   });
+  // A RETURN-ONLY record (store credit / refund instead of a replacement, Junid 26 Nov 2026): its one line is the
+  // item coming back (returnOnly), status "new". Its collection is booked exactly like an exchange's return leg.
+  it("a return-only record (store credit / refund, nothing ships): the return collection still books, once", async () => {
+    const exchange = EXCHANGE({
+      status: "new",
+      exchange: { paidAt: 1793333411004, contactPhone: "27600000000", returnOnly: true, desk: { id: 7, outcome: "credit" }, relatedOrders: ["9001"] },
+      lines: [{ pid: "p1", category: "Footwear", isFootwear: true, title: "Diesel", size: "7", sizeKey: "7", qty: 1, unitPriceCents: 0, returnOnly: true, exchangeFor: "Diesel" }],
+    });
+    const d = db({ exchange });
+    const client = fakeClient();
+    const out = await bookReturn(KEY, deps(d, client));
+    expect(out).toMatchObject({ booked: true, waybill: "TEST01", locker: { id: "RVM01017" } });
+    expect(client.creates()).toHaveLength(1);
+    expect(client.creates()[0][1]).toMatchObject({ collection_pickup_point_id: "RVM01017" });
+    expect(d.root.online_orders[KEY].returnShipping).toMatchObject({ waybill: "TEST01", courierBooking: { state: "booked" } });
+    expect(d.root.online_orders[KEY].shipping.courierBooking).toBeUndefined(); // the outbound is never touched
+    expect((await bookReturn(KEY, deps(d, client))).skipped).toBe(true);
+    expect(client.creates()).toHaveLength(1);
+  });
+  it("a return-only record still unpaid (awaitingPayment, paidAt null, as the desk first writes it) books nothing", async () => {
+    const exchange = EXCHANGE({ status: "new", exchange: { paidAt: null, awaitingPayment: true, returnOnly: true }, lines: [{ pid: "p1", title: "Diesel", size: "7", qty: 1, returnOnly: true }] });
+    const client = fakeClient();
+    expect(await bookReturn(KEY, deps(db({ exchange }), client))).toMatchObject({ skipped: true, reason: expect.stringMatching(/no paid exchange/) });
+    expect(client.calls).toEqual([]);
+  });
   for (const live of [false, "true", 1, null]) {
     it(`live=${JSON.stringify(live)} is a dry run: no create`, async () => {
       const client = fakeClient();

@@ -502,3 +502,63 @@ describe("26 Nov 2026: back where it was picked, and Junid's good is the conditi
     expect(at(unproven, `stock/concrete/${PID_OUT}/11`) ?? null).toBeNull();
   });
 });
+
+// A RETURN-ONLY record (store credit / refund instead of a replacement, Junid 26 Nov 2026): marathon-dm-agent
+// desk.js returnRecordFor writes the returning item as the record's one line (returnOnly: true) and no
+// incoming.returning. The unit still goes back into stock; there is no replacement to check.
+describe("a return-only record (store credit / refund, nothing ships)", () => {
+  const roRecord = (extra = {}) => ({
+    orderNumber: "1793-EX", shopifyName: "#1793-EX", status: "new",
+    exchange: { kind: "exchange", by: "exchange page", returnOnly: true, paidAt: 1793333411004, paidCents: 0, relatedOrders: ["18966134358165"], desk: { id: 7, outcome: "credit" } },
+    lines: [{ pid: PID_OUT, size: "11", sizeKey: "11", qty: 1, title: "Diesel Green Black White Orange", unitPriceCents: 0, returnOnly: true, exchangeFor: "Diesel Green Black White Orange" }],
+    ...extra,
+  });
+
+  it("pure: the returning line is the plan; ready; no replacement", () => {
+    const plan = returnPlan(roRecord(), KEY);
+    expect(plan).toMatchObject({ ok: true, fromFallback: false, items: [{ pid: PID_OUT, size: "11", sizeKey: "11", origOrderKey: "18966134358165", movementId: MV }] });
+    expect(notReadyWhy(roRecord(), { orderNumber: "1793" })).toBeNull();
+    expect(notReadyWhy(roRecord({ lines: [] }), { orderNumber: "1793" })).toMatch(/does not name the item coming back/);
+    expect(replacementCheck({ record: roRecord() })).toMatchObject({ lines: [], deducted: "none", returnOnly: true });
+    // incoming.returning (the record's own booked list) still wins when it is there.
+    const listed = returnPlan(roRecord({ incoming: { returning: [{ pid: SNK, size: "9", title: "Shox" }] } }), KEY);
+    expect(listed.items.map((i) => i.pid)).toEqual([SNK]);
+  });
+
+  it("good condition: the unit goes back into stock once, the arrival is done, nothing else is read or touched", async () => {
+    const db = world({ rec: roRecord(), peQty: 0, extra: { online_reservations: null } });
+    const out = await run(db);
+    expect(out).toMatchObject({ ok: true, done: true, items: [{ pid: PID_OUT, size: "11", to: RETURN_TO, before: 0, after: 1, movementId: MV }] });
+    expect(out.replacement).toMatchObject({ lines: [], deducted: "none" });
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
+    expect(at(db, `stock_movements/${MV}`)).toMatchObject({ type: "return", reason: "exchange return #1793", link: { orderId: KEY, saleId: "-NsOrig" } });
+    expect(at(db, `online_orders/${KEY}/incoming/arrival`)).toMatchObject({ state: "done", via: "jimmy" });
+    expect(at(db, "online_reservations")).toBeNull(); // no hold is ever written for it
+    const again = await run(db);
+    expect(again).toMatchObject({ ok: true, already: true });
+    expect(Object.keys(at(db, "stock_movements"))).toEqual([MV]);
+    // The poller then closes it (back and good): a re-run still answers "already back", never "closed".
+    await db.ref(`online_orders/${KEY}/status`).set("closed");
+    expect(await run(db)).toMatchObject({ ok: true, already: true });
+  });
+
+  it("the till confirmed it by hand and the poller closed it: Junid's \"good\" still puts the unit back, once", async () => {
+    const db = world({ rec: roRecord({ status: "closed", incoming: { arrival: { state: "done", byHand: { by: "Yusuf" }, at: NOW - 1000 }, check: { result: "good" } } }), peQty: 0, extra: { online_reservations: null } });
+    const out = await run(db);
+    expect(out).toMatchObject({ ok: true, done: true, byHand: true, items: [{ to: RETURN_TO, before: 0, after: 1 }] });
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
+  });
+
+  it("a unit already put back by hand (ledger row, no arrival recorded) is not added a second time", async () => {
+    expect(returnPlan(roRecord(), KEY)).toMatchObject({ fromLines: true, fromFallback: false });
+    const db = world({ rec: roRecord(), peQty: 1, extra: { online_reservations: null, stock_movements: { a: { type: "adjustment", productId: PID_OUT, size: "11", qty: 1, to: "marathon-pe", ts: new Date(NOW - 5000).toISOString(), reason: "found in back" } } } });
+    expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/already shows/) });
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
+    // Junid's "add it anyway" still gets past a false match.
+    expect(await run(db, { force: true })).toMatchObject({ ok: true, done: true });
+  });
+
+  it("a cancelled return-only record is still finished", () => {
+    expect(notReadyWhy(roRecord({ status: "cancelled" }))).toMatch(/cancelled/);
+  });
+});

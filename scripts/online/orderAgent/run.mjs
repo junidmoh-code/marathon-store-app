@@ -15,6 +15,7 @@
 //
 // NEVER: a stock or refill request created, changed or cancelled; a policy value read or written; a stock movement.
 import { judgeOrder, linesOf, lineIsHere, PLACE } from "./judge.mjs";
+import { isReturnOnlyLine, isReturnOnlyOrder } from "../../../src/utils/onlineOrders.js";
 import { dayKey, hhmm, sast, SUMMARY_HOUR } from "./hours.mjs";
 import { CELL_HOLDS_PATH, cellHeld, readPickableRules } from "../../shopify/pickableStock.mjs";
 
@@ -188,7 +189,8 @@ export async function runOrderAgent(deps) {
     const facts = { lines: {} };
     try {
       let refunds = null;
-      const needy = linesOf(order).filter(([i, l]) => !OFF_PARCEL.has(l?.source?.status) && !lineIsHere(order, i, l));
+      // A returning line (store credit / refund, nothing ships) needs no facts: the judge leaves it alone.
+      const needy = isReturnOnlyOrder(order) ? [] : linesOf(order).filter(([i, l]) => !OFF_PARCEL.has(l?.source?.status) && !isReturnOnlyLine(l) && !lineIsHere(order, i, l));
       if (needy.length && graphql && order.shopifyGid) {
         try { refunds = await shopifyRefunds(graphql, order.shopifyGid); } catch (e) { log(`  ! ${label}: Shopify read failed — ${String(e?.message || e).slice(0, 120)}`); }
       }

@@ -22,6 +22,7 @@
 //   5 unavailable    nowhere on the route and nothing at Central → alternatives_now (unless Jamie already has it).
 // Never: a stock or refill request created, changed or cancelled; a policy value; a stock movement.
 import { tradingHoursBetween } from "./hours.mjs";
+import { isReturnOnlyOrder, isReturnOnlyLine } from "../../../src/utils/onlineOrders.js";
 
 export const PACKING_STORE = "marathon-pe";
 export const PLACE = Object.freeze({ hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concrete", "marathon-pine": "Marathon Pine", central: "Central" });
@@ -153,6 +154,8 @@ const firstFree = (free, exclude, isFootwear, qty) => {
 export function judgeLine(order, i, line, facts = {}, now = Date.now()) {
   const st = line?.source?.status ?? null;
   if (OFF_PARCEL.has(st)) return null;
+  // A returning line (store credit / refund instead of a replacement) is not in any parcel: nothing to find or chase.
+  if (isReturnOnlyLine(line)) return null;
   const rec = jamieRecord(order, i, line);
   // Money the customer owes holds the parcel even when the item is in hand (the POS's red rule too).
   if (rec?.state === "awaiting_payment" && num(rec.diffCents) > 0 && lineIsHere(order, i, line)) {
@@ -284,7 +287,15 @@ export function redWords(j) {
  *   facts  { lines: { [i]: lineFacts } }
  */
 export function judgeOrder(order, facts = {}, now = Date.now()) {
-  const entries = linesOf(order).filter(([, l]) => !OFF_PARCEL.has(l?.source?.status ?? null));
+  // A RETURN-ONLY collection (store credit / refund instead of a replacement): nothing ships, so nothing is chased,
+  // re-picked, nudged or escalated. It sits with the incoming returns until its item is back, then green.
+  if (isReturnOnlyOrder(order)) {
+    // On the arrival alone: a record flagged only on its lines may carry no incoming/exchange block yet.
+    return !incomingArrivalDone(order)
+      ? { group: "incoming", reason: "Waiting for the customer's return (store credit / refund, nothing ships)", detail: null, lines: [], actions: [], here: 0, total: 0 }
+      : { group: "green", reason: null, detail: "Return only: back, nothing ships", lines: [], actions: [], here: 0, total: 0 };
+  }
+  const entries = linesOf(order).filter(([, l]) => !OFF_PARCEL.has(l?.source?.status ?? null) && !isReturnOnlyLine(l));
   const total = entries.length;
   const judged = entries.map(([i, l]) => judgeLine(order, i, l, facts.lines?.[i] || {}, now)).filter(Boolean);
   // Physically in hand, counted on its own: a line in hand with a difference unpaid is red but still here.

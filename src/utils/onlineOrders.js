@@ -151,6 +151,52 @@ export function heldUnits(cell, loc = null) {
   return n;
 }
 
+// ── RETURN-ONLY exchange records (Junid, 26 Nov 2026) ───────────────────────
+// A customer who takes store credit or a refund instead of a replacement gets
+// a collection record from Jamie's exchange page (marathon-dm-agent
+// src/jimmy/exchangeDesk/desk.js returnRecordFor): online_orders/exchange-<n>-<ms>
+// with exchange.returnOnly === true and lines carrying returnOnly: true. Its
+// line names the item COMING BACK, so the courier return can be booked
+// (scripts/shipping/bookReturn.mjs) and the unit put back into stock
+// (exchangeReturn.mjs). Nothing goes OUT: no routing, no hub order, no strip
+// entry, no hold, no parcel estimate and never an outbound shipment.
+export const isReturnOnlyLine = (line) => !!line && typeof line === "object" && line.returnOnly === true;
+const lineList = (order) => (Array.isArray(order?.lines) ? order.lines : Object.values(order?.lines || {})).filter((l) => l && typeof l === "object");
+/** The whole record is a return-only collection: flagged on the record, or every line flagged. PURE. */
+export function isReturnOnlyOrder(order) {
+  if (!order || typeof order !== "object") return false;
+  if (order.exchange && typeof order.exchange === "object" && order.exchange.returnOnly === true) return true;
+  const lines = lineList(order);
+  return lines.length > 0 && lines.every(isReturnOnlyLine);
+}
+/**
+ * A return-only record is finished once its item is back in stock AND said to
+ * be in original condition, with no condition hold standing:
+ *   back      incoming/arrival state "done" (or the till's older returnSaleId),
+ *             but NOT a by-hand arrival whose stock step is still open (byHand
+ *             set, nothing returned yet: exchangeReturn.mjs must still run it);
+ *   good      incoming/check.result "good" (the hub's check), or, with no
+ *             check at all, Junid's own "good condition" through
+ *             exchangeReturn.mjs (arrival via "jimmy" with units returned).
+ * A disputed, unchecked or held return stays open. The check is taken as
+ * final: a closed record is not reopened by a later hold. PURE.
+ */
+export function returnOnlyReceivedGood(order) {
+  const inc = order?.incoming;
+  if (!inc || typeof inc !== "object") return false;
+  const a = inc.arrival;
+  if (!a || typeof a !== "object") return false;
+  const returned = Array.isArray(a.stockReturned) ? a.stockReturned.length > 0 : !!a.stockReturned && Object.keys(a.stockReturned).length > 0;
+  const saleId = typeof a.returnSaleId === "string" && a.returnSaleId !== "";
+  const arrived = a.state != null ? a.state === "done" : saleId;
+  if (!arrived) return false;
+  if (a.byHand != null && !returned && !saleId && a.via !== "jimmy") return false;
+  if (inc.conditionHold && typeof inc.conditionHold === "object") return false;
+  const check = inc.check?.result;
+  if (check != null) return check === "good";
+  return a.via === "jimmy" && returned;
+}
+
 /**
  * The status an open order should show, from its lines. Packed, cancelled and
  * fulfilled_elsewhere are terminal. `enabled` is /config/onlineOrders/enabled: while it is off no
@@ -159,7 +205,11 @@ export function heldUnits(cell, loc = null) {
 export function deriveOrderStatus(order, { enabled = false } = {}) {
   const status = order?.status;
   if (TERMINAL_STATUSES.includes(status) || status === ORDER_STATUS.RELEASE_REQUESTED) return status;
-  const lines = Array.isArray(order?.lines) ? order.lines.filter(Boolean) : Object.values(order?.lines || {}).filter(Boolean);
+  // A return-only collection has nothing to pick or pack: it waits ("new", the status Jamie's exchange page cancels
+  // from) until its item is back in good condition, then closes. Never needs attention, never picking.
+  if (isReturnOnlyOrder(order)) return returnOnlyReceivedGood(order) ? ORDER_STATUS.CLOSED : ORDER_STATUS.NEW;
+  // A returning line on a mixed record is not waited for (nothing ships for it).
+  const lines = (Array.isArray(order?.lines) ? order.lines.filter(Boolean) : Object.values(order?.lines || {}).filter(Boolean)).filter((l) => !isReturnOnlyLine(l));
   if (!lines.length) return ORDER_STATUS.NEEDS_ATTENTION;
   const st = (l) => l?.source?.status;
   if (lines.some((l) => ATTENTION_LINE_STATUSES.includes(st(l)))) return ORDER_STATUS.NEEDS_ATTENTION;
