@@ -792,7 +792,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     if (!confirmMove || typeof window === "undefined") return undefined;
     // Escape cancels; Tab stays on Cancel / Yes (CodeRabbit, #1014). Focus goes
     // back to where it was when the popup closes.
-    const opener = typeof document !== "undefined" ? document.activeElement : null;
+    const opener = confirmOpener.current;
     const onKey = (e) => {
       if (e.key === "Escape") { setConfirmMove(null); return; }
       if (e.key !== "Tab") return;
@@ -806,12 +806,13 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     return () => { window.removeEventListener("keydown", onKey); try { opener?.focus?.(); } catch { /* gone */ } };
   }, [confirmMove]);
   const confirmCancelRef = useRef(null);
+  const confirmOpener = useRef(null);   // the button that opened the popup (focus returns there)
   const confirmYesRef = useRef(null);
   act.current.division = (row) => {
     if (inFlight.current.has(row.pid) || !canMark || gone[row.key]) return;
     const to = divisionTargetOf(listKindOf(ctx.current.network, row.section));
     if (!divisionAllowed(row.kind, to)) return;   // (no button is drawn; a stale tap does nothing)
-    if (to === "concrete") { setConfirmMove(row); return; }
+    if (to === "concrete") { confirmOpener.current = typeof document !== "undefined" ? document.activeElement : null; setConfirmMove(row); return; }
     act.current.divisionCommit(row);
   };
   act.current.divisionCommit = async (row) => {
