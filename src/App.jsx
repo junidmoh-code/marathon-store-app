@@ -12933,11 +12933,18 @@ function TomorrowActionButton({ order, product, onOutcome, hideWhenOOS = false }
 // shows nothing (hideWhenOOS); with Central holding the size it is
 // "Schedule for Tomorrow".
 
+const SEND_CONFIRM_MS = 15000;
 function WarehouseView({ products = [], orders: liveOrders, onExit }) {
   // Orders this device has just sent, shown as sent at once while the write
   // runs (markSentAndPrint). An entry stops applying the moment the live
   // record has left Incoming, or if it is a different order (number reused).
   const [optimisticSent, setOptimisticSent] = useState({});
+  // The newest live list, for the send's confirmation timer (no re-render).
+  const liveOrdersRef = useRef(liveOrders);
+  liveOrdersRef.current = liveOrders;
+  // One send per order at a time: a double tap must not write Ready, the
+  // insight row and the WhatsApp twice (the ledger itself is idempotent).
+  const sendingRef = useRef(new Set());
   const orders = useMemo(() => {
     const keys = Object.keys(optimisticSent);
     if (!keys.length) return liveOrders;
@@ -12950,7 +12957,10 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
   useEffect(() => {
     const keys = Object.keys(optimisticSent);
     if (!keys.length) return;
-    const stale = keys.filter((k) => { const o = (liveOrders || []).find((x) => x?.id === k); return !o || o.status !== STATUS.INCOMING; });
+    // Only when the live record has LEFT Incoming, or the number now belongs to
+    // another order. A missing row is a scope or hub switch mid-write, not an
+    // answer (architect review of #1002).
+    const stale = keys.filter((k) => { const o = (liveOrders || []).find((x) => x?.id === k); return !!o && (o.status !== STATUS.INCOMING || (o.createdAt ?? null) !== optimisticSent[k].createdAt); });
     if (stale.length) setOptimisticSent((m) => { const n = { ...m }; for (const k of stale) delete n[k]; return n; });
   }, [liveOrders, optimisticSent]);
   const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
@@ -13704,14 +13714,29 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
   const markSentAndPrint = (order, extraPatch = {}) => {
     const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
     const key = order.id;
+    const flightKey = `${order.id}|${order.createdAt ?? ""}`;
+    if (sendingRef.current.has(flightKey)) return Promise.resolve();
+    sendingRef.current.add(flightKey);
     setOptimisticSent((m) => ({ ...m, [key]: { createdAt: order.createdAt ?? null, patch: { status: STATUS.READY, readyAt: serverNowIso(), ...extraPatch } } }));
     const undo = (text) => {
       setOptimisticSent((m) => { const n = { ...m }; delete n[key]; return n; });
       if (text) setPrintToast({ kind: "err", text, retry: () => { setPrintToast(null); markSentAndPrint(order, extraPatch); } });
     };
+    // CONFIRMATION. A rejected status write is reverted by the database to
+    // Incoming, and the overlay would hide that. So if the live record is still
+    // Incoming SEND_CONFIRM_MS after the tap, the card comes back with Retry
+    // (an offline write is applied locally at once, so it never trips this).
+    const confirm = () => {
+      sendingRef.current.delete(flightKey);
+      setTimeout(() => {
+        const live = (liveOrdersRef.current || []).find((x) => x?.id === key && (x.createdAt ?? null) === (order.createdAt ?? null));
+        if (live && live.status === STATUS.INCOMING) undo(`#${order.id} did not save — check the connection and tap Retry.`);
+      }, SEND_CONFIRM_MS);
+    };
     return markSentWithTransfer(order, extraPatch).then((transfer) => {
       // The refusal already explained itself (paused toast / "NOT sent — hub shows 0").
-      if (transfer?.blockSend) { undo(null); return transfer; }
+      if (transfer?.blockSend) { sendingRef.current.delete(flightKey); undo(null); return transfer; }
+      confirm();
       if (!SEND_PRINTS_LABEL) return transfer;
       // A skipped footwear transfer still gets its label — the parcel physically
       // travels to the shop exactly as before; only the ledger move is gone.
@@ -13720,6 +13745,7 @@ function WarehouseView({ products = [], orders: liveOrders, onExit }) {
       return transfer;
     }).catch((err) => {
       console.warn(`Send failed for #${order.id}:`, err?.message || err);
+      sendingRef.current.delete(flightKey);
       undo(`#${order.id} did not save — check the connection and tap Retry.`);
     });
   };
