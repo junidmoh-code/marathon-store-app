@@ -178,7 +178,8 @@ describe("the screen Junid asked for", () => {
     expect(new Set(heights).size).toBe(1);
     expect(stockLine(tree, SHOE_B)).toBe("Central 18");
     for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "hide").length).toBe(0);
-    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "division").map((b) => b.props["data-division-mark"])).toEqual(["concrete"]);
+    // NO CONCRETE BUTTON ON SNEAKERS (Junid, 26 Nov 2026): Marathon's footwear cards have no division button at all.
+    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "division")).toEqual([]);
     for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(solveBtn(tree, pid)).toBeDefined();
   });
 });
@@ -905,6 +906,18 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("NO CONCRETE BUTTON ON SNEAKERS (Junid, 26 Nov 2026): Marathon footwear cards have none, clothing keeps it, Concrete's sneaker cards keep Marathon", async () => {
+    const tree = await mount();
+    const marks = (pid) => card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "division").map((b) => b.props["data-division-mark"]);
+    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(marks(pid)).toEqual([]);
+    expect(textOf(tree)).not.toMatch(/Tap again to move to Concrete/);
+    await kind(tree, "clothing");
+    expect(marks(TEE)).toEqual(["concrete"]);
+    await division(tree, CONCRETE); await kind(tree, "sneakers");
+    expect(marks(SHOE_B)).toEqual(["marathon"]);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
   it("Marathon card: Concrete marks it Concrete-only — leaves Marathon's list and count; writes the mark only", async () => {
     const tree = await mount();
     await kind(tree, "clothing");
@@ -1068,7 +1081,8 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     const { CARD_H } = await import("./MissingRow.jsx");
     for (const n of host(tree, "data-card")) expect(n.props.style.height).toBe(CARD_H);
     expect(CARD_H).toBe(94);                              // compact (Junid, 23 Nov 2026)
-    const b = markBtn(tree, SHOE_B);
+    await kind(tree, "clothing");                         // (sneakers carry no Concrete button since 26 Nov 2026)
+    const b = markBtn(tree, TEE);
     expect(b.props.style.height).toBe(44);                // a full tap target …
     expect(b.props.style.margin).toBeUndefined();         // … that reaches into nothing else
     expect(b.findAll((n) => n.type === "span")[0].props.style.height).toBe(22);
