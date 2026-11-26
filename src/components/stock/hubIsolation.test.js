@@ -225,7 +225,8 @@ describe("Hub 3 and the shops are untouched by the Tomorrow gate", () => {
     // The row's own catalogue record reaches the gate — from the map the
     // warehouse already builds, never a read.
     expect(a).toContain("const gatedRow = centralFedRow(order, product);");
-    expect(a).toContain("<TomorrowActionButton order={order} product={whProductsById[order.productId]}");
+    // The card no longer offers Schedule for Tomorrow at all (Junid, 26 Nov 2026 11:32: no on-hold orders).
+    expect(a).not.toContain("<TomorrowActionButton order={order}");
   });
 });
 

@@ -1040,6 +1040,10 @@ function updateProductHubs(id, hubs) {
 // live & orderable. Any legacy `depletedAt` left on a product is inert.
 
 // ─── ORDERS HOOK + DIRECT FIREBASE WRITES ────────────────────────────────────
+// A "cancelled" order (the on-hold orders closed by Junid on 26 Nov 2026) is
+// kept in the database but never handed to a screen: every order feed below
+// drops it, so it shows in no Incoming / Ready / Out of Stock / Complete /
+// History list, on no TV and in no tracker.
 // Orders are stored at /orders/{orderId} so each order is its own node — that
 // way two devices mutating different orders (or the same one) never clobber
 // each other. Each component does its own update() against the specific path
@@ -1073,7 +1077,7 @@ function useOrders(scopeShop = null, enabled = true) {
     if (liveOrders || !mirroredOrders.settled) return;
     const data = mirroredOrders.value;
     if (!data) { setOrders(Object.assign([], { settled: true, scope: scopeShop })); return; }
-    const arr = Object.values(data)
+    const arr = Object.values(data).filter((o) => o?.status !== "cancelled")
       // Not just filter(Boolean). The legacy {items:[...]} shape would yield
       // ONE element that is an array, which sorts by an undefined createdAt
       // and renders as a broken order row. The live path detects and MIGRATES
@@ -1124,7 +1128,7 @@ function useOrders(scopeShop = null, enabled = true) {
         return;
       }
       // Normal shape: map of id → order. Convert to sorted array.
-      const arr = Object.values(data)
+      const arr = Object.values(data).filter((o) => o?.status !== "cancelled")
         .filter(Boolean)
         .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
       setOrders(Object.assign(arr, { settled: true, scope: scopeShop }));
@@ -1171,7 +1175,7 @@ function useHubOrders(hub, network) {
   const live = mirrored.verdict === "fallback";
   const field = hub ? hubOrderField(network, hub) : null;
   const shape = useCallback((data) => Object.assign(
-    Object.values(data || {})
+    Object.values(data || {}).filter((o) => o?.status !== "cancelled")
       .filter((o) => o && typeof o === "object" && !Array.isArray(o))
       .filter((o) => orderIsAtHub(network, o, hub))
       .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt)),
@@ -1218,7 +1222,7 @@ function useTvOrders() {
 
   const shapeTvOrders = useCallback((data) => (
     data
-      ? Object.values(data).filter(Boolean)
+      ? Object.values(data).filter((o) => o?.status !== "cancelled").filter(Boolean)
           .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
       : []
   ), []);
@@ -1282,7 +1286,7 @@ function useSectionTvOrders(section) {
   const { registry: tvNetwork } = useNetwork();
   const ranges = useMemo(() => withSharedRange(tvOrderKeyRanges(tvNetwork, section), section), [tvNetwork, section]);
   const shape = useCallback((data) => (
-    Object.values(data || {}).filter(Boolean).filter((o) => boardShowsOrder(tvNetwork, section, o)).sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
+    Object.values(data || {}).filter((o) => o?.status !== "cancelled").filter(Boolean).filter((o) => boardShowsOrder(tvNetwork, section, o)).sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
   ), [tvNetwork, section]);
   const mirrored = useMirroredPath("orders", authReady);
   const live = mirrored.verdict === "fallback";
@@ -13480,21 +13484,12 @@ function WarehouseView({ products = [], onExit }) {
   // Website orders arrive here as ordinary /orders records (customer "Shopify",
   // the order's three-letter code as the number) — the same queue, the same
   // Mark as Sent; dispatch moves no stock for them (dispatchSkipsStock).
-  // ON HOLD LEAVES THE CARD (Junid, 26 Nov 2026 11:15). An order on hold
-  // (Schedule for Tomorrow → coming_tomorrow) is not shown anywhere — no box,
-  // no tab — until its day, when it is back in Incoming at the top with no
-  // staff action. Display only: the record is untouched (its status stays
-  // coming_tomorrow until a person acts on it from Incoming).
-  const todaySa = getSADateString();
-  const heldDue = (o) => o.status === STATUS.COMING_TOMORROW && (() => {
-    const t = Date.parse(o.comingTomorrowAt || o.updatedAt || "");
-    if (!Number.isFinite(t)) return true;   // no date: never hide it for good
-    return new Date(t + 2 * 60 * 60 * 1000).toISOString().slice(0, 10) < todaySa;
-  })();
+  // NO ON HOLD (Junid, 26 Nov 2026 11:32): on-hold orders were closed as
+  // cancelled and none can be made; anything still on hold or cancelled is
+  // never shown on the card (a missing item is raised by the refill scan).
   const hubOrders = [
     ...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill")
-      .filter(o => o.status !== STATUS.COMING_TOMORROW || heldDue(o))
-      .map(o => (o.status === STATUS.COMING_TOMORROW ? { ...o, status: STATUS.INCOMING, _heldDue: true } : o)),
+      .filter(o => o.status !== STATUS.COMING_TOMORROW && o.status !== "cancelled"),
     ...hubLaybyOrders,
   ];
 
@@ -13503,6 +13498,8 @@ function WarehouseView({ products = [], onExit }) {
   // log order.size (the customer-requested value); only Source view surfaces
   // sentSize, by design.
   const updateStatus = async (order, status, extraPatch = {}, { gateChecked = false } = {}) => {
+    // No on-hold orders can be made (Junid, 26 Nov 2026 11:32).
+    if (status === STATUS.COMING_TOMORROW) { console.warn(`[on-hold removed] #${order?.id} not put on hold`); return false; }
     // A phone Junid has quarantined changes nothing (src/device/deviceRejects.js).
     // gateChecked: the caller already asked, and stock may have moved since —
     // asking again could strand a transfer with its order never marked.
@@ -14451,7 +14448,7 @@ function WarehouseView({ products = [], onExit }) {
   const filtered = hubOrders
     .filter(o => filter === "all" ? o.status !== STATUS.COMING_TOMORROW : o.status === filter)
     // A held order back on its day leads the list (Junid 26 Nov 2026), then website picks.
-    .sort((a, b) => ((b._heldDue === true) - (a._heldDue === true)) || (webWaitingPick(b) - webWaitingPick(a))
+    .sort((a, b) => (webWaitingPick(b) - webWaitingPick(a))
       || (webWaitingPick(a) ? (queueDateOf(a) || "").localeCompare(queueDateOf(b) || "") : (queueDateOf(b) || "").localeCompare(queueDateOf(a) || "")));
 
   // Tally for the incoming pill at top right
@@ -14548,7 +14545,7 @@ function WarehouseView({ products = [], onExit }) {
             <DayCollapsible
               sectionKey={`wh-${filter}`}
               items={filtered}
-              dateOf={(o) => hubQueueDay(o, (x) => webWaitingPick(x) || x._heldDue === true, queueDateOf, serverNowIso())}
+              dateOf={(o) => hubQueueDay(o, webWaitingPick, queueDateOf, serverNowIso())}
               columns={isWide ? 2 : 1}
               // Cards here are STATEFUL now (TomorrowActionButton holds a
               // Central probe); the date-index fallback key would hand one
@@ -14827,8 +14824,7 @@ function WarehouseView({ products = [], onExit }) {
                             <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                             Out of stock
                           </button>
-                          <TomorrowActionButton order={order} product={whProductsById[order.productId]} hideWhenOOS
-                            onOutcome={(kind) => updateStatus(order, kind === "out_of_stock" ? STATUS.OUT_OF_STOCK : STATUS.COMING_TOMORROW)} />
+                          {/* "Schedule for Tomorrow" REMOVED (Junid, 26 Nov 2026 11:32): no on-hold orders. */}
                           <button onClick={() => subAvailable && setPickerOpenId(order.id)}
                                   disabled={!subAvailable}
                                   title={subAvailable ? "" : "No valid substitute size in range"}
