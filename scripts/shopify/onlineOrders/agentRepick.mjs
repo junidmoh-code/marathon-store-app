@@ -217,7 +217,7 @@ export async function applyAgentRepicks(ctx, id, order, helpers) {
           // Every place that failed this line, kept across re-picks (the agent skips them unless stock arrives there
           // after their failure). A walk-in sale is not a place failing.
           failedPlaces: { ...(cur.failedPlaces || {}), ...(old.locationId && old.status !== LINE_STATUS.NEEDS_ATTENTION ? { [old.locationId]: Number(req.evidence?.failed?.since) || ctx.now } : {}) },
-          source: { status: to.status, locationId: to.locationId, ...(to.why ? { why: to.why } : {}) },
+          source: { status: to.status, locationId: to.locationId, ...(to.why ? { why: to.why } : {}), ...(old.locationId && old.locationId !== to.locationId ? { movedFrom: old.locationId } : {}) },
           repick: { rid, at: Number(req.at) || ctx.now, appliedAt: ctx.now, cancelledAt: ctx.now, by: req.by || "order-agent", from: { status: old.status, locationId: old.locationId }, to: to.locationId, old, exclude },
         });
         const nextLines = Array.isArray(curOrder.lines) ? [...curOrder.lines] : { ...curOrder.lines };

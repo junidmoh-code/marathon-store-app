@@ -302,10 +302,19 @@ export function hubOrderKeys(ref, orderLines, index) {
   return qty === 1 ? [base] : Array.from({ length: qty }, (_, u) => `${base}-${u + 1}`);
 }
 
+// MOVED HERE (Junid, 26 Nov 2026): a line the system moves to another place
+// carries source.movedFrom; the new pick (hub card / shop strip) says so.
+export function movedNoteOf(line) {
+  const from = line?.source?.movedFrom;
+  const to = line?.source?.locationId;
+  return from && to && from !== to ? `Moved here from ${placeName(from)}` : null;
+}
+
 export function hubOrderRecord({ key, line, onlineOrderId, lineIndex, section, nowIso, orderNumber = null, unit = 0 }) {
   const hub = line.source.locationId;
   return {
     id: key,
+    ...(movedNoteOf(line) ? { movedNote: movedNoteOf(line) } : {}),
     productId: line.pid,
     productName: line.title ?? null,
     productPhoto: null,
@@ -402,6 +411,7 @@ export function displayEntry({ orderId, order, index, line, checkId, nowMs, saDa
     instruction: PACKER_INSTRUCTION,
     // Escalation round 2: the shop said "Not found" once already.
     checkProperly: line.source?.checkProperly === true ? true : null,
+    movedNote: movedNoteOf(line),
   });
 }
 
@@ -413,7 +423,7 @@ const LINE_ATTENTION = Object.freeze({
   [LINE_STATUS.NEEDS_ATTENTION]: ATTENTION_KIND.WALKIN_OVERRIDE,
 });
 
-const PLACE = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concrete", "marathon-pine": "Marathon Pine" };
+const PLACE = { central: "Central", hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concrete", "marathon-pine": "Marathon Pine" };
 export const placeName = (loc) => PLACE[loc] || loc || "nowhere";
 
 /** The attention an order's lines call for, or null. */

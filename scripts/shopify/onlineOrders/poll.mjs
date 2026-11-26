@@ -786,7 +786,10 @@ async function maintainOrder(ctx, id, order) {
           ? (old.units > 1 ? { unit: old.unit, units: old.units } : total > 1 ? { unit: 1, units: total } : {})
           : { unit: n + 1, units: total, splitFrom: i };
         const line = { ...buildLine({ index: n === 0 ? i : before.length + appended.length, item, resolved: r, piece, unitPriceCents: Number(old.unitPriceCents) || 0 }), ...unitOf, routeGen: gen };
-        if (n === 0) changed.set(i, { ...line, lineId: old.lineId, ...keep });
+        // Moved to another place: the new pick says where it came from (Junid 26 Nov 2026).
+        const from = old.source?.locationId;
+        const moved = n === 0 && from && line.source?.locationId && from !== line.source.locationId ? { source: { ...line.source, movedFrom: from } } : {};
+        if (n === 0) changed.set(i, { ...line, ...moved, lineId: old.lineId, ...keep });
         else appended.push(line);
       });
     });
