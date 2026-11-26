@@ -111,6 +111,8 @@ function Row({ store, row, handover, now, central = false, onDone = null }) {
         <div style={{ fontFamily: MONO, fontSize: 13, fontWeight: 700, color: "rgba(233,238,255,.85)", marginTop: 3 }}>
           {size ? `SIZE ${size} · ` : ""}QTY {row.qty || 1}
         </div>
+        {/* Moved here by the system from another place (Junid, 26 Nov 2026). */}
+        {row.movedNote && <div data-testid="web-moved-note" style={{ fontFamily: FONT, display: "inline-block", marginTop: 6, padding: "3px 9px", borderRadius: 8, fontSize: 12, fontWeight: 800, color: "#FBBF24", background: "rgba(251,191,36,.12)", border: "1px solid rgba(251,191,36,.35)" }}>{row.movedNote}</div>}
         {/* Escalation round 2: this shop answered Not found once already. */}
         {row.checkProperly === true && <div role="alert" data-testid="web-check-properly" style={{ marginTop: 6 }}><CheckProperlyBanner /></div>}
         <div style={{ fontFamily: FONT, fontSize: 13, color: isReturn ? GREEN : INK, fontWeight: isReturn ? 700 : 400, marginTop: 4 }} data-testid={isReturn ? "web-return-text" : undefined}>

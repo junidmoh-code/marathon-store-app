@@ -124,3 +124,20 @@ describe("one line per unit", () => {
     expect(lost.map((l) => [l.qty, l.unit, l.source.status])).toEqual([[1, 1, "unresolved"], [1, 2, "unresolved"]]);
   });
 });
+
+// MOVED HERE note (Junid, 26 Nov 2026)
+import { movedNoteOf, hubOrderRecord as _hor, displayEntry as _de } from "./orderModel.mjs";
+import { describe as _d, it as _it, expect as _ex } from "vitest";
+_d("movedNoteOf", () => {
+  _it("names the place a moved line came from, on the hub record and the strip entry", () => {
+    const line = { pid: "p1", title: "Jersey", size: "S", sizeKey: "S", qty: 1, source: { status: "display", locationId: "marathon-pe", movedFrom: "concrete" } };
+    _ex(movedNoteOf(line)).toBe("Moved here from Concrete");
+    _ex(_de({ orderId: "1", order: { orderNumber: 2481 }, index: 2, line, checkId: "c", nowMs: 1, saDate: "2026-11-26", assignedTo: null }).movedNote).toBe("Moved here from Concrete");
+    const hubLine = { ...line, source: { status: "pick", locationId: "hub1", movedFrom: "hub2" } };
+    _ex(_hor({ key: "ABC", line: hubLine, onlineOrderId: "1", lineIndex: 0, section: 2, nowIso: "x" }).movedNote).toBe("Moved here from Hub 2");
+  });
+  _it("no note for a line that did not move", () => {
+    _ex(movedNoteOf({ source: { locationId: "hub1" } })).toBe(null);
+    _ex(movedNoteOf({ source: { locationId: "hub1", movedFrom: "hub1" } })).toBe(null);
+  });
+});
