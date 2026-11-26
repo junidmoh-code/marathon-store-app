@@ -949,6 +949,18 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
+  it("CONFIRM BEFORE CONCRETE: Yes on a card that left the list meanwhile (hidden on another device) writes nothing", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    await act(async () => { markBtn(tree, TEE).props.onClick(); });
+    await act(async () => { emit("settings/missingProductsHidden", { [TEE]: { at: NOW, by: "u2" } }); });
+    updateMock.mockClear();
+    await act(async () => { await host(tree, "data-action", "confirm-yes")[0].props.onClick(); });
+    await act(async () => {});
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(toast(tree).text).toMatch(/left the list meanwhile — nothing changed/);
+  });
+
   it("CONFIRM BEFORE CONCRETE: Yes writes the mark, and the Undo stays up 10 seconds", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {

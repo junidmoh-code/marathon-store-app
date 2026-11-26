@@ -112,7 +112,7 @@ export async function claimSolve(pid, token) {
   return !!(r && r.committed && r.snapshot?.val()?.token === token);
 }
 export async function releaseSolveClaim(pid, token) {
-  // (A first run sees the LOCAL copy, which is usually empty: answering null
+  // (A first run sees the LOCAL copy, which may be empty: answering null
   // there sends the delete, and the server re-runs it on the real value — so
   // the claim is really cleared, and the next Solve's claim lands in one trip.
   // Someone else's claim is never touched.)
@@ -613,14 +613,14 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     setGone((g) => ({ ...g, [row.key]: true }));
     setPicks((m) => { const n = { ...m }; delete n[row.key]; return n; });
     const t0 = Date.now();
-    solveBehind(row, sel).then((out) => {
+    solveBehind(row, sel).catch((e) => ({ ok: false, msg: `Nothing sent — retry. (${e?.message || "error"})` })).then((out) => {
       inFlight.current.delete(row.pid);
       setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
       lastSolveMs.current = Date.now() - t0;
       if (!out.ok) {
         // ROLL BACK: the card comes back, its choice still made.
         back(row.key);
-        setPicks((m) => ({ ...m, [row.key]: sel }));
+        if (rowNow.current(row)) setPicks((m) => ({ ...m, [row.key]: sel }));
         say({ ok: false, text: out.msg });
         return;
       }
@@ -651,6 +651,17 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // Everything Solve does after the tap — the same checks, in the same order,
   // and the same write. Returns { ok:true, res } or { ok:false, msg }; never throws.
   const solveBehind = async (row, sel) => {
+    let claimToken = null;
+    try { return await solveSteps(row, sel, (t) => { claimToken = t; }); }
+    catch (e) {
+      // An unexpected error mid-check: nothing was written (the write is the
+      // last step and catches its own), so the claim is let go and the card
+      // comes back with the reason.
+      if (claimToken) releaseSolveClaim(row.pid, claimToken).catch(() => {});
+      return { ok: false, msg: `Nothing sent — retry. (${e?.message || "error"})` };
+    }
+  };
+  const solveSteps = async (row, sel, noteClaim) => {
     const c = ctx.current;
     let problem = null;
     // ── ONE SOLVE OF A PRODUCT AT A TIME, ON EVERY DEVICE (Junid, 24 Nov 2026)
@@ -662,9 +673,9 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     const token = `${auth.currentUser?.uid || "anon"}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const release = () => releaseSolveClaim(row.pid, token).catch(() => {});
     let claimed = false;
-    try { claimed = await claimSolve(row.pid, token); } catch (e) { problem = `Couldn't check whether someone else is solving this — nothing sent, retry. (${e?.message || "error"})`; }
+    try { claimed = await claimSolve(row.pid, token); if (claimed) noteClaim(token); } catch (e) { problem = `Couldn't check whether someone else is solving this — nothing sent, retry. (${e?.message || "error"})`; }
     if (!problem && !claimed) problem = "Someone else is solving this product right now — nothing sent. Look again in a moment.";
-    // THE LIVE READS, together (all after the claim). Each keeps its own
+    // THE LIVE READS, together (all after the claim) — one round trip. Each keeps its own
     // failure, and they are judged below in the order they always were.
     const settle = (p) => p.then((value) => ({ value }), (error) => ({ error }));
     const clothing = row.kind === "clothing";
@@ -674,14 +685,13 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       // The one-owner check counts a shop with an open request read live in
       // the SAME read of this product (so a request written a moment ago on
       // another device or by the scan is seen before the feed delivers it).
-      const liveP = settle(readLiveProduct(row.source, row.pid));
+      // (liveAt fills in once the live read lands; the owners read does not
+      // wait for it — shops with a live open request are merged in below.)
+      let liveAt = new Set();
       [marksR, liveR, ownersR] = await Promise.all([
         settle(liveMarksOf(row.pid)),
-        liveP,
-        clothing ? settle(liveP.then((lp) => {
-          const liveAt = lp.value ? (openLocationsByProduct(lp.value.reqs).get(row.pid) || new Set()) : new Set();
-          return shopOwnersNow(row.pid, shops, (d) => liveAt.has(d) || !!ctx.current.openAt.get(row.pid)?.has(d));
-        })) : null,
+        settle(readLiveProduct(row.source, row.pid).then((lp) => { liveAt = openLocationsByProduct(lp.reqs).get(row.pid) || new Set(); return lp; })),
+        clothing ? settle(shopOwnersNow(row.pid, shops, (d) => liveAt.has(d) || !!ctx.current.openAt.get(row.pid)?.has(d))) : null,
       ]);
     }
     // WHICH DIVISION IT BELONGS TO, asked of the server now: a mark made on
@@ -760,6 +770,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
       return { ok: false, msg: problem };
     }
     const api = apisRef.current[row.section];
+    noteClaim(null);   // from here the write's own finally lets the claim go
     let res;
     try { if (!api) throw new Error("this list is not ready"); res = row.kind === "sneakers" ? await api.sneaker.solveTo(row.card, sel[0], { expect: expect[sel[0]], liveRequests: liveOpen }) : await api.product.solveTo(row.card, sel, { expect, liveRequests: liveOpen }); }
     catch (e) { res = { ok: false, msg: `Nothing changed — retry. (${e?.message || "error"})` }; }
@@ -776,6 +787,12 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // first — "Move <name> to Concrete only? It will leave the Marathon list." —
   // and nothing is written until Yes. Then the Undo stays up 10 seconds.
   const [confirmMove, setConfirmMove] = useState(null);   // the row being asked about
+  useEffect(() => {
+    if (!confirmMove || typeof window === "undefined") return undefined;
+    const onKey = (e) => { if (e.key === "Escape") setConfirmMove(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmMove]);
   act.current.division = (row) => {
     if (inFlight.current.has(row.pid) || !canMark || gone[row.key]) return;
     const to = divisionTargetOf(listKindOf(ctx.current.network, row.section));
@@ -1010,7 +1027,12 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
             <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
               <button type="button" data-action="confirm-cancel" autoFocus onClick={() => setConfirmMove(null)}
                 style={{ flex: 1, height: 48, borderRadius: 12, background: "transparent", border: "1px solid rgba(255,255,255,.25)", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: FONT }}>Cancel</button>
-              <button type="button" data-action="confirm-yes" onClick={() => { const r = confirmMove; setConfirmMove(null); act.current.divisionCommit(r); }}
+              <button type="button" data-action="confirm-yes" onClick={() => {
+                const r = confirmMove; setConfirmMove(null);
+                // Still on the list? (solved or hidden on another device while the popup was open → nothing)
+                if (!rowNow.current(r)) { say({ ok: false, text: "This product left the list meanwhile — nothing changed." }); return; }
+                act.current.divisionCommit(r);
+              }}
                 style={{ flex: 1, height: 48, borderRadius: 12, background: "#5b3fa8", border: "1px solid rgba(196,160,255,.85)", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: FONT }}>Yes</button>
             </div>
           </div>
