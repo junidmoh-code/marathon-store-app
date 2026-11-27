@@ -16,10 +16,10 @@ vi.mock("firebase/database", () => ({
   serverTimestamp: () => 0,
 }));
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
-vi.mock("../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
+vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 
-const live = await import("../utils/sharedLiveRead.js");
-const stock = await import("../components/stock/useStock.js");
+const live = await import("../../utils/sharedLiveRead.js");
+const stock = await import("../../components/stock/useStock.js");
 
 const answer = () => act(() => { for (const [, cb] of [...handlers]) cb({ val: () => ({}) }); });
 const priced = (list) => list.filter((p) => p !== ".info/connected");

@@ -17,14 +17,14 @@ vi.mock("firebase/database", () => ({
   update: vi.fn(async () => {}),
 }));
 vi.mock("firebase/functions", () => ({ httpsCallable: () => async () => ({ data: {} }) }));
-vi.mock("../firebase", () => ({ database: {}, functions: {} }));
-vi.mock("../utils/useNetwork", async () => {
-  const { SEED_REGISTRY } = await vi.importActual("../utils/networkRegistry");
+vi.mock("../../firebase", () => ({ database: {}, functions: {} }));
+vi.mock("../../utils/useNetwork", async () => {
+  const { SEED_REGISTRY } = await vi.importActual("../../utils/networkRegistry");
   return { useNetwork: () => ({ registry: SEED_REGISTRY, settled: true, error: false }) };
 });
 
-const UserManagement = (await import("../components/UserManagement.jsx")).default;
-const live = await import("../utils/sharedLiveRead.js");
+const UserManagement = (await import("../../components/UserManagement.jsx")).default;
+const live = await import("../../utils/sharedLiveRead.js");
 const ADMIN = { uid: "admin-uid", email: "gunidmoh@gmail.com", displayName: "Junid" };
 const mount = () => { let t; act(() => { t = TestRenderer.create(<UserManagement onExit={() => {}} authUser={ADMIN} />); }); return t; };
 const usersOpens = () => opens.filter((p) => p === "users").length;

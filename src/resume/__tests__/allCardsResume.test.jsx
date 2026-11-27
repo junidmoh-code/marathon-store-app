@@ -22,7 +22,7 @@ import { MEASURED, bytesOf, mountProbe } from "./resumeHarness.jsx";
 
 const opens = [];
 const handlers = new Map();
-vi.mock("../firebase", () => ({
+vi.mock("../../firebase", () => ({
   app: {}, database: {}, functions: {}, functionsUS: {}, storage: {}, googleProvider: {},
   auth: { currentUser: { uid: "u1" }, onAuthStateChanged: () => () => {} },
 }));
@@ -43,13 +43,13 @@ globalThis.document ??= { addEventListener() {}, removeEventListener() {}, activ
 const mem = new Map();
 globalThis.localStorage ??= { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
 
-const app = await import("../App.jsx");
-const stock = await import("../components/stock/useStock.js");
-const layby = await import("../components/layby/useLayby.js");
-const { useNetwork } = await import("../utils/useNetwork.js");
-const { useSpecials } = await import("../components/TvSpecialsRail.jsx");
-const live = await import("../utils/sharedLiveRead.js");
-const { HIDDEN_GRACE_MS } = await import("../utils/sharedLiveReadCore.js");
+const app = await import("../../App.jsx");
+const stock = await import("../../components/stock/useStock.js");
+const layby = await import("../../components/layby/useLayby.js");
+const { useNetwork } = await import("../../utils/useNetwork.js");
+const { useSpecials } = await import("../../components/TvSpecialsRail.jsx");
+const live = await import("../../utils/sharedLiveRead.js");
+const { HIDDEN_GRACE_MS } = await import("../../utils/sharedLiveReadCore.js");
 
 const CARDS = {
   Source: () => { stock.useEngineOpen(); stock.useEngineConfig(); useNetwork(); },

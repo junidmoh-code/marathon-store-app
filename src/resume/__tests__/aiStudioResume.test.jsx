@@ -5,7 +5,7 @@ import { bytesOf, mountProbe } from "./resumeHarness.jsx";
 
 const opens = [];
 const handlers = new Map();
-vi.mock("../firebase", () => ({
+vi.mock("../../firebase", () => ({
   app: {}, database: {}, functions: {}, functionsUS: {}, storage: {}, googleProvider: {},
   auth: { currentUser: { uid: "u1" }, onAuthStateChanged: () => () => {} },
 }));
@@ -26,8 +26,8 @@ globalThis.document ??= { addEventListener() {}, removeEventListener() {}, activ
 const mem = new Map();
 globalThis.localStorage ??= { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
 
-const { useNameProposals, usePhotoProposals } = await import("../App.jsx");
-const live = await import("../utils/sharedLiveRead.js");
+const { useNameProposals, usePhotoProposals } = await import("../../App.jsx");
+const live = await import("../../utils/sharedLiveRead.js");
 
 // AI Studio mounts the name list once and the photo list twice (the view and
 // its default Review Photos tab).

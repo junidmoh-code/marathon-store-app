@@ -6,7 +6,7 @@ import { act } from "react-test-renderer";
 import { mountProbe } from "./resumeHarness.jsx";
 
 const opens = [];
-vi.mock("../firebase", () => ({
+vi.mock("../../firebase", () => ({
   app: {}, database: {}, functions: {}, functionsUS: {}, storage: {}, googleProvider: {},
   auth: { currentUser: { uid: "u1" }, onAuthStateChanged: () => () => {} },
 }));
@@ -27,9 +27,9 @@ globalThis.document ??= { addEventListener() {}, removeEventListener() {}, activ
 const mem = new Map();
 globalThis.localStorage ??= { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
 
-const { useBroadcastHistory } = await import("../App.jsx");
-const { useSpecials } = await import("../components/TvSpecialsRail.jsx");
-const live = await import("../utils/sharedLiveRead.js");
+const { useBroadcastHistory } = await import("../../App.jsx");
+const { useSpecials } = await import("../../components/TvSpecialsRail.jsx");
+const live = await import("../../utils/sharedLiveRead.js");
 
 beforeEach(() => { vi.useFakeTimers(); live._resetSharedLiveReadsForTests(); live._setHoldingForTests(true); opens.length = 0; });
 afterEach(() => { live._resetSharedLiveReadsForTests(); live._setHoldingForTests(live.holdsInMode("test")); vi.useRealTimers(); });
