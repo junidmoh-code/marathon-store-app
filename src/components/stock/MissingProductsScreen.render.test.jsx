@@ -13,6 +13,7 @@ const gets = {};
 const listeners = {};
 // Every database read the screen makes (search must add none).
 const reads = { onValue: 0, get: 0 };
+const getPaths = [];   // every get() path, in order (Solve's read count)
 // A one-product live read (Solve's check at the tap) answers from the same
 // data the listeners hold: stock/{loc}/{pid}, and refill_requests by productId.
 const liveOf = (path) => {
@@ -32,7 +33,7 @@ vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path ?? "" }),
   onValue: (r, cb) => { reads.onValue++; (listeners[r.path] ||= []).push(cb); cb({ val: () => paths[r.path] ?? null }); return () => { listeners[r.path] = (listeners[r.path] || []).filter((x) => x !== cb); }; },
   update: (...a) => updateMock(...a),
-  get: (r) => { reads.get++; return Promise.resolve({ val: () => (r.path in gets ? gets[r.path] : liveOf(r.path)) }); },
+  get: (r) => { reads.get++; getPaths.push(r.path); return Promise.resolve({ val: () => (r.path in gets ? gets[r.path] : liveOf(r.path)) }); },
   push: () => ({ key: `req${++pushN}` }),
   // A real transaction: the function sees the stored value; undefined aborts.
   runTransaction: (r, fn) => { const cur = txnData[r.path] ?? null; const next = fn(cur); txnCalls.push({ path: r.path, cur, next }); if (next !== undefined) txnData[r.path] = next; return Promise.resolve({ committed: next !== undefined, snapshot: { val: () => (next === undefined ? cur : next) } }); },
@@ -112,7 +113,8 @@ const live = (tree, pid) => dests(tree, pid).map((b) => b.props["data-dest"]);
 const picked = (tree, pid) => dests(tree, pid).filter((b) => b.props["aria-pressed"]).map((b) => b.props["data-dest"]);
 const solveBtn = (tree, pid) => card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "solve")[0];
 const pick = async (tree, pid, dest) => { await act(async () => { dests(tree, pid).find((b) => b.props["data-dest"] === dest).props.onClick(); }); };
-const solve = async (tree, pid) => { await act(async () => { await solveBtn(tree, pid).props.onClick(); }); await act(async () => {}); };
+// (Solve runs behind the screen since 26 Nov 2026: a few turns let its reads and write land.)
+const solve = async (tree, pid) => { await act(async () => { await solveBtn(tree, pid).props.onClick(); }); for (let i = 0; i < 4; i++) await act(async () => {}); };
 const stockLine = (tree, pid) => flat(card(tree, pid).findAll((n) => typeof n.type === "string" && n.props["data-stock"])[0].children);
 // Choose a location, then Solve — the two deliberate steps.
 const tapDest = async (tree, pid, dest) => { await pick(tree, pid, dest); await solve(tree, pid); };
@@ -361,9 +363,9 @@ describe("kids shoes: no policy is said as no policy, never as queued", () => {
     expect(host(tree, "data-not-listed-row", KID)[0].props["data-reason"]).toBe("noPolicy");
   });
 
-  it("tapping a location or Solve disarms the division button", async () => {
+  it("tapping a location or Solve disarms the division button (the two-tap Marathon button on Concrete's list)", async () => {
     const tree = await mount();
-    await kind(tree, "clothing");
+    await division(tree, CONCRETE); await kind(tree, "clothing");
     const mb = () => card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0];
     await act(async () => { mb().props.onClick(); });
     expect(mb().props["data-armed"]).toBe(true);
@@ -458,12 +460,16 @@ describe("no shake: the order is frozen and only the solved card leaves", () => 
     await pick(tree, SHOE_B, "hub1");
     expect(shape()).toEqual(s0);                               // chosen: same box, same buttons
     await act(async () => { solveBtn(tree, SHOE_B).props.onClick(); });
-    await act(async () => {});
-    expect(shape()).toEqual(s0);                               // the write is in flight: same boxes, same buttons
-    expect(cardsOf(tree)).toContain("Gazelle Bold");           // the card stays until the write has landed
-    await act(async () => { release(); });
+    // SOLVE IS INSTANT ON SCREEN (Junid, 26 Nov 2026): the card leaves with the
+    // tap, while the write is still in flight — and no element is added.
+    expect(cardsOf(tree)).not.toContain("Gazelle Bold");
     await act(async () => {});
     expect(cardsOf(tree)).not.toContain("Gazelle Bold");
+    expect(toast(tree)).toBe(null);                            // no "sending" message: success brings the Undo
+    await act(async () => { release(); });
+    for (let i = 0; i < 4; i++) await act(async () => {});
+    expect(cardsOf(tree)).not.toContain("Gazelle Bold");
+    expect(toast(tree).undo).toBeDefined();
   });
 
   it("a failed solve says why in the toast and the card stays put", async () => {
@@ -477,6 +483,36 @@ describe("no shake: the order is frozen and only the solved card leaves", () => 
     expect(cardsOf(tree)).toEqual(before);
     expect(count(tree, MARATHON)).toBe("6");
     expect(live(tree, SHOE_B)).toEqual(["hub1", "hub2"]);      // and can be tapped again
+  });
+
+  it("SOLVE IS INSTANT (Junid, 26 Nov 2026): the card leaves with the tap; a write that fails puts it back, its location still chosen, with the reason in red", async () => {
+    const tree = await mount();
+    const before = cardsOf(tree);
+    let fail;
+    updateMock.mockImplementationOnce(() => new Promise((_, rej) => { fail = rej; }));
+    await pick(tree, SHOE_B, "hub1");
+    await act(async () => { solveBtn(tree, SHOE_B).props.onClick(); });
+    expect(cardsOf(tree)).not.toContain("Gazelle Bold");       // gone at once
+    expect(count(tree, MARATHON)).toBe("5");
+    for (let i = 0; i < 4; i++) await act(async () => {});
+    await act(async () => { fail(new Error("PERMISSION_DENIED")); });
+    for (let i = 0; i < 3; i++) await act(async () => {});
+    expect(cardsOf(tree)).toEqual(before);                     // rolled back, same place
+    expect(count(tree, MARATHON)).toBe("6");
+    expect(picked(tree, SHOE_B)).toEqual(["hub1"]);            // the choice is kept
+    expect(toast(tree).kind).toBe("fail");
+    expect(toast(tree).text).toMatch(/PERMISSION_DENIED/);
+  });
+
+  it("SOLVE IS INSTANT: the product's live record is read ONCE per Solve (clothing), never a whole node", async () => {
+    const tree = await mount();
+    await division(tree, CONCRETE); await kind(tree, "clothing");
+    getPaths.length = 0;
+    await pick(tree, TEE, "marathon-pine");
+    await solve(tree, TEE);
+    expect(updateMock).toHaveBeenCalled();
+    expect(getPaths.filter((p) => p === `refill_requests?orderBy=productId&equalTo=${TEE}`).length).toBe(1);   // was 2
+    expect(getPaths.filter((p) => ["refill_requests", "stock", "products", "refill_engine/seats"].includes(p))).toEqual([]);
   });
 
   it("ten solves in a row: each leaves once, the rest never move", async () => {
@@ -870,7 +906,14 @@ describe("one product, one shop — Pine or Concrete, never both", () => {
 describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
   const markBtn = (tree, pid) => card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0];
   // Two taps on the same button (24 Nov 2026): the first arms, the second marks.
-  const tapMark = async (tree, pid) => { await act(async () => { markBtn(tree, pid).props.onClick(); }); await act(async () => { await markBtn(tree, pid).props.onClick(); }); await act(async () => {}); await act(async () => {}); };
+  // Concrete (on clothing) asks in a popup since 26 Nov 2026: one tap, then Yes.
+  const tapMark = async (tree, pid) => {
+    if (markBtn(tree, pid).props["data-division-mark"] === "concrete") {
+      await act(async () => { markBtn(tree, pid).props.onClick(); });
+      await act(async () => { await host(tree, "data-action", "confirm-yes")[0].props.onClick(); });
+    } else { await act(async () => { markBtn(tree, pid).props.onClick(); }); await act(async () => { await markBtn(tree, pid).props.onClick(); }); }
+    await act(async () => {}); await act(async () => {});
+  };
   const allWrites = () => updateMock.mock.calls.flatMap((c) => Object.keys(c[1]));
   const FORBIDDEN = /^(stock|refill_requests|refill_engine|stock_targets|stock_movements|transfers)\//;
   const withProducts = async (over) => {
@@ -880,42 +923,60 @@ describe("the division button replaces Hide (Junid, 23 Nov 2026)", () => {
   };
   const listOf = async (tree, sec, k) => { await division(tree, sec); await kind(tree, k); return cardsOf(tree); };
 
-  it("ONE tap does nothing (24 Nov 2026): the button reads 'Tap again to move to Concrete', nothing is written, nothing moves; the window runs out and it is the tag again", async () => {
+  it("CONFIRM BEFORE CONCRETE (Junid, 26 Nov 2026): a tap on clothing's Concrete opens the popup and writes nothing; Cancel closes it and nothing moves", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    const before = cardsOf(tree);
+    updateMock.mockClear();
+    await act(async () => { markBtn(tree, TEE).props.onClick(); });
+    const dlg = host(tree, "data-confirm-move", TEE)[0];
+    expect(dlg).toBeDefined();
+    expect(flat(host(tree, "data-confirm-text")[0].children)).toBe("Move Essentials Tee Olive to Concrete only? It will leave the Marathon list.");
+    expect(host(tree, "data-action", "confirm-yes").map((b) => flat(b.children))).toEqual(["Yes"]);
+    expect(host(tree, "data-action", "confirm-cancel").map((b) => flat(b.children))).toEqual(["Cancel"]);
+    expect(markBtn(tree, TEE).props["data-armed"]).toBeUndefined();          // no "Tap again" arming any more
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(cardsOf(tree)).toEqual(before);
+    await act(async () => { host(tree, "data-action", "confirm-cancel")[0].props.onClick(); });
+    expect(host(tree, "data-confirm-move").length).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(cardsOf(tree)).toEqual(before);
+    // a tap on the dimmed backdrop is a Cancel too
+    await act(async () => { markBtn(tree, TEE).props.onClick(); });
+    const bd = host(tree, "data-confirm-move", TEE)[0];
+    await act(async () => { bd.props.onClick({ target: bd, currentTarget: bd }); });
+    expect(host(tree, "data-confirm-move").length).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("CONFIRM BEFORE CONCRETE: Yes on a card that left the list meanwhile (hidden on another device) writes nothing", async () => {
+    const tree = await mount();
+    await kind(tree, "clothing");
+    await act(async () => { markBtn(tree, TEE).props.onClick(); });
+    await act(async () => { emit("settings/missingProductsHidden", { [TEE]: { at: NOW, by: "u2" } }); });
+    updateMock.mockClear();
+    await act(async () => { await host(tree, "data-action", "confirm-yes")[0].props.onClick(); });
+    await act(async () => {});
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(toast(tree).text).toMatch(/left the list meanwhile — nothing changed/);
+  });
+
+  it("CONFIRM BEFORE CONCRETE: Yes writes the mark, and the Undo stays up 10 seconds", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const tree = await mount();
       await kind(tree, "clothing");
-      const before = cardsOf(tree);
-      const shellH = card(tree, TEE).props.style.height;
-      updateMock.mockClear();
       await act(async () => { markBtn(tree, TEE).props.onClick(); });
-      expect(markBtn(tree, TEE).props["data-armed"]).toBe(true);
-      expect(flat(card(tree, TEE).findAll((n) => typeof n.type === "string" && n.props["data-division-confirm"])[0].children)).toBe("Tap again to move to Concrete");
-      // laid over the name block, absolutely: the card and the list do not move
-      const over = card(tree, TEE).findAll((n) => typeof n.type === "string" && n.props["data-division-confirm"])[0];
-      expect(over.props.style.position).toBe("absolute");
-      expect(card(tree, TEE).props.style.height).toBe(shellH);
-      expect(updateMock).not.toHaveBeenCalled();
-      expect(cardsOf(tree)).toEqual(before);
-      await act(async () => { vi.advanceTimersByTime(4100); });
-      expect(markBtn(tree, TEE).props["data-armed"]).toBeUndefined();
-      // a tap after the window only arms again — still nothing written
-      await act(async () => { markBtn(tree, TEE).props.onClick(); });
-      expect(updateMock).not.toHaveBeenCalled();
-      expect(cardsOf(tree)).toEqual(before);
+      await act(async () => { await host(tree, "data-action", "confirm-yes")[0].props.onClick(); });
+      await act(async () => {}); await act(async () => {});
+      expect(lastUpdate()[`products/${TEE}/concreteProduct`]).toBe(true);
+      expect(host(tree, "data-confirm-move").length).toBe(0);
+      expect(toast(tree).undo).toBeDefined();
+      await act(async () => { vi.advanceTimersByTime(9500); });
+      expect(toast(tree)?.undo).toBeDefined();                  // still there at 9.5 s
+      await act(async () => { vi.advanceTimersByTime(700); });
+      expect(toast(tree)).toBe(null);                           // gone after 10 s
     } finally { vi.useRealTimers(); }
-  });
-
-  it("NO CONCRETE BUTTON ON SNEAKERS (Junid, 26 Nov 2026): Marathon footwear cards have none, clothing keeps it, Concrete's sneaker cards keep Marathon", async () => {
-    const tree = await mount();
-    const marks = (pid) => card(tree, pid).findAll((n) => n.type === "button" && n.props["data-action"] === "division").map((b) => b.props["data-division-mark"]);
-    for (const pid of [SHOE_A, SHOE_B, SHOE_C]) expect(marks(pid)).toEqual([]);
-    expect(textOf(tree)).not.toMatch(/Tap again to move to Concrete/);
-    await kind(tree, "clothing");
-    expect(marks(TEE)).toEqual(["concrete"]);
-    await division(tree, CONCRETE); await kind(tree, "sneakers");
-    expect(marks(SHOE_B)).toEqual(["marathon"]);
-    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it("Marathon card: Concrete marks it Concrete-only — leaves Marathon's list and count; writes the mark only", async () => {
@@ -1100,8 +1161,8 @@ describe("division Undo that fails (CodeRabbit, PR #967)", () => {
     const tree = await mount();
     await kind(tree, "clothing");
     const mb = () => card(tree, TEE).findAll((n) => n.type === "button" && n.props["data-action"] === "division")[0];
-    await act(async () => { mb().props.onClick(); });            // arms
-    await act(async () => { await mb().props.onClick(); });      // marks
+    await act(async () => { mb().props.onClick(); });            // asks
+    await act(async () => { await tree.root.findAll((n) => n.type === "button" && n.props["data-action"] === "confirm-yes")[0].props.onClick(); });   // Yes
     await act(async () => {}); await act(async () => {});
     updateMock.mockImplementationOnce(() => Promise.reject(new Error("offline")));
     await act(async () => { await toast(tree).undo.props.onClick(); });
@@ -1310,9 +1371,9 @@ describe("the numbers are exact — after the architect review (PR #990)", () =>
 
   it("the claim is taken BEFORE the one-owner and division reads, so a second solver reads the first one's writes", async () => {
     const src = (await import("fs")).readFileSync(new URL("./MissingProductsScreen.jsx", import.meta.url), "utf8");
-    const solve = src.slice(src.indexOf("act.current.solve = async"), src.indexOf("act.current.division = async"));
+    const solve = src.slice(src.indexOf("const solveBehind = async"), src.indexOf("act.current.division = (row)"));
     const claimAt = solve.indexOf("await claimSolve(");
     expect(claimAt).toBeGreaterThan(-1);
-    for (const later of ["await liveMarksOf(", "shopOwnersNow(", "readLiveProduct("]) expect(solve.indexOf(later)).toBeGreaterThan(claimAt);
+    for (const later of ["liveMarksOf(", "shopOwnersNow(", "readLiveProduct("]) expect(solve.indexOf(later)).toBeGreaterThan(claimAt);
   });
 });

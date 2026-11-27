@@ -77,6 +77,8 @@ const KINDS = [["sneakers", "Sneakers"], ["clothing", "Clothing"]];
 // Cards drawn at once; the rest follow as the list is scrolled.
 const PAGE = 40;
 const TOAST_MS = 7000;
+// The Undo after "Move to Concrete" stays up this long (Junid, 26 Nov 2026).
+export const DIVISION_UNDO_MS = 10000;
 const NONE = Object.freeze({});
 const NO_PICK = Object.freeze([]);
 const NOOP = () => {};
@@ -110,7 +112,11 @@ export async function claimSolve(pid, token) {
   return !!(r && r.committed && r.snapshot?.val()?.token === token);
 }
 export async function releaseSolveClaim(pid, token) {
-  await runTransaction(ref(database, `${SOLVE_CLAIMS_PATH}/${pid}`), (cur) => (cur && cur.token === token ? null : undefined));
+  // (A first run sees the LOCAL copy, which may be empty: answering null
+  // there sends the delete, and the server re-runs it on the real value — so
+  // the claim is really cleared, and the next Solve's claim lands in one trip.
+  // Someone else's claim is never touched.)
+  await runTransaction(ref(database, `${SOLVE_CLAIMS_PATH}/${pid}`), (cur) => (cur && cur.token !== token ? undefined : null));
 }
 // One product, live: its cells at `source` (decoded, as the screen holds them)
 // and every request record for it (the productId index — never a whole node).
@@ -402,8 +408,10 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // WHAT IS CHOSEN ON EACH CARD (row key → location ids, in tap order). Lives
   // and dies with this screen: leaving it clears every choice.
   const [picks, setPicks] = useState({});
-  const latestPicks = useRef(picks); latestPicks.current = picks;
-  const latestRows = useRef(new Map());
+  // A row as now worked out — gone or not (Solve's second look, after its
+  // card has already left the screen).
+  const rowNow = useRef(() => null);
+  rowNow.current = (row) => (hiddenMap && hiddenMap[row.pid] ? null : (sliced.rows[bucketId(row.section, row.kind)] || []).find((r) => r.key === row.key) || null);
   const inFlight = useRef(new Set());
   const listedOf = (id) => sliced.rows[id].filter((r) => !(hiddenMap && hiddenMap[r.pid]) && !gone[r.key]);
   const countOf = (sec) => (KINDS.every(([k]) => sliced.complete[bucketId(sec, k)])
@@ -457,6 +465,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   // the visit comes back by itself (Sonnet architect review, PR #964).
   useEffect(() => {
     const drop = Object.keys(gone).filter((k) => {
+      if (busy[k]) return false;   // its Solve is still running behind the screen (CodeRabbit, #1014)
       const [sec, kind, pid] = k.split(":");
       const id = bucketId(Number(sec), kind);
       return sliced.complete[id] && !(sliced.rows[id] || []).some((r) => r.pid === pid);
@@ -482,7 +491,6 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
   const onScreen = view === "list" && section != null && !!sliced.complete[active];
   const listed = onScreen ? listedOf(active) : [];
   const listedBy = new Map(listed.map((r) => [r.key, r]));
-  latestRows.current = listedBy;   // the rows as drawn, for Solve's second look
   const before = new Set(fz.seen);
   freezeOrder(fz, listed.map((r) => r.key));
   for (const r of listed) fz.last.set(r.key, r);
@@ -545,7 +553,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     clearTimeout(toastTimer.current);
     const id = Date.now() + Math.random();
     setToast({ id, ...t });
-    toastTimer.current = setTimeout(() => setToast((cur) => (cur && cur.id === id ? null : cur)), TOAST_MS);
+    toastTimer.current = setTimeout(() => setToast((cur) => (cur && cur.id === id ? null : cur)), t.ms || TOAST_MS);
   }, []);
   useEffect(() => () => clearTimeout(toastTimer.current), []);
   const back = (key) => setGone((g) => { const n = { ...g }; delete n[key]; return n; });
@@ -572,7 +580,16 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     if (!canAct || gone[row.key] || inFlight.current.has(row.pid) || !row.dests.some((x) => x.id === dest)) return;
     setPicks((m) => ({ ...m, [row.key]: pickNext(chosen(row), dest, { exclusive: exclusiveFor(row) }) }));
   };
-  act.current.solve = async (row) => {
+  // ── SOLVE, AT ONCE ON SCREEN (Junid, 26 Nov 2026 — "Solve must be fast") ──
+  // What Solve checks and writes is exactly what it was; only WHEN the screen
+  // moves changed. The card leaves the moment Solve is tapped; the claim, the
+  // live reads and the write run behind it. Anything that refuses or fails
+  // puts the card back where it was, with the location still chosen, and says
+  // why in red. The live reads that do not depend on each other (division
+  // marks, the product's live cells + requests, the one-owner check) go out
+  // together — one round trip, not three — and the product's live record is
+  // read once, not twice.
+  act.current.solve = (row) => {
     // ONE SOLVE PER PRODUCT AT A TIME, across both divisions: a Hub 1 and a
     // Hub 3 solve of the same shoe must not both plan from the same free stock.
     if (inFlight.current.has(row.pid) || !canAct || gone[row.key]) return;   // (a leaving card takes no second Solve)
@@ -588,10 +605,66 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     // never both of a one-or-the-other pair, never a location with nothing to
     // send. The hooks ask destinationProblem again of what they write.
     const kindOf = row.kind === "sneakers" ? "sneaker" : "product";
-    let problem = sel.map((dest) => tapProblem({ row, dest })).find(Boolean)
+    const early = sel.map((dest) => tapProblem({ row, dest })).find(Boolean)
       || destinationProblem({ network: c.network, section: row.section, destinations: sel, kind: kindOf });
+    if (early) { say({ ok: false, text: early }); return; }
     inFlight.current.add(row.pid);
     setBusy((b) => ({ ...b, [row.key]: true }));
+    // THE SCREEN MOVES NOW: the card leaves in this frame.
+    setGone((g) => ({ ...g, [row.key]: true }));
+    setPicks((m) => { const n = { ...m }; delete n[row.key]; return n; });
+    const t0 = Date.now();
+    solveBehind(row, sel).catch((e) => ({ ok: false, msg: `Nothing sent — retry. (${e?.message || "error"})` })).then((out) => {
+      inFlight.current.delete(row.pid);
+      setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
+      lastSolveMs.current = Date.now() - t0;
+      if (!out.ok) {
+        // ROLL BACK: the card comes back, its choice still made.
+        back(row.key);
+        if (rowNow.current(row)) setPicks((m) => ({ ...m, [row.key]: sel }));
+        say({ ok: false, text: out.msg });
+        return;
+      }
+      const res = out.res;
+      const what = res.units > 0 ? ` · ${res.units} ${row.kind === "sneakers" ? "pair" : "unit"}${res.units === 1 ? "" : "s"}` : "";
+      say({
+        ok: true, text: `${sel.map(c.label).join(" + ")}${what}`,
+        undo: async function undoIt() {
+          let r2;
+          if (row.kind === "sneakers") r2 = await undoSneakerRequest(res);
+          else {
+            r2 = { ok: true };
+            for (const u of res.rows || []) {
+              // eslint-disable-next-line no-await-in-loop
+              const r = await apisRef.current[row.section].product.undoEntry(u);
+              if (!r || !r.ok) { r2 = { ok: false, msg: r?.msg || "Not undone." }; break; }
+            }
+            if (!(res.rows || []).length) r2 = { ok: false, msg: "Nothing to undo." };
+          }
+          // A failure that can be retried keeps its Undo; a refusal (Central has
+          // started) does not.
+          if (r2.ok) { back(row.key); say({ ok: true, text: "Undone" }); } else say({ ok: false, text: r2.msg, ...(r2.retry ? { undo: undoIt } : {}) });
+        },
+      });
+    });
+  };
+  const lastSolveMs = useRef(null);
+  // Everything Solve does after the tap — the same checks, in the same order,
+  // and the same write. Returns { ok:true, res } or { ok:false, msg }; never throws.
+  const solveBehind = async (row, sel) => {
+    let claimToken = null;
+    try { return await solveSteps(row, sel, (t) => { claimToken = t; }); }
+    catch (e) {
+      // An unexpected error mid-check: nothing was written (the write is the
+      // last step and catches its own), so the claim is let go and the card
+      // comes back with the reason.
+      if (claimToken) releaseSolveClaim(row.pid, claimToken).catch(() => {});
+      return { ok: false, msg: `Nothing sent — retry. (${e?.message || "error"})` };
+    }
+  };
+  const solveSteps = async (row, sel, noteClaim) => {
+    const c = ctx.current;
+    let problem = null;
     // ── ONE SOLVE OF A PRODUCT AT A TIME, ON EVERY DEVICE (Junid, 24 Nov 2026)
     // A short claim, taken in a transaction BEFORE every live read below (the
     // division marks, the one-owner check, the stock): a second person
@@ -601,56 +674,60 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     const token = `${auth.currentUser?.uid || "anon"}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const release = () => releaseSolveClaim(row.pid, token).catch(() => {});
     let claimed = false;
+    try { claimed = await claimSolve(row.pid, token); if (claimed) noteClaim(token); } catch (e) { problem = `Couldn't check whether someone else is solving this — nothing sent, retry. (${e?.message || "error"})`; }
+    if (!problem && !claimed) problem = "Someone else is solving this product right now — nothing sent. Look again in a moment.";
+    // THE LIVE READS, together (all after the claim) — one round trip. Each keeps its own
+    // failure, and they are judged below in the order they always were.
+    const settle = (p) => p.then((value) => ({ value }), (error) => ({ error }));
+    const clothing = row.kind === "clothing";
+    const shops = clothing ? shopDestinations(c.network, row.section) : [];
+    let marksR = null, liveR = null, ownersR = null;
     if (!problem) {
-      try { claimed = await claimSolve(row.pid, token); } catch (e) { problem = `Couldn't check whether someone else is solving this — nothing sent, retry. (${e?.message || "error"})`; }
-      if (!problem && !claimed) problem = "Someone else is solving this product right now — nothing sent. Look again in a moment.";
+      // The one-owner check counts a shop with an open request read live in
+      // the SAME read of this product (so a request written a moment ago on
+      // another device or by the scan is seen before the feed delivers it).
+      // (liveAt fills in once the live read lands; the owners read does not
+      // wait for it — shops with a live open request are merged in below.)
+      let liveAt = new Set();
+      [marksR, liveR, ownersR] = await Promise.all([
+        settle(liveMarksOf(row.pid)),
+        settle(readLiveProduct(row.source, row.pid).then((lp) => { liveAt = openLocationsByProduct(lp.reqs).get(row.pid) || new Set(); return lp; })),
+        clothing ? settle(shopOwnersNow(row.pid, shops, (d) => liveAt.has(d) || !!ctx.current.openAt.get(row.pid)?.has(d))) : null,
+      ]);
     }
-    // ONE OWNER, CHECKED LIVE (Pine / Concrete): a stale screen — another
-    // device solved it to the other shop a minute ago — must not write a
-    // second shop. Read now, per product: stock and seat at the other shop,
-    // and its queued requests.
     // WHICH DIVISION IT BELONGS TO, asked of the server now: a mark made on
     // another device a moment ago is never sent into the other division.
     if (!problem) {
-      try {
-        const live = await liveMarksOf(row.pid);
-        const mark = live.concrete ? "concrete" : live.marathon ? "marathon" : null;
+      if (marksR.error) problem = `Couldn't check which division this belongs to — nothing sent, retry. (${marksR.error?.message || "error"})`;
+      else {
+        const mark = marksR.value.concrete ? "concrete" : marksR.value.marathon ? "marathon" : null;
         if (mark && mark !== listKindOf(c.network, row.section)) problem = "This product belongs to the other division — nothing sent.";
-      } catch (e) {
-        problem = `Couldn't check which division this belongs to — nothing sent, retry. (${e?.message || "error"})`;
       }
     }
     // One shop per product in every division (Junid, 24 Nov 2026).
-    if (!problem && row.kind === "clothing" && sel.length > 1) problem = `${sel.map(c.label).join(" and ")} cannot both be solved for the same product — pick one.`;
-    if (!problem && row.kind === "clothing") {
-      const shops = shopDestinations(c.network, row.section);
-      try {
-        // Requests read LIVE too (one indexed read of this product), so a
-        // request written a moment ago on another device or by the scan is
-        // seen even before this screen's feed delivers it (architect review, #991).
-        let liveAt = new Set();
-        const [liveProduct, ownersFeed] = await Promise.all([
-          readLiveProduct(row.source, row.pid),
-          shopOwnersNow(row.pid, shops, (d) => liveAt.has(d) || !!ctx.current.openAt.get(row.pid)?.has(d)),
-        ]);
-        liveAt = openLocationsByProduct(liveProduct.reqs).get(row.pid) || new Set();
-        const owners = [...new Set([...ownersFeed, ...shops.filter((d) => liveAt.has(d))])];
+    if (!problem && clothing && sel.length > 1) problem = `${sel.map(c.label).join(" and ")} cannot both be solved for the same product — pick one.`;
+    // ONE OWNER, CHECKED LIVE (Pine / Concrete): a stale screen — another
+    // device solved it to the other shop a minute ago — must not write a
+    // second shop: stock and seat at each shop, and its queued requests.
+    if (!problem && clothing) {
+      const err = liveR.error || ownersR.error;
+      if (err) problem = `Couldn't check where this belongs — nothing sent, retry. (${err?.message || "error"})`;
+      else {
+        const liveAt = openLocationsByProduct(liveR.value.reqs).get(row.pid) || new Set();
+        const owners = [...new Set([...ownersR.value, ...shops.filter((d) => liveAt.has(d))])];
         // Held by any shop of the division now (another device, a scan): it
         // is that shop's to refill — nothing is sent from here.
         if (owners.length) problem = `${owners.map(c.label).join(" and ")} already ${owners.length > 1 ? "have" : "has"} this — the refill engine tops it up there. Nothing sent.`;
-      } catch (e) {
-        problem = `Couldn't check where this belongs — nothing sent, retry. (${e?.message || "error"})`;
       }
     }
-    // The choice is judged again after the live read: what is sent is what is
-    // chosen NOW (a location that left the card meanwhile is not sent to).
+    // The choice is judged again after the live read: what is sent is what was
+    // chosen, and only while every chosen location is still on the card.
+    // (The card has left the screen, so the choice cannot change under it; the
+    // row is looked up in the rows as now worked out.)
     if (!problem) {
-      const cur = latestRows.current.get(row.key);
+      const cur = rowNow.current(row);
       if (!cur) problem = "This product changed while it was being checked — nothing sent.";   // (CodeRabbit, PR #966)
-      else {
-        const now = (latestPicks.current[row.key] || []).filter((d) => cur.dests.some((x) => x.id === d));
-        if (now.length !== sel.length || now.some((d, i) => d !== sel[i])) problem = "The choice changed — check it and Solve again.";
-      }
+      else if (!sel.every((d) => cur.dests.some((x) => x.id === d))) problem = "The choice changed — check it and Solve again.";
     }
     // ── THE CARD'S NUMBER, CHECKED LIVE AT THE TAP ───────────────────────────
     // Central's cells (or the hub's, for a hub-fed card) and this product's
@@ -659,83 +736,92 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     // and the person decides again.
     let expect = null, liveOpen = null;
     if (!problem) {
-      try {
-        const live = await readLiveProduct(row.source, row.pid);
-        const routes = c.cfg?.routes || {};
-        const fromCentral = row.source === c.central;
-        const owedNow = fromCentral ? owedBySize(live.reqs, row.pid, { routes, central: c.central }) : {};
-        const changed = figureChanged(row,
-          { cells: c.allStock?.[row.source]?.[row.pid] || {}, owed: fromCentral ? owedBySize(c.requests, row.pid, { routes, central: c.central }) : {} },
-          { cells: live.cells, owed: owedNow });
-        if (changed) {
-          if (fromCentral) setLiveFix((m) => ({ ...m, [row.pid]: { cells: live.cells, reqs: live.reqs, at: Date.now(), feedSig: feedSigOf({ central: c.allStockFeed?.central }, c.requestsFeed, row.pid, routes) } }));
-          problem = `${row.sourceName} now has ${changed.now.total} free, not ${changed.was.total} — nothing sent. The card shows the live number; check it and Solve again.`;
-        } else {
-          // Solve may send ONLY what the card shows: the hooks refuse a plan
-          // that differs from this, and plan from these same live requests.
-          expect = Object.fromEntries(row.dests.filter((d) => sel.includes(d.id)).map((d) => [d.id, { units: d.units, sizes: d.sizes }]));
-          // Two shops in one Solve: no longer reachable for clothing (one shop
-          // per product, Junid 24 Nov 2026 — refused above); kept for safety.
-          if (row.kind === "clothing" && sel.length > 1) {
-            const joint = apisRef.current[row.section]?.product.planFor(row.card, sel, openRequestsByProduct(live.reqs).get(row.pid) || {});
-            for (const l of joint?.lines || []) if (expect[l.store]) expect[l.store] = { units: l.units || 0, sizes: expect[l.store].sizes, joint: true };
+      if (liveR.error) problem = `Couldn't read the live stock — nothing sent, retry. (${liveR.error?.message || "error"})`;
+      else {
+        try {
+          const live = liveR.value;
+          const routes = c.cfg?.routes || {};
+          const fromCentral = row.source === c.central;
+          const owedNow = fromCentral ? owedBySize(live.reqs, row.pid, { routes, central: c.central }) : {};
+          const changed = figureChanged(row,
+            { cells: c.allStock?.[row.source]?.[row.pid] || {}, owed: fromCentral ? owedBySize(c.requests, row.pid, { routes, central: c.central }) : {} },
+            { cells: live.cells, owed: owedNow });
+          if (changed) {
+            if (fromCentral) setLiveFix((m) => ({ ...m, [row.pid]: { cells: live.cells, reqs: live.reqs, at: Date.now(), feedSig: feedSigOf({ central: c.allStockFeed?.central }, c.requestsFeed, row.pid, routes) } }));
+            problem = `${row.sourceName} now has ${changed.now.total} free, not ${changed.was.total} — nothing sent. The card shows the live number; check it and Solve again.`;
+          } else {
+            // Solve may send ONLY what the card shows: the hooks refuse a plan
+            // that differs from this, and plan from these same live requests.
+            expect = Object.fromEntries(row.dests.filter((d) => sel.includes(d.id)).map((d) => [d.id, { units: d.units, sizes: d.sizes }]));
+            // Two shops in one Solve: no longer reachable for clothing (one shop
+            // per product, Junid 24 Nov 2026 — refused above); kept for safety.
+            if (clothing && sel.length > 1) {
+              const joint = apisRef.current[row.section]?.product.planFor(row.card, sel, openRequestsByProduct(live.reqs).get(row.pid) || {});
+              for (const l of joint?.lines || []) if (expect[l.store]) expect[l.store] = { units: l.units || 0, sizes: expect[l.store].sizes, joint: true };
+            }
+            liveOpen = live.reqs;
           }
-          liveOpen = live.reqs;
+        } catch (e) {
+          problem = `Couldn't read the live stock — nothing sent, retry. (${e?.message || "error"})`;
         }
-      } catch (e) {
-        problem = `Couldn't read the live stock — nothing sent, retry. (${e?.message || "error"})`;
       }
     }
     if (problem) {
       if (claimed) release();
-      inFlight.current.delete(row.pid);
-      setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
-      say({ ok: false, text: problem });
-      return;
+      return { ok: false, msg: problem };
     }
     const api = apisRef.current[row.section];
+    noteClaim(null);   // from here the write's own finally lets the claim go
     let res;
     try { if (!api) throw new Error("this list is not ready"); res = row.kind === "sneakers" ? await api.sneaker.solveTo(row.card, sel[0], { expect: expect[sel[0]], liveRequests: liveOpen }) : await api.product.solveTo(row.card, sel, { expect, liveRequests: liveOpen }); }
     catch (e) { res = { ok: false, msg: `Nothing changed — retry. (${e?.message || "error"})` }; }
     finally { release(); }
-    inFlight.current.delete(row.pid);
-    setBusy((b) => { const n = { ...b }; delete n[row.key]; return n; });
-    if (!res || !res.ok) { say({ ok: false, text: res?.msg || "Nothing was sent." }); return; }   // the card stays put, choice kept
-    setGone((g) => ({ ...g, [row.key]: true }));
-    setPicks((m) => { const n = { ...m }; delete n[row.key]; return n; });
-    const what = res.units > 0 ? ` · ${res.units} ${row.kind === "sneakers" ? "pair" : "unit"}${res.units === 1 ? "" : "s"}` : "";
-    say({
-      ok: true, text: `${sel.map(c.label).join(" + ")}${what}`,
-      undo: async function undoIt() {
-        let out;
-        if (row.kind === "sneakers") out = await undoSneakerRequest(res);
-        else {
-          out = { ok: true };
-          for (const u of res.rows || []) {
-            // eslint-disable-next-line no-await-in-loop
-            const r = await apisRef.current[row.section].product.undoEntry(u);
-            if (!r || !r.ok) { out = { ok: false, msg: r?.msg || "Not undone." }; break; }
-          }
-          if (!(res.rows || []).length) out = { ok: false, msg: "Nothing to undo." };
-        }
-        // A failure that can be retried keeps its Undo; a refusal (Central has
-        // started) does not.
-        if (out.ok) { back(row.key); say({ ok: true, text: "Undone" }); } else say({ ok: false, text: out.msg, ...(out.retry ? { undo: undoIt } : {}) });
-      },
-    });
+    if (!res || !res.ok) return { ok: false, msg: res?.msg || "Nothing was sent." };   // the card comes back, choice kept
+    return { ok: true, res };
   };
   // THE DIVISION BUTTON (Junid, 23 Nov 2026), where Hide was: it marks the
   // product for the OTHER division; the card leaves this list for good. Since
   // 24 Nov it takes two taps on the same button (MissingRow arms it, "Tap
   // again to move to …"); this runs on the second.
   // It writes the mark only (divisionMark.js) — no stock, seat or request.
-  act.current.division = async (row) => {
+  // CONFIRM BEFORE CONCRETE (Junid, 26 Nov 2026): on clothing, Concrete asks
+  // first — "Move <name> to Concrete only? It will leave the Marathon list." —
+  // and nothing is written until Yes. Then the Undo stays up 10 seconds.
+  const [confirmMove, setConfirmMove] = useState(null);   // the row being asked about
+  useEffect(() => {
+    if (!confirmMove || typeof window === "undefined") return undefined;
+    // Escape cancels; Tab stays on Cancel / Yes (CodeRabbit, #1014). Focus goes
+    // back to where it was when the popup closes.
+    const opener = confirmOpener.current;
+    const onKey = (e) => {
+      if (e.key === "Escape") { setConfirmMove(null); return; }
+      if (e.key !== "Tab") return;
+      const pair = [confirmCancelRef.current, confirmYesRef.current].filter(Boolean);
+      if (!pair.length) return;
+      e.preventDefault();
+      const i = pair.indexOf(document.activeElement);
+      pair[(i + (e.shiftKey ? pair.length - 1 : 1) + pair.length) % pair.length].focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("keydown", onKey); try { opener?.focus?.(); } catch { /* gone */ } };
+  }, [confirmMove]);
+  const confirmCancelRef = useRef(null);
+  const confirmOpener = useRef(null);   // the button that opened the popup (focus returns there)
+  const confirmYesRef = useRef(null);
+  act.current.division = (row) => {
+    if (inFlight.current.has(row.pid) || !canMark || gone[row.key]) return;
+    const to = divisionTargetOf(listKindOf(ctx.current.network, row.section));
+    if (!divisionAllowed(row.kind, to)) return;   // (no button is drawn; a stale tap does nothing)
+    if (to === "concrete") { confirmOpener.current = typeof document !== "undefined" ? document.activeElement : null; setConfirmMove(row); return; }
+    act.current.divisionCommit(row);
+  };
+  act.current.divisionCommit = async (row) => {
     if (inFlight.current.has(row.pid) || !canMark || gone[row.key]) return;
     const c = ctx.current;
     const product = c.byId.get(row.pid);
     if (!product) return;
     const to = divisionTargetOf(listKindOf(c.network, row.section));
-    if (!divisionAllowed(row.kind, to)) return;   // (no button is drawn; a stale tap does nothing)
+    if (!divisionAllowed(row.kind, to)) return;
     const name = to === "concrete" ? "Concrete" : "Marathon";
     inFlight.current.add(row.pid);
     setBusy((b) => ({ ...b, [row.key]: "division" }));
@@ -747,7 +833,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
     setGone((g) => ({ ...g, [row.key]: true }));
     setPicks((m) => { const n = { ...m }; delete n[row.key]; return n; });
     say({
-      ok: true, text: res.msg || `${name} only`,
+      ok: true, text: res.msg || `${name} only`, ...(to === "concrete" ? { ms: DIVISION_UNDO_MS } : {}),
       // A failed Undo changed nothing (one write), so it keeps its Undo to retry.
       undo: async function undoMark() {
         const r = await undoDivision(row.pid, to, res.prior);
@@ -913,7 +999,7 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
                     <Slot leaving={d.leaving} entering={d.entering} data-slot={d.key}>
                       <MissingRow row={d.row} product={byId.get(d.row.pid)} twinProduct={d.row.twin ? byId.get(d.row.twin) : null}
                         selected={d.leaving ? NO_PICK : chosen(d.row)} busy={!!busy[d.key]} canAct={canAct} onPick={onPick} onSolve={onSolve} onPhoto={onPhoto}
-                        divisionLabel={divisionLabelFor(d.row)} onDivision={onDivision} />
+                        divisionLabel={divisionLabelFor(d.row)} divisionPopup={divisionLabelFor(d.row) === "Concrete"} onDivision={onDivision} />
                     </Slot>
                   </React.Fragment>
                 ))}
@@ -942,6 +1028,29 @@ function Body({ apis, flags, divisions, network, products, allStock, targets, hi
             }}
               style={{ height: 44, padding: "0 18px", borderRadius: 12, background: "rgba(251,191,36,.12)", border: "1px solid rgba(251,191,36,.5)", color: AMBER, fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>Undo</button>
           )}
+        </div>
+      )}
+      {confirmMove && (
+        <div data-confirm-move={confirmMove.pid} role="dialog" aria-modal="true" aria-labelledby="mp-confirm-move-text"
+          onClick={(e) => { if (e.target === e.currentTarget) setConfirmMove(null); }}
+          style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box",
+            padding: "calc(16px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px))", fontFamily: FONT }}>
+          <div style={{ width: "100%", maxWidth: 380, background: "#10141f", border: "1px solid rgba(196,160,255,.45)", borderRadius: 18, padding: 18, boxShadow: "0 18px 50px -12px rgba(0,0,0,.9)" }}>
+            <div id="mp-confirm-move-text" data-confirm-text style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.35, color: "#fff", overflowWrap: "anywhere" }}>
+              Move {String(confirmMove.name).replace(/\u00a0/g, " ")} to Concrete only? It will leave the Marathon list.
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+              <button type="button" ref={confirmCancelRef} data-action="confirm-cancel" autoFocus onClick={() => setConfirmMove(null)}
+                style={{ flex: 1, height: 48, borderRadius: 12, background: "transparent", border: "1px solid rgba(255,255,255,.25)", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: FONT }}>Cancel</button>
+              <button type="button" ref={confirmYesRef} data-action="confirm-yes" onClick={() => {
+                const r = confirmMove; setConfirmMove(null);
+                // Still on the list? (solved or hidden on another device while the popup was open → nothing)
+                if (!rowNow.current(r)) { say({ ok: false, text: "This product left the list meanwhile — nothing changed." }); return; }
+                act.current.divisionCommit(r);
+              }}
+                style={{ flex: 1, height: 48, borderRadius: 12, background: "#5b3fa8", border: "1px solid rgba(196,160,255,.85)", color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: FONT }}>Yes</button>
+            </div>
+          </div>
         </div>
       )}
       <PhotoLightbox url={lightbox} onClose={() => setLightbox(null)} />
