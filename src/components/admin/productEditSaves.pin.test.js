@@ -16,9 +16,15 @@ describe("the product edit page", () => {
     expect(body).toMatch(/function AdminProductDetail\(\{ product: listProduct,/);
     expect(body).toMatch(/const product = useLiveProduct\(listProduct\);/);
   });
-  it("saves type, sizes, hubs, shoebox and name through the one save path", () => {
+  it("saves type, sizes, hubs and shoebox through the one save path", () => {
     for (const re of [/changeProductType\(\{\s*id: product\.id, productType: nextType, deviceId: getDeviceId\(\), call: setProductTypeCall,/, /save\(\{ sizes: next \}/, /save\(\{ hubs: next \}/,
-      /save\(\{ hasShoeBoxOption: next \}/, /save\(\{ name: next[ ,]/]) expect(body).toMatch(re);
+      /save\(\{ hasShoeBoxOption: next \}/]) expect(body).toMatch(re);
+  });
+  it("renames only through ProductNameEditor → setProductName (Edit → Save), never on blur", () => {
+    expect(body).toMatch(/<ProductNameEditor product=\{product\} allProducts=\{allProducts\} call=\{setProductNameCall\}/);
+    expect(app).toMatch(/const setProductNameCall = httpsCallable\(functions, "setProductName"\);/);
+    expect(body).not.toMatch(/save\(\{ name:/);
+    expect(body).not.toMatch(/onBlur=\{saveName\}/);
   });
   it("has no write on /products/{id} left that could fail silently", () => {
     // The photo goes through THE one write (setPrimaryPhoto, 25 Oct 2026):

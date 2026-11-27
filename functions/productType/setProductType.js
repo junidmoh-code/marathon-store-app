@@ -136,3 +136,6 @@ exports.setProductType = onCall(
   }),
 );
 exports._handleSetProductType = handleSetProductType;
+// Shared with setProductName (same reads, same "who").
+exports._readCells = readCells;
+exports._whoIs = whoIs;

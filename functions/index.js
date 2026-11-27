@@ -4358,6 +4358,11 @@ exports.deviceEnrolmentEmail = require("./deviceEnrolment/deviceEnrolment.js").d
 //   firebase deploy --only functions:setProductType
 exports.setProductType = require("./productType/setProductType.js").setProductType;
 
+// ─── PRODUCT NAME — setProductName (the edit page's Name: Edit → Save) ───────
+// Same rule and logging as setProductType; see functions/productType/setProductName.js.
+//   firebase deploy --only functions:setProductName
+exports.setProductName = require("./productType/setProductName.js").setProductName;
+
 // ─── SHOPIFY PUBLISHING — mediaHashClaim (the wrong-photo guard) ─────────────
 // Every new publishing photo/video is hashed on the phone and claimed here
 // before upload; an exact file already on a DIFFERENT product is refused and
