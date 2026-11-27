@@ -309,6 +309,9 @@ export function startUpdateChecker() {
   const bumpActivity = () => { lastActivity = Date.now(); };
   window.addEventListener("pointerdown", bumpActivity, { passive: true, capture: true });
   window.addEventListener("keydown", bumpActivity, { passive: true, capture: true });
+  // Scrolling is someone using the app too (CodeRabbit, #1019).
+  window.addEventListener("wheel", bumpActivity, { passive: true, capture: true });
+  window.addEventListener("touchstart", bumpActivity, { passive: true, capture: true });
 
   window.setInterval(check, POLL_MS);
   window.addEventListener("focus", check);

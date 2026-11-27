@@ -51,6 +51,7 @@ export function createResumeCopies({
   let epoch = 0;                // bumped by clearAll: a write queued before it must not land after it
   const gens = new Map();       // full key -> bumped by forget(): an earlier load must not restore it
   const deleting = new Map();   // full key -> the on-disk delete forget() started: a later load waits for it
+  const blocked = new Set();    // full keys whose delete FAILED: never read back from disk until a live save replaces them
 
   const fullKey = (uid, key) => `${RESUME_PREFIX}${uid}|${key}`;
 
@@ -61,6 +62,18 @@ export function createResumeCopies({
       return db.setMeta(fk, rec);
     }).catch((err) => warn("resume copy: could not save —", err?.message ?? err));
   };
+
+  function forgetKey(uid, key) {
+    if (!uid || !key) return;
+    const fk = fullKey(uid, key);
+    gens.set(fk, (gens.get(fk) ?? 0) + 1);
+    mem.delete(fk);
+    if (trailing.has(fk)) { clearTimer(trailing.get(fk)); trailing.delete(fk); }
+    const done = Promise.resolve().then(getDb).then((db) => db.deleteMetaMany([fk]))
+      .then(() => { blocked.delete(fk); }, () => { blocked.add(fk); })
+      .finally(() => { if (deleting.get(fk) === done) deleting.delete(fk); });
+    deleting.set(fk, done);
+  }
 
   return {
     /** The saved copy for this uid, or null. Never throws. */
@@ -73,6 +86,7 @@ export function createResumeCopies({
       const myGen = gens.get(fk) ?? 0;
       try {
         if (deleting.has(fk)) await deleting.get(fk);
+        if (blocked.has(fk)) { forgetKey(uid, key); return null; }   // retry the delete; offer nothing
         const db = await getDb();
         const rec = await db.getMeta(fk);
         if (myEpoch !== epoch || myGen !== (gens.get(fk) ?? 0)) return null;
@@ -97,6 +111,7 @@ export function createResumeCopies({
       try { json = JSON.stringify(value); } catch { return false; }
       if (typeof json !== "string" || json.length > maxBytes) return false;
       const fk = fullKey(uid, key);
+      blocked.delete(fk);           // a live answer replaces a copy that could not be deleted
       const rec = { uid, at: now(), value };
       mem.set(fk, rec);
       const myEpoch = epoch;
@@ -114,21 +129,13 @@ export function createResumeCopies({
       return true;
     },
     /** Forget one saved copy (a refused or missing record). */
-    forget(uid, key) {
-      if (!uid || !key) return;
-      const fk = fullKey(uid, key);
-      gens.set(fk, (gens.get(fk) ?? 0) + 1);
-      mem.delete(fk);
-      if (trailing.has(fk)) { clearTimer(trailing.get(fk)); trailing.delete(fk); }
-      const done = Promise.resolve().then(getDb).then((db) => db.deleteMetaMany([fk])).catch(() => {})
-        .finally(() => { if (deleting.get(fk) === done) deleting.delete(fk); });
-      deleting.set(fk, done);
-    },
+    forget(uid, key) { forgetKey(uid, key); },
     /** Sign-out / another person: forget every saved copy, here and on disk. */
     async clearAll() {
       epoch += 1;
       mem.clear();
       gens.clear();
+      blocked.clear();
       lastWrite.clear();
       for (const t of trailing.values()) clearTimer(t);
       trailing.clear();

@@ -115,4 +115,19 @@ describe("resume copies live in the mirror's own database", () => {
     fresh.forget("u1", "k");
     expect(await fresh.load("u1", "k")).toBe(null);
   });
+
+  it("a delete that FAILS still keeps the forgotten copy from being offered, until a live save replaces it (CodeRabbit, #1019)", async () => {
+    const r = rig();
+    r.copies().save("u1", "k", { old: true }); await r.settle();
+    const real = await r.dbP;
+    let fail = true;
+    const flaky = { ...real, getMeta: (k) => real.getMeta(k), setMeta: (k, v) => real.setMeta(k, v),
+      deleteMetaMany: (ks) => (fail ? Promise.reject(new Error("disk")) : real.deleteMetaMany(ks)) };
+    const c = createResumeCopies({ getDb: async () => flaky, now: r.now, warn: () => {} });
+    c.forget("u1", "k"); await r.settle();
+    expect(await c.load("u1", "k")).toBe(null);           // still on disk, never offered
+    fail = false;
+    c.save("u1", "k", { live: true });
+    expect((await c.load("u1", "k")).value).toEqual({ live: true });
+  });
 });
