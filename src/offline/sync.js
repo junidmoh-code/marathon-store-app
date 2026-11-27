@@ -967,7 +967,7 @@ export function createSyncEngine({
   // them on a busy afternoon, each of which used to pay two range reads that
   // came back with the one row the cursor already named. The floor-cadence
   // pass (no signal) walks them every time, as before.
-  async function runPass({ signal = false } = {}) {
+  async function runPass({ signal = false, onFeed = null } = {}) {
     const report = { feed: null, range: [], census: null, errors: [] };
 
     // 1. The change feed, which is what keeps eighteen legs true — unless it
@@ -1039,6 +1039,13 @@ export function createSyncEngine({
       } else {
         report.errors.push({ where: "feed", reason: err.name, message: err.message });
       }
+    }
+
+    // The feed step is done: say so NOW, not after the range walks — a range
+    // leg can take its full 90 s timeout, and the "Updating…" pill must not
+    // wait on a leg that has nothing to do with it (resumeFreshness.js).
+    if (onFeed) {
+      try { onFeed(report.feed, report.errors.some((e) => e.where === "feed")); } catch { /* the pass goes on */ }
     }
 
     // 2. The two forward walks.

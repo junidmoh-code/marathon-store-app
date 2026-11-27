@@ -7,13 +7,13 @@
 // path with every other hook, and that listener survives a screen switch.
 // See sharedLiveReadCore.js for why, with the measurements.
 
-import { ref, onValue } from "firebase/database";
+import { ref, onValue, goOffline, goOnline } from "firebase/database";
 import { database } from "../firebase";
 import { createSharedLiveReads, createHideGrace, LINGER_MS, SHORT_LINGER_MS } from "./sharedLiveReadCore";
 import { onIdentityChange } from "./identityChange";
 import { legFor } from "../offline/localReads";
 import { isLegServing } from "../offline/serving";
-import { setSavedShowing } from "../offline/resumeFreshness";
+import { setSavedShowing, setDatabaseConnected, registerUpdateRetry } from "../offline/resumeFreshness";
 
 // ── HOW LONG EACH NODE IS HELD, AND ROUGHLY HOW BIG IT IS ───────────────────
 //
@@ -135,6 +135,10 @@ function wireConnection() {
     let settle = null;
     onValue(ref(database, ".info/connected"), (snap) => {
       const now = snap.val() === true;
+      // The pill shows "Offline" for a line that WAS up and dropped — not for
+      // the false every page load starts with before its first connect.
+      if (now) setDatabaseConnected(true);
+      else if (was) setDatabaseConnected(false);
       if (was && !now) {
         grace.connectionLost();
         // A screen still open through the drop is showing an unconfirmed
@@ -150,6 +154,14 @@ function wireConnection() {
       }
       was = now;
     }, () => {});
+    // A tap on "Couldn't update. Tap to retry": a socket iOS left half-open
+    // after a trip to another app answers nothing and never drops on its own
+    // (the 8 s feed timeouts on Junid's phone, 27 Nov). Close and reopen it;
+    // the SDK re-sends every listen, and the settle above confirms them.
+    registerUpdateRetry(({ manual }) => {
+      if (!manual) return;
+      try { goOffline(database); goOnline(database); } catch { /* nothing to bounce */ }
+    });
   } catch { /* no connection state — idle entries still go on hide and by their hold */ }
 }
 
