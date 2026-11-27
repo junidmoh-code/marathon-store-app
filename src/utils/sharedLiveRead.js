@@ -9,7 +9,7 @@
 
 import { ref, onValue } from "firebase/database";
 import { database } from "../firebase";
-import { createSharedLiveReads, LINGER_MS, SHORT_LINGER_MS } from "./sharedLiveReadCore";
+import { createSharedLiveReads, createHideGrace, LINGER_MS, SHORT_LINGER_MS } from "./sharedLiveReadCore";
 import { onIdentityChange } from "./identityChange";
 import { legFor } from "../offline/localReads";
 import { isLegServing } from "../offline/serving";
@@ -79,21 +79,25 @@ const shared = createSharedLiveReads({
 
 // ── WHEN A HELD LISTENER IS LET GO EARLY ────────────────────────────────────
 // Wired once, on first use, so importing this module in a test or a worker
-// touches neither the DOM, auth nor the database.
+// touches neither the DOM, auth nor the database. A hide, a dropped socket
+// while hidden and a pagehide all go through the hide grace; a sign-out
+// releases at once.
 let wired = false;
+// The hide grace (sharedLiveReadCore.createHideGrace): idle entries survive a
+// short trip to another app and go when the page has been hidden longer.
+const grace = createHideGrace({ release: () => shared.releaseIdle() });
 function wire() {
   if (wired) return;
   wired = true;
   try {
     if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
-      // Hidden: nobody is about to open another screen. A lingering listener
-      // would only be re-sent by every reconnect of a sleeping device.
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "hidden") shared.releaseIdle();
+        if (document.visibilityState === "hidden") grace.hidden();
+        else grace.visible();
       });
     }
     if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-      window.addEventListener("pagehide", () => shared.releaseIdle());
+      window.addEventListener("pagehide", (e) => grace.pageHide(!!(e && e.persisted)));
     }
   } catch { /* no DOM — nothing to wire */ }
   try { onIdentityChange(() => shared.identityChanged()); } catch { /* the hooks' own auth gates still apply */ }
@@ -116,7 +120,7 @@ function wireConnection() {
     let was = false;
     onValue(ref(database, ".info/connected"), (snap) => {
       const now = snap.val() === true;
-      if (was && !now) shared.connectionLost();
+      if (was && !now) grace.connectionLost();
       was = now;
     }, () => {});
   } catch { /* no connection state — idle entries still go on hide and by their hold */ }
@@ -162,4 +166,6 @@ export function releaseIdleLiveReads() { shared.releaseIdle(); }
 export function _resetSharedLiveReadsForTests() { shared.reset(); }
 export function _setHoldingForTests(on) { holding = !!on; if (wired) wireConnection(); }
 export function _connectionLostForTests() { shared.connectionLost(); }
+/** The hide grace the document's visibilitychange drives (hidden()/visible()). */
+export function _hideGraceForTests() { return grace; }
 export function _sharedLiveReadStatsForTests() { return shared.stats(); }

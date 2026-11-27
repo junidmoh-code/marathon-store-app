@@ -20,10 +20,11 @@
 //   - It never serves a value the server has not confirmed is current: the
 //     cached snapshot is the listener's own latest, and it is dropped the
 //     moment the listener is.
-//   - It never keeps a listener for a page nobody can see. A lingering entry
-//     with no subscriber is released as soon as the page is hidden
-//     (releaseIdle) — a phone in a pocket reconnects through the night, and a
-//     held listener is re-sent on every reconnect.
+//   - It never keeps a listener for a page nobody can see for long. A
+//     lingering entry with no subscriber is released once the page has been
+//     hidden for HIDDEN_GRACE_MS (createHideGrace, below) — a phone in a pocket
+//     reconnects through the night, and a held listener is re-sent on every
+//     reconnect. A quick trip to another app keeps it.
 //   - It never hands one signed-in person's rows to the next: an identity
 //     change releases every idle entry and ends lingering for the rest.
 //   - A listener the server CANCELLED (permission denied) is dead in the SDK.
@@ -268,4 +269,59 @@ export function createSharedLiveReads({
   });
 
   return { subscribe, releaseIdle, connectionLost, identityChanged, reset, stats };
+}
+
+// ─── HELD THROUGH A HIDE, NOT DROPPED AT ONCE (Junid, 27 Nov 2026) ───────────
+//
+// Idle listeners used to be dropped the instant the page was hidden and on
+// every connection drop — and iOS drops the socket as soon as the app goes to
+// the background. So open Source, go Home, answer a WhatsApp, come back, open
+// Source again: every non-mirrored node it reads came down again in full
+// (Refill Queue's /refill_engine/open is 390 KB, measured 27 Nov).
+//
+// Now a hide starts a GRACE. Coming back inside it keeps everything held; the
+// SDK re-syncs a held listener on reconnect with changes only. A hide longer
+// than the grace releases the idle entries — from a timer while the page still
+// runs, or at the very moment it becomes visible again if the timer could not
+// fire (a frozen phone), which is before the SDK has re-sent anything. That
+// keeps the original promise: a phone left in a pocket does not have idle
+// listeners re-sent through the night.
+//
+// Listeners still IN USE are untouched either way, exactly as before. A sign-
+// out still releases on the spot (identityChanged).
+export const HIDDEN_GRACE_MS = 3 * 60 * 1000;
+
+export function createHideGrace({
+  release,
+  graceMs = HIDDEN_GRACE_MS,
+  now = () => Date.now(),
+  setTimer = (fn, ms) => setTimeout(fn, ms),
+  clearTimer = (t) => clearTimeout(t),
+} = {}) {
+  if (typeof release !== "function") throw new Error("createHideGrace: release is required");
+  let hiddenAt = null;
+  let timer = null;
+  let done = false;          // this hide has already released
+  const cancel = () => { if (timer != null) { clearTimer(timer); timer = null; } };
+  return {
+    hidden() {
+      if (hiddenAt == null) { hiddenAt = now(); done = false; }
+      cancel();
+      if (!done) timer = setTimer(() => { timer = null; done = true; release(); }, graceMs);
+    },
+    visible() {
+      const since = hiddenAt;
+      hiddenAt = null;
+      cancel();
+      if (since != null && !done && now() - since >= graceMs) release();
+      done = false;
+    },
+    /** The socket dropped. Visible: release idle entries now, as before.
+     *  Hidden: that is just the phone backgrounding — the grace decides. */
+    connectionLost() { if (hiddenAt == null) release(); },
+    /** pagehide. A page kept in the back/forward cache (persisted) comes back
+     *  with its memory, so it keeps what it holds; an unloading page releases. */
+    pageHide(persisted) { if (!persisted) release(); },
+    isHidden: () => hiddenAt != null,
+  };
 }

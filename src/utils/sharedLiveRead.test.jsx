@@ -48,8 +48,9 @@ vi.mock("../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" }
 
 const {
   holdsInMode, lingerPolicyFor, childQueryKey, isPlaceholderKey,
-  _setHoldingForTests, _resetSharedLiveReadsForTests, releaseIdleLiveReads,
+  _setHoldingForTests, _resetSharedLiveReadsForTests, releaseIdleLiveReads, _hideGraceForTests,
 } = await import("./sharedLiveRead.js");
+const { HIDDEN_GRACE_MS } = await import("./sharedLiveReadCore.js");
 const { LINGER_MS, SHORT_LINGER_MS, MAX_IDLE_BYTES } = await import("./sharedLiveReadCore.js");
 const stock = await import("../components/stock/useStock.js");
 const layby = await import("../components/layby/useLayby.js");
@@ -287,6 +288,56 @@ describe("the stock chokepoint (usePathState) — the Refill queue's read", () =
     releaseIdleLiveReads();
     expect(closes).toEqual(["stock/hub2"]);
     expect(kept.out.value).toBe(null);
+  });
+
+  it("a SHORT hide keeps what no screen is using: back to the app, open the screen again, nothing re-downloads (Junid, 27 Nov)", () => {
+    const grace = _hideGraceForTests();
+    const src = mountHook(() => stock.useEngineOpen());
+    push("refill_engine/open", { hub2: { p1: { s9: { qty: 1 } } } });
+    src.unmount();                                   // Source → Home
+    act(() => { grace.hidden(); });                  // → WhatsApp
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    act(() => { handlers.get(".info/connected").cb({ val: () => false }); });   // iOS drops the socket
+    vi.advanceTimersByTime(20_000);
+    act(() => { grace.visible(); });                 // back, inside the grace
+    expect(closes).toEqual([]);
+    const again = mountHook(() => stock.useEngineOpen());
+    expect(countOf("refill_engine/open")).toBe(1);   // the held listener, not a second download
+    expect(again.out.value).toEqual({ hub2: { p1: { s9: { qty: 1 } } } });
+    again.unmount();
+  });
+
+  it("a LONG hide still lets go of idle listeners — by its timer, or the moment the page wakes", () => {
+    const grace = _hideGraceForTests();
+    const a = mountHook(() => stock.useStockTargets());
+    push("stock_targets", {});
+    a.unmount();
+    act(() => { grace.hidden(); });
+    vi.advanceTimersByTime(HIDDEN_GRACE_MS);
+    expect(closes).toEqual(["stock_targets"]);
+    act(() => { grace.visible(); });
+    // A frozen phone: no timer ran while hidden, so the wake itself releases.
+    const b = mountHook(() => stock.useStockTargets());
+    push("stock_targets", {});
+    b.unmount();
+    let now = Date.now();
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    act(() => { grace.hidden(); });
+    now += HIDDEN_GRACE_MS + 1;
+    act(() => { grace.visible(); });
+    expect(closes).toEqual(["stock_targets", "stock_targets"]);
+    spy.mockRestore();
+  });
+
+  it("a screen in use is never dropped by a hide, however long", () => {
+    const grace = _hideGraceForTests();
+    const on = mountHook(() => stock.useEngineOpen());
+    push("refill_engine/open", {});
+    act(() => { grace.hidden(); });
+    vi.advanceTimersByTime(HIDDEN_GRACE_MS * 5);
+    act(() => { grace.visible(); });
+    expect(closes).toEqual([]);
+    on.unmount();
   });
 
   it("a denied read is still settled-with-error, and the next mount tries again", () => {

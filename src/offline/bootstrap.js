@@ -32,6 +32,7 @@
 // so nothing starts until auth says there is a user, and everything stops when
 // it says there is not.
 
+import { markMirrorFeedOk, resetMirrorFreshness } from "./resumeFreshness";
 import { openMirrorDb } from "./db";
 import { createRtdbAdapter } from "./rtdbAdapter";
 import { createConnectionTracker } from "./connection";
@@ -289,6 +290,7 @@ export async function startOfflineMirror({
     // off, benched) or failed is not current, however recent the pass.
     if (report.feed && !report.feed.skipped && !report.errors.some((e) => e.where === "feed")) {
       state.feedOkAt = now();
+      markMirrorFeedOk(state.feedOkAt);
     }
     state.lastError = report.errors.length ? report.errors[0] : null;
 
@@ -682,6 +684,16 @@ export async function startOfflineMirror({
       return true;
     },
     isSuspended: () => suspended,
+    // ── COMING BACK TO THE APP: CATCH UP NOW ───────────────────────────────
+    // A pass reads the change feed from the cursor stored on the device —
+    // changes only. Asked for by MirrorGate when the page becomes visible and
+    // the last good feed read is older than RESUME_SAFE_MS, so the
+    // "Updating…" marker comes down in seconds rather than at the next tick.
+    catchUp() {
+      if (stopped || suspended || !wanted) return false;
+      schedule(0);
+      return true;
+    },
     // Every leg this account may read is served from the local copy.
     fullyMirrored: () => lastServing.length > 0 && readableUnserved.length === 0,
     stop() {
@@ -697,6 +709,7 @@ export async function startOfflineMirror({
       // the live subscription it now needs.
       setServingLegs([]);
       setForcedUpdateMode(false);
+      resetMirrorFreshness();
     },
   };
 

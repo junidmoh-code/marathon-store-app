@@ -4,7 +4,7 @@
 // is what downloads the node. So these tests count opens (and closes) against
 // a fake `listen`, and drive time by hand.
 import { describe, it, expect, beforeEach } from "vitest";
-import { createSharedLiveReads, LINGER_MS, MAX_IDLE_BYTES } from "./sharedLiveReadCore";
+import { createSharedLiveReads, createHideGrace, HIDDEN_GRACE_MS, LINGER_MS, MAX_IDLE_BYTES } from "./sharedLiveReadCore";
 
 /** A fake onValue: records every open and close, and lets a test push data. */
 function makeServer() {
@@ -535,4 +535,39 @@ describe("guards", () => {
     expect(shared.stats()).toEqual({ listeners: 0, idle: 0, keys: [] });
   });
   it("the linger is ten minutes", () => { expect(LINGER_MS).toBe(600000); });
+});
+
+describe("createHideGrace — held through a short hide, released after a long one", () => {
+  function rig() {
+    let t = 0; const timers = new Map(); let id = 0; let released = 0;
+    const g = createHideGrace({
+      release: () => { released += 1; },
+      now: () => t,
+      setTimer: (fn, ms) => { id += 1; timers.set(id, { fn, at: t + ms }); return id; },
+      clearTimer: (i) => timers.delete(i),
+    });
+    const advance = (ms) => { t += ms; for (const [i, x] of [...timers]) if (x.at <= t) { timers.delete(i); x.fn(); } };
+    const freeze = (ms) => { t += ms; };          // time passes, no timer runs
+    return { g, advance, freeze, released: () => released };
+  }
+  it("back inside the grace: nothing released", () => {
+    const r = rig(); r.g.hidden(); r.advance(HIDDEN_GRACE_MS - 1); r.g.visible();
+    expect(r.released()).toBe(0);
+  });
+  it("hidden past the grace: released by the timer, once", () => {
+    const r = rig(); r.g.hidden(); r.advance(HIDDEN_GRACE_MS); r.g.visible();
+    expect(r.released()).toBe(1);
+  });
+  it("a frozen page: released the moment it wakes", () => {
+    const r = rig(); r.g.hidden(); r.freeze(HIDDEN_GRACE_MS + 1); r.g.visible();
+    expect(r.released()).toBe(1);
+  });
+  it("a socket drop releases at once while visible, and defers to the grace while hidden", () => {
+    const r = rig(); r.g.connectionLost(); expect(r.released()).toBe(1);
+    r.g.hidden(); r.g.connectionLost(); expect(r.released()).toBe(1);
+  });
+  it("pagehide: an unloading page releases, a back/forward-cached one keeps", () => {
+    const r = rig(); r.g.pageHide(true); expect(r.released()).toBe(0);
+    r.g.pageHide(false); expect(r.released()).toBe(1);
+  });
 });

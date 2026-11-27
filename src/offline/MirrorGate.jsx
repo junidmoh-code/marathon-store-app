@@ -271,6 +271,22 @@ export function MirrorGate({ auth, storage, children }) {
     return () => { cancelled = true; if (stopIdle) stopIdle(); };
   }, [enabled, runtime]);
 
+  // ── COMING BACK: CATCH UP AT ONCE (Junid, 27 Nov 2026) ─────────────────────
+  // Visible again with a feed read older than the safe limit: run a pass now
+  // (changes since the stored cursor), so the "Updating…" marker is up for
+  // seconds. A suspended device is resumed by idleSuspend instead.
+  useEffect(() => {
+    if (!enabled || !runtime || typeof document === "undefined") return undefined;
+    let fresh = null;
+    import("./resumeFreshness").then((m) => { fresh = m; }).catch(() => {});
+    const onVis = () => {
+      if (document.visibilityState !== "visible" || !fresh) return;
+      if (fresh.isMirrorStale(fresh.mirrorFeedOkAt(), Date.now())) runtime.catchUp?.();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [enabled, runtime]);
+
   // Nothing is ever shown over the app: see autoConsent. `runtime` is kept
   // for the status dot, which reads it through mirrorRuntime.
   void runtime;

@@ -30,6 +30,7 @@ import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
 import { useMirroredPath, useMirrorLeg } from "./offline/useMirroredPath";
 import { MirrorDot } from "./offline/MirrorDot.jsx";
+import { ResumeUpdatingMarker } from "./offline/ResumeUpdatingMarker.jsx";
 import { MirroredImg } from "./offline/MirroredImg.jsx";
 import { PrimaryPhoto } from "./components/shared/PrimaryPhoto.jsx";
 import { notePendingUpdate } from "./offline/pendingWrites";
@@ -22584,7 +22585,10 @@ export default function App() {
           Fixed rather than in a header because this app has several shells
           (warehouse, assistant, TV) and the one question it answers — "is what
           I am looking at current?" — is the same in all of them. */}
-      <div style={{ position: "fixed", right: 10, top: 8, zIndex: 900 }}>
+      <div style={{ position: "fixed", right: 10, top: 8, zIndex: 900, display: "flex", alignItems: "center", gap: 6 }}>
+        {/* "Updating…" while a saved or mirrored copy catches up after the
+            app comes back (src/offline/resumeFreshness.js). */}
+        <ResumeUpdatingMarker />
         <MirrorDot />
       </div>
       <AuthGate renderTv={() => (tvSectionFromSearch(window.location.search) === 1 ? <SectionTvShell section={1} /> : <TvOnlyShell />)}>
