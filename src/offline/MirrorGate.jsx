@@ -27,6 +27,7 @@ import {
   offlineMirrorEnabled, subscribeMirrorSwitch, watchMirrorSwitchLive,
 } from "./killSwitch";
 import { setOfflineMirrorRuntime } from "./mirrorRuntime";
+import { isMirrorStale, mirrorFeedOkAt } from "./resumeFreshness";
 
 // PR #618 raced the start against an 8-second bound, because a start that
 // hung left the app behind a setup screen that could never finish. Nothing is
@@ -269,6 +270,20 @@ export function MirrorGate({ auth, storage, children }) {
       }).stop;
     })().catch((err) => console.warn("offline mirror: idle suspend unavailable —", err?.message ?? err));
     return () => { cancelled = true; if (stopIdle) stopIdle(); };
+  }, [enabled, runtime]);
+
+  // ── COMING BACK: CATCH UP AT ONCE (Junid, 27 Nov 2026) ─────────────────────
+  // Visible again with a feed read older than the safe limit: run a pass now
+  // (changes since the stored cursor), so the "Updating…" marker is up for
+  // seconds. A suspended device is resumed by idleSuspend instead.
+  useEffect(() => {
+    if (!enabled || !runtime || typeof document === "undefined") return undefined;
+    const onVis = () => {
+      if (document.visibilityState !== "visible") return;
+      if (isMirrorStale(mirrorFeedOkAt(), Date.now())) runtime.catchUp?.();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
   }, [enabled, runtime]);
 
   // Nothing is ever shown over the app: see autoConsent. `runtime` is kept

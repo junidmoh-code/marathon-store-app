@@ -30,6 +30,7 @@ import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
 import { useMirroredPath, useMirrorLeg } from "./offline/useMirroredPath";
 import { MirrorDot } from "./offline/MirrorDot.jsx";
+import { ResumeUpdatingMarker } from "./offline/ResumeUpdatingMarker.jsx";
 import { MirroredImg } from "./offline/MirroredImg.jsx";
 import { PrimaryPhoto } from "./components/shared/PrimaryPhoto.jsx";
 import { notePendingUpdate } from "./offline/pendingWrites";
@@ -2397,17 +2398,18 @@ function CustomerSuggestionDropdown({ query, mode, customers, onPick, onAddNew }
   );
 }
 
-function useBroadcastHistory() {
+export function useBroadcastHistory() {
   const authReady = useAuthReady();
   const [broadcasts, setBroadcasts] = useState([]);
   useEffect(() => {
     if (!authReady) return;
-    const unsub = onValue(ref(database, "broadcasts"), snap => {
+    // Shared and held through a short hide (utils/sharedLiveRead.js).
+    const unsub = subscribeLivePath("broadcasts", snap => {
       const data = snap.val();
       if (!data) { setBroadcasts([]); return; }
       setBroadcasts(Object.values(data).filter(Boolean)
         .sort((a, b) => tsMs(b.sentAt) - tsMs(a.sentAt)));
-    });
+    }, (err) => console.warn("/broadcasts read failed:", err?.message ?? err));
     return () => unsub();
   }, [authReady]);
   return broadcasts;
@@ -4064,10 +4066,15 @@ function parseProductHash() {
 // admin approves a row here; nothing auto-applies. Approve writes the (optionally
 // edited) suggested name to /products/{id}.name and marks the proposal approved;
 // Reject marks it rejected; both decisions stop the row reappearing on a re-run.
-function useNameProposals() {
+export function useNameProposals() {
   const [proposals, setProposals] = useState({});
+  // Shared and held (utils/sharedLiveRead.js): AI Studio opened this list once
+  // per mount — and the photo list twice, from two tabs — and a trip to
+  // another app cost it again. Measured 27 Nov 2026: names 873,650 B, photos
+  // 592,901 B. One listener now, kept through a short hide.
   useEffect(() => {
-    const unsub = onValue(ref(database, "aiAssistant/nameProposals"), snap => setProposals(snap.val() || {}));
+    const unsub = subscribeLivePath("aiAssistant/nameProposals", snap => setProposals(snap.val() || {}),
+      (err) => console.warn("/aiAssistant/nameProposals read failed:", err?.message ?? err));
     return () => unsub();
   }, []);
   return proposals;
@@ -4079,10 +4086,15 @@ function useNameProposals() {
 // product's photoUrl to the white-bg version but KEEPS the original (stored in
 // photoUrlOriginal; the original file at products/{id}/photo.jpg is never touched).
 // Reject discards. Nothing auto-applies.
-function usePhotoProposals() {
+export function usePhotoProposals() {
   const [proposals, setProposals] = useState({});
+  // Shared and held (utils/sharedLiveRead.js): AI Studio opened this list once
+  // per mount — and the photo list twice, from two tabs — and a trip to
+  // another app cost it again. Measured 27 Nov 2026: names 873,650 B, photos
+  // 592,901 B. One listener now, kept through a short hide.
   useEffect(() => {
-    const unsub = onValue(ref(database, "aiAssistant/photoProposals"), snap => setProposals(snap.val() || {}));
+    const unsub = subscribeLivePath("aiAssistant/photoProposals", snap => setProposals(snap.val() || {}),
+      (err) => console.warn("/aiAssistant/photoProposals read failed:", err?.message ?? err));
     return () => unsub();
   }, []);
   return proposals;
@@ -22584,7 +22596,10 @@ export default function App() {
           Fixed rather than in a header because this app has several shells
           (warehouse, assistant, TV) and the one question it answers — "is what
           I am looking at current?" — is the same in all of them. */}
-      <div style={{ position: "fixed", right: 10, top: 8, zIndex: 900 }}>
+      <div style={{ position: "fixed", right: 10, top: 8, zIndex: 900, display: "flex", alignItems: "center", gap: 6 }}>
+        {/* "Updating…" while a saved or mirrored copy catches up after the
+            app comes back (src/offline/resumeFreshness.js). */}
+        <ResumeUpdatingMarker />
         <MirrorDot />
       </div>
       <AuthGate renderTv={() => (tvSectionFromSearch(window.location.search) === 1 ? <SectionTvShell section={1} /> : <TvOnlyShell />)}>

@@ -48,8 +48,11 @@ vi.mock("../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" }
 
 const {
   holdsInMode, lingerPolicyFor, childQueryKey, isPlaceholderKey,
-  _setHoldingForTests, _resetSharedLiveReadsForTests, releaseIdleLiveReads,
+  _setHoldingForTests, _resetSharedLiveReadsForTests, releaseIdleLiveReads, _hideGraceForTests,
 } = await import("./sharedLiveRead.js");
+const { HIDDEN_GRACE_MS } = await import("./sharedLiveReadCore.js");
+const { RECONNECT_SETTLE_MS } = await import("./sharedLiveRead.js");
+const { isSavedShowing, _resetResumeFreshnessForTests } = await import("../offline/resumeFreshness.js");
 const { LINGER_MS, SHORT_LINGER_MS, MAX_IDLE_BYTES } = await import("./sharedLiveReadCore.js");
 const stock = await import("../components/stock/useStock.js");
 const layby = await import("../components/layby/useLayby.js");
@@ -287,6 +290,107 @@ describe("the stock chokepoint (usePathState) — the Refill queue's read", () =
     releaseIdleLiveReads();
     expect(closes).toEqual(["stock/hub2"]);
     expect(kept.out.value).toBe(null);
+  });
+
+  it("a SHORT hide keeps what no screen is using: back to the app, open the screen again, nothing re-downloads (Junid, 27 Nov)", () => {
+    const grace = _hideGraceForTests();
+    const src = mountHook(() => stock.useEngineOpen());
+    push("refill_engine/open", { hub2: { p1: { s9: { qty: 1 } } } });
+    src.unmount();                                   // Source → Home
+    act(() => { grace.hidden(); });                  // → WhatsApp
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    act(() => { handlers.get(".info/connected").cb({ val: () => false }); });   // iOS drops the socket
+    vi.advanceTimersByTime(20_000);
+    act(() => { grace.visible(); });                 // back, inside the grace
+    expect(closes).toEqual([]);
+    const again = mountHook(() => stock.useEngineOpen());
+    expect(countOf("refill_engine/open")).toBe(1);   // the held listener, not a second download
+    expect(again.out.value).toEqual({ hub2: { p1: { s9: { qty: 1 } } } });
+    again.unmount();
+  });
+
+  it("a held value from before the socket dropped is handed over with Updating… up, until the reconnect settles (Sonnet review, #1019)", () => {
+    _resetResumeFreshnessForTests();
+    const grace = _hideGraceForTests();
+    const src = mountHook(() => stock.useEngineOpen());
+    push("refill_engine/open", { v: 1 });
+    src.unmount();
+    act(() => { grace.hidden(); });
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    act(() => { handlers.get(".info/connected").cb({ val: () => false }); });   // dropped while away
+    act(() => { grace.visible(); });
+    const again = mountHook(() => stock.useEngineOpen());
+    expect(again.out.value).toEqual({ v: 1 });       // still handed over (what the SDK does offline)…
+    expect(isSavedShowing()).toBe(true);              // …but never as if live
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    vi.advanceTimersByTime(RECONNECT_SETTLE_MS);
+    expect(isSavedShowing()).toBe(false);
+    // A changed value from the server confirms it at once, too.
+    act(() => { handlers.get(".info/connected").cb({ val: () => false }); });
+    const third = mountHook(() => stock.useEngineOpen());
+    expect(isSavedShowing()).toBe(true);
+    push("refill_engine/open", { v: 2 });
+    expect(isSavedShowing()).toBe(false);
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    again.unmount(); third.unmount();
+  });
+
+  it("a screen left OPEN through a socket drop shows Updating… too, until confirmed (CodeRabbit, #1019)", () => {
+    _resetResumeFreshnessForTests();
+    const open = mountHook(() => stock.useEngineOpen());
+    push("refill_engine/open", { v: 1 });
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    act(() => { handlers.get(".info/connected").cb({ val: () => false }); });
+    expect(isSavedShowing()).toBe(true);
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    vi.advanceTimersByTime(RECONNECT_SETTLE_MS);
+    expect(isSavedShowing()).toBe(false);
+    open.unmount();
+  });
+
+  it("after the grace has released, an entry that goes idle later is not parked for the night", () => {
+    const grace = _hideGraceForTests();
+    const kept = mountHook(() => stock.useEngineOpen());
+    push("refill_engine/open", {});
+    act(() => { grace.hidden(); });
+    vi.advanceTimersByTime(HIDDEN_GRACE_MS);          // grace runs out while hidden
+    kept.unmount();                                   // a screen unmounts afterwards, still hidden
+    vi.advanceTimersByTime(60_000);                   // its short hold runs out
+    expect(closes).toContain("refill_engine/open");   // dropped, not parked
+    act(() => { grace.visible(); });
+  });
+
+  it("a LONG hide still lets go of idle listeners — by its timer, or the moment the page wakes", () => {
+    const grace = _hideGraceForTests();
+    const a = mountHook(() => stock.useStockTargets());
+    push("stock_targets", {});
+    a.unmount();
+    act(() => { grace.hidden(); });
+    vi.advanceTimersByTime(HIDDEN_GRACE_MS);
+    expect(closes).toEqual(["stock_targets"]);
+    act(() => { grace.visible(); });
+    // A frozen phone: no timer ran while hidden, so the wake itself releases.
+    const b = mountHook(() => stock.useStockTargets());
+    push("stock_targets", {});
+    b.unmount();
+    let now = Date.now();
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    act(() => { grace.hidden(); });
+    now += HIDDEN_GRACE_MS + 1;
+    act(() => { grace.visible(); });
+    expect(closes).toEqual(["stock_targets", "stock_targets"]);
+    spy.mockRestore();
+  });
+
+  it("a screen in use is never dropped by a hide, however long", () => {
+    const grace = _hideGraceForTests();
+    const on = mountHook(() => stock.useEngineOpen());
+    push("refill_engine/open", {});
+    act(() => { grace.hidden(); });
+    vi.advanceTimersByTime(HIDDEN_GRACE_MS * 5);
+    act(() => { grace.visible(); });
+    expect(closes).toEqual([]);
+    on.unmount();
   });
 
   it("a denied read is still settled-with-error, and the next mount tries again", () => {

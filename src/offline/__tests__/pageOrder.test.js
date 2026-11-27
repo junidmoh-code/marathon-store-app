@@ -1226,6 +1226,41 @@ describe("idle suspend and resume (bootstrap suspendLive / resumeLive)", () => {
   });
 });
 
+// ─── COMING BACK TO THE APP (Junid, 27 Nov 2026) ─────────────────────────────
+describe("catch-up on return (bootstrap catchUp + resumeFreshness)", () => {
+  test("a pass marks the feed fresh; catchUp reads changes since the stored cursor — never a whole leg", async () => {
+    const fresh = await import("../resumeFreshness");
+    fresh._resetResumeFreshnessForTests();
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    await rt.consentAndDownload();
+    await settle(rt.downloadInBackground(), t);
+    await rt.runOnePass();
+    expect(fresh.mirrorFeedOkAt()).not.toBe(null);
+    expect(fresh.isMirrorStale(fresh.mirrorFeedOkAt(), fresh.mirrorFeedOkAt() + 1000)).toBe(false);
+
+    // Away: the shop changes one product. Coming back asks for a catch-up.
+    sdk.write("products/p0001", { id: "p0001", name: "shoe 1 — while away" });
+    sdk.write(`mirror_changes/${pushKeyForMs(T0 + 600_000, "R00000000000")}`, { n: "products", k: "p0001", t: T0 + 600_000 });
+    const before = sdk.state.reads.length;
+    expect(rt.catchUp()).toBe(true);
+    await settle(new Promise((r) => setTimeout(r, 400)), t);
+    expect((await readMirroredPath(db, "products/p0001")).name).toBe("shoe 1 — while away");
+    const since = sdk.state.reads.slice(before).map((r) => r.path);
+    expect(since.filter((p) => p === "products" || p === "orders" || p === "stock")).toEqual([]);
+
+    // Suspended or stopped: catchUp does nothing.
+    rt.suspendLive();
+    expect(rt.catchUp()).toBe(false);
+    rt.stop();
+    expect(fresh.mirrorFeedOkAt()).toBe(null);          // a stopped mirror vouches for nothing
+  });
+});
+
 describe("one pass at a time (Sonnet architect review, PR #639)", () => {
   test("a resume while a pass is still resolving never runs a second pass beside it, and still gets its catch-up", async () => {
     const tree = fullTree();
