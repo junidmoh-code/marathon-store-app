@@ -35,8 +35,8 @@
 // A STANDARD BANK TILL (Junid, 7 Nov 2026 — `photoFirst` from the server,
 // decided by the terminal's bank): the screen leads with "Photograph the
 // end-of-day report". A long report is several photos (up to six), read on the
-// server as one. The card total is REQUIRED (Junid, 25 Nov 2026; 0 if there
-// were no card sales): the PAX settles itself at 18:50, after the photo, so
+// server as one. The card total is ASKED FOR (Junid, 25 Nov 2026; 0 if there
+// were no card sales) but never blocks the photo (27 Nov 2026): the PAX settles itself at 18:50, after the photo, so
 // the report photographed is usually YESTERDAY's — the typed total is today's
 // figure until tonight's report is read (and whenever the photo cannot be
 // read within minutes). Sent / Not sent works exactly as above, and nothing
@@ -233,12 +233,13 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
 
   const figure = text.trim();
   const busy = phase === "sending" || phase === "attaching";
-  // A typed-total till needs the photo AND the figure, and so does a Standard
-  // Bank photo till (25 Nov 2026 — the typed total is the day's figure until
-  // its report is read). An FNB till needs the photo only; a portal till
-  // may add the figure.
-  const needsFigure = (till.typed === true || photoFirst) && !portal;
-  const offersFigure = needsFigure || photoFirst || portal;
+  // THE PHOTO IS ALWAYS ACCEPTED (Junid, 27 Nov 2026 — "Till 2 must never
+  // break again"): a Standard Bank photo till ASKS for today's card total (it
+  // is the day's figure until the report is read, and the fallback when the
+  // photo cannot be read) but never blocks the photo on it — on a typed-total
+  // till too (CodeRabbit, #1022): the server keeps and reads a photo alone.
+  const needsFigure = false;
+  const offersFigure = till.typed === true || photoFirst || portal;
   const canSend = !!photo && (!needsFigure || figure !== "") && !busy && live;
 
   const submit = async () => {
@@ -248,7 +249,7 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
     try {
       const { data } = await cardBatchCaptureFn({
         action: "slip", pickedTid: till.tid, photos: photos.map((p) => ({ base64: p.base64 })),
-        ...(needsFigure || ((photoFirst || portal) && figure !== "") ? { declaredTotal: figure } : {}),
+        ...(offersFigure && figure !== "" ? { declaredTotal: figure } : {}),
       });
       const kept = receiptOf(data);
       if (!kept) {

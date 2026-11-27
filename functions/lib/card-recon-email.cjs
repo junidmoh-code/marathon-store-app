@@ -110,10 +110,10 @@ function routeEmailSlip({ extraction, terminals }) {
   const printed = printedAll.length > 0;
   if (registered && printed && !printedAll.includes(registered)) {
     const named = printedAll.length === 1 ? `merchant ID ${extraction.mid}` : `merchant IDs ${printedAll.join(", ")}`;
-    return {
-      ok: false, tid,
-      reason: `That PDF prints ${named}, and none of them is the merchant terminal ${tid} is registered to (${terminal.mid}). The file is not from this terminal, or the registry is out of date — nothing was recorded.`,
-    };
+    // JUNID'S TOTAL RULE (27 Nov 2026): a MID that is not the registered one
+    // is a note, never a refusal — the terminal named in the report (the
+    // mailbox mapping) decides the till.
+    warnings.push(`NOTE (not a rejection — Junid's total rule): that PDF prints ${named}, and none of them is the merchant terminal ${tid} is registered to (${terminal.mid}). Recorded against ${terminal.label || tid} by its terminal ID — check the registry if this is wrong.`);
   }
   if (registered && !printed) {
     warnings.push(`Emailed slip: the merchant ID could not be read off the PDF, so only the terminal ID vouches for the till it was recorded against.`);

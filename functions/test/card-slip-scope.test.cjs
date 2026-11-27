@@ -129,15 +129,18 @@ test("card_recon is not this scope: a manager without a till list is refused; no
   await assert.rejects(() => slip(db, { uid: undefined }, MT2, "1.00"), (e) => e.code === "permission-denied");
 });
 
-test("one photo is required; a mangled number is refused in words", async () => {
+// Junid's rule – do not weaken or delete without his written instruction.
+test("one photo is required; a mangled number never costs the PHOTO — kept, read in the background, the reason recorded (27 Nov 2026)", async () => {
   const db = world();
   const call = (data) => handleSlip(db, { auth: YASMIN, data: { action: "slip", pickedTid: MT2, ...data } }, { now: () => NOW, bucket: bucket() });
   await assert.rejects(() => call({ photos: [], declaredTotal: "1.00" }), (e) => e.code === "invalid-argument");
   await assert.rejects(() => call({ photos: [PHOTO, PHOTO], declaredTotal: "1.00" }), (e) => e.code === "invalid-argument");
   const bent = await call({ photos: [PHOTO], declaredTotal: "12abc" });
-  assert.equal(bent.ok, false);
-  assert.match(bent.reason, /is not an amount/);
-  assert.deepEqual(await batches(db, "pe", MT2), { 544: B544 });
+  assertSent(bent);
+  assert.deepEqual(await batches(db, "pe", MT2), { 544: B544 }, "nothing recorded from a figure that is not a figure");
+  assert.equal(Object.keys(await jobs(db)).length, 1, "the photo is kept and queued for the reader");
+  const errs = Object.values((await db.ref("card_recon_errors").once("value")).val() || {});
+  assert.ok(errs.some((e) => e.kind === "typed-slip-not-recorded" && /is not an amount/.test(e.message)), "the watchdog sees why");
 });
 
 test("a scope taken away between the two halves stops the record", async () => {
@@ -250,12 +253,11 @@ test("the per-till scope still decides a photo-only slip: Yasmin can't send Till
   assert.deepEqual(await jobs(db), {});
 });
 
-test("Trophy Till 2 is typed-total: Amanda's photo without the number is refused, with it it is recorded", async () => {
+// Junid's rule – do not weaken or delete without his written instruction.
+test("a typed-total till: the photo WITHOUT the number is still kept and read (27 Nov 2026); with it it is recorded", async () => {
   const db = world();
-  await assert.rejects(
-    () => handleSlip(db, { auth: AMANDA, data: { action: "slip", pickedTid: TT2, photos: [PHOTO] } }, { now: () => NOW, bucket: bucket() }),
-    (e) => e.code === "invalid-argument" && /Type the card total/.test(e.message));
-  assert.deepEqual(await jobs(db), {});
+  assertSent(await handleSlip(db, { auth: AMANDA, data: { action: "slip", pickedTid: TT2, photos: [PHOTO] } }, { now: () => NOW, bucket: bucket() }));
+  assert.equal(Object.keys(await jobs(db)).length, 1, "kept and queued for the reader");
   const out = await slip(db, AMANDA, TT2, "2,500.00");
   assertSent(out);
   const recs = Object.values(await batches(db, "trophy", TT2));

@@ -589,9 +589,24 @@ async function run() {
       // (~/marathon-dm-agent/data/quiet-held.jsonl), not emailed. It asks for a
       // manual entry, so it is held as needing a decision; the row is in his
       // report regardless. The server still closes it as delivered.
+      // THE 19:00 CARD-RECON WATCHDOG (Junid, 27 Nov 2026) is the exception:
+      // he asked for it by name — "email only, automated, only when something
+      // is wrong" — so a notice of kind "watchdog" is SENT, to the address it
+      // names (gunidmoh@). Every other card notice stays held.
+      let watchdogTransport = null;
       const round = await deliverNotices({
         call: async (data) => callCapture(await getToken(), data),
-        send: async (mail) => appendQuietHeld({ channel: "email", source: "marathon-store-app:scripts/cardrecon/email-poller.mjs (card-unread notice)", subject: mail.subject, text: mail.text, needsDecision: true }),
+        send: async (mail) => {
+          if (mail.kind === "watchdog") {
+            watchdogTransport = watchdogTransport || nodemailer.createTransport({
+              host: cfg.smtpHost, port: cfg.smtpPort, secure: cfg.smtpPort === 465,
+              auth: { user: cfg.user, pass: cfg.password },
+              connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000,
+            });
+            return watchdogTransport.sendMail({ from: mail.from, to: mail.to, subject: mail.subject, text: mail.text });
+          }
+          return appendQuietHeld({ channel: "email", source: "marathon-store-app:scripts/cardrecon/email-poller.mjs (card-unread notice)", subject: mail.subject, text: mail.text, needsDecision: true });
+        },
         from: cfg.user,
       });
       if (round.refusal) console.warn(`⚠ card recon notices: ${round.refusal}`);

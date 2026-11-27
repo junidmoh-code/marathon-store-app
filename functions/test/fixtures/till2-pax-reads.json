@@ -1,0 +1,672 @@
+{
+ "note": "Marathon PE Till 2 (Standard Bank PAX A8900, 0000HP1X): the live reader's structured answer (production prompt for standard-bank, claude-opus-5-5 fallback while Gemini is out of credit) for every stored report photo 1-26 Nov 2026, read 27 Nov 2026. recordedCents = the total on the record; null for the 26 Nov photo that was refused (thumb over the TID; #584 BATCH EMPTY under #583's R67,440.00). Photos stay off git (public repo); no transaction lines are kept.",
+ "reads": [
+  {
+   "key": "559",
+   "recordedCents": 4181000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "559",
+    "opened": "2026/10/31 16:40:32",
+    "closed": "2026/11/01 14:50:25",
+    "printed": "2026/11/01 14:50:28",
+    "txnCount": 57,
+    "purchases": "R41,810.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R41,810.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "560",
+   "recordedCents": 3837500,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "560",
+    "opened": "2026/11/01 14:50:22",
+    "closed": "2026/11/02 17:01:42",
+    "printed": "2026/11/02 17:01:44",
+    "txnCount": 44,
+    "purchases": "R38,375.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R38,375.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "564",
+   "recordedCents": 7101500,
+   "parsed": {
+    "mid": "",
+    "tid": "",
+    "batchNo": "564",
+    "opened": "2026/11/06 17:05:55",
+    "closed": "2026/11/07 16:38:33",
+    "printed": "2026/11/07 16:40:33",
+    "txnCount": 89,
+    "purchases": "R71,015.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R71,015.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0,
+     "tid": 0,
+     "batchNo": 0.9,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "565",
+   "recordedCents": 1780000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "565",
+    "opened": "2026/11/07 16:38:33",
+    "closed": "2026/11/08 14:49:43",
+    "printed": "2026/11/08 14:50:03",
+    "txnCount": 18,
+    "purchases": "R17,800.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R17,800.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.9,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "566",
+   "recordedCents": 2787000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "566",
+    "opened": "2026/11/08 14:49:43",
+    "closed": "2026/11/09 16:56:33",
+    "printed": "2026/11/09 16:57:17",
+    "txnCount": 38,
+    "purchases": "R27,870.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R27,870.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.88,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.93,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "567",
+   "recordedCents": 2361000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "567",
+    "opened": "2026/11/09 16:56:33",
+    "closed": "2026/11/10 17:02:13",
+    "printed": "2026/11/10 17:03:25",
+    "txnCount": 36,
+    "purchases": "R23,610.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R23,610.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.85,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.93,
+     "closed": 0.93,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.93,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "569",
+   "recordedCents": 2186000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "569",
+    "opened": "2026/11/11 18:50:03",
+    "closed": "2026/11/12 17:03:59",
+    "printed": "2026/11/12 17:05:23",
+    "txnCount": 36,
+    "purchases": "R21,860.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R21,860.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "570",
+   "recordedCents": 3419000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "570",
+    "opened": "2026/11/12 17:03:59",
+    "closed": "2026/11/13 18:50:04",
+    "printed": "2026/11/14 16:35:40",
+    "txnCount": 51,
+    "purchases": "R34,190.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R34,190.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.85,
+     "tid": 0.85,
+     "batchNo": 0.9,
+     "opened": 0.9,
+     "closed": 0.9,
+     "txnCount": 0.9,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "571",
+   "recordedCents": 6082000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "571",
+    "opened": "2026/11/13 18:50:04",
+    "closed": "2026/11/14 18:50:05",
+    "printed": "2026/11/15 14:49:09",
+    "txnCount": 73,
+    "purchases": "R60,820.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R60,820.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "572",
+   "recordedCents": 1754000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "572",
+    "opened": "2026/11/14 18:50:05",
+    "closed": "2026/11/15 18:50:03",
+    "printed": "2026/11/16 17:00:44",
+    "txnCount": 20,
+    "purchases": "R17,540.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R17,540.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.85,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.9,
+     "refunds": 0.9,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "573",
+   "recordedCents": 2651000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "573",
+    "opened": "2026/11/15 18:50:03",
+    "closed": "2026/11/16 18:50:03",
+    "printed": "2026/11/17 16:42:43",
+    "txnCount": 32,
+    "purchases": "R26,510.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R26,510.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.85,
+     "tid": 0.85,
+     "batchNo": 0.9,
+     "opened": 0.9,
+     "closed": 0.9,
+     "txnCount": 0.9,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "574",
+   "recordedCents": 2179500,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "574",
+    "opened": "2026/11/16 18:50:03",
+    "closed": "2026/11/17 18:50:03",
+    "printed": "2026/11/18 16:57:58",
+    "txnCount": 32,
+    "purchases": "R21,795.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R21,795.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.8,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.97,
+     "refunds": 0.95,
+     "total": 0.97
+    }
+   }
+  },
+  {
+   "key": "575",
+   "recordedCents": 2293500,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "575",
+    "opened": "2026/11/17 18:50:03",
+    "closed": "2026/11/18 18:50:03",
+    "printed": "2026/11/19 17:02:34",
+    "txnCount": 27,
+    "purchases": "R22,935.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R22,935.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "576",
+   "recordedCents": 2449000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "576",
+    "opened": "2026/11/18 18:50:03",
+    "closed": "2026/11/19 18:50:06",
+    "printed": "2026/11/20 17:03:40",
+    "txnCount": 34,
+    "purchases": "R24,490.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R24,490.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.85,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.93,
+     "closed": 0.93,
+     "txnCount": 0.95,
+     "purchases": 0.93,
+     "refunds": 0.9,
+     "total": 0.93
+    }
+   }
+  },
+  {
+   "key": "577",
+   "recordedCents": 3351000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "577",
+    "opened": "2026/11/19 18:50:06",
+    "closed": "2026/11/20 18:50:04",
+    "printed": "2026/11/21 16:29:52",
+    "txnCount": 45,
+    "purchases": "R33,510.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R33,510.00",
+    "reconLine": "501 - Reconciled, out of balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "578",
+   "recordedCents": 4900500,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "578",
+    "opened": "2026/11/20 18:50:04",
+    "closed": "2026/11/21 18:50:10",
+    "printed": "2026/11/22 15:21:07",
+    "txnCount": 66,
+    "purchases": "R49,005.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R49,005.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.85,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.97,
+     "refunds": 0.95,
+     "total": 0.97
+    }
+   }
+  },
+  {
+   "key": "579",
+   "recordedCents": 2982000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "579",
+    "opened": "2026/11/21 18:50:10",
+    "closed": "2026/11/22 18:50:04",
+    "printed": "2026/11/23 16:58:56",
+    "txnCount": 45,
+    "purchases": "R29,820.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R29,820.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.85,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "580",
+   "recordedCents": 2668000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "580",
+    "opened": "2026/11/22 18:50:04",
+    "closed": "2026/11/23 18:50:04",
+    "printed": "2026/11/24 17:20:06",
+    "txnCount": 39,
+    "purchases": "R26,680.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R26,680.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.93,
+     "closed": 0.93,
+     "txnCount": 0.93,
+     "purchases": 0.95,
+     "refunds": 0.93,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "581",
+   "recordedCents": 3184500,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "581",
+    "opened": "2026/11/23 18:50:04",
+    "closed": "2026/11/24 18:50:05",
+    "printed": "2026/11/25 17:10:47",
+    "txnCount": 49,
+    "purchases": "R31,845.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R31,845.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "561-r2",
+   "recordedCents": 3344000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "561",
+    "opened": "2026/11/02 17:01:40",
+    "closed": "2026/11/03 17:08:38",
+    "printed": "2026/11/03 17:08:40",
+    "txnCount": 48,
+    "purchases": "R33,440.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R33,440.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.93,
+     "closed": 0.93,
+     "txnCount": 0.95,
+     "purchases": 0.96,
+     "refunds": 0.93,
+     "total": 0.96
+    }
+   }
+  },
+  {
+   "key": "562-r2",
+   "recordedCents": 3889000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "562",
+    "opened": "2026/11/03 17:08:35",
+    "closed": "2026/11/05 16:53:43",
+    "printed": "2026/11/05 16:53:45",
+    "txnCount": 59,
+    "purchases": "R38,890.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R38,890.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.9,
+     "closed": 0.9,
+     "txnCount": 0.95,
+     "purchases": 0.95,
+     "refunds": 0.95,
+     "total": 0.95
+    }
+   }
+  },
+  {
+   "key": "563-r2",
+   "recordedCents": 4650000,
+   "parsed": {
+    "mid": "000000004977890",
+    "tid": "0000HP1X",
+    "batchNo": "563",
+    "opened": "2026/11/05 16:53:40",
+    "closed": "2026/11/06 17:05:58",
+    "printed": "2026/11/06 17:06:01",
+    "txnCount": 62,
+    "purchases": "R46,500.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R46,500.00",
+    "reconLine": "500 - Reconciled, in balance",
+    "confidence": {
+     "mid": 0.9,
+     "tid": 0.9,
+     "batchNo": 0.95,
+     "opened": 0.95,
+     "closed": 0.95,
+     "txnCount": 0.95,
+     "purchases": 0.97,
+     "refunds": 0.97,
+     "total": 0.97
+    }
+   }
+  },
+  {
+   "key": "job-26nov",
+   "recordedCents": null,
+   "parsed": {
+    "mid": "",
+    "tid": "",
+    "batchNo": "584",
+    "opened": "",
+    "closed": "",
+    "printed": "2026/11/26 17:40:58",
+    "txnCount": 0,
+    "purchases": "R67,440.00",
+    "cash": "R0.00",
+    "refunds": "R0.00",
+    "total": "R67,440.00",
+    "reconLine": "",
+    "confidence": {
+     "mid": 0,
+     "tid": 0,
+     "batchNo": 0.85,
+     "opened": 0,
+     "closed": 0,
+     "txnCount": 0,
+     "purchases": 0.6,
+     "refunds": 0.6,
+     "total": 0.6
+    }
+   }
+  }
+ ]
+}

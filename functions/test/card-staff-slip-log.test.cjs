@@ -113,7 +113,8 @@ test("a refused slip leaves no log entry and no receipt", async () => {
   const db = world();
   const now = SAST("2026-10-17T16:24:30");
   await assert.rejects(() => send(db, AMANDA, MT2, { now }), (e) => e.code === "permission-denied");
-  await assert.rejects(() => send(db, AMANDA, TT2, { now }), (e) => e.code === "invalid-argument", "Trophy Till 2 needs the typed total");
+  // (A photo WITHOUT a typed total is no longer refused — Junid, 27 Nov 2026 —
+  // so the only refusal left here is the till scope.)
   assert.equal(await node(db, "card_batch_overrides/staff_slips"), null);
 });
 
