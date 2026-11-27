@@ -26,6 +26,8 @@ export const bfCandidatesApi = {
   end: (pids) => set({ action: "end", pids }),
   // "Not for sale": off the list for good; restore = the undo.
   remove: (pids) => set({ action: "remove", pids }),
+  // Repost (Junid, 26 Nov): a sale already posted to the groups goes once more. Nothing reposts by itself.
+  repost: (pids) => set({ action: "repost", pids }),
   restore: (pids) => set({ action: "restore", pids }),
   removed: () => set({ action: "removed" }),
   // PHOTOS (the Black Friday card's own options, Junid 23 Nov): Generate / Regenerate = the shared New Arrivals

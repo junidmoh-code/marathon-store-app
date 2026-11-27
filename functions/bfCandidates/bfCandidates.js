@@ -355,6 +355,27 @@ async function finishClosing(db, nowMs) {
   return fixed;
 }
 
+/**
+ * REPOST (Junid, 26 Nov 2026): a product's sale posts to the Marathon Club groups ONCE; only this tap posts it again,
+ * once (the poster takes bf_sales_2026/repost/{pid}.at later than the sale post as one more post). Only a product
+ * on sale now that has already posted can be reposted; anything else is refused.
+ */
+async function repostSale(db, data, uid, nowMs) {
+  const pids = pidsOf(data);
+  const [sales, posted] = await Promise.all([
+    inBatches(pids, 25, (p) => val(db, `${R}/sales/${p}`)),
+    inBatches(pids, 25, (p) => val(db, `${R}/posted/${p}`)),
+  ]);
+  const upd = {}, done = [], refused = [];
+  pids.forEach((pid, i) => {
+    if (!core.saleActive(sales[i], nowMs)) refused.push({ pid, refusal: "not on sale now" });
+    else if (!(posted[i] && Number(posted[i].at) > 0)) refused.push({ pid, refusal: "not posted yet: it posts by itself" });
+    else { upd[`${R}/repost/${pid}`] = { at: nowMs, by: uid }; done.push(pid); }
+  });
+  if (done.length) await db.ref().update(upd);
+  return { ok: true, done, refused };
+}
+
 /** "Not for sale": off the candidates list for good (the nightly finder skips it). A sale on it is closed first. */
 async function remove(db, data, uid, nowMs) {
   const pids = pidsOf(data);
@@ -451,13 +472,13 @@ const bfSaleList = onCall({ ...callableOpts, minInstances: 1 }, async (request) 
   const d = request.data || {};
   // The card's own small nodes (the finder's list is the largest: one slim row per product that is not moving).
   // Everything at once (the location names with them): the card waits for the slowest read, not for their sum.
-  const [[items, removed, sales, photos, posted, meta, posting], locs] = await Promise.all([
-    Promise.all(["candidates/items", "removed", "sales", "photos", "posted", "candidates/meta", "posting"].map((p) => val(db, `${R}/${p}`))),
+  const [[items, removed, sales, photos, posted, meta, posting, reposts], locs] = await Promise.all([
+    Promise.all(["candidates/items", "removed", "sales", "photos", "posted", "candidates/meta", "posting", "repost"].map((p) => val(db, `${R}/${p}`))),
     locations(db),
   ]);
   const cutoff = core.cutoffOf(d.cutoff);
   const locNames = Object.fromEntries(locs.map((l) => [l.id, l.name]));
-  const view = core.viewList({ items: items || {}, removed: removed || {}, sales: sales || {}, photos: photos || {}, posted: posted || {} }, { tab: d.tab, cutoff, from: d.from, n: d.n, nowMs });
+  const view = core.viewList({ items: items || {}, removed: removed || {}, sales: sales || {}, photos: photos || {}, posted: posted || {}, reposts: reposts || {} }, { tab: d.tab, cutoff, from: d.from, n: d.n, nowMs });
   // The end a sale put on now gets (Mon 30 Nov, or later once the running sales were extended past it).
   const dEnd = core.defaultEnd(sales || {}, nowMs);
   return { ...view, locNames, tab: core.VIEWS.includes(d.tab) ? d.tab : "clothing", cutoff, cutoffs: Object.keys(core.CUTOFFS).map((k) => ({ key: k, label: core.CUTOFF_LABEL[k], day: core.CUTOFFS[k] })), defaultEndDay: core.sastDay(dEnd), defaultUntil: core.endLabel(dEnd), endPassed: !(dEnd > nowMs), posting: core.postingState(sales || {}, posting, nowMs), today: core.sastDay(nowMs), now: nowMs, meta: meta || null };
@@ -474,6 +495,7 @@ const bfSaleSet = onCall(callableOpts, async (request) => {
     case "extend": return extend(db, d, uid, nowMs);
     case "end": { const r = await closeSales(db, await salesFor(db, d, nowMs), { uid, why: "ended_by_junid", nowMs }); return { ok: true, ...r }; }
     case "remove": return remove(db, d, uid, nowMs);
+    case "repost": return repostSale(db, d, uid, nowMs);
     case "restore": return restore(db, d);
     case "photo": return choosePhoto(db, d, uid, nowMs);
     case "removed": {
@@ -525,4 +547,4 @@ const bfSaleExpire = onSchedule(
   },
 );
 
-module.exports = { bfSaleList, bfSaleSet, bfSaleStoreList, bfSaleExpire, _internals: { receivingOf, alertStores, choosePhoto, putOnSale, extend, closeSales, finishClosing, syncMirror, mirrorsRight, remove, restore, salesFor, stockOf, locations } };
+module.exports = { bfSaleList, bfSaleSet, bfSaleStoreList, bfSaleExpire, _internals: { repostSale, receivingOf, alertStores, choosePhoto, putOnSale, extend, closeSales, finishClosing, syncMirror, mirrorsRight, remove, restore, salesFor, stockOf, locations } };

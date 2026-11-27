@@ -409,6 +409,28 @@ describe("Black Friday card: New Arrivals tab, Approved split, Repost (Junid, 20
     await flush();
     expect(a.repost).toHaveBeenCalledWith(["d"]);
   });
+
+  it("Repost on each posted Approved row (Junid, 26 Nov): queues it once, then shows 'Repost queued'; never on a row not posted yet", async () => {
+    const a = api();
+    const r = await mount(a);
+    await act(async () => { byId(r, "tab-approved").props.onClick(); });
+    expect(has(r, "repost-e")).toBe(false);
+    await act(async () => { byId(r, "repost-d").props.onClick(); });
+    await flush();
+    expect(a.repost).toHaveBeenCalledWith(["d"]);
+    expect(has(r, "repost-queued-d")).toBe(true);
+    expect(has(r, "repost-d")).toBe(false);
+  });
+
+  it("a Repost the server refuses says why and queues nothing", async () => {
+    const a = api({ repost: vi.fn(async () => ({ ok: true, done: [], refused: [{ pid: "d", refusal: "not approved" }] })) });
+    const r = await mount(a);
+    await act(async () => { byId(r, "tab-approved").props.onClick(); });
+    await act(async () => { byId(r, "repost-d").props.onClick(); });
+    await flush();
+    expect(has(r, "repost-queued-d")).toBe(false);
+    expect(text(r.root)).toContain("not approved");
+  });
 });
 
 describe("Black Friday card: Junid's own photo, Find online, R0 guard (Junid, 20 Nov)", () => {

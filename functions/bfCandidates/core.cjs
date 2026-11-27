@@ -83,7 +83,7 @@ function saleActive(s, nowMs) {
 const photoOf = (row, chosen) => (chosen && typeof chosen.url === "string" && /^https:\/\//.test(chosen.url) ? chosen.url : (row && row.photo) || null);
 
 /** One row as the card shows it. */
-function viewRow(pid, row, { sale = null, chosen = null, posted = null, nowMs }) {
+function viewRow(pid, row, { sale = null, chosen = null, posted = null, repost = null, nowMs }) {
   const on = saleActive(sale, nowMs);
   return {
     pid, name: row.name || pid, tab: tabOf(row), cat: row.cat || null, qty: row.qty === null || row.qty === undefined ? null : Number(row.qty) || 0, // null: not on the finder's list any more (not counted here)
@@ -97,7 +97,9 @@ function viewRow(pid, row, { sale = null, chosen = null, posted = null, nowMs })
     locs: row.locs || {}, sizes: row.sizes || "", photo: photoOf(row, chosen), ownPhoto: row.photo || null,
     photoChoice: chosen ? { use: chosen.use || "current", at: chosen.at || null } : null,
     sale: on ? { price: Number(sale.salePrice), start: sale.start, end: sale.end, until: endLabel(sale.end), setAt: sale.setAt, extendedAt: sale.extendedAt || null } : null,
-    posted: on && posted && Number(posted.version) === saleVersion(sale) ? { at: posted.at, groups: posted.groups || 0 } : null,
+    // A product's sale posts ONCE (Junid, 26 Nov 2026): posted at any version counts; only his Repost tap posts it again.
+    posted: on && posted && Number(posted.at) > 0 ? { at: posted.at, groups: posted.groups || 0 } : null,
+    repostQueued: !!(on && posted && Number(posted.at) > 0 && Number(repost && repost.at) > Number(posted.at)),
   };
 }
 /**
@@ -114,7 +116,7 @@ function byQuantity(a, b) {
  * candidate or not, built from the sale itself when the finder no longer lists the product).
  * → { rows (this tab's page), counts: { clothing, sneakers, onSale, removed }, total, from, more, saleEnds }
  */
-function viewList({ items = {}, removed = {}, sales = {}, photos = {}, posted = {} }, { tab = "clothing", cutoff = DEFAULT_CUTOFF, from = 0, n = PAGE, nowMs }) {
+function viewList({ items = {}, removed = {}, sales = {}, photos = {}, posted = {}, reposts = {} }, { tab = "clothing", cutoff = DEFAULT_CUTOFF, from = 0, n = PAGE, nowMs }) {
   const t = VIEWS.includes(tab) ? tab : "clothing";
   const counts = { clothing: 0, sneakers: 0, onSale: 0, removed: Object.keys(removed || {}).length };
   const mine = [];
@@ -142,7 +144,7 @@ function viewList({ items = {}, removed = {}, sales = {}, photos = {}, posted = 
   const start = Math.max(0, Number(from) || 0);
   const page = mine.slice(start, start + Math.max(1, Math.min(PAGE, Number(n) || PAGE)));
   return {
-    rows: page.map(([pid, row]) => viewRow(pid, row, { sale: sales && sales[pid], chosen: photos && photos[pid], posted: posted && posted[pid], nowMs })),
+    rows: page.map(([pid, row]) => viewRow(pid, row, { sale: sales && sales[pid], chosen: photos && photos[pid], posted: posted && posted[pid], repost: reposts && reposts[pid], nowMs })),
     counts, total: mine.length, from: start, more: start + page.length < mine.length,
     // When the sales running now end: one date when they all end together.
     saleEnds: first === null ? null : { first, last, firstLabel: endLabel(first), lastLabel: endLabel(last), same: first === last },
