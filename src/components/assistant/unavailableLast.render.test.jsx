@@ -125,6 +125,25 @@ describe("desktop grid", () => {
   });
 });
 
+describe("the desktop's own brand filter and sort still apply within each group", () => {
+  const P = [
+    { ...mk("p1", "Nike"), retailPrice: 300 }, { ...mk("p2", "Adidas"), retailPrice: 900 },
+    { ...mk("p3", "Nike"), retailPrice: 700 }, { ...mk("p4", "Nike"), retailPrice: 100 },
+    { ...mk("p5", "Adidas"), retailPrice: 500 },
+  ];
+  const sel = (r, label) => r.root.find(n => n.type === "select" && n.props["aria-label"] === label);
+  it("price high-to-low: available by price, then unavailable by price", () => {
+    const r = mount({ products: P, searchResults: P, unavailableIds: new Set(["p2", "p4"]) });
+    act(() => { sel(r, "Sort").props.onChange({ target: { value: "ph" } }); });
+    expect(cardIds(r)).toEqual(["p3", "p5", "p1", "p2", "p4"]);
+  });
+  it("a brand filter narrows first, then the partition", () => {
+    const r = mount({ products: P, searchResults: P, unavailableIds: new Set(["p1"]) });
+    act(() => { sel(r, "Brand").props.onChange({ target: { value: "Nike" } }); });
+    expect(cardIds(r)).toEqual(["p3", "p4", "p1"]);
+  });
+});
+
 describe("?view=wall preview shares the list", () => {
   it("hands the wall the same partitioned order", () => {
     const r = mount({ wallPreview: true, unavailableIds: new Set(["a"]) });
