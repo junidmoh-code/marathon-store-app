@@ -60,6 +60,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # The screen's tests reason in the shops' own time (SAST): under UTC,
+    # slipTerminals.test.jsx fails after 18:00 UTC (pre-existing on main).
+    env:
+      TZ: Africa/Johannesburg
     steps:
       - uses: actions/checkout@v4
         with:
