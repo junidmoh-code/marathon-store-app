@@ -46,13 +46,15 @@ describe("updateChecker on a TV screen", () => {
 
   it("shouldAutoReload: never in trading hours in any mode; once per version in the quiet window", () => {
     const yes = { updateAvailable: true, busy: false, msSinceActivity: 10 * 60_000, alreadyAttempted: false };
-    expect(shouldAutoReload(yes)).toBe(true);
+    expect(shouldAutoReload(yes)).toBe(false);            // trading hours: no screen reloads itself
     expect(shouldAutoReload({ ...yes, tvRoute: true })).toBe(false);
     expect(shouldAutoReload({ ...yes, hidden: true, tvRoute: true })).toBe(false);
-    expect(shouldAutoReload({ ...yes, forced: true, msSinceFirstSeen: 10 * 60_000, tvRoute: true })).toBe(false);
+    expect(shouldAutoReload({ ...yes, forced: true, tvRoute: true })).toBe(false);
     expect(shouldAutoReload({ ...yes, tvRoute: true, tvQuiet: true })).toBe(true);
     expect(shouldAutoReload({ ...yes, tvRoute: true, tvQuiet: true, alreadyAttempted: true })).toBe(false);
     expect(shouldAutoReload({ ...yes, tvRoute: true, tvQuiet: true, busy: true })).toBe(false);
+    // The TV needs no idle wait in its window (nobody touches it anyway).
+    expect(shouldAutoReload({ ...yes, msSinceActivity: 0, tvRoute: true, tvQuiet: true })).toBe(true);
   });
 
   it("applyUpdate never calls reload on #tv during trading hours, even in forced mode", () => {

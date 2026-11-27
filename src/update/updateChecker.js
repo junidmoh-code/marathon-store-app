@@ -1,12 +1,21 @@
 // Auto-update detection for long-lived till tabs. The build stamps a version
 // into the bundle (__BUILD_VERSION__, vite define) AND emits /version.json with
 // the same value; this module polls version.json (no-store) and, when the
-// deployed version differs from the running one, (a) surfaces a banner via
-// subscribers and (b) auto-reloads ONLY when it cannot interrupt anyone:
-// nothing has marked itself busy (a sale in the cart, a count in progress) and
-// the user hasn't touched the app for IDLE_MS — or the tab just went hidden
-// while idle. One silent attempt per version (sessionStorage latch) so a lagging
-// CDN can never reload-loop a till; the banner remains as the manual path.
+// deployed version differs from the running one, surfaces the "Update ready"
+// pill via subscribers.
+//
+// ── WHEN A NEW BUILD IS TAKEN (Junid, 27 Nov 2026) ──────────────────────────
+// Never under somebody, and never because they looked away. Only:
+//   - on the next cold start (index.html is served no-cache, so any fresh
+//     load is the new build),
+//   - on a tap of the pill (applyUpdate),
+//   - or, so no device can sit on an old bundle for ever, in the 03:00–05:00
+//     SAST quiet window with the store shut, after IDLE_MS untouched and with
+//     nothing busy.
+// The old rules reloaded a tab when it went hidden and a mirrored device 30 s
+// after any deploy; with several deploys a day that was a cold start — and a
+// fresh download of every non-mirrored read — each time staff came back to the
+// app. See docs/resume-reload-investigation.md.
 //
 // No service worker on purpose: the store-app's SW caused the iOS zero-data
 // incident and is actively unregistered in main.jsx — polling a tiny JSON is
@@ -16,40 +25,24 @@ const POLL_MS = 5 * 60 * 1000;
 const IDLE_MS = 3 * 60 * 1000;
 const RELOAD_LATCH_KEY = "marathon.update.reloadedFor";
 
-// ── FORCED RELOAD, FOR A DEVICE SERVING FROM ITS LOCAL COPY ──────────────────
-//
-// A parked stale bundle once cost about $400/month. A device reading from a
-// local mirror makes that worse, not better: it has no whole-node
-// subscriptions to make a wrong bundle obvious, so it can sit on an old build
-// for days, quietly, reading a schema the new build has moved on from.
-//
-// So on a mirrored device the reload is FORCED rather than advisory — it does
-// not wait for three minutes of stillness, and it does not give up after one
-// attempt per version. What it never does is interrupt:
-//
-//   - nothing may be registered busy. That is the same registry the cart and
-//     the count screens already use (setUpdateBusy), and the mirror adds
-//     "there are unsent writes" to it.
-//   - and it waits FORCED_GRACE_MS after the update is first seen, so a person
-//     mid-sentence gets a moment rather than a reload under their hands.
-//
-// A device NOT serving from the mirror keeps exactly the old behaviour: idle
-// auto-reload, one silent attempt per version, banner otherwise.
-export const FORCED_GRACE_MS = 30 * 1000;
-export const FORCED_RETRY_MS = 60 * 1000;
+// ── "FORCED" MODE, FOR A DEVICE SERVING FROM ITS LOCAL COPY ──────────────────
+// A parked stale bundle once cost about $400/month, and a mirrored device has
+// no whole-node subscriptions to make a wrong bundle obvious. Forced mode used
+// to reload such a device 30 s after a deploy; it now only means the quiet-
+// window reload keeps trying (up to FORCED_MAX_ATTEMPTS) instead of one
+// attempt per version, so a device busy at 03:10 still takes it at 03:15.
 // ── A FORCED RELOAD MUST NOT BE ABLE TO LOOP ────────────────────────────────
 // The once-per-version latch that forced mode drops exists because a lagging
 // CDN serves a new version.json beside an old bundle, and a device that
 // reloads into the same old bundle reloads again, and again. Forced mode needs
 // to keep retrying past a busy moment, so it cannot use that latch — but it
-// must still have a floor. Five attempts at a minute apart is long enough to
+// must still have a floor. Five attempts, one per 5-minute poll, is long enough to
 // outlast any busy spell and short enough that a CDN that is lying costs five
 // reloads rather than a day of them, after which the banner remains as the
 // manual path. (Fable-vs-spec review, PR #618.)
 export const FORCED_MAX_ATTEMPTS = 5;
 const FORCED_ATTEMPTS_KEY = "marathon.update.forcedAttempts";
 let forcedMode = false;
-let firstSeenAt = null;
 
 // ── THE TV BOARD IS NOT RELOADED WHILE THE STORE IS OPEN ────────────────────
 // The in-store queue board is idle for ever, so the idle rule above reloaded
@@ -140,26 +133,30 @@ export function isNewVersion(currentVersion, fetchedVersion) {
 }
 
 export function shouldAutoReload({
-  updateAvailable, busy, msSinceActivity, alreadyAttempted, hidden = false,
-  forced = false, msSinceFirstSeen = 0, attempts = 0, tvRoute = false, tvQuiet = false,
+  updateAvailable, busy, msSinceActivity, alreadyAttempted,
+  forced = false, attempts = 0, tvRoute = false, tvQuiet = false,
 }) {
   if (!updateAvailable) return false;
-  // A TV: one attempt per version, only in the store-shut window — see isTvScreen.
-  if (tvRoute) return !busy && !alreadyAttempted && tvQuiet;
-  // BUSY IS ABSOLUTE, in both modes. It is the cart, the count in progress,
+  // BUSY IS ABSOLUTE, in every mode. It is the cart, the count in progress,
   // and — on a mirrored device — unsent writes. Nothing reloads over those.
   if (busy) return false;
-  if (forced) {
-    // No idle requirement and no once-per-version latch: a forced reload is
-    // the point, and a device that stayed busy through its one attempt would
-    // otherwise never take the new bundle at all. There is still a floor —
-    // see FORCED_MAX_ATTEMPTS.
-    if (attempts >= FORCED_MAX_ATTEMPTS) return false;
-    return msSinceFirstSeen >= FORCED_GRACE_MS;
-  }
-  if (alreadyAttempted) return false;
-  // A hidden tab can't be interrupting anyone; a visible one must be idle.
-  return hidden || msSinceActivity >= IDLE_MS;
+  // ── NOTHING RELOADS BY ITSELF WHILE THE SHOPS CAN BE TRADING ─────────────
+  // (Junid, 27 Nov 2026: leave the app, come back, and Source was loading
+  // again from nothing.) The old rules reloaded a tab the moment it went
+  // HIDDEN, and a mirrored device 30 seconds after any deploy whether or not
+  // somebody was using it — so a person who switched to WhatsApp came back to
+  // a cold start, and paid for it again in database reads. A new build is now
+  // taken on the next cold start, on a tap of the "Update ready" pill, or —
+  // so no device can sit on an old bundle for ever — in the 03:00–05:00 SAST
+  // quiet window, store shut, and only after IDLE_MS untouched.
+  if (!tvQuiet) return false;
+  // A TV: one attempt per version, the quiet window only — see isTvScreen.
+  if (tvRoute) return !alreadyAttempted;
+  if (!(msSinceActivity >= IDLE_MS)) return false;
+  // A mirrored device keeps trying through the window (a busy spell must not
+  // cost it the night), with the FORCED_MAX_ATTEMPTS floor against a lying CDN.
+  if (forced) return attempts < FORCED_MAX_ATTEMPTS;
+  return !alreadyAttempted;
 }
 
 // ── Runtime ───────────────────────────────────────────────────────────────────
@@ -209,37 +206,23 @@ export function applyUpdate() {
   reloadIo.reload();
 }
 
-let forcedTimer = null;
-
-function maybeAutoReload(hidden) {
-  if (updateAvailable && firstSeenAt === null) firstSeenAt = Date.now();
+function maybeAutoReload() {
   if (
     shouldAutoReload({
       updateAvailable,
       busy: isUpdateBusy(),
       msSinceActivity: Date.now() - lastActivity,
       alreadyAttempted: alreadyAttempted(),
-      hidden,
       forced: forcedMode,
-      msSinceFirstSeen: firstSeenAt === null ? 0 : Date.now() - firstSeenAt,
       attempts: forcedAttempts(),
       tvRoute: isTvScreen(),
       tvQuiet: inTvQuietWindow(Date.now()),
     })
   ) {
     applyUpdate();
-    return;
   }
-  // A forced reload that was refused — busy, or inside its grace — comes back
-  // for it. The ordinary mode deliberately does not: its one attempt per
-  // version is what stops a lagging CDN reload-looping a device.
-  if (forcedMode && updateAvailable && forcedTimer === null && !isTvScreen()
-    && forcedAttempts() < FORCED_MAX_ATTEMPTS) {
-    forcedTimer = setTimeout(() => {
-      forcedTimer = null;
-      maybeAutoReload(document.visibilityState === "hidden");
-    }, FORCED_RETRY_MS);
-  }
+  // No retry timer: check() runs every POLL_MS and asks again, which inside
+  // the two-hour quiet window is plenty of attempts.
 }
 
 // Single-flight: check() is wired to five triggers (interval, focus, online,
@@ -265,7 +248,7 @@ async function check() {
         updateAvailable = true;
         notify();
       }
-      maybeAutoReload(document.visibilityState === "hidden");
+      maybeAutoReload();
     }
   } catch {
     // Offline / timeout / fetch failure — the next tick retries silently.
@@ -286,9 +269,11 @@ export function startUpdateChecker() {
   window.setInterval(check, POLL_MS);
   window.addEventListener("focus", check);
   window.addEventListener("online", check);
+  // Coming back looks for a new build (and shows the pill) — it never
+  // reloads. Going hidden does nothing at all: a hidden tab is a person who
+  // will be back in a moment, and reloading it is what made them wait.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") check();
-    else maybeAutoReload(true); // tab just went hidden — invisible moment to swap builds
   });
   check();
 }
