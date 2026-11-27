@@ -2398,17 +2398,18 @@ function CustomerSuggestionDropdown({ query, mode, customers, onPick, onAddNew }
   );
 }
 
-function useBroadcastHistory() {
+export function useBroadcastHistory() {
   const authReady = useAuthReady();
   const [broadcasts, setBroadcasts] = useState([]);
   useEffect(() => {
     if (!authReady) return;
-    const unsub = onValue(ref(database, "broadcasts"), snap => {
+    // Shared and held through a short hide (utils/sharedLiveRead.js).
+    const unsub = subscribeLivePath("broadcasts", snap => {
       const data = snap.val();
       if (!data) { setBroadcasts([]); return; }
       setBroadcasts(Object.values(data).filter(Boolean)
         .sort((a, b) => tsMs(b.sentAt) - tsMs(a.sentAt)));
-    });
+    }, () => {});
     return () => unsub();
   }, [authReady]);
   return broadcasts;

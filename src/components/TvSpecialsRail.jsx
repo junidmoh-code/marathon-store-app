@@ -20,8 +20,7 @@
 // must never take down the pickup board.
 
 import { useEffect, useRef, useState } from "react";
-import { onValue, ref } from "firebase/database";
-import { database } from "../firebase";
+import { subscribeLivePath } from "../utils/sharedLiveRead";
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 const BAND_H = 160;          // must equal the ShoeConveyor band it replaces
@@ -34,7 +33,8 @@ export function useSpecials() {
   const [gen, setGen] = useState(0); // bumps to re-subscribe after a failed read
   useEffect(() => {
     let retry = null;
-    const unsub = onValue(ref(database, "specials"), (snap) => {
+    // Shared and held through a short hide (utils/sharedLiveRead.js).
+    const unsub = subscribeLivePath("specials", (snap) => {
       const v = snap.val() || {};
       setSpecials(
         Object.entries(v)
