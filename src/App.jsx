@@ -13,7 +13,7 @@ import { ProductActionsButton, DeactivatedChip } from "./components/stock/Produc
 import { showsDeactivated } from "./config/assistantVisibility";
 import { useAssistantVisibility } from "./config/useAssistantVisibility";
 import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
-import { heldProductKey, heldPredicate, stockedHerePredicate, hubReadState, unavailableProductIds, unavailableHint } from "./components/assistant/divisionAvailability";
+import { heldProductKey, heldPredicate, stockedHerePredicate, hubReadState, unavailableProductIds, unavailableHint, unavailableLast } from "./components/assistant/divisionAvailability";
 import { reactiveRefillHubs, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
@@ -9207,8 +9207,10 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
     if (sort === "ph") list = [...list].sort((a, b) => (retailPriceOf(b) || 0) - (retailPriceOf(a) || 0));
     else if (sort === "pl") list = [...list].sort((a, b) => (retailPriceOf(a) || 0) - (retailPriceOf(b) || 0));
     else if (sort === "az") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
-    return list;
-  }, [searchResults, catalog, brand, sort]);
+    // UNAVAILABLE LAST (Junid, 27 Nov 2026), after the chosen sort so each
+    // group keeps it. Same Set as the card badge; the wall shares this list.
+    return unavailableLast(list, unavailableIds);
+  }, [searchResults, catalog, brand, sort, unavailableIds]);
 
   // Reset the brand filter when switching modes (brands differ per catalog).
   // The wall has neither control, so entering it drops a sort left over from
@@ -11053,6 +11055,12 @@ export function AssistantView({ products, onExit, orders = [] }) {
       servingHubCells, extraHubCells, shopHeld, sectionNet, effectiveShop, deadForOrder]);
   // The alternatives sheet is footwear's (computeAlternatives), so only a shoe
   // is promised "similar shoes"; clothing is told where it is not.
+  // UNAVAILABLE LAST on the phone / iPad photo grid (Junid, 27 Nov 2026):
+  // browse and search results alike, sorted by the same Set the badge reads.
+  // The desktop overlay does the same to its own list (after its sort), so it
+  // is handed the unsorted `filtered`. The refill list has no badge and is
+  // left alone. Recomputes when stock lands, so a card moves up live.
+  const photoGrid = useMemo(() => unavailableLast(filtered, unavailableIds), [filtered, unavailableIds]);
   const unavailableHintFor = (p) => unavailableHint(
     shopShelfAnswers(p) ? shopHeldLabels() : sectionHubIds.map((h) => HUB_LABELS[h] || h),
     { similar: !shopShelfAnswers(p) && (p?.productType || "sneaker") !== "clothing" });
@@ -12419,7 +12427,7 @@ export function AssistantView({ products, onExit, orders = [] }) {
       ) : (
         // Responsive: 2 columns on a phone, 5 on iPad (see .mc-grid-photo above).
         <div className="mc-grid-photo" style={{ display:"grid", gap:10 }}>
-          {filtered.map(p => {
+          {photoGrid.map(p => {
             const isSel = selected && selected.id === p.id;
             // Every size out at this shop's own hub (Pine / Concrete only —
             // always false for Marathon PE / Trophy; see unavailableIds).
