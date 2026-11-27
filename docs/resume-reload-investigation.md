@@ -143,3 +143,20 @@ Ranked by egress per return × how often the return happens.
 ## 5. Rules
 
 No rule or `.indexOn` change is needed.
+
+## 6. Result (after this PR)
+
+Per return, mirrored device. "Before" is the cost when a return found a new
+build (every return after a deploy, 9–17 deploys a day) or re-entered a card
+after a hide. Proofs are in `src/resume/*.test.jsx`, `src/offline/__tests__/sourceResume.test.jsx`,
+`src/components/AuthGate.resume.test.jsx` and `pageOrder.test.js` ("catch-up on return").
+
+| Card | Before | After (hide→show) | After (page discarded by the phone) |
+|---|---|---|---|
+| Source | 397,207 B + Loading screen | **0 B**, no Loading | 397,207 B once, opens on the saved record (no Loading), "Updating…" until live |
+| Health | 3,983,626 B | **0 B** | once |
+| Warehouse / TV | 287,615 B | **0 B** | once |
+| AI Studio | 2,059,452 B (photo list opened twice) | **0 B** | 1,466,551 B once |
+| Users (super-admin) | whole /users per return | **0 B** | once |
+| TV specials, Customers broadcasts | 4 B each | 0 B | once |
+| Every card | a self-reload 30 s after any deploy | **no self-reload while trading** | – |
