@@ -50,6 +50,7 @@ export function createResumeCopies({
   const trailing = new Map();   // full key -> timer of a pending write
   let epoch = 0;                // bumped by clearAll: a write queued before it must not land after it
   const gens = new Map();       // full key -> bumped by forget(): an earlier load must not restore it
+  const deleting = new Map();   // full key -> the on-disk delete forget() started: a later load waits for it
 
   const fullKey = (uid, key) => `${RESUME_PREFIX}${uid}|${key}`;
 
@@ -71,6 +72,7 @@ export function createResumeCopies({
       const myEpoch = epoch;
       const myGen = gens.get(fk) ?? 0;
       try {
+        if (deleting.has(fk)) await deleting.get(fk);
         const db = await getDb();
         const rec = await db.getMeta(fk);
         if (myEpoch !== epoch || myGen !== (gens.get(fk) ?? 0)) return null;
@@ -118,12 +120,15 @@ export function createResumeCopies({
       gens.set(fk, (gens.get(fk) ?? 0) + 1);
       mem.delete(fk);
       if (trailing.has(fk)) { clearTimer(trailing.get(fk)); trailing.delete(fk); }
-      Promise.resolve().then(getDb).then((db) => db.deleteMetaMany([fk])).catch(() => {});
+      const done = Promise.resolve().then(getDb).then((db) => db.deleteMetaMany([fk])).catch(() => {})
+        .finally(() => { if (deleting.get(fk) === done) deleting.delete(fk); });
+      deleting.set(fk, done);
     },
     /** Sign-out / another person: forget every saved copy, here and on disk. */
     async clearAll() {
       epoch += 1;
       mem.clear();
+      gens.clear();
       lastWrite.clear();
       for (const t of trailing.values()) clearTimer(t);
       trailing.clear();

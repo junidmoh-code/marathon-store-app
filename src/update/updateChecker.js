@@ -249,10 +249,6 @@ function maybeAutoReload() {
   // the two-hour quiet window is plenty of attempts.
 }
 
-// Single-flight: check() is wired to five triggers (interval, focus, online,
-// visibility, initial) and e.g. wake-from-sleep fires several at once — one
-// outstanding fetch at a time, with a hard timeout so a stalled request on a
-// flaky till network can't pile up over a days-long session.
 function reloadOnReturn(away) {
   if (!shouldReloadOnReturn({
     updateAvailable,
@@ -268,12 +264,21 @@ function reloadOnReturn(away) {
   return true;
 }
 
-let checkInFlight = false;
+// Single-flight: check() is wired to five triggers (interval, focus, online,
+// visibility, initial) and e.g. wake-from-sleep fires several at once — one
+// outstanding fetch at a time, with a hard timeout so a stalled request on a
+// flaky till network can't pile up over a days-long session.
+// A caller that arrives while a check is running gets THAT check's promise,
+// so "after the check" means after the fetch really answered (Sonnet, #1019).
+let checkInFlight = null;
 const FETCH_TIMEOUT_MS = 10_000;
 
-async function check() {
-  if (checkInFlight) return;
-  checkInFlight = true;
+function check() {
+  if (!checkInFlight) checkInFlight = runCheck().finally(() => { checkInFlight = null; });
+  return checkInFlight;
+}
+
+async function runCheck() {
   try {
     const res = await fetch(`/version.json?_=${Date.now()}`, {
       cache: "no-store",
@@ -293,8 +298,6 @@ async function check() {
     }
   } catch {
     // Offline / timeout / fetch failure — the next tick retries silently.
-  } finally {
-    checkInFlight = false;
   }
 }
 
@@ -319,7 +322,14 @@ export function startUpdateChecker() {
     hiddenAt = null;
     if (reloadOnReturn(away)) return;
     // The build may only be discovered by this check (a phone asleep since the
-    // deploy): ask again once it has answered (CodeRabbit, #1019).
-    check().then(() => { reloadOnReturn(away); });
-  });  check();
+    // deploy): ask again once it has answered (CodeRabbit, #1019) — but only
+    // if the person has not started anything since coming back and the page
+    // is still in front of them (Sonnet, #1019).
+    const back = Date.now();
+    check().then(() => {
+      if (document.visibilityState !== "visible" || lastActivity > back) return;
+      reloadOnReturn(away);
+    });
+  });
+  check();
 }

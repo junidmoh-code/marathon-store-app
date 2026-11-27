@@ -604,3 +604,17 @@ describe("a hold that runs out while the page is hidden is parked, not dropped",
     expect(server.log.opens).toEqual(["a"]);
   });
 });
+
+describe("unconfirmed entries and the marker", () => {
+  it("a listener the server cancels while flagged clears its marker (Sonnet, #1019)", () => {
+    const confirmed = [];
+    const s = createSharedLiveReads({ listen: server.listen, setTimer: clock.setTimer, clearTimer: clock.clearTimer, onConfirm: (k) => confirmed.push(k) });
+    const off = s.subscribe("a", () => "a", () => {}, () => {});
+    server.push("a", 1);
+    expect(s.markUnconfirmed()).toEqual(["a"]);
+    server.cancel("a");
+    expect(confirmed).toEqual(["a"]);
+    expect(s.isUnconfirmed("a")).toBe(false);
+    off();
+  });
+});

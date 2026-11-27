@@ -177,4 +177,47 @@ describe("the update checker — a new build waiting never reloads Source under 
     expect(reload).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });
+
+  async function wakeRig({ slowMs }) {
+    const listeners = {};
+    const on = (t, fn) => { (listeners[t] ||= []).push(fn); };
+    vi.stubGlobal("window", { location: { hash: "" }, addEventListener: on, setInterval: (fn, ms) => setInterval(fn, ms) });
+    const doc = { visibilityState: "visible", addEventListener: on };
+    vi.stubGlobal("document", doc);
+    const ss = new Map();
+    vi.stubGlobal("sessionStorage", { getItem: (k) => ss.get(k) ?? null, setItem: (k, v) => ss.set(k, String(v)) });
+    const box = { served: null };
+    vi.stubGlobal("fetch", () => new Promise((res) => setTimeout(() => res({ ok: true, json: async () => box.served }), slowMs)));
+    vi.setSystemTime(Date.UTC(2026, 10, 27, 9, 0));
+    vi.resetModules();
+    const uc = await import("../../update/updateChecker.js");
+    box.served = { version: uc.CURRENT_VERSION };
+    const reload = vi.spyOn(uc.reloadIo, "reload").mockImplementation(() => {});
+    uc.startUpdateChecker();
+    await vi.advanceTimersByTimeAsync(slowMs + 10);
+    const fire = (t) => { for (const fn of listeners[t] || []) fn(); };
+    doc.visibilityState = "hidden"; fire("visibilitychange");
+    vi.setSystemTime(Date.UTC(2026, 10, 27, 10, 0));
+    box.served = { version: "a-newer-build", builtAt: new Date(Date.UTC(2026, 10, 25, 9, 0)).toISOString() };
+    return { uc, reload, fire, doc, listeners };
+  }
+
+  it("focus fires first and starts the check: the long return still waits for THAT check's answer (Sonnet, #1019)", async () => {
+    const { reload, fire, doc } = await wakeRig({ slowMs: 2000 });
+    fire("focus");                                   // a slow check is now in flight
+    doc.visibilityState = "visible"; fire("visibilitychange");
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(reload).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("a tap after coming back, before the check answers: no reload under that person (Sonnet, #1019)", async () => {
+    const { reload, fire, doc, listeners } = await wakeRig({ slowMs: 2000 });
+    doc.visibilityState = "visible"; fire("visibilitychange");
+    await vi.advanceTimersByTimeAsync(500);
+    for (const fn of listeners.pointerdown || []) fn();   // they started something
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(reload).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
 });

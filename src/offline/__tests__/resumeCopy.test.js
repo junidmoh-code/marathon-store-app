@@ -106,4 +106,13 @@ describe("resume copies live in the mirror's own database", () => {
     expect(await pending).toBe(null);
     expect(fresh.peek("u1", "m")).toBe(null);
   });
+
+  it("forget() then an immediate load(): the forgotten copy is not read back (Sonnet, #1019)", async () => {
+    const r = rig();
+    const c = r.copies();
+    c.save("u1", "k", { a: 1 }); await r.settle();
+    const fresh = r.copies();
+    fresh.forget("u1", "k");
+    expect(await fresh.load("u1", "k")).toBe(null);
+  });
 });

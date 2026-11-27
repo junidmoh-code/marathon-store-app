@@ -144,6 +144,8 @@ export function createSharedLiveReads({
           e.has = false;
           e.snap = null;
           e.stop = null;
+          // Nothing held any more, so nothing unconfirmed on screen from it.
+          if (e.unconfirmed) { e.unconfirmed = false; try { onConfirm(e.key); } catch { /* ignore */ } }
           if (e.linger != null) { clearTimer(e.linger); e.linger = null; }
           const subs = [...e.subs];
           if (subs.length === 0) entries.delete(e.key);
