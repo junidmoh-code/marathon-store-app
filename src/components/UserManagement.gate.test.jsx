@@ -60,6 +60,9 @@ vi.mock("../utils/useNetwork", async () => {
 });
 
 const UserManagement = (await import("./UserManagement.jsx")).default;
+// /users is read through the shared live layer: a tree a test left mounted
+// would otherwise hand its listener to the next test.
+const { _resetSharedLiveReadsForTests } = await import("../utils/sharedLiveRead.js");
 
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 const ADMIN = { uid: "admin-uid", email: ADMIN_EMAIL, displayName: "Junid" };
@@ -76,7 +79,7 @@ const render = (props) => {
 const screenNames = (tree) =>
   tree.root.findAll((n) => typeof n.type === "function").map((n) => n.type.name);
 
-beforeEach(() => { onValueMock.mockClear(); updateMock.mockClear(); });
+beforeEach(() => { _resetSharedLiveReadsForTests(); onValueMock.mockClear(); updateMock.mockClear(); });
 
 // ── 1. THE SUBSCRIPTION ──────────────────────────────────────────────────────
 describe("a refused viewer opens no /users subscription", () => {

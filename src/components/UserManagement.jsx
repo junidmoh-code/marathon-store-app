@@ -37,7 +37,8 @@
 // super-admin email on /users writes, and the UI is super-admin gated.
 
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ref, onValue, update } from "firebase/database";
+import { ref, update } from "firebase/database";
+import { subscribeLivePath } from "../utils/sharedLiveRead";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../firebase";
 import { SHOP_IDS, SHOP_LABELS } from "../utils/stores";
@@ -186,7 +187,9 @@ function UserManagementAuthed({ authUser, onExit }) {
   // return placed after them.
   useEffect(() => {
     if (!authUser) return;
-    const unsub = onValue(ref(database, "users"), (snap) => {
+    // Shared and held through a short hide (utils/sharedLiveRead.js): a trip
+    // to another app and back no longer downloads every account again.
+    const unsub = subscribeLivePath("users", (snap) => {
       const data = snap.val() || {};
       const list = Object.entries(data)
         .map(([uid, v]) => ({ uid, ...(v || {}) }))
