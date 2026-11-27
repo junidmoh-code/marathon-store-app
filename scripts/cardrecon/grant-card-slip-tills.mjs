@@ -2,6 +2,7 @@
 // Junid, 16 Oct 2026:
 //   Yasmin → Marathon PE Till 2 only.
 //   Amanda → Trophy Till 2 only.
+// Junid, 27 Nov 2026: Amanda → Trophy Till 2 as well ("Amanda submits Trophy Till 2").
 // Junid, 31 Oct 2026: Amanda → Concrete Till 1 and Concrete Till 2 ONLY —
 //   she sends Concrete's slips and is refused for Trophy Till 2 and every
 //   other till. `only: true` makes the list her WHOLE scope: a till she holds
@@ -43,7 +44,9 @@ const { tillsFor } = local("../../functions/lib/network-registry.cjs");
 const EXECUTE = process.argv.includes("--execute");
 const GRANTS = [
   { username: "yasmin", tillLabels: ["Marathon Till 2"] },
-  { username: "amanda", tillLabels: ["Concrete Till 1", "Concrete Till 2"], only: true },
+  // Junid, 27 Nov 2026: "Amanda submits Trophy Till 2" — back on her list
+  // (it was dropped on 31 Oct, and nobody could send that till's slip since).
+  { username: "amanda", tillLabels: ["Concrete Till 1", "Concrete Till 2", "Trophy Till 2"], only: true },
 ];
 
 admin.initializeApp({
