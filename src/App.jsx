@@ -44,6 +44,7 @@ import UpdateBanner from "./update/UpdateBanner";
 import { setUpdateBusy, setTvBoardMounted } from "./update/updateChecker";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { brandOnRename } from "./utils/brands.js";
+import { eventsForProduct } from "./utils/productActivity.js";
 import { categorize, brandOf, brandInfo, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
@@ -8153,13 +8154,8 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
   // insights_log (orders/{id} is daily-counter-ephemeral so can't be trusted
   // for historical aggregates; see project-insights-past-days-pattern memory).
   const activity = useMemo(() => {
-    // By product id first; by name — this one or any it had before a rename
-    // (previousNames, setProductName) — for the older events with no id.
-    // Matching the current name alone made a renamed product read "Never sold".
-    const names = new Set([product.name, ...(Array.isArray(product.previousNames) ? product.previousNames : [])].filter(Boolean));
-    // An event with another id but this name still counts (merged or re-made
-    // records carried the old id; the twin check keeps names unique).
-    const productLog = insightsLog.filter(e => e.productId === product.id || names.has(e.productName));
+    // By id, then by this name or a previous one (utils/productActivity.js).
+    const productLog = eventsForProduct(insightsLog, product, allProducts);
     const placed     = productLog.filter(e => e.action === "placed");
     const sold       = productLog.filter(e => e.action === "collected" || e.action === "ready");
     let lastSoldLabel = "Never sold";
@@ -8173,7 +8169,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       }
     }
     return `${lastSoldLabel} · ${placed.length} order${placed.length === 1 ? "" : "s"} all-time`;
-  }, [insightsLog, product.id, product.name, product.previousNames]);
+  }, [insightsLog, allProducts, product.id, product.name, product.previousNames]);
 
   // Restock-existing (Stock rework): the same optional per-size receive as the
   // product-add form, for a product already in the system (re-orders arrive
