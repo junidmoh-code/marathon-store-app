@@ -34,7 +34,9 @@ function returnCost(useReads) {
   s.unmount();
   act(() => g.hidden()); vi.advanceTimersByTime(60_000); act(() => g.visible());
   const again = mountProbe(useReads);
-  const after = bytesOf(priced(opens.slice(first)));
+  const reopened = priced(opens.slice(first));
+  expect(reopened).toEqual([]);
+  const after = bytesOf(reopened);
   again.unmount();
   return { firstBytes, after };
 }

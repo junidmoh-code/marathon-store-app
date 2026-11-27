@@ -21,7 +21,13 @@ export const MEASURED = {
   broadcasts: 4,
 };
 
-export const bytesOf = (paths) => paths.reduce((n, p) => n + (MEASURED[p] ?? 0), 0);
+// An unmeasured data path is an error, not zero bytes: a new download must
+// fail the test, not hide in it. `.info/connected` is the SDK's own state.
+export const bytesOf = (paths) => paths.reduce((n, p) => {
+  if (p === ".info/connected") return n;
+  if (!(p in MEASURED)) throw new Error(`resume proof: /${p} was opened but has no measured size`);
+  return n + MEASURED[p];
+}, 0);
 
 export function mountProbe(useIt) {
   function Probe() { useIt(); return null; }

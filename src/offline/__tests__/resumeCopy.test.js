@@ -90,4 +90,20 @@ describe("resume copies live in the mirror's own database", () => {
     expect(off.save("u1", "x", 1)).toBe(false);
     expect(await off.load("u1", "k")).toBe(null);
   });
+
+  it("peek obeys the switch and the age limit too; a forget() beats a load already in flight (CodeRabbit, #1019)", async () => {
+    const r = rig();
+    let on = true;
+    const c = createResumeCopies({ getDb: () => r.dbP, now: r.now, enabled: () => on, warn: () => {} });
+    c.save("u1", "k", { a: 1 }); await r.settle();
+    on = false; expect(c.peek("u1", "k")).toBe(null);
+    on = true; r.advance(RESUME_MAX_AGE_MS + 1); expect(c.peek("u1", "k")).toBe(null);
+    const d = r.copies();
+    d.save("u1", "m", { b: 1 }); await r.settle();
+    const fresh = r.copies();
+    const pending = fresh.load("u1", "m");
+    fresh.forget("u1", "m");
+    expect(await pending).toBe(null);
+    expect(fresh.peek("u1", "m")).toBe(null);
+  });
 });

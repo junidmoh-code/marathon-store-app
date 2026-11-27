@@ -137,7 +137,9 @@ function wireConnection() {
       const now = snap.val() === true;
       if (was && !now) {
         grace.connectionLost();
-        shared.markUnconfirmed();
+        // A screen still open through the drop is showing an unconfirmed
+        // value too (CodeRabbit, #1019).
+        for (const key of shared.markUnconfirmed()) setSavedShowing(markerKey(key), true);
         if (settle) { clearTimeout(settle); settle = null; }
       } else if (!was && now) {
         // Back: the SDK re-sends every held listen and the server answers

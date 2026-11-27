@@ -159,4 +159,6 @@ after a hide. Proofs are in `src/resume/*.test.jsx`, `src/offline/__tests__/sour
 | AI Studio | 2,059,452 B (photo list opened twice) | **0 B** | 1,466,551 B once |
 | Users (super-admin) | whole /users per return | **0 B** | once |
 | TV specials, Customers broadcasts | 4 B each | 0 B | once |
-| Every card | a self-reload 30 s after any deploy | **no self-reload while trading** | – |
+| Every card | a self-reload 30 s after any deploy | **no self-reload during a quick return** | – |
+
+When a new build is taken now: the next cold start; a tap on "Update ready"; 03:00–05:00 SAST idle and not busy; or, once the waiting build has been out for 24 h, the next return after 30+ minutes away (never busy, never the TV).

@@ -253,6 +253,21 @@ function maybeAutoReload() {
 // visibility, initial) and e.g. wake-from-sleep fires several at once — one
 // outstanding fetch at a time, with a hard timeout so a stalled request on a
 // flaky till network can't pile up over a days-long session.
+function reloadOnReturn(away) {
+  if (!shouldReloadOnReturn({
+    updateAvailable,
+    busy: isUpdateBusy(),
+    tvRoute: isTvScreen(),
+    buildAgeMs: fetchedBuiltAt === null ? 0 : Date.now() - fetchedBuiltAt,
+    hiddenMs: away,
+    forced: forcedMode,
+    attempts: forcedAttempts(),
+    alreadyAttempted: alreadyAttempted(),
+  })) return false;
+  applyUpdate();
+  return true;
+}
+
 let checkInFlight = false;
 const FETCH_TIMEOUT_MS = 10_000;
 
@@ -302,17 +317,9 @@ export function startUpdateChecker() {
     if (document.visibilityState === "hidden") { if (hiddenAt === null) hiddenAt = Date.now(); return; }
     const away = hiddenAt === null ? 0 : Date.now() - hiddenAt;
     hiddenAt = null;
-    if (shouldReloadOnReturn({
-      updateAvailable,
-      busy: isUpdateBusy(),
-      tvRoute: isTvScreen(),
-      buildAgeMs: fetchedBuiltAt === null ? 0 : Date.now() - fetchedBuiltAt,
-      hiddenMs: away,
-      forced: forcedMode,
-      attempts: forcedAttempts(),
-      alreadyAttempted: alreadyAttempted(),
-    })) { applyUpdate(); return; }
-    check();
-  });
-  check();
+    if (reloadOnReturn(away)) return;
+    // The build may only be discovered by this check (a phone asleep since the
+    // deploy): ask again once it has answered (CodeRabbit, #1019).
+    check().then(() => { reloadOnReturn(away); });
+  });  check();
 }

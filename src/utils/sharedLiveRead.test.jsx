@@ -335,6 +335,19 @@ describe("the stock chokepoint (usePathState) — the Refill queue's read", () =
     again.unmount(); third.unmount();
   });
 
+  it("a screen left OPEN through a socket drop shows Updating… too, until confirmed (CodeRabbit, #1019)", () => {
+    _resetResumeFreshnessForTests();
+    const open = mountHook(() => stock.useEngineOpen());
+    push("refill_engine/open", { v: 1 });
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    act(() => { handlers.get(".info/connected").cb({ val: () => false }); });
+    expect(isSavedShowing()).toBe(true);
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    vi.advanceTimersByTime(RECONNECT_SETTLE_MS);
+    expect(isSavedShowing()).toBe(false);
+    open.unmount();
+  });
+
   it("after the grace has released, an entry that goes idle later is not parked for the night", () => {
     const grace = _hideGraceForTests();
     const kept = mountHook(() => stock.useEngineOpen());

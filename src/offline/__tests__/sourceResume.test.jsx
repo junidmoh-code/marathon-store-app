@@ -91,6 +91,7 @@ describe("Source — the live reads on a return", () => {
     vi.advanceTimersByTime(60_000);
     act(() => { grace.visible(); });              // back
     const again = mountSourceReads();
+    expect(opens.slice(first).filter((p) => p !== ".info/connected")).toEqual([]);   // nothing at all, measured or not
     const reopened = opens.slice(first).filter((p) => p in MEASURED);
     expect(reopened).toEqual([]);
     expect(bytesOf(reopened)).toBe(0);
@@ -145,6 +146,34 @@ describe("the update checker — a new build waiting never reloads Source under 
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     expect(reload).not.toHaveBeenCalled();
     uc.applyUpdate();                                         // the "Update ready" pill
+    expect(reload).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("a phone asleep since a deploy a day ago: the build found on return is taken on that same long return", async () => {
+    const listeners = {};
+    const on = (t, fn) => { (listeners[t] ||= []).push(fn); };
+    vi.stubGlobal("window", { location: { hash: "" }, addEventListener: on, setInterval: (fn, ms) => setInterval(fn, ms) });
+    const doc = { visibilityState: "visible", addEventListener: on };
+    vi.stubGlobal("document", doc);
+    const ss = new Map();
+    vi.stubGlobal("sessionStorage", { getItem: (k) => ss.get(k) ?? null, setItem: (k, v) => ss.set(k, String(v)) });
+    let served = { version: "this-build" };
+    vi.stubGlobal("fetch", async () => ({ ok: true, json: async () => served }));
+    vi.setSystemTime(Date.UTC(2026, 10, 27, 9, 0));          // 11:00 SAST
+    vi.resetModules();
+    const uc = await import("../../update/updateChecker.js");
+    served = { version: uc.CURRENT_VERSION };              // up to date when it went to sleep
+    const reload = vi.spyOn(uc.reloadIo, "reload").mockImplementation(() => {});
+    uc.startUpdateChecker();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(uc.isUpdateAvailable()).toBe(false);
+    const fire = async (t) => { for (const fn of listeners[t] || []) fn(); await vi.advanceTimersByTimeAsync(10); };
+    doc.visibilityState = "hidden"; await fire("visibilitychange");
+    // Asleep: no timers ran. Meanwhile a build went out 2 days ago.
+    vi.setSystemTime(Date.UTC(2026, 10, 27, 10, 0));
+    served = { version: "a-newer-build", builtAt: new Date(Date.UTC(2026, 10, 25, 9, 0)).toISOString() };
+    doc.visibilityState = "visible"; await fire("visibilitychange");
     expect(reload).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });

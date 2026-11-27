@@ -273,8 +273,16 @@ export function createSharedLiveReads({
   // bare onValue while offline), but the entry is UNCONFIRMED until the
   // listener speaks again or the reconnect has settled (confirmAll), and the
   // app shows "Updating…" meanwhile (sharedLiveRead.js).
+  /** Returns the keys a screen is looking at right now, so the caller can
+   *  put the marker up for those (an idle entry is flagged when it is joined). */
   function markUnconfirmed() {
-    for (const e of entries.values()) if (e.has) e.unconfirmed = true;
+    const inUse = [];
+    for (const e of entries.values()) {
+      if (!e.has) continue;
+      e.unconfirmed = true;
+      if (e.subs.size > 0) inUse.push(e.key);
+    }
+    return inUse;
   }
   function confirmAll() {
     for (const e of [...entries.values()]) {

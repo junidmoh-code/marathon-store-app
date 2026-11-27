@@ -49,6 +49,7 @@ export function createResumeCopies({
   const lastWrite = new Map();  // full key -> ms of the last write
   const trailing = new Map();   // full key -> timer of a pending write
   let epoch = 0;                // bumped by clearAll: a write queued before it must not land after it
+  const gens = new Map();       // full key -> bumped by forget(): an earlier load must not restore it
 
   const fullKey = (uid, key) => `${RESUME_PREFIX}${uid}|${key}`;
 
@@ -68,10 +69,11 @@ export function createResumeCopies({
       const fresh = (r) => r && now() - (Number(r.at) || 0) <= maxAgeMs;
       if (mem.has(fk)) { const r = mem.get(fk); return fresh(r) ? { value: r.value, at: r.at } : null; }
       const myEpoch = epoch;
+      const myGen = gens.get(fk) ?? 0;
       try {
         const db = await getDb();
         const rec = await db.getMeta(fk);
-        if (myEpoch !== epoch) return null;
+        if (myEpoch !== epoch || myGen !== (gens.get(fk) ?? 0)) return null;
         if (!rec || rec.uid !== uid || !("value" in rec) || !fresh(rec)) return null;
         if (!mem.has(fk)) mem.set(fk, rec);
         const r = mem.get(fk);
@@ -82,9 +84,9 @@ export function createResumeCopies({
     },
     /** Synchronous: only what this page has already loaded or saved. */
     peek(uid, key) {
-      if (!uid || !key) return null;
+      if (!uid || !key || !enabled()) return null;
       const r = mem.get(fullKey(uid, key));
-      return r ? { value: r.value, at: r.at } : null;
+      return r && now() - (Number(r.at) || 0) <= maxAgeMs ? { value: r.value, at: r.at } : null;
     },
     /** Remember the latest LIVE answer. Returns false when it was not kept. */
     save(uid, key, value) {
@@ -113,6 +115,7 @@ export function createResumeCopies({
     forget(uid, key) {
       if (!uid || !key) return;
       const fk = fullKey(uid, key);
+      gens.set(fk, (gens.get(fk) ?? 0) + 1);
       mem.delete(fk);
       if (trailing.has(fk)) { clearTimer(trailing.get(fk)); trailing.delete(fk); }
       Promise.resolve().then(getDb).then((db) => db.deleteMetaMany([fk])).catch(() => {});
