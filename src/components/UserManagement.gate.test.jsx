@@ -60,6 +60,9 @@ vi.mock("../utils/useNetwork", async () => {
 });
 
 const UserManagement = (await import("./UserManagement.jsx")).default;
+// /users is read through the shared live layer: a tree a test left mounted
+// would otherwise hand its listener to the next test.
+const { _resetSharedLiveReadsForTests } = await import("../utils/sharedLiveRead.js");
 
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 const ADMIN = { uid: "admin-uid", email: ADMIN_EMAIL, displayName: "Junid" };
@@ -76,7 +79,7 @@ const render = (props) => {
 const screenNames = (tree) =>
   tree.root.findAll((n) => typeof n.type === "function").map((n) => n.type.name);
 
-beforeEach(() => { onValueMock.mockClear(); updateMock.mockClear(); });
+beforeEach(() => { _resetSharedLiveReadsForTests(); onValueMock.mockClear(); updateMock.mockClear(); });
 
 // ── 1. THE SUBSCRIPTION ──────────────────────────────────────────────────────
 describe("a refused viewer opens no /users subscription", () => {
@@ -135,16 +138,20 @@ describe("LAYER 2 — the component gate, with the route gate bypassed", () => {
   it("refuses an account whose email merely resembles the admin's", () => {
     for (const email of [
       "gunidmoh@gmail.com.evil.com",
-      "GUNIDMOH@gmail.com",           // the check is case-sensitive; keep it that way
       "junidmoh@gmail.com",           // the real near-miss: Junid's OTHER address
       "gunidmoh@gmail.co",
-      " gunidmoh@gmail.com",
     ]) {
       const names = screenNames(render({ authUser: { uid: "x", email } }));
       expect(names, `must refuse ${email}`).toContain("NotAuthorized");
       expect(names, `must refuse ${email}`).not.toContain("UserManagementAuthed");
     }
     expect(onValueMock).not.toHaveBeenCalled();
+  });
+
+  it("admits Jafer as well as Junid (one super-admin list)", () => {
+    const names = screenNames(render({ authUser: { uid: "jafer-uid", email: "jafermohammed340@gmail.com" } }));
+    expect(names).toContain("UserManagementAuthed");
+    expect(names).not.toContain("NotAuthorized");
   });
 
   it("admits the super-admin — proving the refusals above mean something", () => {

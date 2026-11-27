@@ -1,17 +1,20 @@
 // "Update ready" pill — appears when the deployed build differs from the one
-// this tab is running. Tap = reload now (the safe auto-reload path in
-// updateChecker handles idle tills on its own; this is the manual override for
-// a cashier mid-shift). Fixed bottom-center so it never covers the header
+// this tab is running. Tap = reload now. This is THE way a new build is taken
+// during the day: nothing reloads by itself while the shops trade (see
+// updateChecker.js — only a cold start, this tap, or the 03:00–05:00 window). Fixed bottom-center so it never covers the header
 // actions or the cart totals.
 import { useEffect, useState } from "react";
-import { onUpdateAvailable, applyUpdate, isTvScreen } from "./updateChecker.js";
+import { onUpdateAvailable, applyUpdate, isTvScreen, isUpdateBannerHosted, onUpdateBannerHosted } from "./updateChecker.js";
 
 export default function UpdateBanner() {
   const [show, setShow] = useState(false);
+  const [hosted, setHosted] = useState(isUpdateBannerHosted);
   useEffect(() => onUpdateAvailable(setShow), []);
+  // A screen with its own banner (the Black Friday card) is open: that one is shown instead.
+  useEffect(() => onUpdateBannerHosted(setHosted), []);
   // Never on the customer-facing TV board: nobody there can tap it, and the
   // board is not reloaded while the store is open (updateChecker.isTvScreen).
-  if (!show || isTvScreen()) return null;
+  if (!show || hosted || isTvScreen()) return null;
   return (
     <button
       type="button"

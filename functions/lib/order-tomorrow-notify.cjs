@@ -101,6 +101,10 @@ const STATE    = "coming_tomorrow";  // STATUS.COMING_TOMORROW in src/App.jsx
 async function notifyOrderTomorrow({ db, enqueueWhatsApp, orderId, before, after, nowIso }) {
   // 1. TRANSITION ONLY.
   if (after !== STATE) return { sent: false, skipped: "not_coming_tomorrow" };
+  // 0. NO ON-HOLD ORDERS (Junid, 26 Nov 2026 11:32): none can be made, and a
+  // stale cached app that still writes one must not tell a customer to come
+  // back tomorrow for an order no screen will show.
+  return { sent: false, skipped: "on_hold_removed" };
   if (before === STATE) return { sent: false, skipped: "no_transition" };
 
   const now = nowIso || new Date().toISOString();

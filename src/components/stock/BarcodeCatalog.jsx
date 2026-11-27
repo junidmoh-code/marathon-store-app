@@ -675,7 +675,7 @@ export default function BarcodeCatalog({ products, canMint, onExit, myShop = nul
       )}
 
       {selList.length > 0 && (
-        <div style={{ position: "fixed", left: 12, right: 12, bottom: 14, zIndex: 40, ...GLASS, padding: 10, display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ position: "fixed", left: 12, right: 12, bottom: "calc(14px + env(safe-area-inset-bottom, 0px))", zIndex: 40, ...GLASS, padding: 10, display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{selList.length} size{selList.length > 1 ? "s" : ""} selected</div>
             <div style={{ fontSize: 11, color: GRAY }}>copies default to on-hand</div>

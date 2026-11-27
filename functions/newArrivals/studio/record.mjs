@@ -49,11 +49,13 @@ export function costOf(rows, prices, usdZar = null) {
 }
 
 /** The list-price estimate of ONE generation, used only when the API returned no usage. Pure. */
-export function generationEstimateUsd(prices, model = "gemini-3-pro-image") {
+// Gemini 3 Pro Image bills a 1K/2K image as 1,120 output tokens and a 4K image as 2,000 (Google's list).
+export const GEMINI_IMAGE_TOKENS = Object.freeze({ "1K": 1120, "2K": 1120, "4K": 2000 });
+export function generationEstimateUsd(prices, model = "gemini-3-pro-image", imageSize = "2K") {
   const p = prices.models[model] || prices.models.default;
   // gpt-image-1 at 1024×1536, quality high: ~6,240 image tokens out, ~1,500 image tokens in (input_fidelity high), ~900 of text.
   if (/^gpt-image/.test(model)) return (6240 * (p.imageOutput ?? p.output) + 1500 * (p.imageInput ?? p.input) + 900 * p.input) / 1e6;
-  return (1120 * (p.imageOutput ?? p.output) + 9000 * p.input) / 1e6;
+  return ((GEMINI_IMAGE_TOKENS[imageSize] || 1120) * (p.imageOutput ?? p.output) + 9000 * p.input) / 1e6;
 }
 
 /**
@@ -61,7 +63,7 @@ export function generationEstimateUsd(prices, model = "gemini-3-pro-image") {
  * USD/ZAR rate), else the marked estimate. Pure.
  * → { usd, zar, usdZar, usdZarFallback?, estimated }
  */
-export function generationCost({ model, usage, prices, fx }) {
+export function generationCost({ model, usage, prices, fx, imageSize = "2K" }) {
   const live = Number(fx?.rate) > 0 && !fx.fallback;
   const usdZar = Number(fx?.rate) > 0 ? Number(fx.rate) : prices.usdToZar;
   const rate = { usdZar, ...(live ? {} : { usdZarFallback: true }) };
@@ -72,7 +74,7 @@ export function generationCost({ model, usage, prices, fx }) {
     const c = costOf([row], prices, usdZar);
     if (Number.isFinite(c.zar) && c.zar > 0) return { usd: r3(c.usd), zar: r2(c.zar), ...rate, estimated: false };
   }
-  const usd = generationEstimateUsd(prices, model);
+  const usd = generationEstimateUsd(prices, model, imageSize);
   return { usd: r3(usd), zar: r2(usd * usdZar), ...rate, estimated: true };
 }
 
@@ -105,6 +107,10 @@ export function generationEntry(res, { at, cost, model, reason, code = null, dra
     plate: res.kind ? `junid-${res.kind}` : null, kind: res.kind || null,
     // What Junid should know about this one (e.g. Split could not place it).
     ...(res.note ? { note: res.note } : {}),
+    // The Style Kit that drove it (Catalogue, 20 Nov 2026), the drift check's answer, and the cut-out fallback.
+    ...(res.styleKit ? { styleKit: res.styleKit } : {}),
+    ...(res.drift ? { drift: res.drift } : {}),
+    ...(res.driftFallback ? { driftFallback: res.driftFallback } : {}),
     // Footwear: placed on the fixed plate by code (true) or kept as Gemini made it (false); Gemini's own photo beside it.
     ...(res.corrected !== undefined ? { corrected: !!res.corrected } : {}),
     ...(res.uncorrected?.url ? { uncorrected: { url: res.uncorrected.url, path: res.uncorrected.path || null } } : {}),

@@ -218,7 +218,30 @@ Secret Manager posts them.
 
 ---
 
-## 4. TikTok — honestly, not yet
+## 4. TikTok — the poster (14 Nov 2026)
+
+**Current way:** `scripts/social/tiktok-poster.mjs`, launchd `com.marathon.tiktokposter` (plist beside it).
+It posts every past Instagram/Facebook post to @marathon.club7, one per family (a feed post and its story
+twin, or a reel and its story twin, go once), oldest first, photos and videos alternating: 3 from 08:30
+and 3 from 18:30 SAST, 15-20 minutes apart. New posts join the end of the queue by themselves.
+
+- It posts through **Signal Studio** (`~/marathon-photo-service`, `src/social/local.ts`): Signal Studio
+  owns the TikTok app (Production keys) and the verified `/studio/` URL prefix TikTok pulls media from.
+  The poster uploads the bytes to `127.0.0.1:8796` with `SIGNAL_LOCAL_POST_TOKEN` from `~/.env`;
+  Signal Studio never reads Firebase.
+- This script READS `social_posts` only. Its ledger is `~/.marathon-tiktok/ledger.json`; anything that
+  reached TikTok, or may have, is never posted again. Logs: `logs/tiktok-poster.log`. Failures also show
+  in Signal Studio's daily report ("TikTok local poster").
+- Privacy: the most public level `creator_info` allows; SELF_ONLY until TikTok passes the app's audit,
+  then PUBLIC_TO_EVERYONE by itself. Logged per post.
+- Not connected: one log line, exit 0. Connect link: on the mini,
+  `curl -s -X POST -H "authorization: Bearer $SIGNAL_LOCAL_POST_TOKEN" http://127.0.0.1:8796/tiktok/connect-url`
+  (one hour, one use), sign in as @marathon.club7, tap "Yes, connect".
+- `--dry-run` shows the queue and the next six; `--kickoff 3` posts three now.
+
+The section below is the history of why this took a separate app.
+
+## 4a. TikTok — before 14 Nov (history) — honestly, not yet
 
 TikTok is **not** posted by the scheduler, and the queue records it as *skipped*
 with the reason on every run rather than claiming otherwise. Two routes exist

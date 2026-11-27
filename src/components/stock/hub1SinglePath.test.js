@@ -59,11 +59,13 @@ describe("CHANGE 1 — every reactive writer is off at hub1, untouched at hub2",
     // A REQUEST (the operator's own sizes) is offered every hub of the section,
     // live or not; SOLVE (the policy's numbers) only the live ones. On Section 2
     // both lists are Hub 1 + Hub 2.
-    expect(mf).toContain("const REQUEST_HUBS = HUBS;");
-    expect(mf.split("(REQUEST_HUBS.includes(dests[card.pid]) ? dests[card.pid] : REQUEST_HUBS[0])").length - 1).toBe(2);
-    expect(mf).toContain("return picked.length ? picked : REQUESTABLE_HUBS.slice(0, 1);");
+    // 22 Nov 2026: the typed-quantity Request (its REQUEST_HUBS chooser) is
+    // gone with its switched-off writer, and the one chooser left offers THIS
+    // list's own hubs — Hub 1 and Hub 2 on Marathon's, as this test protects.
+    expect(mf).not.toContain("REQUEST_HUBS = HUBS");
+    expect(mf).toContain("const SOLVE_HUBS = useMemo(() => sneakerDestinations(network, section), [network, section]);");
+    expect(mf).toContain("if (stored === undefined) return REQUESTABLE_HUBS.slice(0, 1);");
     expect(mf.split("{SOLVE_HUBS.map((h) => (").length - 1).toBe(1);
-    expect(mf.split("{REQUEST_HUBS.map((h) => (").length - 1).toBe(1);
     // Detection and Central-reservation math still span BOTH hubs.
     expect(mf).toContain('hubs: HUBS');
     expect(mf).toContain("RESERVING_HUBS.includes(r.requestingLocation)");

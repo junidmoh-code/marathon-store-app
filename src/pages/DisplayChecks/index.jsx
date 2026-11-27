@@ -2,8 +2,11 @@
 // The four-tab frame (Today / Availability / Analytics / Settings). Desktop
 // (≥1024px) gets an AI-Studio sidebar; phone keeps the single-column floor
 // layout. Manager tabs (Analytics, Settings) are gated by canManageDisplayChecks
-// (super-admin today). Store scope: super-admin toggles enabled stores; scoped
-// staff are pinned to their own store.
+// (super-admin today). Store scope (Junid, 20 Nov 2026): EVERY user sees every
+// shop's chip; the shop shown is the app-wide ACTIVE shop (src/utils/
+// activeStore.js), so leaving your own shop goes through the full-screen
+// confirmation and the banner. Before, only super-admin had chips and scoped
+// staff were pinned to their own destShop.
 //
 // NAVIGATION-STABLE STATE (fix, 2026-07-21). Three things used to destroy state:
 //   1. tab switch — the old ternary UNMOUNTED the inactive tab (Today's listener
@@ -25,6 +28,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePermissions } from "../../components/PermissionsContext";
 import { SHOP_LABELS, shopLabelOf } from "../../utils/stores";
+import { useActiveStore, requestSwitch } from "../../utils/activeStore";
 import {
   displayChecksEnabledStores,
   displayChecksAllStores,
@@ -45,6 +49,9 @@ import { dcSession, bindDcSession } from "./session";
 
 const TABS = [
   { key: "today", label: "Today", manager: false },
+  // The shop's daily shelf check (Junid, 24 Nov 2026 evening): its own tab, shown once Junid has switched the shop on
+  // (/config/onlineOrders/shelfChecks/shops/<shop>/on). Junid and Jafer see it either way, with a note when off.
+  // Shelf check tab REMOVED (Junid, 26 Nov 2026 11:15: the shelf-check routine is off everywhere).
   { key: "availability", label: "Availability", manager: false },
   { key: "analytics", label: "Analytics", manager: true },
   { key: "settings", label: "Settings", manager: true },
@@ -117,23 +124,23 @@ export default function DisplayChecks({ onExit, products }) {
     return off;
   }, []);
   const ENABLED_STORES = enabledStores(switches);
-  // The owner's picker lists EVERY store — one that is switched off can be
-  // opened and switched on from its Settings tab; it is marked "off".
+  // The picker lists EVERY store for EVERY user. "(off)" keeps its meaning: that
+  // shop's sale-driven Display Checks are switched off (its Settings switch /
+  // live flag) — it can still be opened (website strip, and the owner can switch
+  // it on from Settings). It never meant "you may not go there".
   const enabledIds = new Set(ENABLED_STORES.map((s) => s.id));
-  const PICKER_STORES = isSuper
-    ? displayChecksAllStores().map((id) => ({ id, label: enabledIds.has(id) ? shopLabelOf(id) : `${shopLabelOf(id)} (off)` }))
-    : ENABLED_STORES;
-  const [superStore, setSuperStore] = useState(ENABLED_STORES[0]?.id || null);
-  // Junid's policy (12 Nov): every signed-in staff member may open Display
-  // Check. A staff account scoped to a store sees that store, exactly as
-  // before; one with NO store (a hub, a roaming account) picks from the
-  // enabled stores. What it may read or complete there is still the database
-  // rules' and the completeDisplayCheck callable's decision.
-  const canPickStore = isSuper || !permRecord?.destShop;
-  const store = canPickStore ? (superStore || ENABLED_STORES[0]?.id || null) : (permRecord?.destShop || null);
+  const PICKER_STORES = displayChecksAllStores().map((id) => ({ id, label: enabledIds.has(id) ? shopLabelOf(id) : `${shopLabelOf(id)} (off)` }));
+  const active = useActiveStore();
+  const activeMine = active.uid === user?.uid ? active.activeShop : null;
+  // The active shop; an account with no home and no choice yet opens on the
+  // first enabled shop (what the owner's picker always defaulted to).
+  const store = activeMine || permRecord?.destShop || ENABLED_STORES[0]?.id || PICKER_STORES[0]?.id || null;
   const storeLabel = SHOP_LABELS[store] || store || "—";
   const canManage = canManageDisplayChecks(gateUser, store);
-  const visibleTabs = TABS.filter((t) => !t.manager || canManage);
+  // Whether this shop's Shelf check is switched on: the list's own answer (webShelfList), per shop.
+  const [shelfOnBy, setShelfOnBy] = useState({});
+  const shelfOn = shelfOnBy[store] === true;
+  const visibleTabs = TABS.filter((t) => (!t.manager || canManage) && (!t.shelf || shelfOn || isSuper));
   const displayName = permRecord?.displayName || permRecord?.username || user?.email?.split("@")[0] || "Staff";
   const wide = useIsWide(1024);
 
@@ -154,7 +161,9 @@ export default function DisplayChecks({ onExit, products }) {
   useEffect(() => {
     const t = TABS.find((x) => x.key === tab);
     if (t?.manager && !canManage) setTab("today");
-  }, [tab, canManage, setTab]);
+    // The shelf check tab of a shop that is switched off (moved to another shop, or switched off since).
+    if (t?.shelf && shelfOnBy[store] === false && !isSuper) setTab("today");
+  }, [tab, canManage, setTab, shelfOnBy, store, isSuper]);
 
   // ── ONE lifted feed subscription for the whole module ──
   // Today AND Analytics read from this single listener (props), so a tab switch
@@ -198,11 +207,11 @@ export default function DisplayChecks({ onExit, products }) {
   const activeLabel = visibleTabs.find((t) => t.key === tab)?.label || "Today";
 
   // Store-toggle buttons, shared by both chromes.
-  const storeToggle = canPickStore && PICKER_STORES.length > 1
+  const storeToggle = PICKER_STORES.length > 1
     ? PICKER_STORES.map((s) => {
         const on = s.id === store;
         return (
-          <button key={s.id} type="button" onClick={() => setSuperStore(s.id)}
+          <button key={s.id} type="button" onClick={() => requestSwitch(s.id)} data-testid={`dc-store-${s.id}`}
                   style={{ ...META, letterSpacing: "0.08em", cursor: "pointer", padding: "6px 12px", borderRadius: 999,
                            background: on ? "rgba(74,127,255,.18)" : GLASS_BG, border: on ? `1px solid ${BLUE}` : GLASS_BORDER,
                            color: on ? BLUE_SOFT : "rgba(233,238,255,.5)" }}>
@@ -219,6 +228,10 @@ export default function DisplayChecks({ onExit, products }) {
     <>
       <div style={{ display: tab === "today" ? "block" : "none" }}>
         <TodayView store={store} active={tab === "today"} activeItems={feed.activeItems} completedItems={feed.completedItems} ready={feed.ready} error={feed.error} products={products} />
+      </div>
+      {/* Mounted for every shop (it is what says whether the tab shows); polled only while in front. */}
+      <div style={{ display: tab === "shelf" ? "block" : "none" }}>
+        {/* Shelf check removed (Junid 26 Nov 2026). */}
       </div>
       <div style={{ display: tab === "availability" ? "block" : "none" }}>
         <AvailabilityView store={store} products={products} wide={wide} active={tab === "availability"} />
@@ -243,7 +256,7 @@ export default function DisplayChecks({ onExit, products }) {
       {/* SIDEBAR — desktop chrome. display:none when narrow keeps the content
           column's tree position stable, so a rotation never remounts the tabs. */}
       <aside style={{ display: wide ? "flex" : "none", zIndex: 1, width: 246, flexShrink: 0, boxSizing: "border-box",
-                      position: "sticky", top: 0, alignSelf: "flex-start", height: "100vh", flexDirection: "column", padding: "22px 14px 16px",
+                      position: "sticky", top: "env(safe-area-inset-top, 0px)", alignSelf: "flex-start", height: "100vh", flexDirection: "column", padding: "22px 14px 16px",
                       background: "rgba(255,255,255,.02)", borderRight: GLASS_BORDER, overflowY: "auto" }}>
         <button type="button" onClick={onExit} style={{ ...META, background: "none", border: "none", cursor: "pointer", color: "rgba(233,238,255,.45)", padding: "2px 10px", textAlign: "left", alignSelf: "flex-start" }}>‹ BACK</button>
         <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.01em", padding: "12px 10px 14px" }}>Display Checks</div>

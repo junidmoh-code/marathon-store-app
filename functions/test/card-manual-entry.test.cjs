@@ -41,7 +41,7 @@ test("Junid's verified login only — an unverified token claiming the address, 
   assert.equal(mayEnterManually(null), false);
   for (const auth of [{ uid: "m", token: { email: "mgr@x.com", email_verified: true } }, { uid: "g", token: { email: "gunidmoh@gmail.com" } }]) {
     await assert.rejects(cardBatchManualEntry.run({ auth, data: { tid: "0000HP1X", dayYmd: "2026-10-07", total: "1.00", batchNo: "1" } }),
-      /Only Junid can enter batch figures by hand/);
+      /Only Junid or Jafer can enter batch figures by hand/);
   }
 });
 
@@ -125,6 +125,22 @@ function world(extra = {}) {
     ...extra,
   });
 }
+
+test("the warning names who entered it — Jafer's entry says Jafer, Junid's says Junid (CodeRabbit, PR #896)", async () => {
+  const JAFER = { uid: "jafer", token: { email: "jafermohammed340@gmail.com", email_verified: true } };
+  for (const [auth, name, other] of [[JAFER, "Jafer", "Junid"], [OWNER, "Junid", "Jafer"]]) {
+    const db = world();
+    const out = await handleManualEntry(db, { auth, data: { tid: "0000HP1X", dayYmd: "2026-10-07", reason: "no-slip", total: "12,040.00", batchNo: "537" } },
+      { now: () => NOW, computeExpectedCard: expectedStub(1204000) });
+    assert.equal(out.ok, true, out.reason);
+    const rec = (await db.ref("card_batches/pe/0000HP1X/537").once("value")).val();
+    const text = (rec.warnings || []).join(" ");
+    assert.match(text, new RegExp(`Entered by hand by ${name} for 2026-10-07`));
+    assert.doesNotMatch(text, new RegExp(`by ${other}`));
+  }
+  // The pure planner, given no name, names nobody.
+  assert.match(plan({ reason: "no-slip" }).warnings[0], /^Entered by hand for /);
+});
 
 test("an UNREAD day, entered: an ordinary record marked manual, the row answered, the audit written", async () => {
   const db = world();

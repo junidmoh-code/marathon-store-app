@@ -11,32 +11,47 @@ const here = dirname(fileURLToPath(import.meta.url));
 const HEALTH = readFileSync(join(here, "HealthView.jsx"), "utf8");
 const HIDDEN = readFileSync(join(here, "HiddenProducts.jsx"), "utf8");
 const NETWORK = readFileSync(join(here, "NetworkTransfer.jsx"), "utf8");
+const SCREEN = readFileSync(join(here, "MissingProductsScreen.jsx"), "utf8");
+const CARD = readFileSync(join(here, "MissingCard.jsx"), "utf8");
+const APP = readFileSync(join(here, "../../App.jsx"), "utf8");
 
-describe("HealthView wiring — the partition is downstream and the lists don't cross", () => {
+// 22 Nov 2026: Missing Products left Inventory Health for its own screen
+// (MissingProductsScreen.jsx). The same decisions, pinned where they now live.
+describe("the screen's wiring — the partition is downstream and the lists don't cross", () => {
   it("the main list renders the VISIBLE set, the hidden tab joins against the FULL set", () => {
-    // NetworkTransfer must get missingVisible (a hidden card leaves the list),
-    // while HiddenProducts must get the FULL card list — the join that labels
-    // rows STILL MISSING vs NO LONGER MISSING needs cards the main list no
-    // longer shows.
-    expect(HEALTH).toMatch(/<NetworkTransfer[^>]*cards=\{missingVisible\}/);
-    expect(HEALTH).toMatch(/<HiddenProducts[^>]*cards=\{missingProductCards \|\| \[\]\}/);
+    // The Solve hook must get the visible set (a hidden card leaves the list)
+    // BEFORE the "resolving" filter — it hides just-solved cards itself and
+    // needs the live list to know when the card has really gone — while
+    // HiddenProducts must get the FULL card list: the join that labels rows
+    // STILL MISSING vs NO LONGER MISSING needs cards the main list no longer shows.
+    // (22 Nov 2026, the rebuilt screen: the hide filter is applied to the ROWS,
+    // after they are built — one place, for the list and the count alike —
+    // and every card has a Hide, sneakers included, so the hidden tab joins
+    // against both cores' cards.)
+    expect(SCREEN).toMatch(/const listedOf = \(id\) => sliced\.rows\[id\]\.filter\(\(r\) => !\(hiddenMap && hiddenMap\[r\.pid\]\) && !gone\[r\.key\]\);/);
+    expect(SCREEN).toMatch(/divisions\.flatMap\(\(s\) => \[\.\.\.\(walked\[s\]\?\.all \|\| \[\]\), \.\.\.\(walked\[s\]\?\.sneakers \|\| \[\]\)/);
+    expect(SCREEN).toMatch(/<HiddenProducts products=\{products\} cards=\{hiddenCards\} hiddenMap=\{hiddenMap\} \/>/);
   });
-  it("chips and the headline count are built from the visible set", () => {
-    expect(HEALTH).toMatch(/buildChips\(missingVisible,/);
-    expect(HEALTH).toMatch(/missingProductCards == null \? null : missingVisible\.length/);
+  it("the count on the division switch is built from the visible set", () => {
+    // The count is the number of cards on the division's two lists — the same
+    // rows, through the same filter…
+    expect(SCREEN).toMatch(/KINDS\.reduce\(\(t, \[k\]\) => t \+ listedOf\(bucketId\(sec, k\)\)\.length, 0\)/);
+    // …and never from a half-loaded /stock or a list still being worked out
+    // (a zero would say "nothing missing"): no number until both are complete.
+    expect(SCREEN).toMatch(/const countOf = \(sec\) => \(KINDS\.every\(\(\[k\]\) => sliced\.complete\[bucketId\(sec, k\)\]\)/);
+    expect(SCREEN).toMatch(/const ready = stockReady && /);
   });
-  it("the hidden tab bypasses pickActiveTab — it is not a chip, so the fallback must not eat it", () => {
-    // pickActiveTab only knows the visible chips; without the special case,
-    // selecting "hidden" would silently fall back to Clothing and the
-    // entrance would appear dead.
-    expect(HEALTH).toMatch(/missingTab === "hidden" \? "hidden" : pickActiveTab\(chips, missingTab\)/);
+  it("the entrance is the unlabelled HoldSpot beside the title, and the word Hidden only shows once open", () => {
+    expect(SCREEN).toMatch(/<HoldSpot onTrigger=\{\(\) => setView\("hidden"\)\} \/>/);
+    // "Hidden (n)" is the title only inside the hidden view, and counts
+    // ENTRIES (what the tab lists — resolved included).
+    expect(SCREEN).toContain('{view === "hidden" ? `Hidden (${hiddenCount})` : "Missing Products"}');
+    expect(SCREEN).toMatch(/const hiddenCount = Object\.keys\(hiddenMap \|\| \{\}\)\.length;/);
+    expect((SCREEN.match(/setView\("hidden"\)/g) || []).length).toBe(1);   // the HoldSpot is the only way in
   });
-  it("the entrance is the unlabelled HoldSpot in the chip row, and the Hidden chip only shows once open", () => {
-    expect(HEALTH).toMatch(/<HoldSpot onTrigger=\{\(\) => setMissingTab\("hidden"\)\} \/>/);
-    // The visible "Hidden (n)" chip is inside the activeTab === "hidden"
-    // branch, and counts ENTRIES (what the tab lists — resolved included),
-    // not hidden cards.
-    expect(HEALTH).toMatch(/\{activeTab === "hidden" && \([\s\S]{0,800}?Hidden \(\{Object\.keys\(hiddenMap \|\| \{\}\)\.length\}\)/);
+  it("Inventory Health no longer carries the tab — its tile leads to the screen", () => {
+    expect(HEALTH).not.toMatch(/<NetworkTransfer|<MissingFootwear|<HiddenProducts|<HoldSpot|partitionHidden\(/);
+    expect(HEALTH).toMatch(/onClick=\{onOpenMissingProducts \|\| undefined\}/);
   });
 });
 
@@ -65,11 +80,15 @@ describe("HoldSpot — deliberate, invisible, accident-proof", () => {
     expect(holdSpot).not.toMatch(/password|permRecord|isSuperAdmin|stockRole/i);
   });
   it("a stale 'hidden' selection does NOT survive leaving the screen", () => {
-    // HealthView never unmounts between drill-ins, so without this reset one
-    // hold gesture would leave the hidden tab a plain tap away for the rest
-    // of the session — the exact over-the-counter exposure the HoldSpot
-    // prevents. (Sonnet architect review, PR #356 — the MAJOR finding.)
-    expect(HEALTH).toMatch(/setMissingTab\(\(t\) => \(t === "hidden" \? null : t\)\); setScreen\("missingProducts"\)/);
+    // One hold gesture must not leave the hidden tab a plain tap away for the
+    // rest of the session — the over-the-counter exposure the HoldSpot
+    // prevents (Sonnet architect review, PR #356). The view is the screen's
+    // own state: leaving the screen unmounts it, and switching division
+    // returns to the list.
+    expect(SCREEN).toMatch(/const \[view, setView\] = useState\("list"\);/);
+    expect(SCREEN).toMatch(/onClick=\{\(\) => \{ setPick\(sec\); setView\("list"\); \}\}/);
+    expect(SCREEN).toMatch(/onClick=\{\(\) => \{ setKind\(k\); setView\("list"\); \}\}/);
+    expect(APP).toMatch(/<MissingProductsScreen products=\{products\} onExit=\{\(\) => setRole\(null\)\} \/>/);
   });
 });
 
@@ -84,12 +103,12 @@ describe("the writes stay inside the one small node", () => {
   it("NetworkTransfer's hide writes ONLY the hidden-root entry for that pid", () => {
     expect(NETWORK).toMatch(/\[`\$\{HIDDEN_ROOT\}\/\$\{card\.pid\}`\]: hideEntry\(/);
   });
-  it("Hide is a dim text control BELOW the action row, never a third button box", () => {
-    // The card's action language is one green primary + one ghost secondary;
-    // a third bordered box read as a disabled sibling and crowded the name
-    // column (owner feedback, 2026-08-13).
-    expect(NETWORK).toMatch(/flexDirection: "column", alignItems: "flex-end"/);
-    expect(NETWORK).toMatch(/background: "none", border: "none"[^}]*\}\}>\s*\{hOpen \? "Cancel" : "Hide from list"\}/);
+  it("Hide is a quiet text link under the one primary action, never a second button box", () => {
+    // The card's action language is ONE primary; a bordered Hide box beside
+    // it read as a disabled sibling (owner feedback, 2026-08-13). It is one of
+    // the card's small links (MissingCard.jsx), with a full-size tap target.
+    expect(NETWORK).toMatch(/links\.push\(\{ action: "open-hide", label: "Hide from list"/);
+    expect(CARD).toMatch(/const linkBtn = \{ background: "none", border: "none"[^}]*minHeight: 44/);
   });
   it("bulk hide is ONE update over exactly the selection, via the pinned builder", () => {
     // bulkHideUpdate is the tested guarantee that only the selected set is
@@ -135,7 +154,7 @@ describe("select mode — a mis-tap can only toggle selection", () => {
   });
   it("selection cards are keyboard-operable checkboxes, not click-only divs", () => {
     // (CodeRabbit, PR #356.)
-    expect(NETWORK).toMatch(/role="checkbox" aria-checked=\{on\} tabIndex=\{0\} onClick=\{toggle\}/);
-    expect(NETWORK).toMatch(/e\.key === "Enter" \|\| e\.key === " "/);
+    expect(CARD).toMatch(/role: "checkbox", "aria-checked": !!select\.on, tabIndex: 0, onClick: select\.toggle/);
+    expect(CARD).toMatch(/e\.key === "Enter" \|\| e\.key === " "/);
   });
 });

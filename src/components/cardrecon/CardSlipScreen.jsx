@@ -35,9 +35,12 @@
 // A STANDARD BANK TILL (Junid, 7 Nov 2026 — `photoFirst` from the server,
 // decided by the terminal's bank): the screen leads with "Photograph the
 // end-of-day report". A long report is several photos (up to six), read on the
-// server as one. The card total is OPTIONAL — the photo is read for it; a
-// figure typed here is only ever Junid's cross-check. Sent / Not sent works
-// exactly as above, and nothing about the read ever comes back to this screen.
+// server as one. The card total is REQUIRED (Junid, 25 Nov 2026; 0 if there
+// were no card sales): the PAX settles itself at 18:50, after the photo, so
+// the report photographed is usually YESTERDAY's — the typed total is today's
+// figure until tonight's report is read (and whenever the photo cannot be
+// read within minutes). Sent / Not sent works exactly as above, and nothing
+// about the read ever comes back to this screen.
 //
 // THE NUMBER BOX is the app's typed-total pattern (inputMode "decimal" — the
 // phone's own number pad), the same field Junid's typed total uses.
@@ -89,7 +92,7 @@ const S = {
   submit: { appearance: "none", boxSizing: "border-box", width: "100%", minHeight: 54, borderRadius: 12, cursor: "pointer",
             fontFamily: FONT, fontSize: 17, fontWeight: 700, color: "#05070D", background: "#54D97F", border: 0, marginTop: 6 },
   submitOff: { opacity: 0.35, cursor: "default" },
-  waiting: { fontSize: 13.5, fontWeight: 600, color: "#FFD479", textAlign: "center" },
+  waiting: { fontSize: 13.5, fontWeight: 600, color: "rgba(233, 238, 255, 0.7)", textAlign: "center" }, // neutral grey, never amber (Junid, 25 Nov 2026)
   sent: { display: "grid", gap: 6, justifyItems: "center", padding: "26px 14px", borderRadius: 18, textAlign: "center",
           background: "rgba(52,199,89,.08)", border: "1px solid rgba(52,199,89,.25)" },
   sentTitle: { fontSize: 21, fontWeight: 700, color: "#54D97F" },
@@ -230,10 +233,11 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
 
   const figure = text.trim();
   const busy = phase === "sending" || phase === "attaching";
-  // A typed-total till (Trophy Till 2) needs the photo AND the figure; every
-  // other till needs the photo only — its total is read off it. A Standard
-  // Bank till may add the figure (optional, Junid's cross-check).
-  const needsFigure = till.typed === true && !photoFirst && !portal;
+  // A typed-total till needs the photo AND the figure, and so does a Standard
+  // Bank photo till (25 Nov 2026 — the typed total is the day's figure until
+  // its report is read). An FNB till needs the photo only; a portal till
+  // may add the figure.
+  const needsFigure = (till.typed === true || photoFirst) && !portal;
   const offersFigure = needsFigure || photoFirst || portal;
   const canSend = !!photo && (!needsFigure || figure !== "") && !busy && live;
 
@@ -343,11 +347,11 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
             </div>
           )}
           {offersFigure && (<>
-          <label style={S.step} htmlFor={`slip-total-${till.tid}`}>{photoFirst ? "2 · Card total on the report (R) — optional" : portal ? "2 · Card total on the slip (R) — optional" : "2 · Card total on the slip (R)"}</label>
+          <label style={S.step} htmlFor={`slip-total-${till.tid}`}>{photoFirst ? "2 · Today's card total on the terminal (R)" : portal ? "2 · Card total on the slip (R) — optional" : "2 · Card total on the slip (R)"}</label>
           <input id={`slip-total-${till.tid}`} style={S.amount} inputMode="decimal" autoComplete="off" enterKeyHint="done"
                  placeholder="0.00" value={text} disabled={phase === "sending"}
                  onChange={(e) => setText(e.target.value)} />
-          <div style={S.hint}>{photoFirst ? "Not needed — the photo is read for the total." : portal ? "Not needed — SimplyBLU's figure is the record." : "Type 0 if there were no card sales."}</div>
+          <div style={S.hint}>{photoFirst ? "Type 0 if there were no card sales. It is today's figure until tonight's report is read." : portal ? "Not needed — SimplyBLU's figure is the record." : "Type 0 if there were no card sales."}</div>
           </>)}
           <button type="button" style={{ ...S.submit, ...(canSend ? null : S.submitOff) }} disabled={!canSend} onClick={submit}>
             {phase === "sending" ? "Sending…" : "Submit"}

@@ -5,7 +5,7 @@ const { onValueWritten, onValueCreated } = require("firebase-functions/v2/databa
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const { markInventoryDirty } = require("./lib/shopify-inventory-dirty.cjs");
-const { markPriceDirty } = require("./lib/shopify-price-dirty.cjs");
+const { markPriceDirty, markRrpDirty } = require("./lib/shopify-price-dirty.cjs");
 const admin = require("firebase-admin");
 const Anthropic = require("@anthropic-ai/sdk");
 const { toAuthPassword, usernameToEmail } = require("./lib/auth-utils.cjs");
@@ -14,6 +14,8 @@ const { runHoldRevealSweep } = require("./lib/hold-reveal-sweep.cjs");
 const { notifyHoldAvailability } = require("./lib/hold-availability-notify.cjs");
 const { notifyOrderTomorrow } = require("./lib/order-tomorrow-notify.cjs");
 const { runLaybyExpiryNotify, TEMPLATE: LAYBY_EXPIRY_TEMPLATE } = require("./lib/layby-expiry-notify.cjs");
+const creditWhatsApp = require("./lib/credit-whatsapp-notify.cjs");
+const CREDIT_WHATSAPP_TEMPLATE = creditWhatsApp.TEMPLATE;
 const { notifyOrderPlaced } = require("./lib/order-push.cjs");
 const { deliverOutboxDoc } = require("./lib/outbox-deliver.cjs");
 
@@ -109,6 +111,11 @@ const TEMPLATE_BODIES = {
   // registered with Meta is docs/meta-templates/layby_expiry_3d.json (a test
   // holds the two byte-identical).
   layby_expiry_3d:   { params: 3, render: (p) => `Hi, your layby ${p[0]} at Marathon Club ${p[2]} expires on ${p[1]}. Please pay the balance or visit the store before then to keep it.` },
+  // {{1}} first name, {{2}} amount ("1,250"), {{3}} store, {{4}} customer code,
+  // + the URL button's suffix (the code's digits) — the body registered with
+  // Meta is docs/meta-templates/store_credit_issued.json (a test holds the two
+  // byte-identical). lib/credit-whatsapp-notify.cjs is its only producer.
+  store_credit_issued: { params: 4, button: true, render: (p) => `Hi ${p[0]}, R${p[1]} store credit has been added to your account at ${p[2]}. It never expires and can be used in any of our stores. Your customer code is ${p[3]}. Show this message at the till.` },
 };
 
 // Mask a phone number for logging — keep only the last 4 digits, never the full
@@ -145,7 +152,15 @@ function renderWhatsAppText(templateName, params = []) {
 // so the caller can decide whether to retry or fail the doc.
 // NOTE: token handling (metaToken secret + hardcoded WA_PHONE_ID) is unchanged;
 // moving the token to Secret Manager properly is a separate follow-up.
-async function sendViaMetaTemplate(to, templateName, templateParams = []) {
+async function sendViaMetaTemplate(to, templateName, templateParams = [], { buttonUrlParam = null } = {}) {
+  const components = templateParams.length
+    ? [{ type: "body", parameters: templateParams.map(p => ({ type: "text", text: String(p) })) }]
+    : [];
+  // A dynamic URL button (store_credit_issued): its suffix, button index 0.
+  // Absent for every other template, so their payload is unchanged.
+  if (buttonUrlParam) {
+    components.push({ type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: String(buttonUrlParam) }] });
+  }
   const payload = {
     messaging_product: "whatsapp",
     to,
@@ -153,9 +168,7 @@ async function sendViaMetaTemplate(to, templateName, templateParams = []) {
     template: {
       name: templateName,
       language: { code: "en" },
-      components: templateParams.length
-        ? [{ type: "body", parameters: templateParams.map(p => ({ type: "text", text: String(p) })) }]
-        : [],
+      components,
     },
   };
 
@@ -219,8 +232,17 @@ async function sendViaMetaTemplate(to, templateName, templateParams = []) {
 // directly. Invoked only via the authenticated onCall wrapper below; returns a
 // plain result object and throws HttpsError on failure (the callable protocol
 // maps those to a rejected client promise).
-async function enqueueWhatsApp(data) {
-  const { templateName, recipientPhone, templateParams = [] } = data || {};
+// `opts.dedupe` (default true) — the 90s identical-message guard below. Only a
+// producer with its own create-once claim may turn it off (the store-credit
+// WhatsApp dedupes on the ledger id, and two equal credits to one customer a
+// minute apart are two messages). The callable passes request.data alone, so
+// no client can reach this switch.
+// `opts.docId` — a deterministic outbox doc id, created with create() so a
+// second attempt for the same message (a retry after an ambiguous failure, a
+// stale claim taken over) can never mint a second doc: ALREADY_EXISTS is
+// answered as the same message. Only lib/credit-whatsapp-notify.cjs uses it.
+async function enqueueWhatsApp(data, { dedupe = true, docId = null } = {}) {
+  const { templateName, recipientPhone, templateParams = [], buttonUrlParam = null } = data || {};
 
   console.log("sendWhatsApp enqueue:", JSON.stringify({
     templateName,
@@ -246,6 +268,15 @@ async function enqueueWhatsApp(data) {
     throw new HttpsError("invalid-argument", rendered.error);
   }
 
+  // A template registered with a dynamic URL button must be given its suffix,
+  // and no other template may carry one (Meta refuses both mismatches).
+  const wantsButton = TEMPLATE_BODIES[templateName].button === true;
+  if (wantsButton !== (typeof buttonUrlParam === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(buttonUrlParam))) {
+    throw new HttpsError("invalid-argument", wantsButton
+      ? `Template "${templateName}" needs a button parameter`
+      : `Template "${templateName}" takes no button parameter`);
+  }
+
   const to           = normaliseSAPhone(recipientPhone);
   if (!to) {
     console.error("sendWhatsApp rejected unusable recipient phone:", maskPhone(recipientPhone));
@@ -264,7 +295,7 @@ async function enqueueWhatsApp(data) {
   // in memory — a composite where() would require a manual index.
   const DEDUPE_WINDOW_MS = 90 * 1000;
   const ACTIVE_STATUSES  = ["pending", "sending", "sent"];
-  try {
+  if (dedupe) try {
     const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - DEDUPE_WINDOW_MS);
     const recent = await admin.firestore()
       .collection("whatsapp_outbox")
@@ -298,6 +329,8 @@ async function enqueueWhatsApp(data) {
     renderedText,
     templateName,
     variables:  templateParams,
+    // Only on a button template — every other doc keeps its exact shape.
+    ...(wantsButton ? { buttonUrlParam } : {}),
     status:     "pending",
     provider:   null,
     createdAt:  admin.firestore.FieldValue.serverTimestamp(),
@@ -306,6 +339,22 @@ async function enqueueWhatsApp(data) {
     attempts:   0,
     lastError:  null,
   };
+
+  if (docId) {
+    const ref = admin.firestore().collection("whatsapp_outbox").doc(docId);
+    try {
+      await ref.create(outboxDoc);
+    } catch (err) {
+      if (err && (err.code === 6 || err.code === "already-exists")) {
+        console.log("WhatsApp already enqueued (same doc id):", JSON.stringify({ templateName, outboxId: docId }));
+        return { success: true, outboxId: docId, status: "existing", deduped: true };
+      }
+      console.error("Failed to create WhatsApp outbox doc:", err.message);
+      throw new HttpsError("internal", "Could not enqueue WhatsApp message");
+    }
+    console.log("WhatsApp enqueued:", JSON.stringify({ templateName, recipient: maskPhone(to), outboxId: docId }));
+    return { success: true, outboxId: docId, status: "pending" };
+  }
 
   try {
     const ref = await admin.firestore().collection("whatsapp_outbox").add(outboxDoc);
@@ -330,6 +379,16 @@ exports.sendWhatsApp = onCall(
     const provider = request.auth?.token?.firebase?.sign_in_provider;
     if (!request.auth || provider === "anonymous") {
       throw new HttpsError("unauthenticated", "Sign-in required to send WhatsApp messages.");
+    }
+    // Nov 2026 audit: sign-up is open, so a signed-in stranger passed the check
+    // above and could send any approved template, with free text, to any number
+    // from the business account. Staff only: a live /users record.
+    await require("./lib/require-staff-record.cjs").requireStaffRecord(admin.database(), request.auth, HttpsError);
+    // The store-credit message is sent ONLY by creditWhatsAppNotify/Sweep, for
+    // credits the returns desk issued (Junid's hard rule, 25 Nov 2026). No
+    // staff login may send it by hand.
+    if (request.data && request.data.templateName === CREDIT_WHATSAPP_TEMPLATE) {
+      throw new HttpsError("permission-denied", "This message is sent automatically for returns-desk credits only.");
     }
     return enqueueWhatsApp(request.data);
   }
@@ -578,6 +637,72 @@ exports.laybyExpiryNotify = onSchedule(
   }
 );
 
+// ─── STORE CREDIT WHATSAPP — the returns desk's slip (Junid, 25 Nov 2026) ────
+// The Concrete iPad ("Jafer Till", marathon-pos-app's returns-only login) has
+// no printer; each store credit it issues pushes one entry to
+// /pos/credit_whatsapp_queue and the customer gets store_credit_issued from the
+// Meta-registered number (via enqueueWhatsApp → outboxInstantSend). Every
+// guard — the creator's flag, the real ledger txn, the ledgerId claim, the
+// template's approval — lives in lib/credit-whatsapp-notify.cjs (node-tested).
+//   firebase deploy --only functions:creditWhatsAppNotify,functions:creditWhatsAppSweep
+const fetchCreditTemplate = async () => {
+  const token = metaToken.value();
+  if (!token) return { error: { message: "meta-whatsapp-token not available to this function" } };
+  const url = `https://graph.facebook.com/v20.0/${WA_BUSINESS_ACCOUNT_ID}/message_templates`
+    + `?name=${encodeURIComponent(CREDIT_WHATSAPP_TEMPLATE)}&fields=name,status,language,category`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) });
+  return res.json();
+};
+// The producer for this one template: no 90s text dedupe (the ledgerId claim
+// is the dedupe, and two equal credits a minute apart are two messages).
+// The doc id is fixed per credit (credit_{ledgerId}) and created with create(),
+// so no retry or claim takeover can ever enqueue the same credit twice.
+const enqueueCreditWhatsApp = (req, { docId } = {}) => enqueueWhatsApp(req, { dedupe: false, docId });
+
+// The moment an entry lands. Not approved yet → it stays queued (no throw);
+// a transient failure releases its claim and leaves it for the sweep.
+exports.creditWhatsAppNotify = onValueCreated(
+  {
+    ref:            "/pos/credit_whatsapp_queue/{queueId}",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    retry:          false,   // the 15-minute sweep owns every retry
+    secrets:        [metaToken],
+  },
+  async (event) => {
+    await creditWhatsApp.notifyOne({
+      db: admin.database(),
+      enqueueWhatsApp: enqueueCreditWhatsApp,
+      fetchTemplates: fetchCreditTemplate,
+      queueId: event.params.queueId,
+    });
+  }
+);
+
+// The backlog, every 15 minutes: key-ordered and bounded (the queue holds only
+// what is still owed — settled entries are deleted), so the run after approval
+// lands sends everything that waited for it.
+exports.creditWhatsAppSweep = onSchedule(
+  {
+    schedule:       "every 15 minutes",
+    timeZone:       "Africa/Johannesburg",
+    region:         "europe-west1",
+    timeoutSeconds: 300,
+    memory:         "256MiB",
+    secrets:        [metaToken],
+    retryCount:     0,       // the next run is 15 minutes away; claims make it idempotent
+  },
+  async () => {
+    await creditWhatsApp.runSweep({
+      db: admin.database(),
+      enqueueWhatsApp: enqueueCreditWhatsApp,
+      fetchTemplates: fetchCreditTemplate,
+    });
+  }
+);
+
 // ─── HOLD AVAILABILITY NOTIFY (owner reinstatement 2026-08-19) ───────────────
 // The customer WhatsApp for held items, restored — at FULFIL, when the stock is
 // physically there, never at hold-placed time (the old "available tomorrow"
@@ -819,6 +944,38 @@ exports.shopifyPriceDirty = onValueWritten(
   }
 );
 
+// ─── SHOPIFY RRP MARKER: the 65% / 70% chip reaches the website ─────────────
+// The struck-through RRP on Shopify is derived at push time from the app price
+// and /shopify_publish/{pid}/rrpDiscountPct (scripts/shopify/priceSync.mjs).
+// A chip tap writes only that key, so this marks the product's price dirty and
+// the reconciler re-pushes price + compareAtPrice on its next tick. Same
+// marker, same drain, same backstop as shopifyPriceDirty above.
+//   firebase deploy --only functions:shopifyRrpDirty
+exports.shopifyRrpDirty = onValueWritten(
+  {
+    ref:            "/shopify_publish/{pid}/rrpDiscountPct",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    retry:          false,
+  },
+  async (event) => {
+    try {
+      await markRrpDirty(
+        {
+          db:        admin.database(),
+          increment: (n) => admin.database.ServerValue.increment(n),
+          log:       () => {},
+        },
+        { pid: event.params.pid, before: event.data.before.val() }
+      );
+    } catch (e) {
+      console.error(`shopifyRrpDirty: ${String(e?.message || e)}`);
+    }
+  }
+);
+
 // ─── META-READY PHOTO: a square copy of every new primary photo ─────────────
 // Junid, 25 Oct 2026. Stored alongside the primary (products/{pid}/meta/…,
 // pointer /products/{pid}/photoMeta), never replacing it. All of it is in
@@ -855,17 +1012,17 @@ exports.primaryPhotoMetaReady = onValueWritten(
 //   getBroadcastGroups → GET  /api/groups     (list available WhatsApp groups)
 //   sendBroadcast      → POST /api/broadcast  (send caption + media to groups)
 //
-// Only the admin (gunidmoh@gmail.com) may invoke these. The VM's bearer token
+// Only a super admin (Junid or Jafer — lib/super-admins.cjs) may invoke these. The VM's bearer token
 // is read from Secret Manager (secret name: broadcast-service-token) and is
 // never logged, returned, or otherwise exposed to the caller.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const broadcastToken   = defineSecret("broadcast-service-token");
 const BROADCAST_VM_URL = "http://34.59.92.37";
-const ADMIN_EMAIL      = "gunidmoh@gmail.com";
+const { JUNID_EMAIL, SUPER_ADMIN_EMAILS, isSuperAdmin, isSuperAdminToken } = require("./lib/super-admins.cjs");
 
 function assertAdmin(request) {
-  if (request.auth?.token?.email !== ADMIN_EMAIL) {
+  if (!isSuperAdminToken(request.auth?.token)) {
     throw new HttpsError("permission-denied", "Admin only.");
   }
 }
@@ -893,7 +1050,7 @@ function assertAdmin(request) {
 // FAIL CLOSED: an RTDB read error refuses. A gate that opens when the database
 // is unreachable is not a gate.
 async function assertPhotoGeneration(request) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
@@ -930,7 +1087,7 @@ async function assertPhotoGeneration(request) {
 // FAIL CLOSED: an RTDB read error refuses. A gate that opens when the database
 // is unreachable is not a gate.
 async function assertEnginePolicy(request) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
@@ -1797,7 +1954,7 @@ async function buildDemandDrivenPlan({ client, demand, businessContext }) {
  * is within the last 15 minutes.
  *
  * Rate limit: 1 hour between fresh runs for non-super-admin callers.
- * Super-admin (gunidmoh@gmail.com) can override with { force: true }
+ * A super admin (Junid or Jafer) can override with { force: true }
  * in the payload; force is ignored for non-super-admin.
  *
  * Returns: { plan, meta } directly to the caller for backwards
@@ -1817,11 +1974,11 @@ exports.analyzeReorderNeeds = onCall(
     const startedAt = Date.now();
     const callerEmail = request.auth.token.email;
     const callerUid   = request.auth.uid;
-    const isSuperAdmin = callerEmail === ADMIN_EMAIL;
+    const callerIsSuperAdmin = isSuperAdminToken(request.auth.token); // verified email only
     // payload.force is honoured only for the super-admin. Any other caller
     // that passes force: true falls back to the normal rate-limit path.
     const requestedForce = !!(request.data && request.data.force);
-    const force = requestedForce && isSuperAdmin;
+    const force = requestedForce && callerIsSuperAdmin;
 
     // ── 0a. Rate-limit gate. Reads /insights/reorderPlan/latest only.
     //     This check is intentionally non-atomic — the running-lock
@@ -1917,7 +2074,7 @@ exports.analyzeReorderNeeds = onCall(
         // supplied, so /products /orders /insights_log /returns_log are NOT read.
         let businessContext = null;
         try {
-          const ctxSnap = await db.ref("aiAssistant/memory/gunidmoh/businessContext").once("value");
+          const ctxSnap = await db.ref(`aiAssistant/memory/${JUNID_EMAIL.split("@")[0]}/businessContext`).once("value");
           businessContext = ctxSnap.val() || null;
         } catch (err) {
           console.warn("analyzeReorderNeeds(demand): businessContext read failed:", err.message);
@@ -2008,7 +2165,7 @@ exports.analyzeReorderNeeds = onCall(
           db.ref("orders").once("value"),
           db.ref("insights_log").once("value"),
           db.ref("returns_log").once("value"),
-          db.ref("aiAssistant/memory/gunidmoh/businessContext").once("value"),
+          db.ref(`aiAssistant/memory/${JUNID_EMAIL.split("@")[0]}/businessContext`).once("value"),
         ]);
       } catch (err) {
         console.error("analyzeReorderNeeds: RTDB read failed:", err.message);
@@ -2518,64 +2675,16 @@ const OAI_IMAGE_OUT_PER_MTOK = 40;
 // DEFAULT_WHITE_PROMPT is the composed one the adapters fall back to.
 const { PHOTO_PROMPT, DEFAULT_WHITE_PROMPT, buildPhotoPrompt } = require("./lib/photo-prompt.cjs");
 
-// DEFAULT house-style locked prompts — code fallbacks only. The live prompt is
-// read from /aiAssistant/styleKit/{template}/prompt (editable in the Style Kit
-// panel, no redeploy); these apply when no custom prompt is saved.
-// KEEP IN SYNC with STYLE_KIT_DEFAULT_PROMPTS in src/App.jsx (panel starting text).
-const HOUSE_PROMPT_CLOTHING = [
-  "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
-  "images show our exact studio scene — recreate that scene precisely: the same backdrop and wall,",
-  "the same hangers and display hardware, the same lighting direction, softness and colour grade,",
-  "the same camera height, distance, angle and framing, and the same layout and spacing. The output",
-  "must look like it was shot in the SAME session, in the SAME spot, with the SAME lighting rig as",
-  "the references.",
-  "CRITICAL — the references define ONLY the scene and styling. The garments shown in the references",
-  "are DIFFERENT products: none of their design, colour, fabric, branding or details may appear in",
-  "the output.",
-  "The PRODUCT image shows the actual item to photograph. Keep the product's design EXACTLY —",
-  "identical shape, proportions, colour, materials, patterns, logos and text. Never redesign,",
-  "restyle, recolour, or invent details the real product does not have. Render every brand wordmark",
-  "and logo crisply and correctly — properly letter-formed, correctly spelled, matching the real",
-  "brand's exact lettering; never garbled, warped or fake-looking.",
-  "Present the garments as a coordinated SET, displayed exactly the way the reference sets are",
-  "displayed — every piece visible in the product photo (e.g. hoodie and matching joggers) arranged",
-  "together in the same configuration, on the same hangers, with the same spacing as the references.",
-  "If the product photo shows a single piece, present just that piece in the identical scene and",
-  "position. Settle out the creases a garment picks up from packing, folding or a hanger — but anything",
-  "set into the cloth by WEAR stays. Natural drape, squared shoulders and straight hems; nothing cropped",
-  "or cut off.",
-  "Render the product's colours as the ITEM ACTUALLY IS — never washed out or over-exposed by the",
-  "rendering, and never freshened either: colour genuinely lost to fading or yellowing stays lost. Darks",
-  "must not be lifted or greyed by the exposure. Match the exposure and white balance of the reference",
-  "scene so the product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a",
-  "photorealistic result indistinguishable from a real photo of THIS item taken in our studio.",
-].join(" ");
-
-const HOUSE_PROMPT_SNEAKER = [
-  "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
-  "images show our exact studio scene — recreate it precisely: the same backdrop, surface, lighting",
-  "direction, softness and colour grade, the same camera height, angle and framing, and the same",
-  "shoe-and-box composition and spacing as the references. The output must look like it was shot in",
-  "the SAME session, in the SAME spot, with the SAME lighting rig.",
-  "CRITICAL — the references define ONLY the scene, layout and styling. The sneakers and boxes shown",
-  "in them are DIFFERENT products: none of their design, colourway or branding may appear in the",
-  "output.",
-  "The PRODUCT image shows the actual sneaker to photograph. Keep its design EXACTLY — identical",
-  "shape, proportions, colourway, materials, patterns, logos and text. Show the OUTER (lateral)",
-  "branded display side facing the camera, keeping the SAME side and SAME left/right facing as the",
-  "product photo — never flip, mirror or rotate to the plain inner side. Never redesign or invent",
-  "details.",
-  "Display the sneaker WITH its retail box, positioned exactly as the boxes are positioned in the",
-  "references. If a BOX image is provided, reproduce that exact box — its true colours, graphics,",
-  "logos and label text, correctly spelled and crisply rendered. If no box image is provided, show",
-  "this exact model's authentic retail box using your knowledge of the real product; keep all box",
-  "text and branding accurate and legible, and never invent box artwork that doesn't exist.",
-  "Colours as the ITEM ACTUALLY IS — darks not lifted or greyed by the exposure, and colour genuinely",
-  "lost to fading left lost; match the reference scene's exposure and white balance. Tack-sharp focus",
-  "and detail; a photorealistic result indistinguishable from a real photo of THIS item in our studio.",
-].join(" ");
-
-const HOUSE_DEFAULT_PROMPTS = { clothing: HOUSE_PROMPT_CLOTHING, sneaker: HOUSE_PROMPT_SNEAKER };
+// DEFAULT house-style locked prompts — code fallbacks only, and since the
+// Style Kit Catalogue (20 Nov 2026) ONE copy, in lib/style-kit-catalogue.mjs
+// (HOUSE_PROMPT_SNEAKER / HOUSE_PROMPT_CLOTHING / HOUSE_PROMPT_GENERIC), which
+// the Style Kit panel imports too. The live prompt is read from
+// /aiAssistant/styleKit/{kit}/prompt when one is saved.
+// The catalogue is an ES module; this file is CommonJS — loaded once, lazily.
+let styleKitCatalogueMod = null;
+const styleKitCatalogue = () => (styleKitCatalogueMod || (styleKitCatalogueMod = import("./lib/style-kit-catalogue.mjs")));
+let styleKitDriftMod = null;
+const styleKitDrift = () => (styleKitDriftMod || (styleKitDriftMod = import("./lib/style-kit-drift.mjs")));
 
 
 // PROVIDER BOUNDARY: given image bytes + the per-product prompt, return { buffer,
@@ -2807,24 +2916,75 @@ async function normalizeHouseStyle(buffer, fallbackMime) {
 // from RTDB else the code default) + the enabled reference images, capped at
 // HOUSE_MAX_REFS (oldest first — the curated core of the kit). Ref buffers are
 // fetched ONCE and shared by every product in the batch.
+// (The SOCIAL generator's view: sneaker + clothing only. Product photos use
+// makeKitResolver below, which routes by the Catalogue.)
 async function loadStyleKit(db) {
   const snap = await db.ref(STYLE_KIT_PATH).once("value");
-  const kit = snap.val() || {};
+  const node = snap.val() || {};
+  const cat = await styleKitCatalogue();
   const out = {};
-  for (const template of ["sneaker", "clothing"]) {
-    const t = kit[template] || {};
-    const prompt = (typeof t.prompt === "string" && t.prompt.trim()) ? t.prompt.trim() : HOUSE_DEFAULT_PROMPTS[template];
-    const refEntries = Object.entries(t.refs || {})
-      .filter(([, r]) => r && r.url && r.enabled !== false)
-      .sort(([, a], [, b]) => (a.addedAt || 0) - (b.addedAt || 0))
-      .slice(0, HOUSE_MAX_REFS);
-    const refs = (await Promise.all(refEntries.map(async ([id, r]) => {
+  for (const template of cat.BASE_KITS) {
+    const { prompt } = cat.promptFor(node, template);
+    const refEntries = cat.enabledRefs(node, template).slice(0, HOUSE_MAX_REFS);
+    const refs = (await Promise.all(refEntries.map(async (r) => {
       try { return await fetchImageBuffer(r.url); }
-      catch (err) { console.warn(`styleKit ref ${template}/${id} fetch failed:`, err && err.message); return null; }
+      catch (err) { console.warn(`styleKit ref ${template}/${r.id} fetch failed:`, err && err.message); return null; }
     }))).filter(Boolean);
     out[template] = { prompt, refs };
   }
   return out;
+}
+
+// THE CATALOGUE ROUTER (Junid, 20 Nov 2026): every house-style generation uses
+// the kit for the product's catalogue category — its own assignment, else its
+// category's kit, then the parent kit, then the house-style default (the old
+// sneaker/clothing choice). The kit node is read ONCE per call (a small config
+// node) and each kit's reference photos are fetched once and shared.
+// → kitFor(product, pid) → { kit, label, chain, dedicated, prompt, promptFamily, refs: [{buffer, contentType}] }
+async function makeKitResolver(db) {
+  const cat = await styleKitCatalogue();
+  const node = (await db.ref(STYLE_KIT_PATH).once("value")).val() || {};
+  const refCache = new Map();
+  const refsOf = (kit) => {
+    if (!refCache.has(kit)) {
+      refCache.set(kit, Promise.all(cat.enabledRefs(node, kit).slice(0, HOUSE_MAX_REFS).map(async (r) => {
+        try { return await fetchImageBuffer(r.url); }
+        catch (err) { console.warn(`styleKit ref ${kit}/${r.id} fetch failed:`, err && err.message); return null; }
+      })).then((xs) => xs.filter(Boolean)));
+    }
+    return refCache.get(kit);
+  };
+  return async (product, pid) => {
+    const r = cat.resolveKit(product, pid, node);
+    const refs = await refsOf(r.kit);
+    if (refs.length || !r.dedicated) return { ...r, refs };
+    // A dedicated kit whose photos could not be fetched never fails the product: the next kit in its chain
+    // with photos that load, else the house-style default — the same as the shared generator.
+    for (const k of r.chain.slice(r.chain.indexOf(r.kit) + 1)) {
+      const got = await refsOf(k);
+      if (got.length || k === r.chain[r.chain.length - 1]) {
+        const { prompt, family } = cat.promptFor(node, k);
+        return { ...r, kit: k, label: cat.kitDefs(node)[k]?.label || k, dedicated: !cat.BASE_KITS.includes(k), prompt, promptFamily: family, refs: got };
+      }
+    }
+    return { ...r, refs };
+  };
+}
+
+// The product cut out of its own photo, centred on the catalogue's white
+// square — the drift fallback: the REAL product, never a drifted one.
+async function cutoutOnWhite(buffer) {
+  const c = await require("./lib/lookbook-render.cjs").cutout(buffer, { edge: 2048 });
+  if (!c || !c.png) throw new Error("the product could not be cut out of its photo");
+  // Its own pixels, untouched: flattened on white and centred on the 1500² square
+  // (no dark-strengthen pass — the fallback exists to show the product as it is).
+  const sharp = require("sharp");
+  const box = Math.round(CATALOGUE_CANVAS * CATALOGUE_FILL);
+  const fit = await sharp(c.png).flatten({ background: "#ffffff" }).resize(box, box, { fit: "inside" }).toBuffer({ resolveWithObject: true });
+  const out = await sharp({ create: { width: CATALOGUE_CANVAS, height: CATALOGUE_CANVAS, channels: 3, background: "#ffffff" } })
+    .composite([{ input: fit.data, left: Math.round((CATALOGUE_CANVAS - fit.info.width) / 2), top: Math.round((CATALOGUE_CANVAS - fit.info.height) / 2) }])
+    .jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer();
+  return { buffer: out, mime: "image/jpeg" };
 }
 
 // Map a raw per-product error into a short, aggregatable reason the Studio UI can
@@ -2856,8 +3016,8 @@ function classifyPhotoError(msg, engName) {
   if (/HTTP 429|\brate[ -]?limit|quota|RESOURCE_EXHAUSTED/i.test(m)) {
     return `AI rate-limited or over quota (429) — check ${provider} billing`;
   }
-  const kit = m.match(/no usable (\w+) Style Kit references/i);
-  if (kit) return `No ${kit[1]} Style Kit references — add & enable refs for that template`;
+  const kit = m.match(/no usable ([\w-]+) Style Kit references/i);
+  if (kit) return `No ${kit[1]} Style Kit references — add & enable refs for that kit`;
   if (/image fetch HTTP|untrusted image host|invalid image url/i.test(m)) return "Couldn't fetch the product image";
   if (/image too large/i.test(m)) return "Product image too large";
   if (/timed out/i.test(m)) return "AI request timed out";
@@ -2949,7 +3109,11 @@ exports.generateProductPhotos = onCall(
 
     // House style: load the Style Kit (locked prompts + enabled refs) once —
     // the ref buffers are shared across every product in this batch.
-    const styleKit = style === "house" ? await loadStyleKit(db) : null;
+    // Routed per product by the Style Kit Catalogue (makeKitResolver).
+    const kitFor = style === "house" ? await makeKitResolver(db) : null;
+    const drift = style === "house" ? await styleKitDrift() : null;
+    const cat = style === "house" ? await styleKitCatalogue() : null;
+    const sharpLib = style === "house" ? require("sharp") : null;
 
     let processed = 0, failed = 0, estCostUSD = 0;
     const costByEngine = { openai: 0, gemini: 0, nbpro: 0 };
@@ -2962,8 +3126,6 @@ exports.generateProductPhotos = onCall(
         const id = ids[cursor++];
         const p = products[id];
         const isClothing = p.category === "Clothing" || p.productType === "clothing";
-        // House style always runs on Nano Banana Pro; templates key on productType.
-        const template = isClothing ? "clothing" : "sneaker";
         const engName = style === "house" ? "nbpro" : (engineOverride || defaultEngineFor(p));
         try {
           // The override when the caller named one, else the record's hero.
@@ -2971,31 +3133,90 @@ exports.generateProductPhotos = onCall(
           const { buffer, contentType } = await fetchImageBuffer(srcUrl);
           // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
           const size = isClothing ? "1024x1536" : PHOTO_SIZE;
-          const kit = styleKit ? styleKit[template] : null;
+          // THE KIT FOR THIS PRODUCT'S CATEGORY (Catalogue): its own, else its
+          // category's, else the parent's, else the house-style default.
+          const kit = kitFor ? await kitFor(p, id) : null;
+          const template = kit ? kit.kit : (isClothing ? "clothing" : "sneaker");
           // Never write a style:"house" proposal that isn't actually reference-
-          // conditioned: if the template has no enabled refs (or every ref fetch
+          // conditioned: if the kit has no enabled refs (or every ref fetch
           // failed), fail this product loudly instead of burning an NB Pro gen on
-          // an ungrounded result. The Style Kit panel warns when a template is empty.
+          // an ungrounded result. The Style Kit panel warns when a kit is empty.
           if (kit && !kit.refs.length) {
             throw new Error(`house style: no usable ${template} Style Kit references`);
           }
+          // THE GARMENT FINISH + CHECK (Junid, 21 Nov 2026): clothing gets the garment finish after its kit's prompt,
+          // and the drift check also judges lines, wrinkles, tilt and colour; its retry is told the fix.
+          const garment = !!(kit && cat && (kit.promptFamily === "clothing" || cat.isGarment(p)));
+          const basePrompt = kit ? (garment ? `${kit.prompt} ${cat.GARMENT_FINISH}` : kit.prompt) : null;
           // name-aware + optional per-run fix note; house swaps in the template's locked prompt
-          const prompt = buildPhotoPrompt(p.name, note, kit ? kit.prompt : PHOTO_PROMPT);
+          const composeWith = (n) => buildPhotoPrompt(p.name, n, basePrompt || PHOTO_PROMPT);
+          const prompt = composeWith(note);
           // Sneaker house shots include the product's own box photo when one is
           // saved (photoBoxUrl). Best-effort: a broken box URL downgrades to the
           // no-box prompt path instead of failing the product.
+          // (The sneaker family keeps its box; a generic kit — perfume — shows
+          // its box when it has one; clothing never had one.)
           let box = null;
-          if (kit && template === "sneaker" && p.photoBoxUrl) {
+          if (kit && kit.promptFamily !== "clothing" && p.photoBoxUrl) {
             try { box = await fetchImageBuffer(p.photoBoxUrl); }
             catch (err) { console.warn(`generateProductPhotos: ${id} box photo fetch failed:`, err && err.message); }
           }
-          const { buffer: rawBuf, costUSD, mime: rawMime } = await getEngine(engName)
-            .generate(buffer, contentType, { quality, size, prompt, box, refs: kit ? kit.refs : undefined });
+          // The quality retry's fix (garments) joins the run's own note; the condition rule still comes last.
+          const withFix = (fixNote) => [note, fixNote].map((x) => String(x || "").trim()).filter(Boolean).join(" — ");
+          const runOnce = (fixNote = null) => getEngine(engName)
+            .generate(buffer, contentType, { quality, size, prompt: fixNote ? composeWith(withFix(fixNote)) : prompt, box, refs: kit ? kit.refs : undefined });
+          let { buffer: rawBuf, costUSD, mime: rawMime } = await runOnce();
+          // ── THE DRIFT CHECK (house style): the result against the ORIGINAL
+          // photo. Drifted → ONE retry; drifted again → the product's own
+          // cut-out on white. A check that cannot run never counts as a drift.
+          let driftInfo = null, driftFallback = false;
+          // The drift check judges against the TRUE original photograph: when the hero was itself an
+          // approved generation, photoUrlOriginal is the real staff photo (best-effort; else the input).
+          let truth = buffer;
+          if (kit && !sourceUrl && p.photoUrlOriginal && p.photoUrlOriginal !== srcUrl) {
+            try { truth = (await fetchImageBuffer(p.photoUrlOriginal)).buffer; } catch { truth = buffer; }
+          }
+          if (kit) {
+            const d1 = await drift.checkDrift({ original: truth, generated: rawBuf }, { apiKey: geminiApiKey.value(), sharp: sharpLib, garment });
+            driftInfo = { first: d1.checked ? (d1.drift ? "drifted" : "same") : "unchecked", issues: d1.issues || "", ...(garment ? { check: "garment", faults: d1.faults || [] } : {}) };
+            if (d1.drift) {
+              console.warn(`generateProductPhotos: ${id} drifted (${d1.issues}) — retrying once`);
+              let second = null;
+              // A retry that fails outright never costs the product: the cut-out stands in for the drifted photo.
+              try { second = await runOnce(garment ? cat.garmentFixNote(d1.faults) : null); costUSD += second.costUSD; }
+              catch (err) { console.warn(`generateProductPhotos: ${id} drift retry failed:`, err && err.message); driftInfo.retry = "failed"; driftFallback = true; }
+              if (second) {
+                const d2 = await drift.checkDrift({ original: truth, generated: second.buffer }, { apiKey: geminiApiKey.value(), sharp: sharpLib, garment });
+                driftInfo.retry = d2.checked ? (d2.drift ? "drifted" : "same") : "unchecked";
+                if (d2.drift) { driftInfo.retryIssues = d2.issues || ""; if (garment) driftInfo.retryFaults = d2.faults || []; driftFallback = true; }
+                else { rawBuf = second.buffer; rawMime = second.mime; }
+              }
+            }
+          }
           // White: trim + centre on a uniform white square so the catalogue grid is
-          // consistent. House: keep the generated scene — resize only.
-          const { buffer: outBuf, mime } = kit
-            ? await normalizeHouseStyle(rawBuf, rawMime)
-            : await normalizeForCatalogue(rawBuf, rawMime);
+          // consistent. House: keep the generated scene — resize only. Drifted
+          // twice: the real product cut out of its photo.
+          // (No clean cut-out: the generated photo is kept — it was paid for — and the record says it drifted.)
+          let cut = null;
+          if (driftFallback) {
+            // The REAL product (the staff photo the check judged against), never an earlier generated hero.
+            try { cut = await cutoutOnWhite(truth); }
+            catch (err) {
+              console.warn(`generateProductPhotos: ${id} no cut-out for the drift fallback:`, err && err.message);
+              // A garment that failed the check twice is never proposed (Junid, 21 Nov 2026: never post a failed image).
+              if (garment) {
+                estCostUSD += costUSD;
+                costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
+                throw new Error("failed the quality check twice and the product could not be cut out cleanly");
+              }
+              driftFallback = false; driftInfo.fallback = "no-cutout";
+            }
+          }
+          const { buffer: outBuf, mime } = cut
+            ? cut
+            : kit
+              ? await normalizeHouseStyle(rawBuf, rawMime)
+              : await normalizeForCatalogue(rawBuf, rawMime);
           const proposedUrl = await uploadProposalImage(id, outBuf, mime);
           estCostUSD += costUSD;
           costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
@@ -3037,7 +3258,9 @@ exports.generateProductPhotos = onCall(
               at: Date.now(),
               by: request.auth.uid,
               // House-style provenance (absent on white runs — their records are unchanged).
-              ...(kit ? { style: "house", template, refsUsed: kit.refs.length } : {}),
+              ...(kit ? { style: "house", template, kit: kit.kit, kitLabel: kit.label, refsUsed: kit.refs.length } : {}),
+              ...(driftInfo ? { drift: driftInfo } : {}),
+              ...(driftFallback ? { driftFallback: "cutout" } : {}),
             });
           }
           processed++;
@@ -3046,7 +3269,8 @@ exports.generateProductPhotos = onCall(
           // refuse to show a side-by-side against a different one — which is
           // what a deployed build older than this argument would produce, and
           // what a rollback would produce again.
-          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName, sourceUrl: srcUrl });
+          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName, sourceUrl: srcUrl,
+            ...(kit ? { kit: kit.kit, kitLabel: kit.label } : {}), ...(driftInfo ? { drift: driftInfo } : {}), ...(driftFallback ? { driftFallback: "cutout" } : {}) });
         } catch (err) {
           failed++;
           if (failures.length < 50) failures.push({ id, name: p.name || "", reason: classifyPhotoError(err && err.message, engName) });
@@ -3088,7 +3312,7 @@ exports.generateProductPhotos = onCall(
 //
 // Flow on each request:
 //   1. Verify the Firebase ID token in the Authorization header. Reject if
-//      missing/invalid OR if the verified email isn't ADMIN_EMAIL.
+//      missing/invalid OR if the verified email isn't a super admin's.
 //   2. Read /orders, /insights_log, /insights/reorderPlan/latest. Take the
 //      most recent CHAT_CONTEXT_RECENT_LIMIT entries from orders + logs
 //      (full plan is small enough to send whole).
@@ -3181,7 +3405,7 @@ exports.chatStream = onRequest(
       console.warn("chatStream: token verification failed:", err.code || err.message);
       return res.status(401).json({ error: "Invalid or expired token." });
     }
-    if (decoded.email !== ADMIN_EMAIL) {
+    if (!isSuperAdminToken(decoded)) { // verified email only (CodeRabbit, PR #896)
       console.warn(`chatStream: forbidden caller ${decoded.email}`);
       return res.status(403).json({ error: "Forbidden." });
     }
@@ -3623,8 +3847,8 @@ exports.deleteStaffUser = onCall(
       throw new HttpsError("invalid-argument", "uid is required.");
     }
 
-    // ── Self-deletion guard. The super-admin uses a Google account with the
-    //    ADMIN_EMAIL address; if anyone ever tampers with /users to include
+    // ── Self-deletion guard. The super-admin uses a Google account with a
+    //    super-admin address (Junid or Jafer); if anyone ever tampers with /users to include
     //    that email, this stops a UI mis-click from locking the org out. ──
     let target;
     try {
@@ -3636,7 +3860,7 @@ exports.deleteStaffUser = onCall(
       console.error("deleteStaffUser: getUser failed:", err);
       throw new HttpsError("internal", "Could not look up user.");
     }
-    if (target.email === ADMIN_EMAIL) {
+    if (isSuperAdmin(target.email)) {
       throw new HttpsError("failed-precondition", "Cannot delete the super-admin account.");
     }
 
@@ -3710,11 +3934,11 @@ exports.refusalWriteoffDigest = onSchedule(
   { schedule: "40 19 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 540 },
   async () => {
     const digest = require("./lib/writeoff-digest.cjs");
-    await digest.runDigestAndConfirm({
-      // Gmail SMTP via the mini FIRST (the route that reaches Junid, 1 Nov 2026),
-      // the Monitoring alert email second.
-      db: admin.database(), nowMs: Date.now(), channels: [digest.emailViaMiniOutbox(admin.database()), digest.emailViaAlertLog()], api: digest.monitoringApi(),
-    });
+    // JUNID'S QUIET RULE (26 Nov 2026): a daily report — archived for the
+    // Health card, emailed by NO route (not the mini's outbox, not the
+    // Monitoring alert, whose policy is disabled). The emailing run was
+    // runDigestAndConfirm with channels [emailViaMiniOutbox, emailViaAlertLog].
+    await digest.runDigestHeld({ db: admin.database(), nowMs: Date.now() });
   }
 );
 
@@ -3913,6 +4137,25 @@ exports.wakeHeldChecks = require("./displayChecks/wakeHeldChecks.js").wakeHeldCh
 // decision in displayChecks/lib.cjs; IO in displayChecks/completeCheck.js.
 //   firebase deploy --only functions:completeDisplayCheck
 exports.completeDisplayCheck = require("./displayChecks/completeCheck.js").completeDisplayCheck;
+
+// ─── SHELF CHECKS + CENTRAL'S WEBSITE STRIP (Junid, 24 Nov 2026) ──────────────
+// Each shop and hub works a short daily list of its riskiest shelves (Found /
+// Not found / the real number, never typed); Central's website-orders strip is
+// listed for the Source screen. Rules in webShelf/lib.cjs, IO in webShelf/index.js.
+//   firebase deploy --only functions:webShelfList,functions:webShelfAnswer,functions:webShelfProgress
+exports.webShelfList = require("./webShelf/index.js").webShelfList;
+exports.webShelfAnswer = require("./webShelf/index.js").webShelfAnswer;
+exports.webShelfProgress = require("./webShelf/index.js").webShelfProgress;
+// Every ten minutes: stock on the way (a refill credited but not landed is never counted as missing) and, from
+// commit 3, the rejections that are not website orders (Junid, 24 Nov 2026 evening).
+//   firebase deploy --only functions:shelfChecksTick
+exports.shelfChecksTick = require("./webShelf/tick.js").shelfChecksTick;
+
+// ─── ALL-STORE ACCESS — logStoreSwitch (audit of every active-shop switch) ─────
+// Junid, 20 Nov 2026. Append-only /store_switch_log/{saDate}/{pushId}; the
+// client never writes that path. IO + pure shaping in storeSwitch/logStoreSwitch.js.
+//   firebase deploy --only functions:logStoreSwitch
+exports.logStoreSwitch = require("./storeSwitch/logStoreSwitch.js").logStoreSwitch;
 
 // ─── STYLE CODE — resolveStyleCode (sneaker intake identity lookup) ───────────
 // Sneakers arrive without boxes, so there is no box barcode. The manufacturer
@@ -4244,8 +4487,13 @@ exports.cardTillSilenceScan = onSchedule(
     }
     // THE ALARM FIRST, the state write second: a write that throws must not
     // swallow a silent till's email. (CodeRabbit, #799.)
+    // JUNID'S QUIET RULE (26 Nov 2026): a silent till is a business event,
+    // not an outage — logged WITHOUT the marker, so the "Card till silence
+    // alarm" policy never emails it (the line is kept on /card_till_silence
+    // below). What still emails: this check FAILING (failureLine above) and
+    // this check STOPPING (cardReconHealthScan's staleCheckLine).
     if (verdict.silent.length) {
-      console.error(tillSilence.alarmLine(verdict.silent));
+      console.log(`cardTillSilenceScan (quiet rule, not emailed): ${tillSilence.alarmLine(verdict.silent).replace(tillSilence.MARKER, "").trim()}`);
     } else {
       console.log(`cardTillSilenceScan: every till that took card money ${verdict.days.at(-1)} → ${verdict.days[0]} has a batch.`);
     }
@@ -4292,7 +4540,15 @@ exports.shopifyInventoryHealthScan = onSchedule(
     await db.ref("shopify_inventory_health/watchdog").set({
       ...verdict.state, ok: verdict.ok, passAgeMinutes: verdict.passAgeMinutes, inWindow: verdict.inWindow,
     });
-    for (const alarm of verdict.alarms) console.error(shopifyInventoryHealth.alarmLine(alarm));
+    // JUNID'S QUIET RULE (26 Nov 2026): only an OUTAGE pages — the sync has
+    // stopped passing ([pass]) or the nightly sweep has stopped reporting
+    // ([sweepStale]). What the sweep FOUND ([sweep], oversell fixed) and
+    // products stuck on their own ([stuck]) are business, logged WITHOUT the
+    // marker so Cloud Monitoring never emails them.
+    for (const alarm of verdict.alarms) {
+      if (shopifyInventoryHealth.isOutageAlarm(alarm)) console.error(shopifyInventoryHealth.alarmLine(alarm));
+      else console.log(`shopifyInventoryHealthScan (quiet rule, not emailed): [${alarm.kind}] ${alarm.message}`);
+    }
     if (!verdict.alarms.length) {
       console.log(`shopifyInventoryHealthScan: ${verdict.ok ? "ok" : "not ok (already alerted)"} · last pass ${verdict.passAgeMinutes ?? "never"} min ago`);
     }
@@ -4375,7 +4631,7 @@ exports.setCategoryPolicy = onCall(
         db: admin.database(),
         callerEmail: request.auth?.token?.email,
         callerUid: request.auth?.uid || null,
-        adminEmail: ADMIN_EMAIL,
+        adminEmail: SUPER_ADMIN_EMAILS,
         data: request.data,
         // Server clock. serverNowMs() is the CLIENT's corrected clock and does
         // not exist here; inside a Cloud Function Date.now() IS server time.
@@ -6412,6 +6668,9 @@ exports.socialHealthScan = onSchedule(
       checkedAt: nowMs,
       ok: verdict.ok,
       severity: verdict.severity,
+      // Junid's quiet rule (26 Nov 2026): the narrow "engine is down" verdict
+      // that alone pages (here and in the mini's social-alarm-mail).
+      outage: verdict.outage === true,
       reasons: verdict.reasons.length ? verdict.reasons : null,
       counts: verdict.counts,
       // Which still posted today and whether the lookbook fell back. An
@@ -6442,8 +6701,11 @@ exports.socialHealthScan = onSchedule(
     // ticking. That is the shape of "down", and it is the shape that was
     // actually happening at 01:16 this morning when the publisher stalled for
     // 625 minutes and nothing on this earth would have told him.
-    if (verdict.severity !== "silent") {
-      console.log(`socialHealthScan ${saDate}: ${verdict.severity} (not paging)`, verdict.reasons);
+    // JUNID'S QUIET RULE (26 Nov 2026): narrower still — only an OUTAGE
+    // (publisher stopped, nothing published, generator down) pages. A missed
+    // slot or a short surface is one item, recorded above, not paged.
+    if (!verdict.outage) {
+      console.log(`socialHealthScan ${saDate}: ${verdict.severity} (not paging — not an outage)`, verdict.reasons);
       return;
     }
 
@@ -6613,9 +6875,59 @@ exports.insightsRollupSweep = onSchedule(
   exports.newArrivalsHow = na.newArrivalsHow;
   exports.newArrivalsPause = na.newArrivalsPause;
   exports.newArrivalsMethod = na.newArrivalsMethod;
+  // The live card (19 Nov 2026): Use current photo, Un-approve, Post all approved.
+  //   firebase deploy --only functions:newArrivalsUseCurrent,functions:newArrivalsUnapprove,functions:newArrivalsPostAll
+  exports.newArrivalsUseCurrent = na.newArrivalsUseCurrent;
+  exports.newArrivalsUnapprove = na.newArrivalsUnapprove;
+  exports.newArrivalsPostAll = na.newArrivalsPostAll;
   // The photo studio: ONE streaming callable that calls Gemini directly on Junid's tap.
   //   firebase deploy --only functions:newArrivalsStudio
   exports.newArrivalsStudio = require("./newArrivals/studio.js").newArrivalsStudio;
+}
+
+// ─── BLACK FRIDAY 2026 — Junid's approve card (the Mac mini posts) ──────────
+// /bf_campaign_2026 is server-only (no client rule): the card goes through these
+// callables, plus bfGenerate (one Gemini photo per tap). See functions/blackFriday/core.cjs.
+//   firebase deploy --only functions:bfCampaignList,functions:bfCampaignSet,functions:bfNaMirror,functions:bfGenerate,functions:bfPhotoSource
+{
+  const bf = require("./blackFriday/blackFriday.js");
+  exports.bfCampaignList = bf.bfCampaignList;
+  exports.bfCampaignSet = bf.bfCampaignSet;
+  // A tap on the New Arrivals card mirrors into the Black Friday pick (one approval).
+  exports.bfNaMirror = bf.bfNaMirror;
+  // NOTHING IS EVER APPROVED AUTOMATICALLY (Junid, 21 Nov 2026): only his tap approves. bfNaAutoApprove was deleted.
+  exports.bfGenerate = require("./blackFriday/generate.js").bfGenerate;
+  // Junid's own photo for a product: Replace photo (his iPhone) and Find online (20 Nov 2026).
+  exports.bfPhotoSource = require("./blackFriday/sources.js").bfPhotoSource;
+  // 360 px list thumbnails for the card (iOS kept throwing the card away for memory, 21 Nov 2026).
+  exports.bfThumb = require("./blackFriday/thumbs.js").bfThumb;
+  // The card's precomputed list, kept up to date on every change (fast open on his iPhone, 21 Nov 2026).
+  //   firebase deploy --only functions:bfCardIndexPick,functions:bfCardIndexPhoto,functions:bfCardIndexItem,functions:bfCardIndexRepost,functions:bfCardIndexSent,functions:bfCardIndexPosted,functions:bfCardIndexNa,functions:bfCardIndexTick
+  const ci = require("./blackFriday/cardIndex.js");
+  exports.bfCardIndexPick = ci.bfCardIndexPick;
+  exports.bfCardIndexPhoto = ci.bfCardIndexPhoto;
+  exports.bfCardIndexItem = ci.bfCardIndexItem;
+  exports.bfCardIndexRepost = ci.bfCardIndexRepost;
+  exports.bfCardIndexSent = ci.bfCardIndexSent;
+  exports.bfCardIndexPosted = ci.bfCardIndexPosted;
+  exports.bfCardIndexNa = ci.bfCardIndexNa;
+  exports.bfCardIndexWeb = ci.bfCardIndexWeb;
+  exports.bfCardIndexTick = ci.bfCardIndexTick;
+  // Approve = publish on the website first (Junid, 20 Nov 2026): every approval is queued for the
+  // existing Shopify publisher (the Mac mini's bf-web runner).  firebase deploy --only functions:bfWebQueue,functions:bfCardIndexWeb
+  exports.bfWebQueue = require("./blackFriday/webQueue.js").bfWebQueue;
+}
+
+// ── BF CANDIDATES: stock that isn't moving, and the in-store Black Friday sale (Junid, 23 Nov 2026) ──
+// One sale price per product on its own node (bf_sales_2026); the till reads products/{pid}/bfSale.
+// Base prices are never written; nothing here touches Shopify. See functions/bfCandidates/.
+//   firebase deploy --only functions:bfSaleList,functions:bfSaleSet,functions:bfSaleStoreList,functions:bfSaleExpire
+{
+  const bfs = require("./bfCandidates/bfCandidates.js");
+  exports.bfSaleList = bfs.bfSaleList;
+  exports.bfSaleSet = bfs.bfSaleSet;
+  exports.bfSaleStoreList = bfs.bfSaleStoreList;
+  exports.bfSaleExpire = bfs.bfSaleExpire;
 }
 
 // ── ALTERNATIVES: automatic enrichment + per-product profile (2026-10-09) ────
@@ -6627,3 +6939,11 @@ exports.insightsRollupSweep = onSchedule(
   exports.alternativesProfileFromAttributes = alt.alternativesProfileFromAttributes;
   exports.alternativesEnrichSweep = alt.alternativesEnrichSweep;
 }
+
+// ─── SECURITY — syncStaffClaim (a /users record becomes a `staff` token claim) ─
+// Storage rules cannot read the RTDB; this lets storage.rules require a real
+// staff record instead of "any signed-in account" (sign-up is open). Acts only
+// when a whole record appears/disappears. See functions/security/staffClaim.js
+// and docs/security/2026-11-audit.md.
+//   firebase deploy --only functions:syncStaffClaim --project marathon-club
+exports.syncStaffClaim = require("./security/staffClaim.js").syncStaffClaim;

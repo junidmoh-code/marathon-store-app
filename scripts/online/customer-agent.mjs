@@ -31,6 +31,7 @@ import { fakeDb } from "../shopify/onlineOrders/fakeDb.testutil.mjs";
 import { runCustomerAgent, AGENT_META } from "./agent/run.mjs";
 import { findAlternatives, listingTitle, offerStillAvailable } from "./agent/alternatives.mjs";
 import { grantedScopes } from "./agent/money.mjs";
+import { heldMailSender } from "../lib/quietHeld.mjs";
 
 const COMMIT = process.argv.includes("--commit");
 const SYNTHETIC = process.argv.includes("--synthetic");
@@ -241,6 +242,9 @@ try {
     log: logLine,
     mailer: COMMIT ? (m) => mail.send(m) : async (m) => console.log(`  [dry] would email ${m.to}: ${m.subject}`),
     notifyJunid: COMMIT ? (m) => mail.send({ to: NOTIFY_TO, ...m }) : async (m) => console.log(`  [dry] would email Junid: ${m.subject}`),
+    // JUNID'S QUIET RULE (26 Nov 2026): every handoff that is not money left
+    // unpaid (agent/run.mjs tellJunid) is held for Fable's daily review.
+    holdForJunid: COMMIT ? heldMailSender({ source: "marathon-store-app:scripts/online/customer-agent.mjs" }) : async (m) => console.log(`  [dry] would hold for Fable: ${m.subject}`),
     whatsapp: COMMIT ? gateway() : null,
     model,
     inbox: imapInbox(),
@@ -252,7 +256,9 @@ try {
     scopes: COMMIT ? async () => (scopeCache ??= await grantedScopes(graphql)) : async () => new Set(),
     graphql: COMMIT ? graphql : async (q) => { if (/mutation/.test(q)) throw new Error("dry run: no Shopify mutation"); return graphql(q); },
   });
-  if (COMMIT && mail) await dailySummary(liveDb, await serverNowMs(liveDb), (m) => mail.send({ to: NOTIFY_TO, ...m })).catch((e) => logLine(`✗ daily summary: ${e.message}`));
+  // The daily summary to Junid is OFF (Junid's quiet rule, 26 Nov 2026): a pure report.
+  // dailySummary() stays for a deliberate switch back.
+  void dailySummary;
   const busy = summary.opened || summary.sent || summary.replies || summary.swaps || summary.credits || summary.refunds || summary.errors.length;
   if (summary.off) { logLine("agent: OFF (/config/onlineOrders/agentOff)"); process.exit(0); }
   logLine(busy ? `agent: ${summary.opened} opened · ${summary.sent} sent · ${summary.replies} replies · ${summary.swaps} swaps · ${summary.credits} credits · ${summary.refunds} refunds · ${summary.junid} to Junid${summary.errors.length ? ` · ${summary.errors.length} ERROR(S)` : ""}${COMMIT ? "" : " — DRY RUN"}` : `agent: quiet${COMMIT ? "" : " — DRY RUN"}`);

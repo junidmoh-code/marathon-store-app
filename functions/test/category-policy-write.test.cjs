@@ -89,7 +89,7 @@ const EDIT = { categoryKey: "caps-beanies", policy: { hub2: { target: 10, minQty
 
 test("no email but the owner's opens the door on its own", async () => {
   for (const who of [undefined, null, "", "junid@marathon.internal", "ahmed@marathon.internal",
-                     "someone@gmail.com", "GUNIDMOH@GMAIL.COM", "gunidmoh@gmail.com.evil.com"]) {
+                     "someone@gmail.com", "gunidmoh@gmail.com.evil.com", " x-gunidmoh@gmail.com"]) {
     const db = makeFakeDb(world());
     await rejects(() => applyCategoryPolicy({
       db, callerEmail: who, adminEmail: OWNER, data: EDIT, nowMs: NOW,

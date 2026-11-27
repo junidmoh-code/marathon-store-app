@@ -171,21 +171,17 @@ test("REGENERATE after an approval made a generated photo the product's photo: i
   assert.deepEqual(fetched, [OLD]);
 });
 
-test("a photo made from the OLD product photo cannot be approved once the product's photo has changed — Regenerate first; nothing is logged", async () => {
+test("a photo made from the OLD product photo IS approvable (19 Nov 2026): the note stays, nothing is blocked", async () => {
   const gens = { g1: { url: generated(1), at: 10, sourceUrl: OLD } };
   const db = world({ item: { status: "ready", currentGen: "g1", generatedUrl: generated(1), generations: gens } });
+  // The product's current photo is itself a generated studio shot (the chain set it): still approvable.
   await db.ref(`products/${PID}`).update({ photoUrl: NEW, photoUpdatedAt: NOW });
   const out = await na.approve(db, { pids: [PID] }, "junid", NOW + 1);
-  assert.deepEqual(out.approved, []);
-  assert.match(out.skipped[0].why, /the product's photo was changed after this photo was made — tap Regenerate first/);
-  assert.equal((await db.ref(`new_arrivals/items/${PID}/status`).once()).val(), "ready");
-  assert.equal((await db.ref(core.DECISIONS).once()).val(), null);
-  // The same photo kept at the same address but replaced later (photoUpdatedAt) is refused too.
+  assert.deepEqual(out.approved, [PID]);
+  assert.equal((await db.ref(`new_arrivals/items/${PID}/status`).once()).val(), "approved");
+  // The card still gets the note (staleGens / sourceChanged) — as information only.
   const same = world({ product: { photoUpdatedAt: NOW }, item: { status: "ready", currentGen: "g1", generatedUrl: generated(1), generations: { g1: { url: generated(1), at: 10, sourceUrl: OLD } } } });
-  assert.deepEqual((await na.approve(same, { pids: [PID] }, "junid", NOW)).approved, []);
-  // A photo made from the CURRENT product photo is approved as before.
-  const ok = world({ product: { photoUrl: NEW, photoUpdatedAt: 5 }, item: { status: "ready", currentGen: "g1", generatedUrl: generated(1), generations: { g1: { url: generated(1), at: 10, sourceUrl: NEW } } } });
-  assert.deepEqual((await na.approve(ok, { pids: [PID] }, "junid", NOW)).approved, [PID]);
+  assert.deepEqual((await na.approve(same, { pids: [PID], genId: "g1" }, "junid", NOW)).approved, [PID]);
 });
 
 test("the photo was replaced WHILE Gemini was working: the result that comes back already says the photo is out of date", async () => {

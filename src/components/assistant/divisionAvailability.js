@@ -81,6 +81,28 @@ export function unavailableProductIds(products, judge) {
 }
 
 /**
+ * UNAVAILABLE SORTS LAST (Junid, 27 Nov 2026). A stable partition of a grid or
+ * search-result list: every product NOT in `unavailableIds` first, then every
+ * product that is, each group in exactly the order it arrived.
+ *
+ * `unavailableIds` is the very Set the card's UNAVAILABLE badge and its
+ * "Tap for similar" line read (unavailableProductIds above) — there is no
+ * second availability check here, so the sort and the badge cannot disagree.
+ * Nothing is dropped: an unavailable product stays findable and tappable.
+ *
+ * Returns the SAME array when nothing in it is unavailable (Marathon PE and
+ * Trophy always, since their set is empty), so a memo downstream sees no change.
+ */
+export function unavailableLast(list, unavailableIds) {
+  const arr = Array.isArray(list) ? list : [];
+  if (!unavailableIds || !unavailableIds.size) return arr;
+  const avail = [];
+  const unavail = [];
+  for (const p of arr) (p && unavailableIds.has(p.id) ? unavail : avail).push(p);
+  return unavail.length ? avail.concat(unavail) : arr;
+}
+
+/**
  * Is this product unavailable to this shop — every size out?
  *
  *   sizes     the sizes the card offers (already filtered of blanks)

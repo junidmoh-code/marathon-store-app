@@ -127,11 +127,14 @@ test("the due pass reads EXACTLY its own state — nothing the scan already read
 
   // The hub lists cost NOTHING to read: /orders, /stock and /products are all
   // already in the scan's memory. Only the shops' own rotation stamps are read.
-  assert.deepEqual(db._reads, [
+  // …plus the shelf-check settings per shop (a few bytes; its list is read only while that shop's Shelf check is on).
+  assert.deepEqual([...db._reads].sort(), [
+    "config/onlineOrders/shelfChecks",
+    "config/onlineOrders/shelfChecks",
     "settings/stockAudit/config",
-    "settings/stockAudit/state",
     "settings/stockAudit/rotation/marathon-pe",
     "settings/stockAudit/rotation/trophy",
+    "settings/stockAudit/state",
   ]);
   // The expensive nodes — the whole reason this pass rides on the scan.
   for (const forbidden of ["stock", "products", "stock_movements", "refill_requests",

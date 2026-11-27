@@ -15,7 +15,7 @@ export default function ShopSwitchConfirm({ fromLabel, toLabel, cartCount = 0, o
       </div>
       {cartCount > 0 && (
         <div className="sky-ovl-msg__note">
-          You have {cartCount} item{cartCount > 1 ? "s" : ""} in the cart — they’ll be placed for {toLabel}.
+          You have {cartCount} item{cartCount > 1 ? "s" : ""} in the cart — switching empties it; add them again for {toLabel}.
         </div>
       )}
     </SkyConfirm>

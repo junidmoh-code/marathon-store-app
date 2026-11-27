@@ -1,0 +1,25 @@
+{
+  "name": "store_credit_issued",
+  "language": "en",
+  "category": "UTILITY",
+  "components": [
+    {
+      "type": "BODY",
+      "text": "Hi {{1}}, R{{2}} store credit has been added to your account at {{3}}. It never expires and can be used in any of our stores. Your customer code is {{4}}. Show this message at the till.",
+      "example": {
+        "body_text": [["Thandi", "1,250", "Concrete", "C-2291"]]
+      }
+    },
+    {
+      "type": "BUTTONS",
+      "buttons": [
+        {
+          "type": "URL",
+          "text": "Show barcode",
+          "url": "https://marathon-pos.web.app/code/{{1}}",
+          "example": ["https://marathon-pos.web.app/code/2291"]
+        }
+      ]
+    }
+  ]
+}

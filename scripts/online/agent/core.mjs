@@ -32,7 +32,8 @@ export const rands = (cents) => `R${(Number(cents) / 100).toFixed(2).replace(/\.
 // src/jimmy/lineLedger.js (approvals.issue re-checks a credit against it before paying) — KEEP THE TWO IN SYNC.
 // Given back = completed money (state done) in resolution.money and every earlier one in resolution.moneySettled.
 // Owed = paid for the line − given back − the current item's price: positive → store credit owed; negative → a difference
-// to collect. A money action whose result is not known is UNCLEAR and stops every swap until it is settled:
+// to collect. A money action whose result is not known is UNCLEAR (money paths wait for it), but it NEVER stops a swap
+// (Junid, 15 Nov 2026: money never blocks packing): the swap voids it and recomputes.
 //   manual   approved for Junid to do by hand: unclear until he says it is done (the slot then becomes done)
 //   failed   unclear unless ambiguous === false (a definite refusal: nothing moved)
 //   claimed  being paid now (busy); older than CLAIM_STALE_MS: unclear (the payer died mid-flight)
@@ -56,7 +57,8 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
   const nowCents = Math.max(0, Math.round(Number(priceCents) || 0)) * qty;
   const net = paid - settled - nowCents;
   const claimedAt = Number(m?.at) || 0;
-  const stale = isObj && m.state === "claimed" && claimedAt > 0 && now - claimedAt > CLAIM_STALE_MS;
+  // A claim with no time on it can never age out: stale at once (review of #909, 3), never a retry loop for ever.
+  const stale = isObj && m.state === "claimed" && (!(claimedAt > 0) || now - claimedAt > CLAIM_STALE_MS);
   let unclearWhy = null;
   if (isObj && m.state === "manual") unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line was approved for Junid to do by hand and is not marked done yet (once done in Shopify, Junid tells Jamie on his line "done #<order>")`;
   else if (isObj && m.state === "failed" && m.ambiguous !== false) unclearWhy = `an earlier ${rands(amt(m))} ${m.kind || "money action"} for this line may have gone through (its answer was lost): check it in Shopify first`;
@@ -73,6 +75,15 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
     paidInCents: paidIn,
     busy: isObj && m.state === "claimed" && !stale,
     unclear: !!unclearWhy, unclearWhy,
+    // MONEY NEVER BLOCKS PACKING (Junid, 15 Nov 2026). What the customer still has to pay for what ships: the price of what
+    // ships minus what they paid (less what went back to their own payment as a refund). Store credit we gave never makes
+    // the customer owe: a credit now too big is OWED BACK TO US (owedToUsCents), recorded and emailed to Junid, never red.
+    unpaidCents: Math.max(0, nowCents - (paid - refundedOrig)),
+    owedToUsCents: Math.max(0, Math.max(0, -net) - Math.max(0, nowCents - (paid - refundedOrig))),
+    refundedCents: refundedOrig,
+    // A money task with no known result (manual for Junid, a lost answer, an unknown state, a payer that died): the next swap
+    // VOIDS it (supersededMoney, doNotIssue) and recomputes; Junid hears it is cancelled. Never a reason to refuse a swap.
+    voids: isObj && m.state !== "done" && !(m.state === "claimed" && !stale) ? { state: m.state ?? null, amountCents: amt(m), kind: m.kind || null } : null,
     // Never moved money: superseded by the next swap (a definite refusal, or a pending request).
     supersedes: isObj && (m.state === "pending" || (m.state === "failed" && m.ambiguous === false)) ? { state: m.state, amountCents: amt(m), kind: m.kind || null } : null,
   };
@@ -80,18 +91,28 @@ export function lineLedger(line, { priceCents, now = Date.now() } = {}) {
 /**
  * The line's resolution after a swap: a completed money action moves to moneySettled (counted in every later ledger, so
  * the next credit is its own action), one that never moved money is kept as supersededMoney (doNotIssue). Pure.
- * Call only when lineLedger said neither busy nor unclear.
+ * Call only when lineLedger said not busy. An unsettled task (manual, failed, unknown, stale) is voided here too and kept
+ * in moneyVoided (every one, never overwritten); `owedToUsCents` > 0 records a credit now too big as owed back to us.
  */
-export function swapResolution(resolution, { now, outcome, closeConversation = null }) {
+// Its own key, never overwriting an earlier void (two swaps in one millisecond keep both).
+const voidKey = (have, now) => { let k = `v${now}`; for (let n = 1; have && have[k]; n++) k = `v${now}-${n}`; return k; };
+export function swapResolution(resolution, { now, outcome, closeConversation = null, owedToUsCents = 0 }) {
   const cur = resolution || {};
   const m = cur.money;
   const done = !!m && typeof m === "object" && m.state === "done";
-  const { money: _old, ...rest } = cur;
+  // The mailed marker goes with a cleared record (review of #909, 2): owed again later is emailed again.
+  const { money: _old, owedToUs: _owed, ...rest00 } = cur;
+  const { owedToUsMailedCents: _mk, ...restNoMark } = rest00;
+  const rest0 = owedToUsCents > 0 ? rest00 : restNoMark;
+  // Recomputed on every swap: a later swap that brings it to 0 clears it.
+  const rest = owedToUsCents > 0 || !_owed ? rest0 : { ...rest0, owedToUsCleared: { ..._owed, clearedAt: now } };
   const conv = cur.conversation;
   return {
     ...rest,
     ...(done ? { moneySettled: { ...(cur.moneySettled || {}), [`m${now}`]: m } } : {}),
     ...(m && !done ? { supersededMoney: { ...m, supersededAt: now, doNotIssue: true } } : {}),
+    ...(m && typeof m === "object" && !done ? { moneyVoided: { ...(cur.moneyVoided || {}), [voidKey(cur.moneyVoided, now)]: { ...m, supersededAt: now, doNotIssue: true } } } : {}),
+    ...(owedToUsCents > 0 ? { owedToUs: { amountCents: owedToUsCents, at: now, why: "store credit already given is more than the price difference now" } } : {}),
     outcome,
     ...(closeConversation && conv && conv.state !== "closed" ? { conversation: { ...conv, state: "closed", closedAt: now, closedBy: closeConversation } } : {}),
   };
@@ -177,11 +198,13 @@ export function moneyAllowed(money, { kind, amountCents, line }) {
 export function judgeSwap(line, offer, { now = Date.now() } = {}) {
   // The ledger (COMMIT 6): against what is left of what was paid, never the full price paid.
   const lg = lineLedger(line, { priceCents: Number(offer?.priceCents) || 0, now });
-  if (lg.busy || lg.unclear) return { ok: false, why: "money_unclear", note: lg.unclearWhy || "money for this line is being issued right now" };
-  // Everything paid for the line was given back already: nothing is left to swap against. A final answer, never "unclear"
-  // (never held for ever) and never "costs more" (review of #847).
-  if (lg.paidCents > 0 && lg.refundableCents === 0) return { ok: false, why: "refunded_full", note: `everything paid for the line was given back already (${rands(lg.settledCents)}, refund or store credit): nothing is left to swap against` };
-  if (lg.extraCents > 0) return { ok: false, why: "costs_more", extraCents: lg.extraCents };
+  // Only a payment being made THIS minute holds the pick (held, tried again next run). An unsettled credit or refund task
+  // never does (Junid, 15 Nov 2026): the swap voids it and the money is recomputed.
+  if (lg.busy) return { ok: false, why: "money_unclear", note: "money for this line is being issued right now" };
+  // Everything paid for the line went back to the customer's own payment (a refund in full): nothing is left to swap against.
+  if (lg.paidCents > 0 && paidCents(line) > 0 && lg.refundedCents >= paidCents(line)) return { ok: false, why: "refunded_full", note: `everything paid for the line was refunded already (${rands(lg.refundedCents)}): nothing is left to swap against` };
+  // Costs more = the customer has not paid for what would ship. A credit we gave that is now too big is ours to recover.
+  if (lg.unpaidCents > 0) return { ok: false, why: "costs_more", extraCents: lg.unpaidCents };
   return { ok: true, creditCents: lg.creditCents };
 }
 

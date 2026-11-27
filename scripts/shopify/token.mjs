@@ -13,6 +13,7 @@
 // It is never written to disk and never logged; only expires_in / scope are
 // safe to print.
 import { requireEnv, requireShop } from "./env.mjs";
+import { STORE } from "./storeConfig.mjs";
 
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
@@ -33,8 +34,10 @@ async function mint() {
   const shop = requireShop();
   const body = new URLSearchParams({
     grant_type: "client_credentials",
-    client_id: requireEnv("SHOPIFY_CLIENT_ID"),
-    client_secret: requireEnv("SHOPIFY_CLIENT_SECRET"),
+    // Marathon: SHOPIFY_CLIENT_ID / SHOPIFY_CLIENT_SECRET (unchanged).
+    // Concrete: CONCRETE_SHOPIFY_CLIENT_ID / CONCRETE_SHOPIFY_CLIENT_SECRET.
+    client_id: requireEnv(STORE.idVar),
+    client_secret: requireEnv(STORE.secretVar),
   });
 
   const res = await fetch(`https://${shop}/admin/oauth/access_token`, {

@@ -53,8 +53,13 @@ test("allSections and Junid capture both; a shop lock scopes to that shop's sect
   assert.match(await sectionRefusalFor(db, as("pe"), "A", T.concreteTill), /not in your section/);
   // The owner is never narrowed, and costs no read.
   const before = db.reads.length;
-  assert.equal(await sectionRefusalFor(db, { auth: { uid: "owner", token: { email: "gunidmoh@gmail.com" } } }, "A", T.peTill), null);
+  assert.equal(await sectionRefusalFor(db, { auth: { uid: "owner", token: { email: "gunidmoh@gmail.com", email_verified: true } } }, "A", T.peTill), null);
+  assert.equal(await sectionRefusalFor(db, { auth: { uid: "jafer", token: { email: "jafermohammed340@gmail.com", email_verified: true } } }, "A", T.peTill), null);
   assert.equal(db.reads.length, before);
+  // An UNVERIFIED super-admin email is not a super admin: it is scoped like
+  // anyone else (owner's sections are {1}, so the PE till is refused).
+  // (CodeRabbit, PR #896.)
+  assert.match(await sectionRefusalFor(db, { auth: { uid: "owner", token: { email: "gunidmoh@gmail.com" } } }, "A", T.peTill), /not in your section/);
 });
 
 test("an enrolled device's section claim scopes the shared login it is on (device gates ON)", async (t) => {

@@ -15,6 +15,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { SkyHeader, SkyBackGrid, SkySearch, SkyBrandStrip, SkyStorePill, SkyPopover, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
 import { fmtR } from "../assistant/assistantOrderModel.js";
+import { retailPriceOf } from "../../utils/retailPrice";
 
 export default function AssistantPhone({
   mode, onMode,
@@ -90,7 +91,8 @@ export default function AssistantPhone({
       ) : (
         <div className="ap-grid">
           {products.map((p) => {
-            const priced = typeof p.retailPrice === "number" && p.retailPrice > 0;
+            const price = retailPriceOf(p);   // docs/ASSISTANT-NO-PRICE-SET.md
+            const priced = price !== null;
             const dead = isDead ? isDead(p) : false;
             const n = photoCount ? photoCount(p) : 0;
             return (
@@ -112,7 +114,7 @@ export default function AssistantPhone({
                   {dead ? <div className="ap-dead" data-contrast-exempt="">Deactivated — no sizes on offer</div> : null}
                   <div className="ap-row">
                     {priced
-                      ? <span className="sky-price ap-price" data-contrast-exempt="">{fmtR(p.retailPrice)}</span>
+                      ? <span className="sky-price ap-price" data-contrast-exempt="">{fmtR(price)}</span>
                       : <span className="ap-noprice" data-contrast-exempt="">No price set</span>}
                     <SkyPlus label={`Add ${p.name}`} onClick={(e) => { e.stopPropagation(); onOpen(p); }} />
                   </div>

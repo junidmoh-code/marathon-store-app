@@ -385,35 +385,127 @@ describe("review fixes (Sonnet architect, PR #788)", () => {
     expect(line(f, 0).source.orderKeys).toEqual([C(0, 1)]);
   });
 
-  it("COMMIT 6: a second swap is applied; the money is ONE ledger against what was paid (superseded, never stacked)", async () => {
+  it("15 Nov 2026: a pending (by-hand) credit NEVER blocks the next swap: it is voided, the money recomputed, Junid emailed once", async () => {
     const { f, h } = await ingested();
     await ask(f, 1, "POLO", "M");
     await h.tick();
     const first = line(f, 1).ledger;
-    expect(first).toMatchObject({ swaps: 1 });
-    // The first swap's R50 credit was approved for Junid to do by hand (manual): it may be loaded already, so the second
-    // swap waits until it is marked done (COMMIT 6 review: a manual slot never counted as nothing, never credited twice).
-    expect(line(f, 1).resolution.money).toMatchObject({ state: "manual" });
+    expect(first).toMatchObject({ swaps: 1, creditCents: 5000 });
+    expect(line(f, 1).resolution.money).toMatchObject({ state: "manual", amountCents: 5000 });
+    h.mails.length = 0;
     await ask(f, 1, "JKT", "M", { rid: "r2", priceDecision: "we_absorb" });
     await h.tick();
-    expect(request(f, "r2").state).not.toBe("applied");
-    expect(line(f, 1).pid).toBe("POLO");
-    // Junid loads it by hand and says so: the slot is done, and counts as given back.
-    await f.db.ref("online_orders/9001/lines/1/resolution/money/state").set("done");
-    await ask(f, 1, "JKT", "M", { rid: "r3", priceDecision: "we_absorb" });
-    await h.tick();
-    expect(request(f, "r3")).toMatchObject({ state: "applied" });
+    expect(request(f, "r2")).toMatchObject({ state: "applied" });
     const l = line(f, 1);
     expect(l.pid).toBe("JKT");
-    expect(l.ledger.swaps).toBe(2);
-    expect(l.ledger.paidCents).toBe(first.paidCents);
-    // one figure, from scratch: paid minus the current price, either way
-    expect(l.ledger.creditCents - l.ledger.extraCents).toBe(l.ledger.paidCents - l.ledger.settledCents - l.ledger.nowCents);
-    // the first swap's credit, done by hand, is settled: counted once, moved to moneySettled, never issued again
+    expect(l.ledger).toMatchObject({ swaps: 2, paidCents: first.paidCents, settledCents: 0, creditCents: 0 });
+    // the R50 task is voided (never issued), kept in the history; no money task is left on the line
     expect(l.resolution.money).toBeUndefined();
-    expect(Object.values(l.resolution.moneySettled)).toEqual([expect.objectContaining({ state: "done", amountCents: 5000 })]);
-    expect(l.ledger.settledCents).toBe(5000);
-    expect(l.resolution.outcome.creditCents).toBe(l.ledger.creditCents);
+    expect(l.resolution.supersededMoney).toMatchObject({ state: "manual", amountCents: 5000, doNotIssue: true });
+    expect(Object.values(l.resolution.moneyVoided)).toEqual([expect.objectContaining({ state: "manual", amountCents: 5000, doNotIssue: true, mailedAt: NOW })]);
+    const cancel = h.mails.filter((m) => /CANCEL the R50/.test(m.subject));
+    expect(cancel).toHaveLength(1);
+    expect(cancel[0].text).toMatch(/money #1801 went/);
+    // a later tick never mails it again
+    await h.tick();
+    expect(h.mails.filter((m) => /CANCEL the R50/.test(m.subject))).toHaveLength(1);
+  });
+
+  it("15 Nov 2026: A → B → A with B's credit pending by hand: the swap back goes through, credit 0, the task voided (the #2108 case)", async () => {
+    const { f, h } = await ingested();
+    await ask(f, 1, "POLO", "M");
+    await h.tick();
+    expect(line(f, 1).resolution.money).toMatchObject({ state: "manual", amountCents: 5000 });
+    await ask(f, 1, "TEE", "M", { rid: "r2" });
+    await h.tick();
+    expect(request(f, "r2")).toMatchObject({ state: "applied", creditCents: 0, extraCents: 0 });
+    const l = line(f, 1);
+    expect(l).toMatchObject({ pid: "TEE", unitPriceCents: 25000, originalUnitPriceCents: 25000 });
+    expect(l.ledger).toMatchObject({ swaps: 2, creditCents: 0, extraCents: 0, nowCents: 25000, paidCents: 25000 });
+    expect(l.resolution.money).toBeUndefined();
+    expect(l.resolution.owedToUs).toBeUndefined();
+    // and again: B once more, then A — any number of times
+    await ask(f, 1, "POLO", "M", { rid: "r3" });
+    await h.tick();
+    expect(request(f, "r3")).toMatchObject({ state: "applied", creditCents: 5000 });
+    await ask(f, 1, "TEE", "M", { rid: "r4" });
+    await h.tick();
+    expect(request(f, "r4")).toMatchObject({ state: "applied", creditCents: 0 });
+    expect(Object.keys(line(f, 1).resolution.moneyVoided)).toHaveLength(2);
+  });
+
+  it("15 Nov 2026: a credit Junid already DID that is now too big: swap applied, never 'costs more', owed back to us, emailed once", async () => {
+    const { f, h } = await ingested();
+    await ask(f, 1, "POLO", "M");
+    await h.tick();
+    // Junid did the R50 by hand and said so: the slot is done (given back)
+    await f.db.ref("online_orders/9001/lines/1/resolution/money/state").set("done");
+    h.mails.length = 0;
+    await ask(f, 1, "TEE", "M", { rid: "r2" });
+    await h.tick();
+    expect(request(f, "r2")).toMatchObject({ state: "applied", creditCents: 0, extraCents: 0 });
+    const l = line(f, 1);
+    expect(l.pid).toBe("TEE");
+    expect(l.ledger).toMatchObject({ settledCents: 5000, creditCents: 0, extraCents: 0, owedToUsCents: 5000 });
+    expect(l.resolution.owedToUs).toMatchObject({ amountCents: 5000 });
+    expect(l.resolution.owedToUsMailedCents).toBe(5000);
+    const owed = h.mails.filter((m) => /R50 owed back to us/.test(m.subject));
+    expect(owed).toHaveLength(1);
+    // nothing about it in the request the POS shows
+    expect(JSON.stringify(request(f, "r2"))).not.toMatch(/Junid|Shopify/);
+    await h.tick();
+    expect(h.mails.filter((m) => /owed back to us/.test(m.subject))).toHaveLength(1);
+  });
+
+  it("Junid's quiet rule (26 Nov 2026): a credit left to do by hand reaches Junid (sendRefundFailed); owed back to us is held (send)", async () => {
+    const { f, h } = await ingested();
+    const kept = [];
+    const sendRefundFailed = async (m) => { kept.push(m); };
+    h.mails.length = 0;
+    await ask(f, 1, "POLO", "M");
+    await h.tick({ sendRefundFailed });
+    expect(kept.filter((m) => /PLEASE DO THIS BY HAND/.test(m.subject))).toHaveLength(1);
+    expect(h.mails.filter((m) => /PLEASE DO THIS BY HAND/.test(m.subject))).toHaveLength(0);
+    await f.db.ref("online_orders/9001/lines/1/resolution/money/state").set("done");
+    await ask(f, 1, "TEE", "M", { rid: "r2" });
+    await h.tick({ sendRefundFailed });
+    expect(h.mails.filter((m) => /owed back to us/.test(m.subject))).toHaveLength(1);
+    expect(kept.filter((m) => /owed back to us/.test(m.subject))).toHaveLength(0);
+  });
+
+  it("review of #909: owed back to us, cleared by a swap, then owed again is emailed again", async () => {
+    const { f, h } = await ingested();
+    await ask(f, 1, "POLO", "M");
+    await h.tick();
+    await f.db.ref("online_orders/9001/lines/1/resolution/money/state").set("done");
+    await ask(f, 1, "TEE", "M", { rid: "r2" });
+    await h.tick();
+    await ask(f, 1, "POLO", "M", { rid: "r3" });
+    await h.tick();
+    expect(line(f, 1).resolution.owedToUs).toBeUndefined();
+    expect(line(f, 1).resolution.owedToUsMailedCents).toBeUndefined();
+    await ask(f, 1, "TEE", "M", { rid: "r4" });
+    await h.tick();
+    expect(h.mails.filter((m) => /R50 owed back to us/.test(m.subject))).toHaveLength(2);
+  });
+
+  it("review of #909: a voided request that never reached Junid (pending) is not emailed", async () => {
+    const { f, h } = await ingested();
+    await f.db.ref("online_orders/9001/lines/1/resolution/money").set({ kind: "credit", amountCents: 1000, state: "pending", at: NOW - 60e3 });
+    await ask(f, 1, "POLO", "M");
+    await h.tick();
+    expect(request(f)).toMatchObject({ state: "applied" });
+    expect(h.mails.filter((m) => /CANCEL/.test(m.subject))).toHaveLength(0);
+  });
+
+  it("15 Nov 2026: a payment in flight this minute only delays a POS swap (back to pending), never a refusal", async () => {
+    const { f, h } = await ingested();
+    await f.db.ref("online_orders/9001/lines/1/resolution/money").set({ kind: "credit", amountCents: 1000, state: "claimed", at: NOW - 60e3 });
+    await ask(f, 1, "POLO", "M");
+    await h.tick();
+    expect(request(f)).toMatchObject({ state: "pending" });
+    expect(request(f).why).toBeUndefined();
+    expect(line(f, 1).pid).toBe("TEE");
   });
 
   it("two same-price swaps: the line still names the product Shopify lists (originalPid), pushed after the fulfilment", async () => {
@@ -561,6 +653,10 @@ describe("COMMIT 6: the line ledger (pure)", () => {
     expect(lineLedger(l, { priceCents: 40000 })).toMatchObject({ paidCents: 50000, creditCents: 10000 });
     expect(lineLedger(l, { priceCents: 50000 })).toMatchObject({ creditCents: 0, extraCents: 0 });
   });
+  it("review of #909: a claim with no time on it is stale at once (never busy for ever)", () => {
+    expect(lineLedger(L({ resolution: { money: { state: "claimed", amountCents: 5000 } } }), { priceCents: 40000 })).toMatchObject({ busy: false, unclear: true });
+  });
+
   it("a claim: busy while fresh; past 15 minutes it is unclear (the payer died), never refused for ever", () => {
     const at = 1_000_000;
     const c = L({ resolution: { money: { kind: "credit", amountCents: 5000, state: "claimed", at } } });
@@ -574,13 +670,17 @@ describe("COMMIT 6: the line ledger (pure)", () => {
     // paid R300, R100 credited after an R200 swap; now an R250 pick: R50 to collect, never R50 more credit
     expect(judgeSwap(given, { priceCents: 25000 })).toMatchObject({ ok: false, why: "costs_more", extraCents: 5000 });
     expect(judgeSwap(given, { priceCents: 15000 })).toEqual({ ok: true, creditCents: 5000 });
-    expect(judgeSwap(L({ resolution: { money: { state: "manual", amountCents: 5000 } } }), { priceCents: 1000 })).toMatchObject({ ok: false, why: "money_unclear" });
-    // refunded in full: never "costs more" to the customer; Junid's (money_unclear)
-    expect(judgeSwap(L({ resolution: { moneySettled: { a: { state: "done", amountCents: 45000 } } } }), { priceCents: 1000 })).toMatchObject({ ok: false, why: "refunded_full", note: expect.stringMatching(/given back already/) });
+    // a by-hand credit not done yet never blocks a swap (15 Nov 2026): the swap voids it
+    expect(judgeSwap(L({ resolution: { money: { state: "manual", amountCents: 5000 } } }), { priceCents: 1000 })).toMatchObject({ ok: true });
+    // refunded in full to the customer's own payment: nothing is left to swap against
+    expect(judgeSwap(L({ resolution: { moneySettled: { a: { state: "done", kind: "refund", amountCents: 45000 } } } }), { priceCents: 1000 })).toMatchObject({ ok: false, why: "refunded_full", note: expect.stringMatching(/refunded already/) });
+    // a store credit given in full never makes the customer owe: the swap goes on, the credit too big is owed back to us
+    expect(lineLedger(L({ resolution: { moneySettled: { a: { state: "done", kind: "credit", amountCents: 45000 } } } }), { priceCents: 45000 })).toMatchObject({ unpaidCents: 0, owedToUsCents: 45000 });
+    expect(judgeSwap(L({ resolution: { moneySettled: { a: { state: "done", kind: "credit", amountCents: 45000 } } } }), { priceCents: 45000 })).toMatchObject({ ok: true, creditCents: 0 });
   });
   it("a dearer second swap needs its difference: refused without a price decision", () => {
     expect(lineLedger(L(), { priceCents: 50000 })).toMatchObject({ extraCents: 5000, creditCents: 0 });
-    expect(lineLedger(L({ resolution: { money: { state: "claimed", amountCents: 5000 } } }), { priceCents: 40000 }).busy).toBe(true);
+    expect(lineLedger(L({ resolution: { money: { state: "claimed", amountCents: 5000, at: NOW } } }), { priceCents: 40000, now: NOW }).busy).toBe(true);
   });
 });
 

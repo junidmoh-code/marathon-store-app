@@ -23,11 +23,16 @@
 // and deleting the seed restores the state it already lived in. Locks on
 // sizes the solve did NOT seed never block: undo does not touch their cells.
 //
-// Undo state is SESSION-SCOPED by design (held in HealthView, so it survives
-// chip-hopping to Sneakers/Hidden — but not leaving Inventory Health). A
-// durable any-time undo needs a log node or a whole-tree seed scan; the
-// first is more moving parts than the mistake it serves, the second is a
-// banned bandwidth cost. Older mistakes remain a guarded admin reversal.
+// Undo state is DURABLE since 20 Nov 2026 (Junid asked for a Solved tab):
+// every solve is a row of /settings/missingProductsSolved (solvedLog.js), and
+// any canAct user can undo any row while the guards below allow it. Because
+// that node is staff-writable, a row read back is VALIDATED before use
+// (solvedLog.undoRecordProblem — its paths must be this product's /stock
+// cells at its own locations, its request ids plain keys); and every delete
+// is still a per-cell CAS that refuses anything but an untouched seed. Undo's
+// sibling check sees the rows loaded on screen (the newest pages); an older
+// sibling sharing a hub seed is outside it — accepted: a shared hub seed only
+// matters inside one multi-store confirm, and those rows sit together.
 //
 // KNOWN, ACCEPTED GAPS (documented, not silent): the engine can claim a lock
 // between the guard read and the cell transactions — a window of seconds

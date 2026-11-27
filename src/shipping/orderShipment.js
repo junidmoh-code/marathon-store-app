@@ -75,6 +75,15 @@ export function orderLines(order, products = null) {
   });
 }
 
+/**
+ * The address's own fields, joined (lower case). shipping/geo — Shopify's point for the address, written at
+ * ingest — is used only while the address it was made for is unchanged. Pure.
+ */
+export function addressSig(a) {
+  const x = a ?? {};
+  return [x.address1 ?? x.street ?? x.street_address, x.address2, x.city, x.zip ?? x.code, x.province ?? x.zone].map(str).join("|").toLowerCase();
+}
+
 /** The delivery address in TCG's shape, plus what could not be found. */
 export function deliveryAddress(order) {
   const a = order?.shipping?.address ?? order?.shippingAddress ?? order?.shipping_address ?? {};

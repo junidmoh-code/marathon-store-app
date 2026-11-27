@@ -59,7 +59,8 @@
 
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } from "./centralFed";
-import { concreteDivisionPolicy, divisionTarget, isDivisionLocation, isDivisionFootwear, divisionNeverKeeps, hub3Refuses } from "./concreteDivision";
+import { concreteDivisionPolicy, divisionTarget, isDivisionLocation, isDivisionFootwear, divisionNeverKeeps, hub3Refuses, divisionSizes, divisionShopCarries, DIVISION_SHOPS } from "./concreteDivision";
+import { policyFollowOf, followedTarget } from "./policyFollow";
 import { SEED_REGISTRY, autoRouteAllowed } from "../../utils/networkRegistry";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy";
 
@@ -301,6 +302,20 @@ export function storeCarries(stock, loc, pid) {
   return !!stock?.[loc]?.[pid] && Object.keys(stock[loc][pid]).length > 0;
 }
 
+// refill-engine.cjs followCarries — does the follower carry this cell?
+function followCarries({ config, products }, stock, dest, pid, size) {
+  const product = products?.[pid];
+  if (!product || isFootwear(product) || isDivisionFootwear(product)) return false;
+  if (DIVISION_SHOPS.includes(dest)) {
+    const policy = concreteDivisionPolicy(config);
+    if (policy) {
+      const key = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size);
+      return divisionSizes(product).includes(key) && divisionShopCarries({ policy }, dest, pid, stock);
+    }
+  }
+  return storeCarries(stock, dest, pid);
+}
+
 // refill-engine.cjs:467 — the whole precedence, in its load-bearing order.
 export function resolveTarget({ targets, config, products, stock, network }, dest, pid, size) {
   // Above every row, as the engine (refill-engine.cjs resolveTarget): Concrete
@@ -316,6 +331,16 @@ export function resolveTarget({ targets, config, products, stock, network }, des
       reorderPoint: typeof rp === "number" && Number.isFinite(rp) && rp >= 0 ? rp : null,
       source: "explicit",
     };
+  }
+  // PINE FOLLOWS TROPHY (policyFollow.js; engine twin refill-engine.cjs): a
+  // product Pine carries keeps what Trophy's policy says for it — under Pine's
+  // own row, above the division's numbers. Never footwear. This screen has no
+  // seats node, so a shop's own cell stands in for its seat.
+  if (policyFollowOf(config, dest) && followCarries({ config, products }, stock, dest, pid, size)) {
+    const catKey = effectiveCategoryKey(products?.[pid]);
+    const categoryHas = (loc) => !!catKey && !!locationPolicyFor(config, catKey, loc);
+    const ft = followedTarget(resolveTarget, { targets, config, products, stock, network, categoryHas }, dest, pid, size);
+    if (ft !== undefined) return ft;
   }
   // CENTRAL-FED CLOTHING (centralFed.js; engine twin refill-engine.cjs): a
   // store keeping its clothing in the shop answers N for every declared size,
@@ -408,6 +433,8 @@ export const SEAT_LABEL = {
 };
 
 const SOURCE_TO_REASON = {
+  // A followed policy (Pine follows Trophy) is a policy, not a row of Pine's.
+  follows: SEAT_REASON.CATEGORY_POLICY,
   explicit: SEAT_REASON.EXPLICIT_ROW,
   category_policy: SEAT_REASON.CATEGORY_POLICY,
   footwear_default: SEAT_REASON.FOOTWEAR_RULE,

@@ -567,3 +567,27 @@ describe("the new rhythm's obligation", () => {
     assert.deepEqual(dayObligation(asObject, TWINS).byFormat, { reel: 2, feed: 0, story: 2 });
   });
 });
+
+// ── JUNID'S QUIET RULE (26 Nov 2026): only an OUTAGE pages ───────────────────
+describe("quiet rule: `outage` is the narrow, paging part of silent", () => {
+  test("a healthy day is not an outage", () => {
+    assert.equal(day().outage, false);
+  });
+  test("a publisher that stopped ticking is an outage", () => {
+    const v = day({ publisherTickAt: NOW - HEARTBEAT_STALE_MS - 10 * MIN });
+    assert.equal(v.severity, "silent");
+    assert.equal(v.outage, true);
+  });
+  test("a generator with no record is an outage", () => {
+    assert.equal(day({ autopilotLog: null }).outage, true);
+  });
+  test("one missed slot on a day that published, with a live publisher and generator, is silent but NOT an outage", () => {
+    const posts = healthyDayPosts();
+    // the 18:00 reel never landed: still approved, past its slot
+    const r = posts.find((p) => p.format === "reel");
+    Object.assign(r, { status: "approved", scheduledAt: at(18), postedAt: null, results: null });
+    const v = day({ posts });
+    assert.notEqual(v.severity, "ok");
+    assert.equal(v.outage, false);
+  });
+});

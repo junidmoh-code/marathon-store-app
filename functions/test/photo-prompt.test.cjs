@@ -187,9 +187,10 @@ test("index.js uses PHOTO_PROMPT only as buildPhotoPrompt's base", () => {
 });
 
 test("no house prompt default asks for the item to be freshened", () => {
-  const src = readIndex();
-  for (const name of ["HOUSE_PROMPT_CLOTHING", "HOUSE_PROMPT_SNEAKER"]) {
-    const i = src.indexOf(`const ${name} = [`);
+  // Since the Style Kit Catalogue (20 Nov 2026) the defaults live in ONE place, shared with the panel.
+  const src = require("fs").readFileSync(require("path").join(__dirname, "..", "lib", "style-kit-catalogue.mjs"), "utf8");
+  for (const name of ["HOUSE_PROMPT_CLOTHING", "HOUSE_PROMPT_SNEAKER", "HOUSE_PROMPT_GENERIC"]) {
+    const i = src.indexOf(`export const ${name} = [`);
     assert.ok(i > 0, `${name} is missing`);
     const body = src.slice(i, src.indexOf('].join(" ");', i));
     for (const re of EUPHEMISMS) {

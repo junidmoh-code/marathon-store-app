@@ -1351,3 +1351,33 @@ or unreadable the built-in seed applies (`src/utils/networkRegistry.js`): Sectio
 
 New `/orders` and refill-request records carry `section` (of `destShop`). A record without it is legacy;
 readers derive it from `destShop`. Rules for all of the above: `docs/SECTIONS-RULES.md`.
+
+---
+
+## `/bf_campaign_2026` — Black Friday 2026 WhatsApp campaign (Junid, 19 Nov 2026, v3)
+
+Server-only: no client rule. The card (`#black-friday`, super admin) goes through
+`bfCampaignList` / `bfCampaignSet` / `bfGenerate` (`functions/blackFriday/`); the Mac
+mini (`marathon-group-poster` `bin/bf-build.mjs`, `bin/bf-signal-post.mjs`) uses the
+Admin SDK. ONE ROW PER PRODUCT; albums (same stock price, one kind) are made only
+at posting. Paper bags are never in the campaign.
+
+| Path | Writer | Shape |
+|---|---|---|
+| `meta` | Mac (05:00 build) | `{ builtAt, main, big (30+), under, newArrivals, paperBags, noPhotoCount, … }` |
+| `items/main/{pid}` | Mac | 13+ on hand: `{ name, price (STOCK), qty, sizes, photo, kind, na? }` — `kind` = sneakers \| clothing \| headwear \| perfume \| bags \| belts \| sunglasses \| watches \| jewellery \| accessories |
+| `items/under/{pid}` | Mac | the rest that qualifies (in stock, priced, photo) — read only behind "Show under 13" |
+| `picks/{pid}` | `bfCampaignSet` | `{ state: "approved"\|"rejected", sig ("current" or a genId), at, by, section, price, kind, name, sizes, rev }` — absent = To review; a rejection persists across rebuilds; never deleted (`rev`) |
+| `photos/{pid}` | `bfCampaignSet`, `bfGenerate` | `{ use, genId, gens: { genId: { url, path, at, model, imageSize, kind, costZar, width, height, mime } }, generating?, rev }` |
+| `styles/{kind}` | `bfCampaignSet` | `{ approvedAt, by }` — Junid approved that kind's AI look (sneakers/clothing are established) |
+| `schedule` | `bfCampaignSet` | `{ mode, start, from, to, gapMin?, until?, confirmedAt, confirmedBy, plan: { album: { due, lap, pids: {pid:true} } }, planAt }` — **absent = nothing posts** |
+| `stats` | `bfGenerate` | `{ spentZar, generations }` |
+| `posted/{pid}` | Mac poster | `{ at, sig, approvedAt, album }` — posted once per approval |
+| `sending/{album}` | Mac poster | an attempt in progress / retried |
+| `decisions/{push}` | the callables | one row per tap (never read by the card) |
+| `picks/{pid}` (New Arrival) | `bfCampaignSet`, `bfNaMirror` | `{ state, src: "na", sig: "na", shown (the approved photo = the New Arrivals item's generatedUrl), at (= its approvedAt), by, section: "newArrivals", price, kind, name, sizes, useCurrent? }` — MIRRORS `new_arrivals/items/{pid}` (20 Nov): approving on either card is one approval |
+| `approvals/{pid}/{at}` | `bfCampaignSet`, `bfNaMirror` | every approval, kept for ever: `{ pid, at, by, photo, sig, name, price, kind, section, src? }` — the 05:00 build never touches it |
+| `repost/{pid}` | `bfCampaignSet` (Repost) | `{ at, by }` — post this approved product again at the next slot; nothing reposts by itself |
+| `history/{pid}/{album}` | Mac brain | every post: `{ at, album, status, groups: [name] }` |
+| `brain/sent/{pid}` | Mac brain | `{ n, last, album, perf }` — the card's "Posted n× · last …" |
+

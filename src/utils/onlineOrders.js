@@ -39,7 +39,10 @@ export function randomOrderRef(rand = Math.random) {
 /** "#1768" — the name a person reads for a website order (a follow-up says so). */
 export function orderLabel(order) {
   const n = order?.orderNumber;
-  const base = n != null && String(n) !== "" ? `#${n}` : (order?.shopifyName || order?.ref || "#?");
+  const num = n != null && String(n) !== "" ? `#${n}` : (order?.shopifyName || order?.ref || "#?");
+  // Concrete's numbers start at #1001 like Marathon's once did — the store
+  // name keeps "#1003" on a Concrete parcel from reading as Marathon's #1003.
+  const base = order?.sourceStore === "concrete" ? `Concrete ${num}` : num;
   // A second parcel of items an earlier parcel was short (every line `reship`; docs/ONLINE-ORDERS.md "Second parcel").
   if (order?.reship && typeof order.reship === "object") return `${base} (second parcel)`;
   return order?.followUpOf != null ? `${base} (follow-up)` : base;
@@ -148,6 +151,52 @@ export function heldUnits(cell, loc = null) {
   return n;
 }
 
+// ── RETURN-ONLY exchange records (Junid, 26 Nov 2026) ───────────────────────
+// A customer who takes store credit or a refund instead of a replacement gets
+// a collection record from Jamie's exchange page (marathon-dm-agent
+// src/jimmy/exchangeDesk/desk.js returnRecordFor): online_orders/exchange-<n>-<ms>
+// with exchange.returnOnly === true and lines carrying returnOnly: true. Its
+// line names the item COMING BACK, so the courier return can be booked
+// (scripts/shipping/bookReturn.mjs) and the unit put back into stock
+// (exchangeReturn.mjs). Nothing goes OUT: no routing, no hub order, no strip
+// entry, no hold, no parcel estimate and never an outbound shipment.
+export const isReturnOnlyLine = (line) => !!line && typeof line === "object" && line.returnOnly === true;
+const lineList = (order) => (Array.isArray(order?.lines) ? order.lines : Object.values(order?.lines || {})).filter((l) => l && typeof l === "object");
+/** The whole record is a return-only collection: flagged on the record, or every line flagged. PURE. */
+export function isReturnOnlyOrder(order) {
+  if (!order || typeof order !== "object") return false;
+  if (order.exchange && typeof order.exchange === "object" && order.exchange.returnOnly === true) return true;
+  const lines = lineList(order);
+  return lines.length > 0 && lines.every(isReturnOnlyLine);
+}
+/**
+ * A return-only record is finished once its item is back in stock AND said to
+ * be in original condition, with no condition hold standing:
+ *   back      incoming/arrival state "done" (or the till's older returnSaleId),
+ *             but NOT a by-hand arrival whose stock step is still open (byHand
+ *             set, nothing returned yet: exchangeReturn.mjs must still run it);
+ *   good      incoming/check.result "good" (the hub's check), or, with no
+ *             check at all, Junid's own "good condition" through
+ *             exchangeReturn.mjs (arrival via "jimmy" with units returned).
+ * A disputed, unchecked or held return stays open. The check is taken as
+ * final: a closed record is not reopened by a later hold. PURE.
+ */
+export function returnOnlyReceivedGood(order) {
+  const inc = order?.incoming;
+  if (!inc || typeof inc !== "object") return false;
+  const a = inc.arrival;
+  if (!a || typeof a !== "object") return false;
+  const returned = Array.isArray(a.stockReturned) ? a.stockReturned.length > 0 : !!a.stockReturned && Object.keys(a.stockReturned).length > 0;
+  const saleId = typeof a.returnSaleId === "string" && a.returnSaleId !== "";
+  const arrived = a.state != null ? a.state === "done" : saleId;
+  if (!arrived) return false;
+  if (a.byHand != null && !returned && !saleId && a.via !== "jimmy") return false;
+  if (inc.conditionHold && typeof inc.conditionHold === "object") return false;
+  const check = inc.check?.result;
+  if (check != null) return check === "good";
+  return a.via === "jimmy" && returned;
+}
+
 /**
  * The status an open order should show, from its lines. Packed, cancelled and
  * fulfilled_elsewhere are terminal. `enabled` is /config/onlineOrders/enabled: while it is off no
@@ -156,7 +205,11 @@ export function heldUnits(cell, loc = null) {
 export function deriveOrderStatus(order, { enabled = false } = {}) {
   const status = order?.status;
   if (TERMINAL_STATUSES.includes(status) || status === ORDER_STATUS.RELEASE_REQUESTED) return status;
-  const lines = Array.isArray(order?.lines) ? order.lines.filter(Boolean) : Object.values(order?.lines || {}).filter(Boolean);
+  // A return-only collection has nothing to pick or pack: it waits ("new", the status Jamie's exchange page cancels
+  // from) until its item is back in good condition, then closes. Never needs attention, never picking.
+  if (isReturnOnlyOrder(order)) return returnOnlyReceivedGood(order) ? ORDER_STATUS.CLOSED : ORDER_STATUS.NEW;
+  // A returning line on a mixed record is not waited for (nothing ships for it).
+  const lines = (Array.isArray(order?.lines) ? order.lines.filter(Boolean) : Object.values(order?.lines || {}).filter(Boolean)).filter((l) => !isReturnOnlyLine(l));
   if (!lines.length) return ORDER_STATUS.NEEDS_ATTENTION;
   const st = (l) => l?.source?.status;
   if (lines.some((l) => ATTENTION_LINE_STATUSES.includes(st(l)))) return ORDER_STATUS.NEEDS_ATTENTION;
@@ -172,4 +225,32 @@ export function deriveOrderStatus(order, { enabled = false } = {}) {
   if (live.every((l) => st(l) === LINE_STATUS.HANDED)) return ORDER_STATUS.READY;
   if (enabled && live.every((l) => st(l) === LINE_STATUS.HANDED || l?.source?.entryKey)) return ORDER_STATUS.PICKING;
   return ORDER_STATUS.NEW;
+}
+
+// ── How long a website line has been waiting (Junid, 24 Nov 2026) ───────────
+// Shown wherever staff see a website line (the Display Checks strip, a hub's
+// order card, Central's strip in Source). PURE.
+//   → { text: "waiting 1 h 20 min", level: "fresh" | "late" | "overdue" }
+export const WEB_WAIT_LATE_MS = 30 * 60 * 1000;
+export const WEB_WAIT_OVERDUE_MS = 60 * 60 * 1000;
+export function webWaiting(since, nowMs) {
+  const t = typeof since === "number" ? since : Date.parse(since);
+  if (!Number.isFinite(t) || !Number.isFinite(nowMs)) return null;
+  const ms = Math.max(0, nowMs - t);
+  const min = Math.floor(ms / 60000);
+  const text = min < 1 ? "just in" : min < 60 ? `waiting ${min} min` : min < 48 * 60 ? `waiting ${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ""}` : `waiting ${Math.floor(min / 1440)} days`;
+  return { text, level: ms >= WEB_WAIT_OVERDUE_MS ? "overdue" : ms >= WEB_WAIT_LATE_MS ? "late" : "fresh" };
+}
+
+/**
+ * Which day group a hub queue card sits in (Junid, 24 Nov 2026 evening). A website pick still to be pulled is
+ * placed in TODAY's group whatever day it came in — it leads the list (the queue's sort puts it first) and is
+ * never hidden in a collapsed "Yesterday" group or dropped after two days. Every other card keeps its own day.
+ *   order        the hub order
+ *   isWebPick    (order) => true for a website pick still to be pulled
+ *   dateOf       (order) => the card's own ISO stamp
+ *   nowIso       today, as an ISO stamp
+ */
+export function hubQueueDay(order, isWebPick, dateOf, nowIso) {
+  return isWebPick(order) ? nowIso : dateOf(order);
 }

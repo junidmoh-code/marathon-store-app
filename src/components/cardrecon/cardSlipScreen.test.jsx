@@ -354,26 +354,34 @@ describe("Amanda's screen: a Standard Bank till is photographed", () => {
   });
   afterEach(() => { delete ESTATE["00000F2Y"]; });
 
-  it("leads with the end-of-day report; the total is optional; Submit needs only a photo", async () => {
+  // Junid, 25 Nov 2026: the PAX settles itself at 18:50, after the photo, so
+  // today's typed total is REQUIRED (0 if none) — it is the day's figure until
+  // tonight's report is read.
+  it("leads with the end-of-day report; Submit needs the photo AND today's card total (0 allowed)", async () => {
     const t = render();
     const text = everyString(t);
     expect(text).toMatch(/Photograph the end-of-day report/);
-    expect(text).toMatch(/optional/);
+    expect(text).toMatch(/Today's card total/);
+    expect(text).not.toMatch(/optional/);
     expect(text).not.toMatch(/emailed|awaiting/i);
     expect(fileInputs(t).map((i) => !!i.props.multiple)).toEqual([false, true]);
     await pick(fileInputs(t)[0]);
+    expect(submitBtn(t).props.disabled).toBe(true);
+    expect(everyString(t)).toMatch(/Type the card total/);
+    type(t, "0");
     expect(submitBtn(t).props.disabled).toBe(false);
   });
 
-  it("several photos go as one report, with no total when none was typed", async () => {
+  it("several photos go as one report, with the typed total", async () => {
     const t = render();
     await pick(fileInputs(t)[0]);
     const add = () => t.root.findAll((n) => n.type === "input" && n.props.type === "file")[0];
     await pick(add());
     await pick(add());
     expect(everyString(t)).toMatch(/3 photos attached/);
+    type(t, "0");
     await press(submitBtn(t));
-    expect([...calls]).toEqual([{ action: "slip", pickedTid: "00000F2Y", photos: [{ base64: "QUJDRA==" }, { base64: "QUJDRA==" }, { base64: "QUJDRA==" }] }]);
+    expect([...calls]).toEqual([{ action: "slip", pickedTid: "00000F2Y", photos: [{ base64: "QUJDRA==" }, { base64: "QUJDRA==" }, { base64: "QUJDRA==" }], declaredTotal: "0" }]);
     expect(everyString(t)).toMatch(/Sent — thank you/);
     expect(everyString(t)).not.toMatch(/R\s?\d|batch|variance|clean|short|over|read/i);
   });
@@ -390,6 +398,7 @@ describe("Amanda's screen: a Standard Bank till is photographed", () => {
     calls.reply = () => ({ ok: true, received: true });
     const t = render();
     await pick(fileInputs(t)[0]);
+    type(t, "0");
     await press(submitBtn(t));
     expect(everyString(t)).toMatch(/Not sent — try again/);
     expect(t.root.findAll((n) => n.props["data-testid"] === "slip-sent")).toHaveLength(0);

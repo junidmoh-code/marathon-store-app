@@ -24,7 +24,7 @@ import {
   useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
   useStockTargetsState,
   useStockTargets, useTransfers, useRetryState,
-  useHiddenMissingProducts, useRefusalWriteoffs, useRefusalWriteoffDigestStatus,
+  useRefusalWriteoffs, useRefusalWriteoffDigestStatus,
 } from "./useStock";
 import { writeoffRows, recentCount, digestStatusLine, REFUSAL_WRITEOFF_DAYS } from "./refusalWriteoffsCore";
 import InTransit from "./InTransit";
@@ -42,16 +42,10 @@ import RefillQueue from "./RefillQueue";
 // sneakers-only hub → Central screen; hub clothing excess returns here by
 // flipping config/refillEngine/excessClothingEnabled, with no code change.
 import ExcessHubToCentral from "./ExcessHubToCentral";
-import NetworkTransfer from "./NetworkTransfer";
-import MissingFootwear from "./MissingFootwear";
-import { computeMissingFootwear } from "./missingFootwearCore";
-import { computeMissingProducts, buildChips, pickActiveTab } from "./missingProductsCore";
 import { isBufferLike } from "./introduceExistingCore";
 import { nameOf, isStore, solveHubFor } from "./sectionRouting";
 import { isLive } from "../../utils/networkRegistry";
 import { currentNetwork } from "../../utils/networkStore";
-import { partitionHidden } from "./hiddenProductsCore";
-import HiddenProducts, { HoldSpot } from "./HiddenProducts";
 import NoTargetQueue from "./NoTargetQueue";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { sizeRank } from "./hubSizeRank";
@@ -274,18 +268,8 @@ function groupByProduct(items, keyFields) {
   return [...byPid.entries()];
 }
 
-export default function HealthView({ products = [], onExit }) {
+export default function HealthView({ products = [], onExit, onOpenMissingProducts = null }) {
   const [screen, setScreen] = useState(null);
-  // Missing Products chip. null = nothing chosen yet, so pickActiveTab opens on
-  // the first chip — Clothing. The row is two FIXED chips (Clothing, Sneakers;
-  // owner directive 2026-08-05), and a stale per-type selection persisted from
-  // the old per-subcategory row ("bags", "watches", …) falls back the same way.
-  const [missingTab, setMissingTab] = useState(null);
-  // Solve-undo records live HERE, not in NetworkTransfer: a glance at the
-  // Sneakers or Hidden chip unmounts that component, and a fresh undo for a
-  // mistaken solve must survive exactly that glance. HealthView persists for
-  // the whole Inventory Health visit. (Sonnet substitute review, PR #361.)
-  const [solveUndoables, setSolveUndoables] = useState([]);
   const exceptions = useStockExceptions();
   // Units the hold lane parked in stock/in_transit that the hourly sweep could
   // NOT land by itself (a deleted product, a phantom line) — the one place
@@ -419,58 +403,6 @@ export default function HealthView({ products = [], onExit }) {
     const at = Date.parse(t.createdAt || "");
     return Number.isFinite(at) && serverNowMs() - at > STALE_TRANSIT_HOURS * 3600e3;
   }).length, [transitOpen]);
-  // Stranded non-footwear, computed CLIENT-SIDE from live /stock — the same
-  // function that builds the list inside the tab (missingProductsCore). It used
-  // to be the scan's unit-based buckets (onlyInCentral + onlyInHub2), which
-  // counted a different thing from what the list showed: 391 vs 380 measured
-  // 2026-08-03. Harmless while it was one number over one list; not harmless
-  // once the tab splits into category chips, because chips summing to 380 under
-  // a 391 headline reads as a broken screen. Sneakers already work this way and
-  // the note below says why that was the right call.
-  //
-  // null until /stock answers. The old count came from the scan snapshot and was
-  // there immediately; a client-side count is 0 until the listener fires, and a
-  // GREEN 0 on the dashboard states "nothing is stranded" at the exact moment we
-  // know nothing at all. Same gate this file already applies to migratableLive
-  // and liveNegatives above. (CodeRabbit, PR #308.)
-  const missingProductCards = useMemo(
-    () => (allStock && Object.keys(allStock).length ? computeMissingProducts({ allStock, products }) : null),
-    [allStock, products],
-  );
-  // ── HIDE — a view filter, strictly DOWNSTREAM of the compute ───────────────
-  // computeMissingProducts stays the single unforked source; hiding partitions
-  // its output here, so the chips, the headline count and the list all read
-  // the same visible set and cannot drift. The hidden set is one small node
-  // (/settings/missingProductsHidden — hiddenProductsCore.js); a null map
-  // (loading or unreadable) fails open to "nothing hidden". Hiding changes
-  // NOTHING the engine or the scan reads — a hidden product still refills.
-  const hiddenMap = useHiddenMissingProducts();
-  const { visible: missingVisible } = useMemo(
-    () => partitionHidden(missingProductCards || [], hiddenMap),
-    [missingProductCards, hiddenMap],
-  );
-  // Clothing AND perfume cards (2026-08-13) — everything the NetworkTransfer
-  // list renders. Named for what it is NOT (sneakers), because the headline sum
-  // below adds the sneaker list on top and must count every card exactly once.
-  // VISIBLE cards only (2026-08-13): a hidden product leaves the list and every
-  // count that describes the list — dashboard tile, drill-in badge, chips —
-  // in the same render. Null-while-loading is preserved from the raw compute.
-  const missingNonSneaker = missingProductCards == null ? null : missingVisible.length;
-  // SNEAKERS are computed CLIENT-SIDE from live /stock, deliberately, not from the
-  // scan's exception buckets: the engine's Health loop is clothing-only
-  // (`if (!isClothing(...)) continue` — "sneakers never appear in Health"), so a
-  // server-side count would need an engine change and a functions deploy for what
-  // is a read. It also means this count and the list inside the tab come from ONE
-  // function, so they cannot drift apart. The clothing pair above now follows the
-  // same rule — it used to be the scan's buckets over a carriage-based list, and
-  // that is the drift this comment used to describe as live. (PR #308.)
-  const missingSneakerCards = useMemo(
-    () => computeMissingFootwear({ allStock, products }),
-    [allStock, products],
-  );
-  // null while stock loads — see missingProductCards. Sneakers alone would be a
-  // half-answer, so the whole figure waits rather than under-reporting.
-  const missingProducts = missingNonSneaker == null ? null : missingNonSneaker + missingSneakerCards.length;
   // ("Needs Review" was removed 2026-07-12 v3 — the confidence signal still
   // feeds /stock_confidence for future use, but every dashboard card must lead
   // to an action, and a score without a workflow didn't.)
@@ -515,68 +447,6 @@ export default function HealthView({ products = [], onExit }) {
             <InTransit products={products} />
           </DetailShell>
         );
-      // TWO TABS, TWO RULES — they are not the same question.
-      //   Clothing — Central/Hub 2 stock the SHOPS don't carry. Shops hold
-      //              clothing buffer, so they are the right downstream to test.
-      //   Sneakers — Central stock NEITHER HUB holds. Shoes pass through
-      //              shop → customer and hold no shop buffer by design (267 shop
-      //              shoe cells were zeroed for this reason; PE holds 16 footwear
-      //              units across 2,454 cells), so testing the shops would flag
-      //              nearly the whole catalogue and mean nothing. Hub 1 and Hub 2
-      //              are where sneaker buffer lives.
-      case "missingProducts": {
-        // Three fixed chips — Clothing (owner directive 2026-08-05), Perfume
-        // (2026-08-13) and Sneakers (its own list). All always render, even at
-        // 0, so the row never reshuffles under the operator.
-        // The Hidden tab is NOT in the chip list — its entrance is the
-        // unlabelled HoldSpot below, so pickActiveTab (which only knows the
-        // visible chips) is bypassed for it. Leaving the tab any normal way
-        // (tapping a chip) drops back to chip-world and the Hidden chip
-        // disappears again.
-        const chips = buildChips(missingVisible, missingSneakerCards.length);
-        const activeTab = missingTab === "hidden" ? "hidden" : pickActiveTab(chips, missingTab);
-        return (
-          <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts ?? "—"} onBack={back}>
-            <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-              {chips.map(([key, label, n]) => (
-                <button key={key} onClick={() => setMissingTab(key)}
-                  style={{
-                    padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
-                    border: activeTab === key ? "1px solid rgba(60,110,255,.5)" : "1px solid rgba(255,255,255,.1)",
-                    background: activeTab === key ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.03)",
-                    color: activeTab === key ? BLUE_L : "rgba(255,255,255,.45)",
-                  }}>
-                  {label} ({n})
-                </button>
-              ))}
-              {/* Once OPEN the hidden tab announces itself — the discretion is
-                  about the entrance, not about pretending the screen you are
-                  on doesn't exist. Leaving via any chip hides it again. */}
-              {activeTab === "hidden" && (
-                <button onClick={() => setMissingTab("hidden")}
-                  style={{
-                    padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
-                    border: "1px solid rgba(60,110,255,.5)", background: "rgba(60,110,255,.14)", color: BLUE_L,
-                  }}>
-                  {/* Entry count, not hidden-CARD count: the tab lists every
-                      entry including NO LONGER MISSING ones (the state-change
-                      rule), so its chip must count what the tab shows. */}
-                  Hidden ({Object.keys(hiddenMap || {}).length})
-                </button>
-              )}
-              {/* The unlabelled entrance: press-and-hold the empty space at
-                  the end of the chip row (see HiddenProducts.jsx HoldSpot for
-                  the full rationale — discretion, NOT access control). */}
-              <HoldSpot onTrigger={() => setMissingTab("hidden")} />
-            </div>
-            {activeTab === "hidden"
-              ? <HiddenProducts products={products} cards={missingProductCards || []} hiddenMap={hiddenMap} />
-              : activeTab === "sneakers"
-              ? <MissingFootwear products={products} />
-              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingVisible} targets={allTargetsRaw} targetsSettled={targetsState.settled} targetsError={targetsState.error} undoables={solveUndoables} setUndoables={setSolveUndoables} />}
-          </DetailShell>
-        );
-      }
       case "missingSizes":
         return (
           <DetailShell title="Missing Sizes" sub="Real demand, zero stock anywhere — reorder candidates" count={count("missingSizes")} onBack={back}>
@@ -857,7 +727,7 @@ export default function HealthView({ products = [], onExit }) {
           return { ...o, [k]: { ...g, rows: [...g.rows, r] } };
         }, {});
         return (
-          <DetailShell title="Concrete Division Policy" sub={`Every product seated at Pine, Concrete and Hub 3, every size, checked by the hourly scan against Junid's policy (12 Nov 2026): everything that is not footwear at Pine and Concrete keeps 2 per size (5 per design with no size), from Central — no perfume at Concrete; Hub 3 holds footwear only, its sneakers keeping 2 per size, ask at 1. Seating-tab switch-offs count as correct. Read-only — fix a line on the Engine Policy card or the Seating tab; the next scan clears it.${count("divisionPolicy") > items("divisionPolicy").length ? ` Showing ${items("divisionPolicy").length} of ${count("divisionPolicy")} cells.` : ""}`} count={count("divisionPolicy")} onBack={back}>
+          <DetailShell title="Concrete Division Policy" sub={`Every product seated at Pine, Concrete and Hub 3, every size, checked by the hourly scan against Junid's policy (12 Nov 2026): everything that is not footwear at Pine and Concrete keeps 2 per size (5 per design with no size), from Central — no perfume at Concrete; where Pine follows Trophy (Engine Policy card) Trophy's numbers are the correct ones for Pine; Hub 3 holds footwear only, its sneakers keeping 2 per size, ask at 1. Seating-tab switch-offs count as correct. Read-only — fix a line on the Engine Policy card or the Seating tab; the next scan clears it.${count("divisionPolicy") > items("divisionPolicy").length ? ` Showing ${items("divisionPolicy").length} of ${count("divisionPolicy")} cells.` : ""}`} count={count("divisionPolicy")} onBack={back}>
             {!dp && (
               <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GRAY, fontWeight: 700, fontSize: 14 }}>No division audit in the latest scan — the Concrete division key is off, or the scan has not run since this card was added.</div>
             )}
@@ -1088,16 +958,12 @@ export default function HealthView({ products = [], onExit }) {
                         onClick={() => setScreen("intransit")} />
               <StatCard label="Excess Inventory" value={count("excess")} tone={count("excess") ? AMBER : GREEN}
                         sub="Hub 2 + shops above target → rebalance" onClick={() => setScreen("excess")} />
-              <StatCard label="Missing Products" value={missingProducts == null ? "—" : missingProducts}
-                        tone={missingProducts == null ? GRAY : missingProducts ? AMBER : GREEN}
-                        sub={missingProducts == null ? "Loading live stock…" : "Stranded upstream — transfer from here"}
-                        // A stale "hidden" selection must NOT survive leaving the
-                        // screen — HealthView never unmounts between drill-ins, so
-                        // without this, one hold gesture would leave the hidden tab
-                        // one PLAIN TAP away for the rest of the session, exactly
-                        // the over-the-counter exposure the HoldSpot exists to
-                        // prevent. Normal chip stickiness is untouched.
-                        onClick={() => { setMissingTab((t) => (t === "hidden" ? null : t)); setScreen("missingProducts"); }} />
+              {/* MISSING PRODUCTS IS ITS OWN SCREEN NOW (Junid, 22 Nov 2026 —
+                  MissingProductsScreen.jsx). This tile is the old way in: it
+                  no longer opens a tab here, it takes you there. */}
+              <StatCard label="Missing Products" value="→" tone={BLUE_L}
+                        sub="Moved to its own screen — tap to open"
+                        onClick={onOpenMissingProducts || undefined} />
               <StatCard label="Missing Sizes" value={count("missingSizes")} tone={count("missingSizes") ? RED : GREEN}
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
               <StatCard label="Recount Needed" value={count("recountNeeded")} tone={count("recountNeeded") ? RED : GREEN}

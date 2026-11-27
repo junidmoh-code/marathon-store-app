@@ -29,10 +29,12 @@ import { onAuthStateChanged, onIdTokenChanged, signInAnonymously, signInWithCust
 import { onValue, ref, set } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { auth, database, functions } from "../firebase";
-import { PermissionsContext, ADMIN_EMAIL } from "./PermissionsContext";
+import { PermissionsContext } from "./PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "../config/superAdmins";
 import { revokeBeforeSignOut } from "../push/registerPush";
 import { effectiveStoreIds } from "../utils/stores";
 import Login from "./Login";
+import { packerRedirectUrl } from "../utils/packerRedirect";
 import EnrolmentGate from "../device/EnrolmentGate";
 import {
   deviceGateVerdict, deviceTypeHint, identityFrom, isLiveEnrolment, knownRequired, readSessionClaims,
@@ -40,6 +42,10 @@ import {
 } from "../device/enrolment";
 import { serverNowMs } from "../utils/serverTime";
 import { adoptDeviceId, getDeviceId } from "../device/deviceId";
+import ActiveStoreLayer from "./ActiveStoreLayer";
+import { resumeCopies } from "../offline/resumeCopy";
+import { setSavedShowing } from "../offline/resumeFreshness";
+import { auditSignOut, bindActiveStore, resetActiveStore, setActiveStoreLogger, signOutFailed } from "../utils/activeStore";
 
 // The two calls the code screen makes. Module-level so the screen's props are
 // stable across renders.
@@ -59,6 +65,11 @@ const signInWithDeviceToken = async (token) => {
   try { window.location.reload(); } catch { /* no reload (tests) — AuthGate still opens the app */ }
 };
 
+// Every store switch is written to /store_switch_log by the server (who, from,
+// to, device, server time) — the client never writes the audit path itself.
+const logStoreSwitchCall = httpsCallable(functions, "logStoreSwitch");
+setActiveStoreLogger((entry) => logStoreSwitchCall(entry));
+
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 
 function LoadingScreen({ label = "Loading…" }) {
@@ -77,12 +88,20 @@ export default function AuthGate({ children, renderTv }) {
   const [user,         setUser]         = useState(null);
   const [permRecord,   setPermRecord]   = useState(null);
   const [permLoaded,   setPermLoaded]   = useState(false);
+  // Which account the loaded record belongs to — so the active shop is never
+  // bound to a new sign-in with the PREVIOUS (signed-out, null) record.
+  const [permUid,      setPermUid]      = useState(null);
   // Phase 15: a transient /users/{uid} read failure leaves permRecord null,
   // which effectiveStoreIds would treat as "legacy = all-access". For a scoped
   // user that would silently over-grant store access until the read recovers.
   // Track the error so we can fail CLOSED (no stores) on read failure instead.
   const [permReadError, setPermReadError] = useState(false);
   const [tvAuthReady,  setTvAuthReady]  = useState(false);
+  // The record on screen is the SAVED copy, not yet the live answer. While it
+  // is, nothing that changes state or routes acts on it (Sonnet review, #1019):
+  // the active shop is not bound, the packer redirect does not fire, and a
+  // record that asks for a device code waits for the live answer.
+  const [permSaved,    setPermSaved]    = useState(false);
 
   // Track hash changes for the #tv bypass
   useEffect(() => {
@@ -161,7 +180,17 @@ export default function AuthGate({ children, renderTv }) {
       });
   }, [isTv]);
 
-  // Subscribe to /users/{uid} for real (non-anonymous) users
+  // Subscribe to /users/{uid} for real (non-anonymous) users.
+  //
+  // ── A COLD START PAINTS FROM THE SAVED RECORD (Junid, 27 Nov 2026) ─────────
+  // A phone that threw the page away while it was in the background used to
+  // come back to "Loading…" until this read answered over a fresh socket —
+  // the loading state Junid saw on Source. The last LIVE answer for this same
+  // uid is kept in the mirror's database (src/offline/resumeCopy.js), and the
+  // app opens on it at once with the "Updating…" marker up; the live answer
+  // replaces it the moment it lands. Never another person's record, never a
+  // missing one (no record would read as all-access), and nothing that writes
+  // trusts the UI: every write is checked by the database's own rules.
   useEffect(() => {
     if (!user || user.isAnonymous) {
       setPermRecord(null);
@@ -169,19 +198,63 @@ export default function AuthGate({ children, renderTv }) {
       return;
     }
     setPermLoaded(false);
-    const r = ref(database, `users/${user.uid}`);
+    const uid = user.uid;
+    const savedKey = `users/${uid}`;
+    const copies = resumeCopies();
+    let liveArrived = false;
+    let cancelled = false;
+    const adoptSaved = (saved) => {
+      if (cancelled || liveArrived || !saved || !saved.value || typeof saved.value !== "object") return;
+      setPermReadError(false);
+      setPermRecord(saved.value);
+      setPermUid(uid);
+      setPermSaved(true);
+      setPermLoaded(true);
+      setSavedShowing(savedKey, true);
+    };
+    const peeked = copies.peek(uid, savedKey);
+    if (peeked) adoptSaved(peeked);
+    else copies.load(uid, savedKey).then(adoptSaved, () => {});
+    const r = ref(database, `users/${uid}`);
     const off = onValue(
       r,
       (snap) => {
+        liveArrived = true;
+        const val = snap.val() || null;
         setPermReadError(false);
-        setPermRecord(snap.val() || null);
-        rememberRequired(user.uid, snap.val()?.deviceCodeRequired === true);
+        setPermRecord(val);
+        setPermUid(uid);
+        rememberRequired(uid, val?.deviceCodeRequired === true);
+        setPermSaved(false);
         setPermLoaded(true);
+        setSavedShowing(savedKey, false);
+        if (val && typeof val === "object") copies.save(uid, savedKey, val);
+        else copies.forget(uid, savedKey);
       },
-      (err)  => { console.warn("permissions read failed:", err); setPermReadError(true); setPermRecord(null); setPermLoaded(true); }
+      (err)  => {
+        liveArrived = true;
+        setPermSaved(false);
+        setSavedShowing(savedKey, false);
+        copies.forget(uid, savedKey);   // a refused read must not be painted again on the next cold start
+        console.warn("permissions read failed:", err); setPermReadError(true); setPermRecord(null); setPermLoaded(true);
+      }
     );
-    return () => off();
+    return () => { cancelled = true; setSavedShowing(savedKey, false); off(); };
   }, [user]);
+
+  // The active shop (src/utils/activeStore.js): home = /users/{uid}/destShop.
+  // Bound only once the record has loaded, so a pinned user never starts
+  // "away" for a frame. A different sign-in (lastSignInTime) starts at home.
+  const realUid = user && !user.isAnonymous ? user.uid : null;
+  const homeShop = permRecord?.destShop || null;
+  const switchName = permRecord?.displayName || permRecord?.username || user?.email?.split("@")[0] || null;
+  const signInStamp = user?.metadata?.lastSignInTime || null;
+  useEffect(() => {
+    if (!authReady) return;                      // never wipe the saved choice before auth settles
+    if (!realUid) { resetActiveStore(); return; }
+    if (!permLoaded || permReadError || permUid !== realUid || permSaved) return;
+    bindActiveStore({ uid: realUid, homeShop, name: switchName, signIn: signInStamp, deviceId: getDeviceId() });
+  }, [authReady, realUid, homeShop, switchName, signInStamp, permLoaded, permReadError, permUid, permSaved]);
 
   // TV bypass: hand off entirely to the caller's renderTv — but only once
   // tvAuthReady is true, so the TV's data hooks always see a valid auth.
@@ -217,15 +290,23 @@ export default function AuthGate({ children, renderTv }) {
   if (!user || user.isAnonymous) return <Login />;
   if (!permLoaded) return <LoadingScreen />;
 
-  const isSuperAdmin  = user.email === ADMIN_EMAIL;
+  const isSuperAdmin  = isSuperAdminEmail(user.email);
   // A login that needs a device code: the code screen and nothing else until
   // this device is enrolled — and again the moment it is revoked, because the
   // gate entry lives on the /users record subscribed just above.
-  const gate = deviceGateVerdict({
+  // A saved record that asks for a device code never opens the gate by
+  // itself: wait for the live one.
+  const gate = (permSaved && permRecord?.deviceCodeRequired === true) ? "loading" : deviceGateVerdict({
     permRecord, claims, isSuperAdmin, readError: permReadError, knownRequired: knownRequired(user.uid),
   });
   if (gate === "loading") return <LoadingScreen />;
   if (gate === "code") return <EnrolmentGate enrol={enrolWithCode} signIn={signInWithDeviceToken} />;
+  // The online packer works in the POS, never here (Junid, 20 Nov 2026; src/utils/packerRedirect.js).
+  const toPos = permSaved ? null : packerRedirectUrl(permRecord, isSuperAdmin);
+  if (toPos) {
+    if (typeof window !== "undefined") window.location.replace(toPos);
+    return <div style={{ padding: 24, fontSize: 18 }}>Opening the POS for website orders… <a href={toPos}>Tap here if it doesn't open.</a></div>;
+  }
   const permissions   = Array.isArray(permRecord?.permissions) ? permRecord.permissions : [];
   // Fail closed for scoped users on a read error (super-admin still bypasses).
   const storeIds      = permReadError ? effectiveStoreIds({ storeIds: [] }, isSuperAdmin)
@@ -242,14 +323,19 @@ export default function AuthGate({ children, renderTv }) {
   const doSignOut     = () =>
     revokeBeforeSignOut(user && !user.isAnonymous ? user.uid : null)
       .catch(() => {})
-      .then(() => signOut(auth))
+      // Away from home → the return is audited while still signed in (≤3 s).
+      // The active shop itself is cleared only once sign-out has happened
+      // (the effect above sees no user); a failed sign-out keeps it working.
+      .then(() => Promise.race([auditSignOut(), new Promise((r) => setTimeout(r, 3000))]))
+      .catch(() => {})
+      .then(() => signOut(auth).catch((err) => { signOutFailed(); throw err; }))
       .catch((err) => console.warn("signOut failed:", err));
 
   return (
     <PermissionsContext.Provider
       value={{ user, permRecord, isSuperAdmin, permissions, storeIds, hasPermission, signOut: doSignOut,
                deviceIdentity: identityFrom({ claims, permRecord, user }) }}>
-      {children}
+      <ActiveStoreLayer>{children}</ActiveStoreLayer>
     </PermissionsContext.Provider>
   );
 }

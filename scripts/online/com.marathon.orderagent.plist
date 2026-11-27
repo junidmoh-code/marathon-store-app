@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the website-order agent (Mac mini, Junid's brief 14 Nov 2026):
+  scripts/online/order-agent.mjs. KeepAlive + ThrottleInterval 900 → one run every
+  15 minutes (the 2026-08-31 lesson: StartInterval agents can silently stop firing);
+  a start outside 08:00–18:15 SAST exits at once. Kill switch:
+  /config/onlineOrders/orderAgentOff = true.
+
+  CREDENTIALS: none here. .env at the repo root (Shopify); Firebase Admin (RTDB + FCM
+  for the staff nudge) via GOOGLE_APPLICATION_CREDENTIALS. Only PATHS appear here.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.orderagent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/online/order-agent.mjs</string>
+    <string>--commit</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>900</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/order-agent.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/order-agent.err.log</string>
+</dict>
+</plist>

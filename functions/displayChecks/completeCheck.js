@@ -54,7 +54,25 @@ const {
 
 const ALL_RESULTS = [...DISPLAY_RESULTS, ...ONLINE_PICK_RESULTS, ...ONLINE_RETURN_RESULTS];
 const { guardedMutate } = require("./guardedTransaction.cjs");
-const { applyOnlineOrderOutcome } = require("./onlineOrder.cjs");
+const { applyOnlineOrderOutcome, applyFoundOnCheck } = require("./onlineOrder.cjs");
+const { holdRejection } = require("../lib/shelf-rejects.cjs");
+const { DIRTY_PATH, CONCRETE_DIRTY_PATH } = require("../lib/shopify-inventory-dirty.cjs");
+
+/** A display check closed "no stock" over stock the app shows: hold that shelf until it is checked. Never throws. */
+async function holdNoStock(db, store, record) {
+  try {
+    if (!record || record.result !== "no_stock" || isOnlinePickRecord(record) || !record.productId) return null;
+    const sizeKey = record.sizeKey || stockSizeKey(record.size);
+    const at = Number(record.completedAt) || Date.now();
+    return await holdRejection(db, { loc: store, pid: record.productId, sizeKey, size: record.size ?? null, at, kind: "display_no_stock", ref: `display check ${record.checkId || ""}`.trim() }, {
+      nowMs: at,
+      markDirty: async (pid) => { for (const node of [DIRTY_PATH, CONCRETE_DIRTY_PATH]) await db.ref(`${node}/${pid}`).set(admin.database.ServerValue.increment(1)); },
+    });
+  } catch (e) {
+    console.warn(`[displayChecks] no-stock hold for ${store} not written (${e && e.message})`);
+    return null;
+  }
+}
 const { locationName, SEED_REGISTRY } = require("../lib/network-registry.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { loadStoreSettings } = require("./settings.cjs");
@@ -65,7 +83,7 @@ if (!admin.apps.length) {
   });
 }
 
-const ADMIN_EMAIL = "gunidmoh@gmail.com"; // super-admin (mirrors config/displayChecks.js)
+const { isSuperAdmin } = require("../lib/super-admins.cjs"); // Junid and Jafer (mirrors config/displayChecks.js)
 
 // Reject-code → callable error code. Everything else is a failed-precondition.
 const ERROR_CODE = {
@@ -163,6 +181,11 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   const durable = (record) => Promise.all([
     archiveAndLog(db, store, record),
     applyOnlineOrderOutcome(db, store, record, { storeName: name }),
+    // "It is on display" also undoes a website write-down on that shelf (never decides ok: best-effort).
+    applyFoundOnCheck(db, store, record),
+    // "No Stock Available" while the app shows stock there: the shop's own "not found anywhere". The count is NOT
+    // changed; the shelf is held off the website and put on its shelf check (Junid, 24 Nov 2026 evening). Best-effort.
+    holdNoStock(db, store, record),
   ]).then(([a, o]) => a && o);
   const okOrRetry = (record) => durable(record).then((ok) =>
     ok ? { kind: "ok", result: record.result, completedAt: record.completedAt, overridden: !!record.resultOverridden }
@@ -215,6 +238,36 @@ async function runComplete(db, { store, key, checkId, result, override, actor, n
   return { kind: "reject", code: "already-completed" };
 }
 
+// Who may complete a check for THIS store: a super admin (Junid or Jafer) with a
+// VERIFIED email, or an account holding display_checks — for ANY shop (Junid,
+// 20 Nov 2026: every user works all four shops; the app confirms and banners a
+// switch away from their own). It used to also require destShop === store.
+// The shop itself is checked by the caller (enabled / website strip).
+function displayCheckAllowed({ email, emailVerified, userRec, store }) {
+  const perms = Array.isArray(userRec?.permissions) ? userRec.permissions : [];
+  const isSuper = isSuperAdmin(email) && emailVerified === true;
+  // Central's website strip lives inside Source (Junid, 24 Nov 2026): whoever may work Source may answer it.
+  // Central is not a shop: display_checks does not reach it.
+  if (store === "central") return isSuper || perms.includes("source");
+  return isSuper || (perms.includes("display_checks") && typeof store === "string" && store.length > 0);
+}
+
+// The completer's stamp: who, plus the shop the action counted for and their
+// own shop — read server-side, so it cannot be forged by the client.
+function completionActor({ uid, userRec, email, store }) {
+  const home = typeof userRec?.destShop === "string" && userRec.destShop ? userRec.destShop : null;
+  return {
+    uid,
+    name: userRec?.displayName || userRec?.username || (email ? email.split("@")[0] : "staff"),
+    email,
+    actingStore: store,
+    actingHomeStore: home,
+    actingAway: !!home && home !== store,
+  };
+}
+exports._completionActor = completionActor;
+exports._displayCheckAllowed = displayCheckAllowed;
+
 // Exported for the completion regression tests (write-once, no-stock soft-block,
 // and THE hard gate: completion never deletes the active record).
 exports.runComplete = runComplete;
@@ -257,28 +310,21 @@ exports.completeDisplayCheck = onCall(
 
     const db = admin.database();
 
-    // ── Authorize for THIS store: super-admin, or store-scoped display_checks
+    // ── Authorize for THIS store: super-admin, or display_checks (any shop)
     // (mirrors config/displayChecks.canUseDisplayChecks server-side). ──
     // The super-admin shortcut trusts the email claim, so it MUST be a VERIFIED
-    // email — otherwise a self-signed-up account claiming gunidmoh@gmail.com with
+    // email — otherwise a self-signed-up account claiming a super-admin address with
     // email_verified:false would inherit super-admin. Google sign-in (the real
     // super-admin's provider) sets email_verified:true, so this is safe. The
     // staff path never trusts email — it authorizes by uid-keyed /users perms.
     const emailVerified = !!(request.auth.token && request.auth.token.email_verified);
     const userRec = (await db.ref(`users/${uid}`).get()).val() || {};
-    const perms = Array.isArray(userRec.permissions) ? userRec.permissions : [];
-    const isSuper = email === ADMIN_EMAIL && emailVerified;
-    const allowed = isSuper
-      || (perms.includes("display_checks") && userRec.destShop === store);
+    const allowed = displayCheckAllowed({ email, emailVerified, userRec, store });
     if (!allowed) {
       throw new HttpsError("permission-denied", "You can't complete checks for this store.");
     }
 
-    const actor = {
-      uid,
-      name: userRec.displayName || userRec.username || (email ? email.split("@")[0] : "staff"),
-      email,
-    };
+    const actor = completionActor({ uid, userRec, email, store });
 
     const out = await runComplete(db, {
       store, key, checkId, result, override: override === true, actor, nowMs: Date.now(), websiteOnly,

@@ -394,14 +394,20 @@ describe("destinationFor (the owner rule, Junid 5 Nov 2026)", () => {
     expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "marathon-pe" } } })).toBe("hub2");
     expect(destinationFor({ product: shoe, size: "8", soldLoc: "trophy" })).toBe("hub2");
     expect(destinationFor({ product: shoe, size: "8", hubQty: { hub1: 5, hub2: 0 } })).toBe("hub2"); // never "whichever holds more"
-    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "hub3" } } })).toBe("hub2");
+    // Hub 3 is the hub it was picked from (Junid 12 + 26 Nov 2026, as the POS's pickedFromRoutes).
+    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "hub3" } } })).toBe("hub3");
+    expect(destinationFor({ product: shoe, size: "8", origLine: { source: { locationId: "concrete" } } })).toBe("hub2");
   });
   it("clothing goes back to the shop it was picked from, Marathon PE if unknown", () => {
     expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "trophy" } } })).toBe("trophy");
     expect(destinationFor({ product: { category: "Clothing" }, size: "M", soldLoc: "marathon-pe", origLine: { source: { locationId: "trophy" } } })).toBe("marathon-pe");
     expect(destinationFor({ product: { category: "Clothing" }, size: "M" })).toBe("marathon-pe");
     expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "elsewhere" } } })).toBe("marathon-pe");
-    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "hub2" } } })).toBe("marathon-pe"); // never a hub
+    // The place it was picked from (the POS's WEB_ORDER_DEDUCT_LOCATIONS: Hub 2, Concrete, Marathon Pine too); never Hub 1.
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "hub2" } } })).toBe("hub2");
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { deductFrom: "concrete" } })).toBe("concrete");
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "marathon-pine" } } })).toBe("marathon-pine");
+    expect(destinationFor({ product: { category: "Clothing" }, size: "M", origLine: { source: { locationId: "hub1" } } })).toBe("marathon-pe");
     expect(destinationFor({ product: { category: "Clothing" }, size: "M", soldLoc: "hub1", origLine: { source: { locationId: "trophy" } } })).toBe("trophy");
     expect(destinationFor({ product: shoe, size: "M" })).toBe("marathon-pe"); // a slide in S/M/L is a shop item
   });
@@ -459,5 +465,100 @@ describe("a pid-less returning item and the movement's order reference", () => {
     const rec = record({ incoming: { ...record().incoming, returning: [{ title: "Nobody knows", size: "8", origOrderKey: "18966134358165" }] } });
     const db = world({ rec, orig: [{ pid: SNK, size: "8", title: "Nike Shox TL" }, { pid: "pX", size: "8", title: "Other" }] });
     expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/not recorded/) });
+  });
+});
+
+describe("26 Nov 2026: back where it was picked, and Junid's good is the condition check", () => {
+  it("a good run writes incoming/check { result: good } (the field the dm-agent reads) once the stock is back", async () => {
+    const db = world();
+    const out = await run(db);
+    expect(out).toMatchObject({ ok: true, done: true });
+    expect(at(db, `online_orders/${KEY}/incoming/check`)).toEqual({ result: "good", at: NOW, by: { uid: ACTOR, name: "Jimmy (Junid's word on WhatsApp)" }, via: "junid" });
+  });
+  it("a till's own good check is never overwritten; an arrival the till already finished gets one only when it has none", async () => {
+    const tillCheck = { result: "good", at: 5, by: { uid: "u-yusuf", name: "Yusuf" } };
+    const rec = record({ incoming: { ...record().incoming, arrival: { state: "done", at: 4, returnSaleId: "S-RET", by: { uid: "u-yusuf" } }, check: tillCheck } });
+    const db = world({ rec });
+    expect(await run(db)).toMatchObject({ ok: true, already: true });
+    expect(at(db, `online_orders/${KEY}/incoming/check`)).toEqual(tillCheck);
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11`) ?? null).toBeNull(); // never twice
+  });
+  it("Junid's good after a till's not_original keeps the till's evidence under previous", async () => {
+    const tillCheck = { result: "not_original", reason: "dirty", photos: ["https://a", "https://b"], at: 5, by: { uid: "u-yusuf" } };
+    const rec = record({ incoming: { ...record().incoming, arrival: { state: "done", at: 4, returnSaleId: "S-RET", by: { uid: "u-yusuf" } }, check: tillCheck } });
+    const db = world({ rec });
+    await run(db);
+    expect(at(db, `online_orders/${KEY}/incoming/check`)).toMatchObject({ result: "good", via: "junid", previous: tillCheck });
+  });
+  it("clothing picked at Concrete goes back to Concrete when the pack sale deducted there; nothing shows it → withheld, never minted", async () => {
+    const orig = [{ pid: PID_OUT, size: "11", title: "Diesel", deductFrom: "concrete", source: { locationId: "concrete", status: "handed" } }];
+    const proven = world({ orig, extra: { stock_movements: { [`sold:-NsOrig:concrete:${PID_OUT}:11`]: { type: "sold", qty: 1, productId: PID_OUT, size: "11" } } } });
+    const ok = await run(proven);
+    expect(ok).toMatchObject({ ok: true, done: true, items: [{ pid: PID_OUT, to: "concrete" }] });
+    expect(at(proven, `stock/concrete/${PID_OUT}/11/qty`)).toBe(1);
+    const unproven = world({ orig });
+    const out = await run(unproven);
+    expect(out).toMatchObject({ ok: true, done: true, withheld: [{ pid: PID_OUT, why: "not_deducted_there" }] });
+    expect(at(unproven, `stock/concrete/${PID_OUT}/11`) ?? null).toBeNull();
+  });
+});
+
+// A RETURN-ONLY record (store credit / refund instead of a replacement, Junid 26 Nov 2026): marathon-dm-agent
+// desk.js returnRecordFor writes the returning item as the record's one line (returnOnly: true) and no
+// incoming.returning. The unit still goes back into stock; there is no replacement to check.
+describe("a return-only record (store credit / refund, nothing ships)", () => {
+  const roRecord = (extra = {}) => ({
+    orderNumber: "1793-EX", shopifyName: "#1793-EX", status: "new",
+    exchange: { kind: "exchange", by: "exchange page", returnOnly: true, paidAt: 1793333411004, paidCents: 0, relatedOrders: ["18966134358165"], desk: { id: 7, outcome: "credit" } },
+    lines: [{ pid: PID_OUT, size: "11", sizeKey: "11", qty: 1, title: "Diesel Green Black White Orange", unitPriceCents: 0, returnOnly: true, exchangeFor: "Diesel Green Black White Orange" }],
+    ...extra,
+  });
+
+  it("pure: the returning line is the plan; ready; no replacement", () => {
+    const plan = returnPlan(roRecord(), KEY);
+    expect(plan).toMatchObject({ ok: true, fromFallback: false, items: [{ pid: PID_OUT, size: "11", sizeKey: "11", origOrderKey: "18966134358165", movementId: MV }] });
+    expect(notReadyWhy(roRecord(), { orderNumber: "1793" })).toBeNull();
+    expect(notReadyWhy(roRecord({ lines: [] }), { orderNumber: "1793" })).toMatch(/does not name the item coming back/);
+    expect(replacementCheck({ record: roRecord() })).toMatchObject({ lines: [], deducted: "none", returnOnly: true });
+    // incoming.returning (the record's own booked list) still wins when it is there.
+    const listed = returnPlan(roRecord({ incoming: { returning: [{ pid: SNK, size: "9", title: "Shox" }] } }), KEY);
+    expect(listed.items.map((i) => i.pid)).toEqual([SNK]);
+  });
+
+  it("good condition: the unit goes back into stock once, the arrival is done, nothing else is read or touched", async () => {
+    const db = world({ rec: roRecord(), peQty: 0, extra: { online_reservations: null } });
+    const out = await run(db);
+    expect(out).toMatchObject({ ok: true, done: true, items: [{ pid: PID_OUT, size: "11", to: RETURN_TO, before: 0, after: 1, movementId: MV }] });
+    expect(out.replacement).toMatchObject({ lines: [], deducted: "none" });
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
+    expect(at(db, `stock_movements/${MV}`)).toMatchObject({ type: "return", reason: "exchange return #1793", link: { orderId: KEY, saleId: "-NsOrig" } });
+    expect(at(db, `online_orders/${KEY}/incoming/arrival`)).toMatchObject({ state: "done", via: "jimmy" });
+    expect(at(db, "online_reservations")).toBeNull(); // no hold is ever written for it
+    const again = await run(db);
+    expect(again).toMatchObject({ ok: true, already: true });
+    expect(Object.keys(at(db, "stock_movements"))).toEqual([MV]);
+    // The poller then closes it (back and good): a re-run still answers "already back", never "closed".
+    await db.ref(`online_orders/${KEY}/status`).set("closed");
+    expect(await run(db)).toMatchObject({ ok: true, already: true });
+  });
+
+  it("the till confirmed it by hand and the poller closed it: Junid's \"good\" still puts the unit back, once", async () => {
+    const db = world({ rec: roRecord({ status: "closed", incoming: { arrival: { state: "done", byHand: { by: "Yusuf" }, at: NOW - 1000 }, check: { result: "good" } } }), peQty: 0, extra: { online_reservations: null } });
+    const out = await run(db);
+    expect(out).toMatchObject({ ok: true, done: true, byHand: true, items: [{ to: RETURN_TO, before: 0, after: 1 }] });
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
+  });
+
+  it("a unit already put back by hand (ledger row, no arrival recorded) is not added a second time", async () => {
+    expect(returnPlan(roRecord(), KEY)).toMatchObject({ fromLines: true, fromFallback: false });
+    const db = world({ rec: roRecord(), peQty: 1, extra: { online_reservations: null, stock_movements: { a: { type: "adjustment", productId: PID_OUT, size: "11", qty: 1, to: "marathon-pe", ts: new Date(NOW - 5000).toISOString(), reason: "found in back" } } } });
+    expect(await run(db)).toMatchObject({ ok: false, notReady: true, reason: expect.stringMatching(/already shows/) });
+    expect(at(db, `stock/${RETURN_TO}/${PID_OUT}/11/qty`)).toBe(1);
+    // Junid's "add it anyway" still gets past a false match.
+    expect(await run(db, { force: true })).toMatchObject({ ok: true, done: true });
+  });
+
+  it("a cancelled return-only record is still finished", () => {
+    expect(notReadyWhy(roRecord({ status: "cancelled" }))).toMatch(/cancelled/);
   });
 });

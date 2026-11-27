@@ -257,6 +257,26 @@ function strRow(e) {
 // Seed a location that is being armed for the first time. Minimum is filled in
 // from ceil(keep / 2) rather than left blank — the column stays visible, but it
 // is never typed from scratch.
+// A CATEGORY LEAVING ITS GROUP FOR ITS OWN NUMBERS starts from the group's —
+// but only for ITS OWN SIZES. Kids Shoes opens on the Footwear policy: Hub 3's
+// one number for every size is kept exactly as it is, and each size-by-size
+// location (Hub 1, Hub 2) is laid out on the kids run (24–35), carrying the
+// group's number for any size both name and BLANK for the rest — never the
+// adult sizes a kids shoe does not come in, and never a number nobody chose.
+// Every location is CARRIED-ONLY: Kids Shoes' own numbers keep sizes only where
+// a kids shoe is already kept (the server refuses anything else).
+export function draftForOwnRun(draft, sizeRun) {
+  const run = [...new Set(sizeRun || [])].sort(bySizeRank);
+  const out = {};
+  for (const [loc, row] of Object.entries(draft || {})) {
+    if (!isPerSizeRow(row) || !run.length) { out[loc] = { ...row, carriedOnly: true }; continue; }
+    const sizes = {};
+    for (const k of run) sizes[k] = row.sizes[k] || { target: "", minQty: "", reorderPoint: "" };
+    out[loc] = { sizes, carriedOnly: true };
+  }
+  return out;
+}
+
 export function seedLocation(target) {
   const t = Number(target);
   return {
@@ -675,27 +695,117 @@ export function lastChange(historyEntries) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// THE MAIN LIST — A GROUP IS ONE ENTRY, ITS MEMBERS ARE INSIDE IT
+// THE MAIN LIST — EVERY CATEGORY HAS A ROW; A GROUP'S MEMBERS SIT UNDER IT
 // ═════════════════════════════════════════════════════════════════════════════
 // The census returns categories AND groupEntries (one per group, carrying the
-// same fields a category carries, counts summed). The list shows the group
-// entry sorted in with everything else and HIDES its members — they are
-// reached from inside the group, where any one can still be given numbers of
-// its own. Hidden means not on this list, not gone: the member entries stay in
-// the census so the detail screen can open them.
+// same fields a category carries, counts summed).
+//
+// EVERY CATEGORY IS ON THE LIST (Junid, 22 Nov 2026). The list used to HIDE a
+// group's members — eight footwear categories folded into one "Footwear" row,
+// reachable only from inside it. Junid went to arm Kids Shoes and could not
+// find it: there was no row with that name, and nothing said its sizes
+// (26–33) had no numbers under a Footwear policy that only speaks for 3–13.
+// A member now has its own row, directly under its group's, saying whose
+// numbers it uses and — policyGaps below — which of its sizes have none.
 //
 // Order: governed first (they are what somebody came to change), then anything
 // with products or rows, then the empty rest — alphabetical inside each. A
 // group is "governed" only when it is ARMED and names a location: a disarmed
 // group with numbers in it governs nothing, and the list must not rank it as
-// if it did.
+// if it did. Members follow their group wherever it lands, alphabetical.
 export function mainListEntries(census) {
   const cats = Array.isArray(census?.categories) ? census.categories : [];
   const groups = Array.isArray(census?.groupEntries) ? census.groupEntries : [];
-  const visible = [...cats.filter((c) => !c.memberOfGroup), ...groups];
+  const top = [...cats.filter((c) => !c.memberOfGroup), ...groups];
   const governed = (c) => (c.isGroup ? (c.armed === true && (c.armedEffective || []).length > 0) : (c.armedEffective || []).length > 0);
   const band = (c) => (governed(c) ? 0 : (c.products > 0 || c.ownRowCells > 0) ? 1 : 2);
-  return visible.sort((a, b) => band(a) - band(b) || String(a.label).localeCompare(String(b.label)));
+  const byLabel = (a, b) => String(a.label).localeCompare(String(b.label));
+  top.sort((a, b) => band(a) - band(b) || byLabel(a, b));
+  const out = [];
+  const placed = new Set();
+  for (const c of top) {
+    out.push(c);
+    if (!c.isGroup) continue;
+    const gk = c.groupKey || String(c.key).replace(/^group:/, "");
+    for (const m of cats.filter((x) => x.memberOfGroup === gk).sort(byLabel)) {
+      out.push({ ...m, underGroup: c.key });
+      placed.add(m.key);
+    }
+  }
+  // A member whose group entry the census did not send (the shape before
+  // groups were entries) is still a category, and still gets a row.
+  for (const m of cats.filter((x) => x.memberOfGroup && !placed.has(x.key)).sort(byLabel)) out.push(m);
+  return out;
+}
+
+// ── WHICH OF A CATEGORY'S SIZES HAVE NO NUMBER ───────────────────────────────
+// "Armed at 3" is true of Kids Shoes and useless: the Footwear policy is armed
+// at Hub 1 and Hub 2 SIZE BY SIZE, for 3–13, and a kids shoe is a 26–33. The
+// engine keeps nothing of a size the per-size map does not name, so the
+// category is unarmed there in every way that matters. This says so, from the
+// census alone — the category's own derived run against the numbers in force.
+//
+//   { [location]: { missing: [sizeKey…], all: true|false } }
+//
+// Only per-size locations can have a gap: a location armed with ONE number
+// speaks for every size. A one-size category has no run and so no gap.
+export function policyGaps(category) {
+  const run = Array.isArray(category?.sizeRun) ? category.sizeRun : [];
+  const entry = category?.effectiveEntry;
+  const out = {};
+  if (!run.length || !entry || typeof entry !== "object") return out;
+  for (const loc of category.armedEffective || []) {
+    const leg = entry[loc];
+    if (!leg || typeof leg !== "object" || !leg.sizes || typeof leg.sizes !== "object") continue;
+    const missing = run.filter((k) => !(Number(leg.sizes[k]?.target) > 0));
+    if (missing.length) out[loc] = { missing, all: missing.length === run.length };
+  }
+  return out;
+}
+
+// Where a category is armed in name only — a per-size location that names
+// NONE of its sizes — and where it genuinely is.
+export function armedInTruth(category) {
+  const gaps = policyGaps(category);
+  const armed = category?.armedEffective || [];
+  return { real: armed.filter((l) => !gaps[l]?.all), hollow: armed.filter((l) => gaps[l]?.all), partial: armed.filter((l) => gaps[l] && !gaps[l].all) };
+}
+
+// ── THE CATALOGUE AGAINST THE LIST ───────────────────────────────────────────
+// The census lists every category the taxonomy, the policy map or a group
+// names, plus any that exists only as rows. Two things a product can be that
+// reach none of those, and so had no row anywhere on this card:
+//
+//   noCategory   products with NO category key (and not a legacy sneaker). No
+//                category policy can ever reach them — the "earlier footwear
+//                case" again, for everything else. Counted by what the
+//                product's old category/subcategory says, so the owner can see
+//                what they are.
+//   unlisted     a category key some product carries that the census did not
+//                return at all (a key outside the category list with no rows).
+//
+// Computed in the browser from the catalogue the app already holds — no read.
+// `categoryKeyOf` is the engine's own resolution (productTaxonomy.js
+// effectiveCategoryKey, the browser copy of policyCategoryKey). Deactivated
+// products are finished lines and are left out.
+export function catalogueOutsideTheList({ products, census, categoryKeyOf, isDeactivated }) {
+  const listed = new Set((Array.isArray(census?.categories) ? census.categories : []).map((c) => c.key));
+  const none = new Map();       // legacy label → count
+  const unlisted = new Map();   // key → count
+  let noCategory = 0;
+  for (const p of Array.isArray(products) ? products : []) {
+    if (!p || (isDeactivated && isDeactivated(p))) continue;
+    const key = categoryKeyOf(p);
+    if (!key) {
+      noCategory += 1;
+      const label = [p.category, p.subcategory].filter((x) => typeof x === "string" && x.trim()).join(" › ") || "Nothing recorded";
+      none.set(label, (none.get(label) || 0) + 1);
+    } else if (!listed.has(key)) {
+      unlisted.set(key, (unlisted.get(key) || 0) + 1);
+    }
+  }
+  const sorted = (m) => [...m.entries()].map(([label, products]) => ({ label, products })).sort((a, b) => b.products - a.products || a.label.localeCompare(b.label));
+  return { noCategory, noCategoryBy: sorted(none), unlisted: sorted(unlisted).map(({ label, products }) => ({ key: label, products })) };
 }
 
 // A group's preview comes back from setGroup's dry run as an `armModel` —

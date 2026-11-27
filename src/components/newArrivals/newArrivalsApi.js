@@ -29,6 +29,12 @@ export const newArrivalsApi = {
     getToken: () => auth.currentUser?.getIdToken(),
     onChunk: onEvent,
   }),
+  // "Use current photo": approve with the app's own photo — no generation. → { approved, skipped }
+  useCurrent: (pid) => call("newArrivalsUseCurrent")({ pid }),
+  // Approved → back to New. → { ok, status, shopifyNote } | { ok: false, why }
+  unapprove: (pid) => call("newArrivalsUnapprove")({ pid }),
+  // Post all approved: dryRun (default) returns the plan; dryRun:false queues it for the Mac mini.
+  postAll: ({ dryRun = true } = {}) => call("newArrivalsPostAll")({ dryRun: dryRun !== false }),
   skip: (pids) => call("newArrivalsSkip")({ pids }),
   restore: (pids) => call("newArrivalsRestore")({ pids }),
   reject: (pid, reason) => call("newArrivalsReject")({ pid, reason }),

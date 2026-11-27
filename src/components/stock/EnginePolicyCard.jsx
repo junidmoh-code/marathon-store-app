@@ -75,16 +75,22 @@ import {
   nextScanAt, previewVerdict, firstSentence, lastChange, defaultMinQty,
   isPerSizeRow, fillAllSizes, seedPerSizeLocation, seedArmedLocation, bySizeRank, sizeLabel,
   perSizeMode, setEverySize,
-  mainListEntries, previewFromArmModel,
+  mainListEntries, previewFromArmModel, policyGaps, armedInTruth, catalogueOutsideTheList, draftForOwnRun,
 } from "./enginePolicyCore";
+import { FOOTWEAR_OWN_NUMBERS_KEYS } from "../../utils/footwearLine.js";
+// May this category be given numbers of its own although it is footwear?
+const ownNumbers = (c) => !!c && !c.isGroup && (c.ownNumbersAllowed === true || FOOTWEAR_OWN_NUMBERS_KEYS.includes(c.key));
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
 import ArmingTab from "./ArmingTab";
 import { writableRow, shapeOfRow } from "./targetOverride";
-import { enginePolicyVisibleForViewer, ADMIN_EMAIL } from "../../config/enginePolicy";
+import { enginePolicyVisibleForViewer } from "../../config/enginePolicy";
+import { isSuperAdmin as isSuperAdminEmail, superAdminName } from "../../config/superAdmins";
 import { nameOf } from "./sectionRouting";
 import { locationOf } from "../../utils/networkRegistry";
 import { currentNetwork } from "../../utils/networkStore";
+import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
+import { isDeactivated } from "../../utils/deactivation.js";
 
 // 300s to match the function's own timeoutSeconds. The Firebase JS SDK defaults
 // httpsCallable to 70,000ms; the census, the row list and the group model can
@@ -277,6 +283,23 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // THE MAIN LIST: categories and groups sorted in together, a group's members
   // folded into the group's entry. See mainListEntries.
   const categories = useMemo(() => mainListEntries(census), [census]);
+  // Find-by-name over the list (label or key). A match on a member keeps its
+  // group row above it, so the row still reads as "part of Footwear".
+  const [find, setFind] = useState("");
+  const shownCategories = useMemo(() => {
+    const q = find.trim().toLowerCase();
+    if (!q) return categories;
+    const hit = (c) => String(c.label || "").toLowerCase().includes(q) || String(c.key || "").toLowerCase().includes(q);
+    const keep = new Set(categories.filter(hit).map((c) => c.key));
+    for (const c of categories) if (keep.has(c.key) && c.underGroup) keep.add(c.underGroup);
+    return categories.filter((c) => keep.has(c.key));
+  }, [categories, find]);
+  // What the catalogue holds that no row above speaks for (enginePolicyCore.
+  // catalogueOutsideTheList) — from the product list the app already has.
+  const outside = useMemo(
+    () => (census ? catalogueOutsideTheList({ products, census, categoryKeyOf: effectiveCategoryKey, isDeactivated }) : null),
+    [products, census],
+  );
   // EVERY entry, members included — the detail screen can open a member from
   // inside its group even though the main list does not show it.
   const allEntries = useMemo(() => [...(census?.categories || []), ...(census?.groupEntries || [])], [census]);
@@ -288,7 +311,14 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // DERIVED, not read back from what was saved last time — see perSizeMode.
   const perSize = perSizeMode(open);
   const keyNow = useMemo(() => previewKey(openKey, draft, { perSize }), [openKey, draft, perSize]);
-  const proposed = useMemo(() => policyFromDraft(draft, { perSize }), [draft, perSize]);
+  // Kids Shoes' own numbers are carried-only at every location, whatever edit
+  // reshaped a draft row (the server refuses anything else) — set once, here,
+  // where the draft becomes the policy that is previewed and saved.
+  const proposed = useMemo(() => {
+    const p = policyFromDraft(draft, { perSize });
+    if (!p || !ownNumbers(open)) return p;
+    return Object.fromEntries(Object.entries(p).map(([loc, e]) => [loc, loc !== "perSize" && e && typeof e === "object" ? { ...e, carriedOnly: true } : e]));
+  }, [draft, perSize, open]);
   const banner = useMemo(() => changedFields(open?.entry || null, proposed, { perSize }), [open, proposed, perSize]);
   const saveable = canSave({ preview, previewKeyNow: keyNow, errors, busy: !!busy });
   const scan = nextScanAt(serverNowMs());
@@ -313,7 +343,11 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     // are the numbers in force. Saving them writes an entry of its own, which
     // takes the category out of the group — said in one line on its screen.
     // A GROUP opens on its own policy.
-    setDraft(draftFromEntry({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations }));
+    const start = draftFromEntry({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations });
+    // KIDS SHOES (Junid, 22 Nov 2026) has its own size run and may have its
+    // own numbers: with none saved yet, its editor is the Footwear policy laid
+    // out on the KIDS sizes — blank where nobody has chosen a number.
+    setDraft(ownNumbers(c) && !c.entry ? draftForOwnRun(start, c.sizeRun) : start);
   };
   // Back from a member returns to its group; Back from anything else to the list.
   const closeCategory = () => {
@@ -556,7 +590,8 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     // a round trip, is the honest version of the same answer.
     // A null `proposed` (every location dropped) DELETES a stray own entry —
     // always allowed, it is how a copy is removed. (CodeRabbit, PR #646.)
-    if (open && !open.isGroup && open.footwearMember && proposed !== null && census?.groups?.["footwear-all"]?.armed === true) {
+    // (Kids Shoes is the one footwear category with numbers of its own.)
+    if (open && !open.isGroup && open.footwearMember && !ownNumbers(open) && proposed !== null && census?.groups?.["footwear-all"]?.armed === true) {
       flash("bad", `Footwear is set once, on ${parent?.label || open.groupLabel || "Footwear"} — change the numbers there.`);
       return;
     }
@@ -687,6 +722,9 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     if (h.kind === "targets") return revertTargets(h);
     if (h.kind === "centralFed") return revertCentralFed(h);
     if (h.kind === "concreteDivision") return saveConcreteDivision(h.before ?? null, h.after ?? null);
+    // The link reverts through the action that made it: back to what it was
+    // (off, when the entry switched it on), expecting what it became.
+    if (h.kind === "policyFollow") return savePolicyFollow(h.location, h.before ?? null, h.after ?? null);
     const what = h.kind === "group" ? h.groupKey : h.categoryKey;
     const ok = window.confirm(
       `Put ${what} back to how it was before this change?\n\n` +
@@ -731,6 +769,23 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
       setError(e?.message || String(e));
     }
     setBusy(false);
+  };
+  // ── PINE FOLLOWS TROPHY (policyFollow.js) — the link, on or off. Through the
+  // same callable, history and Revert as every write here.
+  const savePolicyFollow = async (location, follows, expectedBefore) => {
+    if (busy) return;
+    const ok = window.confirm(follows
+      ? `Make ${locLabel(location)} follow ${locLabel(follows)}?\n\nEvery product ${locLabel(location)} already carries will keep what ${locLabel(follows)}'s policy says, from the next scan. No product is added to ${locLabel(location)} and where its stock comes from does not change.`
+      : `Stop ${locLabel(location)} following ${locLabel(expectedBefore)}?\n\n${locLabel(location)} goes back to its own numbers from the next scan.`);
+    if (!ok) return;
+    setBusy("policyFollow");
+    try {
+      await setCategoryPolicyFn()({ action: "setPolicyFollow", location, follows, expectedBefore });
+      flash("ok", follows ? `${locLabel(location)} follows ${locLabel(follows)}.` : `${locLabel(location)} no longer follows ${locLabel(expectedBefore)}.`);
+      await load(true);
+    } catch (e) {
+      flash("bad", e?.message || String(e));
+    } finally { setBusy(""); }
   };
   const saveCentralFed = async (location, perSize) => {
     setBusy("centralFed");
@@ -836,7 +891,9 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   const groupable = (census?.categories || []).filter((c) => !c.memberOfGroup)
     .map((c) => ({ key: c.key, label: c.label, products: c.products, sizeRun: c.sizeRun || [] }));
   const allCats = census?.categories || [];
-  const governed = allCats.filter((c) => (c.armedEffective || []).length).length;
+  // Governed IN TRUTH: a category whose every size is unnamed at every armed
+  // per-size location keeps nothing anywhere, and is not counted.
+  const governed = allCats.filter((c) => armedInTruth(c).real.length).length;
   const oldRows = (census?.categories || []).reduce((n, c) => n + (c.ownRowCells || 0), 0);
 
   return (
@@ -954,14 +1011,36 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
               <ConcreteDivisionPanel policy={census.concreteDivision} keeps={census.divisionKeeps} />
             )}
 
+            {!loading && !error && Object.keys(census?.policyFollowAllowed || {}).map((loc) => (
+              <PolicyFollowPanel key={loc} location={loc} follows={census?.policyFollow?.[loc] ?? null}
+                options={census.policyFollowAllowed[loc] || []} busy={busy}
+                onSave={(leader) => savePolicyFollow(loc, leader, census?.policyFollowStored ? (census.policyFollowStored[loc] ?? null) : (census?.policyFollow?.[loc] ?? null))} />
+            ))}
+
             {!loading && !error && !census?.concreteDivision && (census?.centralFedStores || []).map((loc) => (
               <CentralFedPanel key={loc} location={loc} perSize={census?.centralFedClothing?.[loc] ?? null}
                 busy={busy} onSave={(n) => saveCentralFed(loc, n)} />
             ))}
 
-            {!loading && !error && categories.map((c) => (
-              <CategoryRow key={c.key} category={c} onOpen={() => openCategory(c)} />
+            {/* FIND A CATEGORY BY NAME. Forty rows on a phone, the empty ones
+                last: typing three letters is how a new category is found. */}
+            {!loading && !error && (
+              <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a category…"
+                aria-label="Find a category" enterKeyHint="search" autoCapitalize="none" autoCorrect="off"
+                style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 10, fontSize: 16, padding: "11px 13px" }} />
+            )}
+
+            {!loading && !error && shownCategories.map((c) => (
+              <CategoryRow key={c.key} category={c}
+                onOpen={() => openCategory(c, c.underGroup ? allEntries.find((e) => e.key === c.underGroup) || null : null)} />
             ))}
+            {!loading && !error && find.trim() && !shownCategories.length && (
+              <div style={{ ...GLASS, padding: "1rem", color: GRAY, fontSize: ".85rem" }}>
+                No category called “{find.trim()}”. A new category is added in Admin → Categories; it then appears here as “no policy”.
+              </div>
+            )}
+
+            {!loading && !error && !find.trim() && <OutsideTheList outside={outside} />}
 
             {!loading && !error && <History entries={census?.history} onRevert={revert} busy={busy} />}
           </>
@@ -1029,8 +1108,15 @@ function categoryChips(c) {
   } else {
     if (c.policySource === "group") out.push({ tone: "blue", text: `in ${c.groupLabel || c.groupKey}` });
     else if (c.memberOfGroup && !c.entry) out.push({ tone: "blue", text: "in its group" });
-    if ((c.armedEffective || []).length) out.push({ tone: "green", text: `armed at ${c.armedEffective.length}` });
+    // ARMED IN TRUTH (enginePolicyCore.armedInTruth): a per-size location that
+    // names none of this category's sizes keeps nothing of it, so it is not
+    // counted as armed — Kids Shoes under a Footwear policy that speaks for
+    // 3–13 read "armed at 3" while Hub 1 and Hub 2 kept no kids shoe at all.
+    const truth = armedInTruth(c);
+    if (truth.real.length) out.push({ tone: "green", text: `armed at ${truth.real.length}` });
     else out.push({ tone: "gray", text: "no policy" });
+    if (truth.hollow.length) out.push({ tone: "amber", text: `no numbers for its sizes at ${truth.hollow.map(locLabel).join(" · ")}` });
+    if (truth.partial.length) out.push({ tone: "amber", text: `some sizes without numbers at ${truth.partial.map(locLabel).join(" · ")}` });
   }
   // "N old rows" — the explicit /stock_targets rows the engine reads first. A
   // LINK that opens them for editing; never a count of something to clear.
@@ -1044,10 +1130,75 @@ function categoryChips(c) {
   return out;
 }
 
+// ── SIZES WITH NO NUMBER (enginePolicyCore.policyGaps) ───────────────────────
+// Said in one plain sentence per location, on the category's own screen. It
+// arms nothing and suggests no number: it names the sizes and where to set
+// them, and the owner sets them.
+function SizeGaps({ category: c, whose }) {
+  const gaps = policyGaps(c);
+  const locs = Object.keys(gaps);
+  // Only a SIZED category has a size list to add to (a one-size category's
+  // stray S/M cells are old rows, a different matter with its own chip).
+  const extra = (c.sizeRun || []).length ? (c.sizeRunExtra || []) : [];
+  if (!locs.length && !extra.length) return null;
+  return (
+    <div data-size-gaps style={{ marginBottom: ".9rem", padding: ".7rem .9rem", borderRadius: RADIUS,
+      background: "rgba(251,191,36,.07)", border: "1px solid rgba(251,191,36,.35)" }}>
+      {locs.length > 0 && <div style={{ color: AMBER, fontWeight: 700, fontSize: ".85rem", marginBottom: 4 }}>Sizes with no number</div>}
+      {locs.map((loc) => (
+        <div key={loc} style={{ color: "#fde68a", fontSize: ".8rem", lineHeight: 1.5 }}>
+          {locLabel(loc)}: {gaps[loc].all ? "none of its sizes has a number" : "no number"} for {gaps[loc].missing.map(sizeLabel).join(", ")} — this policy keeps {gaps[loc].all ? "nothing of this category" : "none of those sizes"} there until {whose ? `they are set on ${whose}` : "they are set below"}. (A product with its own target row is still kept by that row.)
+        </div>
+      ))}
+      {extra.length > 0 && (
+        <div style={{ color: "#fde68a", fontSize: ".8rem", lineHeight: 1.5, marginTop: locs.length ? 6 : 0 }}>
+          Products here also come in {extra.map(sizeLabel).join(", ")}, which {extra.length === 1 ? "is" : "are"} not in this category's size list — add {extra.length === 1 ? "it" : "them"} to the size list in Admin → Categories and {extra.length === 1 ? "it" : "they"} can be given a number too.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── WHAT THE CATALOGUE HOLDS THAT NO ROW SPEAKS FOR ──────────────────────────
+// Products with no category at all, and any category key that is not on the
+// list. Read-only: this card arms categories, and these have none to arm. It
+// says how many, what they are, and where a category is given.
+function OutsideTheList({ outside }) {
+  if (!outside || (!outside.noCategory && !outside.unlisted.length)) return null;
+  return (
+    <div data-outside-list style={{ ...GLASS, marginBottom: 8, padding: ".8rem .9rem", border: "1px solid rgba(251,191,36,.3)" }}>
+      {outside.noCategory > 0 && (
+        <>
+          <div style={{ fontWeight: 700, fontSize: "1rem" }}>No category</div>
+          <div style={{ color: GRAY, fontSize: ".78rem", marginTop: 2 }}>
+            {outside.noCategory} {outside.noCategory === 1 ? "product has" : "products have"} no category, so no policy on this card can reach {outside.noCategory === 1 ? "it" : "them"}.
+            Give {outside.noCategory === 1 ? "it" : "them"} a category in Admin → Categories → Assign; {outside.noCategory === 1 ? "it" : "they"} then follow{outside.noCategory === 1 ? "s" : ""} that category's row here.
+          </div>
+          <div className="ep-chips" style={{ marginTop: 6 }}>
+            <Chip tone="gray">no policy</Chip>
+            {outside.noCategoryBy.slice(0, 8).map((b) => <Chip key={b.label} tone="gray">{b.products} · {b.label}</Chip>)}
+            {outside.noCategoryBy.length > 8 && <Chip tone="gray">+{outside.noCategoryBy.length - 8} more</Chip>}
+          </div>
+        </>
+      )}
+      {outside.unlisted.map((u) => (
+        <div key={u.key} data-unlisted={u.key} style={{ marginTop: outside.noCategory > 0 ? 12 : 0 }}>
+          <div style={{ fontWeight: 700, fontSize: "1rem" }}>{u.key}</div>
+          <div style={{ color: GRAY, fontSize: ".78rem", marginTop: 2 }}>
+            {u.products} {u.products === 1 ? "product carries" : "products carry"} this category, and it is not in the category list. Add it in Admin → Categories and it appears above, ready to arm.
+          </div>
+          <div className="ep-chips" style={{ marginTop: 6 }}><Chip tone="gray">no policy</Chip><Chip tone="gray">not in the category list</Chip></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── THE LIST ROW ─────────────────────────────────────────────────────────────
 function CategoryRow({ category: c, onOpen }) {
   return (
-    <div style={{ ...GLASS, marginBottom: 8, padding: ".8rem .9rem" }}>
+    <div data-category-row={c.key} data-under-group={c.underGroup || undefined}
+      style={{ ...GLASS, marginBottom: 8, padding: ".8rem .9rem", ...(c.underGroup ? { marginLeft: 18, borderLeft: "2px solid rgba(60,110,255,.45)" } : null) }}>
       <button type="button" className="ep-cat" onClick={onOpen}
         aria-label={`Open ${c.label}`}>
         <CategoryImage category={c} size={44} />
@@ -1078,6 +1229,8 @@ function CategoryDetail({
   onScope, onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert, onOpenMember,
 }) {
   const armed = c.armedEffective || [];
+  // The links that are on (policyFollow.js): { "marathon-pine": "trophy" }.
+  const linkedTo = census?.policyFollow || null;
   const locRows = editorRows({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations, follows: c.follows });
   const headline = armed.length
     ? armed.map((l) => `${locLabel(l)} ${headlineNumber(c.effectiveEntry?.[l])}`).join(" · ")
@@ -1102,15 +1255,23 @@ function CategoryDetail({
 
       {/* A MEMBER opened from inside its group: one line, because it is the
           one thing about this screen that is not obvious from the numbers. */}
-      {!c.isGroup && c.footwearMember ? (
+      {!c.isGroup && c.footwearMember && !ownNumbers(c) ? (
         <div style={{ color: "#dbe6ff", fontSize: ".82rem", marginBottom: ".9rem" }}>
           Footwear is set once, on {parent?.label || c.groupLabel || "Footwear"} — change the numbers there.
+          {parent && (
+            <button type="button" onClick={onBack} data-open-group
+              style={{ ...bGray, display: "block", marginTop: 8, padding: "9px 14px", fontSize: ".85rem" }}>
+              Open {parent.label} to set {c.label}'s sizes
+            </button>
+          )}
         </div>
       ) : !c.isGroup && c.memberOfGroup && (
         <div style={{ color: "#dbe6ff", fontSize: ".82rem", marginBottom: ".9rem" }}>
           Saving here gives {c.label} its own numbers — they beat {parent?.label || c.groupLabel || "the group"}'s.
         </div>
       )}
+
+      {!c.isGroup && <SizeGaps category={c} whose={c.policySource === "group" ? (parent?.label || c.groupLabel || "its group") : null} />}
 
       {(c.footwearDrift || []).length > 0 && (
         <div role="alert" style={{ marginBottom: ".9rem", padding: ".7rem .9rem", borderRadius: RADIUS,
@@ -1147,7 +1308,7 @@ function CategoryDetail({
         </div>
       ) : (
         <>
-          <LocationBoxes
+          <LocationBoxes linkedTo={linkedTo}
             category={c} rows={locRows} draft={draft} errors={errors}
             onField={onField} onArm={onArm} onDrop={onDrop}
             onQuickFill={onQuickFill} onSetAll={onSetAll} onSwitchShape={onSwitchShape} onScope={onScope}
@@ -1310,7 +1471,7 @@ function NumInputs({ row, err, onChange, ariaPrefix, small = false }) {
   );
 }
 
-function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSetAll, onSwitchShape, onScope }) {
+function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSetAll, onSwitchShape, onScope, linkedTo = null }) {
   const sizeRun = c.sizeRun || [];
   // NOT `c.perSize && …`. The stored flag is what made this screen unable to
   // arm soccer jerseys per size at all; the category's own run is the condition
@@ -1332,7 +1493,9 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
                 {/* Armed through the policy template: no numbers of its own,
                     so nothing here is saved for it and it keeps following. */}
                 {!inDraft && r.follows && (
-                  <span data-follows={r.follows} title={`${locLabel(r.loc)} has no numbers of its own for this category, so it uses ${locLabel(r.follows)}'s. Change ${locLabel(r.follows)}'s and it follows. Give it numbers here only if it should differ.`}
+                  <span data-follows={r.follows} title={linkedTo?.[r.loc] === r.follows
+                    ? `${locLabel(r.loc)} follows ${locLabel(r.follows)}: the products ${locLabel(r.loc)} carries keep ${locLabel(r.follows)}'s numbers. Change ${locLabel(r.follows)}'s and ${locLabel(r.loc)} follows.`
+                    : `${locLabel(r.loc)} has no numbers of its own for this category, so it uses ${locLabel(r.follows)}'s. Change ${locLabel(r.follows)}'s and it follows. Give it numbers here only if it should differ.`}
                     style={{ fontSize: ".72rem", color: "rgba(233,238,255,.6)" }}>
                     follows {locLabel(r.follows)}
                   </span>
@@ -1351,7 +1514,11 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
                     as a plain, un-tappable chip saying what the leg will do.
                     An ALREADY-ARMED leg keeps the toggle: widening is a second,
                     deliberate edit against a policy whose effect is visible. */}
-                {inDraft && r.armed && (
+                {inDraft && r.armed && ownNumbers(c) && (
+                  // Kids Shoes is carried-only by rule — said, not offered.
+                  <span data-scope-fixed style={{ ...bGray, ...smallBtn, cursor: "default" }}>Carried only</span>
+                )}
+                {inDraft && r.armed && !ownNumbers(c) && (
                   <button onClick={() => onScope(r.loc, !row.carriedOnly)}
                     title={row.carriedOnly
                       ? "Only products this location already stocks get these numbers. Tap for every product in the category."
@@ -1673,7 +1840,8 @@ function whoLabel(by) {
   // authorless. Coerce, then apply the same rules. (CodeRabbit, PR #469.)
   const s = typeof by === "string" ? by : String(by);
   if (!s || s === "[object Object]") return "";
-  if (s === ADMIN_EMAIL) return "Super Admin";
+  // Two super admins now: name which one, so the history still says who.
+  if (isSuperAdminEmail(s)) return superAdminName(s);
   const at = s.indexOf("@");
   return at > 0 ? s.slice(0, at) : s;
 }
@@ -1690,7 +1858,7 @@ function History({ entries, onRevert, busy }) {
         <div key={h.id} style={{ ...GLASS, padding: ".7rem 1rem", marginBottom: 6, display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: ".86rem", fontWeight: 600 }}>
-              {h.kind === "targets" ? (h.productName || h.pid) : h.kind === "centralFed" ? `${locLabel(h.location)} clothing per size` : (h.categoryKey || h.groupKey || "rows")}
+              {h.kind === "targets" ? (h.productName || h.pid) : h.kind === "centralFed" ? `${locLabel(h.location)} clothing per size` : h.kind === "policyFollow" ? `${locLabel(h.location)} follows` : (h.categoryKey || h.groupKey || "rows")}
               {h.kind === "group" && <Chip tone="blue">group</Chip>}
               {h.kind === "rows" && <Chip tone="amber">{h.rowCount} rows</Chip>}
               {/* A product override names the shop it was made at: the same
@@ -1712,7 +1880,7 @@ function History({ entries, onRevert, busy }) {
                   yields no label would otherwise print a bare separator with a
                   blank name after it. (CodeRabbit, PR #469.) */}
               {fmtWhen(h.at)}{whoLabel(h.by) ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
-                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : h.kind === "centralFed" ? `${h.before ?? "off"} -> ${h.after ?? "off"}` : h.kind === "concreteDivision" ? divisionHistoryLine(h) : "no field changes")}
+                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : h.kind === "centralFed" ? `${h.before ?? "off"} -> ${h.after ?? "off"}` : h.kind === "concreteDivision" ? divisionHistoryLine(h) : h.kind === "policyFollow" ? policyFollowHistoryLine(h) : "no field changes")}
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>
           </div>
@@ -1748,6 +1916,40 @@ export function divisionRevertRetired(h) {
   if (h?.kind !== "concreteDivision") return false;
   const b = h.before;
   return !!(b && typeof b === "object" && ("fromHub3" in b || "hub3Keep" in b));
+}
+
+// ── PINE FOLLOWS TROPHY ──────────────────────────────────────────────────────
+// The link (policyFollow.js; Junid, 22 Nov 2026). On: every product the shop
+// already carries keeps what the other shop's policy says, resolved at each
+// scan, so an edit to that shop's numbers needs no second step. Off: the shop
+// is back on its own numbers. The history's Revert undoes either in one tap.
+export function policyFollowHistoryLine(h) {
+  const side = (v) => (v ? `follows ${locLabel(v)}` : "own numbers");
+  return `${side(h?.before)} -> ${side(h?.after)}`;
+}
+
+const SHORT_LOC = { "marathon-pine": "Pine", concrete: "Concrete" };
+export function PolicyFollowPanel({ location, follows, options = [], busy, onSave }) {
+  const name = SHORT_LOC[location] || locLabel(location);
+  const leader = follows || options[0] || null;
+  if (!leader) return null;
+  return (
+    <div data-policy-follow-panel={location} data-follows={follows || ""} style={{ ...GLASS, padding: ".9rem 1rem", marginBottom: "1rem", border: follows ? "1px solid rgba(74,222,128,.4)" : GLASS.border }}>
+      <div style={{ fontWeight: 700, color: "#fff", marginBottom: ".3rem" }}>
+        {follows ? `${name} follows ${locLabel(follows)}` : `${name} does not follow ${locLabel(leader)}`}
+      </div>
+      <div style={{ color: GRAY, fontSize: ".85rem", lineHeight: 1.5 }}>
+        {follows
+          ? <>Every product {name} already carries keeps what {locLabel(follows)}'s policy says for it: the same keep, minimum and ask-at, by category, by size and by product. Change {locLabel(follows)}'s numbers and {name} follows at the next scan. Nothing is added to {name}, a product switched off at {name} stays off, and its stock still comes from Central (sneakers from Hub 3). Where {locLabel(follows)} has no policy for a category, Marathon PE's applies; where neither has one, {name} keeps the Concrete division numbers.{location === "concrete" ? " Concrete never keeps perfumes." : ""}</>
+          : <>{name} is on its own numbers. Switch this on and every product {name} already carries keeps what {locLabel(leader)}'s policy says for it.</>}
+      </div>
+      <div style={{ marginTop: ".6rem" }}>
+        {follows
+          ? <button data-action="policy-follow-off" disabled={!!busy} onClick={() => onSave(null)} style={{ ...bGhost, opacity: busy ? .5 : 1 }}>Stop following {locLabel(follows)}</button>
+          : <button data-action="policy-follow-on" disabled={!!busy} onClick={() => onSave(leader)} style={{ ...bGray, opacity: busy ? .5 : 1 }}>Make {name} follow {locLabel(leader)}</button>}
+      </div>
+    </div>
+  );
 }
 
 // ── THE CONCRETE DIVISION ────────────────────────────────────────────────────

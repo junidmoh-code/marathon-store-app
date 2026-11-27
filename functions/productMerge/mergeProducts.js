@@ -21,7 +21,7 @@ if (!admin.apps.length) {
   });
 }
 
-const ADMIN_EMAIL = "gunidmoh@gmail.com"; // super-admin (mirrors styleCode/access.cjs)
+const { isSuperAdmin } = require("../lib/super-admins.cjs"); // Junid and Jafer
 
 async function assertMergeAccess(request, db) {
   const provider = request.auth && request.auth.token && request.auth.token.firebase
@@ -32,7 +32,7 @@ async function assertMergeAccess(request, db) {
   const uid = request.auth.uid;
   const email = (request.auth.token && request.auth.token.email) || null;
   const emailVerified = !!(request.auth.token && request.auth.token.email_verified);
-  const isSuper = email === ADMIN_EMAIL && emailVerified;
+  const isSuper = isSuperAdmin(email) && emailVerified;
 
   const userRec = (await db.ref(`users/${uid}`).get()).val() || {};
   if (!isSuper && userRec.stockRole !== "admin") {
@@ -40,6 +40,8 @@ async function assertMergeAccess(request, db) {
   }
   return { uid, email, isSuper };
 }
+
+exports._assertMergeAccess = assertMergeAccess;
 
 exports.mergeProducts = onCall({ region: "europe-west1" }, async (request) => {
   const db = admin.database();

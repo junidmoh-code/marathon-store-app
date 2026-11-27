@@ -207,10 +207,154 @@ function marathonSolveRefusal(hub) {
 // One scan's context, or null when the key is off. (Extra arguments older
 // callers still pass — stock, locks, held boxes, requests — are not needed:
 // nothing about Hub 3 decides a shop's non-footwear keep or source any more.)
-function divisionContext({ config, seats } = {}) {
+function divisionContext({ config, seats, owners, openIndex } = {}) {
   const policy = concreteDivisionPolicy(config);
   if (!policy) return null;
-  return { policy, seats: seats || {} };
+  return { policy, seats: seats || {}, owners: divisionIsObj(owners) ? owners : {}, openIndex: divisionIsObj(openIndex) ? openIndex : {} };
+}
+
+// ── ONE SHOP PER PRODUCT: PINE OR CONCRETE (Junid, 24 Nov 2026) ──────────────
+// "Make sure Pine and Concrete are not set to request the same product from
+// Central — they sell separate products, like Marathon PE and Trophy."
+//
+// A non-footwear product seated at BOTH shops has ONE owner. Central supplies
+// the owner only: the other shop gets no new request for it. Nothing is
+// unseated, nothing is moved, no target or policy number changes — the other
+// shop simply resolves no keep (HOW MANY, never WHERE: the seats stay as they
+// are, and the Seating tab still switches a shop off, which ends the overlap).
+//
+// The owner is decided ONCE and kept (refill_engine/divisionOwner/{pid}), so it
+// never flips as units sell:
+//   1. the shop holding more of the product: units on hand PLUS units already
+//      on their way there (open engine requests) — a shop whose request is
+//      about to land is not handed to the other shop;
+//   2. a tie → the shop seated there first (the older seat);
+//   3. still a tie → Concrete (the established shop; Pine reopened after its
+//      11 Nov count).
+// The record goes only when the product is no longer seated at both shops (or
+// turns out to be footwear); a product row missing for one scan keeps it. If it
+// is seated at both again later, the owner is decided afresh.
+//
+// A REQUEST ALREADY OPEN at the other shop is left alone: for a size with an
+// engine lock there, the shop keeps resolving its keep, so the scan neither
+// withdraws nor starves it (Junid, 24 Nov: "do not cancel real requests"); it
+// may still be trued (resized) like any open request, but no second request is
+// raised. Once it is fulfilled, or withdrawn by the engine's own rules (source
+// empty, need gone), the size resolves nothing at that shop from then on.
+const DIVISION_OWNER_PATH = "refill_engine/divisionOwner";
+const OWNER_DEFAULT = "concrete";
+
+const shopUnits = (rawStock, loc, pid) => {
+  const node = rawStock?.[loc]?.[pid];
+  if (!divisionIsObj(node)) return 0;
+  let n = 0;
+  for (const [k, c] of Object.entries(node)) if (k !== "_meta" && divisionIsObj(c)) n += Math.max(Number(c.qty) || 0, 0);
+  return n;
+};
+const seatedAtBothShops = (seats, pid) => DIVISION_SHOPS.every((s) => divisionIsObj(seats?.[s]?.[pid]));
+// Units already on their way to a shop: the open engine locks for the product
+// there whose request is still OPEN. A lock left behind by a request that was
+// fulfilled (or closed) since — the scan reconciles it later — is not inbound:
+// those units are already on the shelf, or never coming (CodeRabbit, #978).
+const shopInbound = (openIndex, loc, pid, refillRequests) => {
+  const bySize = openIndex?.[loc]?.[pid];
+  if (!divisionIsObj(bySize)) return 0;
+  let n = 0;
+  for (const e of Object.values(bySize)) {
+    if (!divisionIsObj(e) || !e.refillId) continue;
+    const rr = refillRequests?.[e.refillId];
+    if (!divisionIsObj(rr) || rr.status !== "open") continue;
+    n += Math.max(Number(e.qty) || 0, 0);
+  }
+  return n;
+};
+
+/** Who owns a both-seated product, by the rule above. → { shop, why, units, inbound }. Pure. */
+function chooseDivisionOwner({ seats, rawStock, openIndex, refillRequests, pid }) {
+  const [a, b] = DIVISION_SHOPS; // "concrete", "marathon-pine"
+  const units = { [a]: shopUnits(rawStock, a, pid), [b]: shopUnits(rawStock, b, pid) };
+  const inbound = { [a]: shopInbound(openIndex, a, pid, refillRequests), [b]: shopInbound(openIndex, b, pid, refillRequests) };
+  const held = (s) => units[s] + inbound[s];
+  if (held(a) !== held(b)) return { shop: held(a) > held(b) ? a : b, why: "units", units, inbound };
+  const at = (s) => String(seats?.[s]?.[pid]?.at || "");
+  if (at(a) && at(b) && at(a) !== at(b)) return { shop: at(a) < at(b) ? a : b, why: "seated_first", units, inbound };
+  return { shop: OWNER_DEFAULT, why: "default", units, inbound };
+}
+
+/**
+ * The owners this scan reads, and what to write. Pure.
+ *   seats   the scan's effective seats (planSeats().effective)
+ *   owners  what DIVISION_OWNER_PATH holds now
+ * → { effective: { pid: owner }, writes: { pid: owner | null }, decided, cleared }
+ */
+function planDivisionOwners({ seats, rawStock, openIndex = {}, refillRequests = {}, owners, products, nowIso }) {
+  const effective = {};
+  const writes = {};
+  let decided = 0, cleared = 0;
+  const kept = divisionIsObj(owners) ? owners : {};
+  const both = new Set(Object.keys(seats?.[DIVISION_SHOPS[0]] || {}).filter((pid) => seatedAtBothShops(seats, pid)));
+  for (const pid of both) {
+    const p = products?.[pid];
+    if (!p || isDivisionFootwear(p) || SEAT_PID_BAD.test(pid)) continue;
+    const have = kept[pid];
+    if (divisionIsObj(have) && DIVISION_SHOPS.includes(have.shop)) { effective[pid] = have; continue; }
+    const c = chooseDivisionOwner({ seats, rawStock, openIndex, refillRequests, pid });
+    effective[pid] = writes[pid] = { shop: c.shop, why: c.why, units: c.units, inbound: c.inbound, at: nowIso };
+    decided++;
+  }
+  // Clear only what the seat rule itself no longer covers: not seated at both
+  // shops any more, or a footwear product. A product row missing for one scan
+  // (a partial catalogue read) keeps its owner — and keeps the gate.
+  for (const [pid, have] of Object.entries(kept)) {
+    if (effective[pid] || SEAT_PID_BAD.test(pid)) continue;
+    const p = products?.[pid];
+    if (seatedAtBothShops(seats, pid) && !(p && isDivisionFootwear(p))) {
+      if (divisionIsObj(have) && DIVISION_SHOPS.includes(have.shop)) effective[pid] = have;
+      continue;
+    }
+    writes[pid] = null;
+    cleared++;
+  }
+  return { effective, writes, decided, cleared };
+}
+
+/**
+ * Is `dest` the shop that must NOT get a new request for this cell? True only
+ * for a division shop, a non-footwear product with an owner recorded this scan
+ * that is the OTHER shop, and no engine lock already open for this size there.
+ */
+function divisionNotOwner(division, dest, pid, size, products, { ignoreLocks = false } = {}) {
+  if (!division || !DIVISION_SHOPS.includes(dest)) return false;
+  const owner = division.owners?.[pid];
+  // HELD: a fresh owner decision the scan could not save — neither shop gets a
+  // new request for it until a scan saves one (the scan sets { hold: true }).
+  const held = divisionIsObj(owner) && owner.hold === true;
+  if (!held && (!divisionIsObj(owner) || !DIVISION_SHOPS.includes(owner.shop) || owner.shop === dest)) return false;
+  // Only while the product really is seated at both (a stale record never gates).
+  if (!seatedAtBothShops(division.seats, pid)) return false;
+  const p = products?.[pid];
+  if (!p || isDivisionFootwear(p)) return false;
+  const t = String(size == null ? "" : size).trim();
+  const key = t ? t.replace(/[.#$/\[\]\s]/g, "_") : "_"; // the engine's encodeSizeKey
+  if (ignoreLocks) return true;
+  return !division.openIndex?.[dest]?.[pid]?.[key];
+}
+
+/**
+ * THE BACKSTOP for new requests (CodeRabbit, #978). A lock in the scan's
+ * snapshot keeps the other shop's keep alive so its open request reconciles
+ * and resizes as usual — but if that lock is closed in the same plan (its
+ * request was fulfilled and the stock sold, say), the deficit loop must not
+ * read the same snapshot lock and raise a NEW request there. Every engine
+ * intent passes this: refused at a non-owner shop whatever the locks say,
+ * unless Junid's own explicit row covers the cell (explicit still wins).
+ */
+function divisionRefusesNewRequest(division, intent, products, targets) {
+  if (!intent || !divisionNotOwner(division, intent.dest, intent.productId, intent.size, products, { ignoreLocks: true })) return false;
+  const t = String(intent.size == null ? "" : intent.size).trim();
+  const key = t ? t.replace(/[.#$/\[\]\s]/g, "_") : "_";
+  const row = targets?.[intent.dest]?.[intent.productId]?.[key];
+  return !(divisionIsObj(row) && typeof row.target === "number");
 }
 
 // Movement types that take units OUT of a location by a person's move. A sale,
@@ -344,15 +488,20 @@ function planSeats({ rawStock, seats, movements, nowIso, releases = {}, products
 // the units it asks for. Reads what the scan reads (the same targets, the same
 // managed list); Hub 3 keeps no non-footwear, so it always counts 0. `stockView`
 // is the engine's own trust-masked stock; `seats` the seated products per location.
-function divisionKeepCounts({ division, stockView, products }) {
+// `linkedTargetAt` (optional): { [loc]: (pid, size) => target|null } for a
+// location whose policy is LINKED (Pine follows Trophy, lib/policy-follow.cjs),
+// so the count there is the engine's resolved keep. Every other location, and
+// every caller that passes none, counts the division keep exactly as before.
+function divisionKeepCounts({ division, stockView, products, linkedTargetAt = null }) {
   const out = {};
   for (const loc of DIVISION_LOCATIONS) {
     let cells = 0, units = 0;
     const pids = new Set();
     for (const pid of division ? divisionManagedPids(division, loc, stockView, products) : []) {
       for (const size of divisionSizes(products[pid])) {
-        const t = divisionTarget(division, loc, pid, size, products, stockView);
-        if (!t) continue;
+        const linked = linkedTargetAt && typeof linkedTargetAt[loc] === "function" ? linkedTargetAt[loc] : null;
+        const t = linked ? linked(pid, size) : divisionTarget(division, loc, pid, size, products, stockView);
+        if (!t || (linked && !(t.target > 0))) continue;
         cells += 1;
         units += t.target;
         pids.add(pid);
@@ -476,5 +625,6 @@ module.exports = {
   isDivisionFootwear, divisionSizes, isDivisionOneSize, concreteDivisionPolicy, isDivisionLocation,
   DIVISION_NEVER_KEEPS, divisionNeverKeeps, hub3Refuses, divisionRefuses, divisionTargetShape, isSeatedAtShop, divisionShopCarries, divisionTarget, divisionSourceFor, divisionManagedPids,
   SNEAKER_SOLVE_HUBS, sneakerSolvePairAllowed, otherMarathonHub, marathonHubSeated, marathonSolveRefusal, divisionContext, planSeats, divisionKeepCounts,
+  DIVISION_OWNER_PATH, chooseDivisionOwner, planDivisionOwners, divisionNotOwner, divisionRefusesNewRequest,
   SEAT_HISTORY_SINCE, SEAT_RELEASES_PATH, seatsBy, seatedIntentTrusted, HUB3_SNEAKER_KEEP, JUNID_DIVISION_KEEPS, divisionExpectedTarget, divisionAuditVerdict,
 };

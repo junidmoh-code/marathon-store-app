@@ -126,10 +126,15 @@ describe("the one-request guard cannot silently outgrow the feed it reads", () =
     expect(APP).not.toMatch(/displayPairRequest:\s*true/);
   });
 
-  it("availableShops stays clamped to myShop — the reason the guard can see", () => {
-    // If this clamp goes, a scoped user can select a shop their /orders feed
-    // does not cover and the guard reads an empty list as "nothing open".
-    expect(APP).toMatch(/const availableShops = myShop\s*\n?\s*\?\s*allShops\.filter\(s => s\.id === myShop\)/);
+  it("the order screen's shop IS the feed's shop — the reason the guard can see", () => {
+    // All-store access (20 Nov 2026) replaced the clamp to destShop: both the
+    // root feed (myShop) and the order screen (chosenShop) now read the SAME
+    // active shop, falling back to the SAME destShop. If either side stops
+    // reading it, a scoped user can order for a shop their /orders feed does
+    // not cover and the guard reads an empty list as "nothing open".
+    expect(APP).toMatch(/const myShop = isSuperAdmin \|\| !permRecord\?\.destShop \? null : \(activeShopForMe \|\| permRecord\.destShop\);/);
+    expect(APP).toMatch(/const chosenShop = homeShop \? \(activeShopMine \|\| homeShop\) : \(activeShopMine \|\| selectedShop\);/);
+    expect(APP).toMatch(/const homeShop = stockPermRecord\?\.destShop \|\| null;/);
   });
 
   it("the wall walk still refuses what it cannot verify", () => {

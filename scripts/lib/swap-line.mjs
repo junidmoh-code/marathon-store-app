@@ -36,13 +36,14 @@
 // Refused: a packed / cancelled / closed order (the agent's follow-up path owns
 // a packed one), a line moved / resolved / cancelled, a size the product does
 // not have, no free unit anywhere on the route, a dearer item without a price
-// decision, a line that changed since the person looked at it (`expect`), money
-// for the line being issued at this very moment.
+// decision, a line that changed since the person looked at it (`expect`). Money
+// being issued this very minute only delays it (moneyBusy: retried). An unsettled
+// credit/refund task NEVER refuses a swap (Junid, 15 Nov 2026): it is voided.
 //
 // MONEY: A LEDGER PER LINE (Junid, 5 Nov 2026, COMMIT 6: "a line may be replaced
 // any number of times"). Every swap recomputes from scratch against what the
 // customer paid for the line (paidCents: originalUnitPriceCents × qty), minus any
-// money already given back for it (resolution.money done / manual): what is left
+// money already given back for it (resolution.money done): what is left
 // minus the new item's price is store credit owed (positive) or a difference to
 // collect (negative, a price decision needed: the caller's payment-confirmed path
 // or Junid's command). The previous swap's credit or extra is SUPERSEDED, never
@@ -115,10 +116,11 @@ export function swappedLine(cur, item, { swappedFrom, outcome, resolution, at = 
   // A payment this swap records (resolution.moneyIn) is in the saved ledger too (CodeRabbit on #848): the line's balance and
   // its payment record agree.
   const lg = lineLedger(resolution?.moneyIn ? { ...cur, resolution: { ...(cur.resolution || {}), moneyIn: resolution.moneyIn } } : cur, { priceCents: item.priceCents });
-  const ledger = { paidCents: lg.paidCents, settledCents: lg.settledCents, nowCents: lg.nowCents, creditCents: lg.creditCents, extraCents: lg.extraCents, swaps: (Number(cur.ledger?.swaps) || (cur.swappedFrom ? 1 : 0)) + 1, at: at ?? outcome?.at ?? null,
+  // extraCents is what the customer has not paid for what ships (never a credit of ours now too big: owedToUsCents).
+  const ledger = { paidCents: lg.paidCents, settledCents: lg.settledCents, nowCents: lg.nowCents, creditCents: lg.creditCents, extraCents: lg.unpaidCents, ...(lg.owedToUsCents > 0 ? { owedToUsCents: lg.owedToUsCents } : {}), swaps: (Number(cur.ledger?.swaps) || (cur.swappedFrom ? 1 : 0)) + 1, at: at ?? outcome?.at ?? null,
     // A dearer item: who settles the difference is on the ledger too (review of #846): the customer pays it (to collect),
     // or we absorb it.
-    ...(lg.extraCents > 0 && outcome?.priceDecision ? { priceDecision: outcome.priceDecision, toCollectCents: outcome.priceDecision === "customer_pays" ? lg.extraCents : 0 } : {}) };
+    ...(lg.unpaidCents > 0 && outcome?.priceDecision ? { priceDecision: outcome.priceDecision, toCollectCents: outcome.priceDecision === "customer_pays" ? lg.unpaidCents : 0 } : {}) };
   return clean({
     ...rest,
     pid: item.pid, size: item.size, sizeKey: item.sizeKey || stockSizeKey(item.size), title: item.title,
@@ -203,13 +205,16 @@ export async function swapOnlineOrderLine({
   // ANY number of swaps (the ledger above): the money is recomputed from what was paid, never stacked.
   const priceCents = Math.round(Number(product.retailPrice ?? product.price) * 100) || 0;
   const ledger = lineLedger(line, { priceCents, now });
-  if (ledger.busy) return refuse("money for this line is being issued right now; try again in a minute", { moneyBusy: true });
-  // An earlier money action with no known result (manual, a lost answer, a payer that died): never a swap on a guess.
-  if (ledger.unclear) return refuse(`${ledger.unclearWhy}; then swap`, { moneyUnclear: true });
-  // Everything paid for the line was given back already: there is nothing left to swap against.
-  if (ledger.paidCents > 0 && ledger.refundableCents === 0) return refuse(`line ${i} was refunded in full (${rands(ledger.settledCents)}): nothing is left to swap against`);
-  const judged = ledger.extraCents > 0 ? { ok: false, extraCents: ledger.extraCents } : { ok: true, creditCents: ledger.creditCents };
-  const paid = ledger.paidCents - ledger.settledCents;
+  // MONEY NEVER BLOCKS PACKING (Junid, 15 Nov 2026). A payment being made this very minute only DELAYS the swap (the POS
+  // request stays pending and is tried again next tick). An unsettled credit/refund task (manual for Junid, a lost answer,
+  // a payer that died) is VOIDED by this swap and the money recomputed (paid − what ships now); Junid is told it is
+  // cancelled. The only money condition that stops a swap is the customer not having paid for what would ship.
+  if (ledger.busy) return refuse("try again in a minute", { moneyBusy: true });
+  // Everything paid for the line went back to the customer's own payment (a refund in full): nothing is left to swap against.
+  if (ledger.paidCents > 0 && paidCents(line) > 0 && ledger.refundedCents >= paidCents(line)) return refuse(`line ${i} was refunded in full (${rands(ledger.refundedCents)}): nothing is left to swap against`);
+  // A credit we already gave that is now too big never makes the customer owe: it is owed back to us (emailed to Junid).
+  const judged = ledger.unpaidCents > 0 ? { ok: false, extraCents: ledger.unpaidCents } : { ok: true, creditCents: ledger.creditCents };
+  const paid = ledger.paidCents - ledger.refundedCents;
   if (!judged.ok && !priceDecision && !allowHigher) {
     return refuse(`${product.name} costs ${rands(judged.extraCents)} more than the ${rands(paid)} paid — the customer must agree to pay it, or we absorb it`, { extraCents: judged.extraCents });
   }
@@ -231,7 +236,8 @@ export async function swapOnlineOrderLine({
     oldSource: line.source || null, oldEscalation: esc ? { phase: esc.phase, request: esc.request || null } : null,
     stock: Object.fromEntries(ROUTED_LOCATIONS.map((l) => [l, { onHand: stockQty[l], free: free[l] ?? 0 }])),
     route: { locationId: piece.locationId, status: piece.status, place: placeName(piece.locationId) },
-    price: { paidCents: ledger.paidCents, settledCents: ledger.settledCents, newCents: priceCents * qty, creditCents: judged.ok ? judged.creditCents : 0, extraCents: judged.ok ? 0 : judged.extraCents, decision: judged.ok ? null : (priceDecision || "allow_higher") },
+    price: { paidCents: ledger.paidCents, settledCents: ledger.settledCents, newCents: priceCents * qty, creditCents: judged.ok ? judged.creditCents : 0, extraCents: judged.ok ? 0 : judged.extraCents, owedToUsCents: ledger.owedToUsCents, decision: judged.ok ? null : (priceDecision || "allow_higher") },
+    voids: ledger.voids && ledger.voids.amountCents > 0 ? ledger.voids : null,
     willRemoveHubOrders: oldKeys, willTombstoneEntry: oldEntry,
     willWithdrawRequest: esc?.phase === "await" && esc.request ? esc.request : null,
   };
@@ -239,7 +245,7 @@ export async function swapOnlineOrderLine({
   // stale amount is refused, nothing written.
   if (paidIn > 0 && !(plan.price.extraCents > 0)) return refuse(`a ${rands(paidIn)} payment was given, but this swap has no difference to pay; nothing written`, { plan });
   if (paidIn > plan.price.extraCents) return refuse(`the ${rands(paidIn)} payment given is more than the ${rands(plan.price.extraCents)} difference; check the amount, nothing written`, { plan });
-  const superseded = ledger.supersedes && ledger.supersedes.amountCents > 0 ? ` The earlier ${rands(ledger.supersedes.amountCents)} ${ledger.supersedes.kind || "money"} request (${ledger.supersedes.state}) is superseded: do not issue it.` : "";
+  const superseded = plan.voids ? ` The earlier ${rands(plan.voids.amountCents)} ${plan.voids.kind || "money"} task (${plan.voids.state}) is cancelled: do not issue it.` : "";
   const summary = `#${ref} updated: ${plan.from} → ${plan.to}, ${piece.status === "display" ? "display pick" : "pick"} raised at ${placeName(piece.locationId)}${superseded}`;
   if (dry) return { ok: true, dry: true, summary: `DRY RUN — ${summary}`, plan, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents };
   // ── 1. The line — ONE transaction on the order, so it is atomic with what a
@@ -256,6 +262,7 @@ export async function swapOnlineOrderLine({
   const outcome = clean({ kind: "swap", pid: newPid, size: item.size, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents || null, priceDecision: plan.price.decision, at: now, by: whoName(by), via, ...(requestId ? { requestId } : {}) });
   const expectKey = `${line.pid}|${line.sizeKey ?? ""}|${line.source?.status ?? ""}|${Number(line.routeGen) || 0}`;
   let why = null;
+  let busy = false;
   const res = await db.ref(`${ONLINE_ORDERS_PATH}/${orderKey}`).transaction((ord) => {
     if (ord == null) return null; // the cold pass; the server value decides
     if (ord.status === "packed" || CLOSED_ORDER.has(ord.status)) { why = `the order is ${ord.status}`; return undefined; }
@@ -266,12 +273,12 @@ export async function swapOnlineOrderLine({
     const conv = cur.resolution?.conversation;
     // A money slot that never moved money (pending / failed) is superseded by this swap's ledger; a settled one stays.
     const m = cur.resolution?.money;
-    if (m && typeof m === "object" && m.state === "claimed") { why = "money for this line is being issued right now"; return undefined; }
-    // The ledger was computed from the line as read: money that moved since makes it stale (never a wrong credit).
-    if (JSON.stringify(m ?? null) !== JSON.stringify(line.resolution?.money ?? null)) { why = "the line's money changed meanwhile"; return undefined; }
+    // A payment in flight, or money that moved since the read: only a retry (busy), never a refusal the packer sees.
+    if (m && typeof m === "object" && m.state === "claimed" && !(ledger.voids && JSON.stringify(m) === JSON.stringify(line.resolution?.money ?? null))) { why = "try again in a minute"; busy = true; return undefined; }
+    if (JSON.stringify(m ?? null) !== JSON.stringify(line.resolution?.money ?? null)) { why = "try again in a minute"; busy = true; return undefined; }
     // A completed money action moves to moneySettled; one that never moved money is kept as supersededMoney (doNotIssue).
     void conv;
-    const resolution0 = swapResolution(cur.resolution, { now, outcome, closeConversation: via });
+    const resolution0 = swapResolution(cur.resolution, { now, outcome, closeConversation: via, owedToUsCents: plan.price.owedToUsCents });
     // A difference the customer PAID for this dearer item counts as paid for the line (review of #847, spec; CodeRabbit on
     // #848): only a confirmed payment the caller passes (paidInCents, e.g. the PayFast difference) is "done". Junid's
     // "customer pays" decision is owed, not paid: recorded as to_collect (never counted) until a payment confirms it.
@@ -295,13 +302,13 @@ export async function swapOnlineOrderLine({
     next.updatedAt = now;
     return clean(next);
   });
-  if (!res.committed || !res.snapshot.val()) return refuse(`${why || "the order changed meanwhile"}; nothing written`, { plan });
+  if (!res.committed || !res.snapshot.val()) return refuse(`${why || "the order changed meanwhile"}; nothing written`, { plan, ...(busy ? { moneyBusy: true } : {}) });
   const after = res.snapshot.val();
   const gen = Number(linesOf(after)[i]?.routeGen) || 0;
   const done = await afterSwap({ db, orderKey, i, order: after, swappedFrom, to: plan.to, newPid, newSizeKey: sizeKey, by, via, now, inc, route: piece });
   log(summary);
   for (const n of done.notes) log(`  ${n}`);
-  return { ok: true, summary, plan, notes: done.notes, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents, returns: done.returns, swappedFrom, gen };
+  return { ok: true, summary, plan, notes: done.notes, creditCents: plan.price.creditCents, extraCents: plan.price.extraCents, owedToUsCents: plan.price.owedToUsCents, voided: plan.voids, returns: done.returns, swappedFrom, gen };
 }
 
 /**

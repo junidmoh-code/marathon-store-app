@@ -33,7 +33,7 @@ if (!admin.apps.length) {
   admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 }
 
-const ADMIN_EMAIL = "gunidmoh@gmail.com"; // the super-admin, as in functions/index.js
+const { isSuperAdminToken } = require("../lib/super-admins.cjs"); // Junid and Jafer, as in functions/index.js
 // The method an item gets with no choice of its own (the studio function reads the same file).
 const CONFIGURED_METHOD = require("./studio/config/generation.json").defaultMethod;
 const DEFAULT_METHOD = core.METHODS.includes(CONFIGURED_METHOD) ? CONFIGURED_METHOD : "full";
@@ -42,7 +42,7 @@ const DEFAULT_METHOD = core.METHODS.includes(CONFIGURED_METHOD) ? CONFIGURED_MET
 // Shopify publish, so it takes the same grant the publishing card does. Read
 // from the permFlags scalar the rules read. FAIL CLOSED on a read error.
 async function assertNewArrivalsAccess(request, db = admin.database()) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+  if (isSuperAdminToken(request.auth?.token)) return;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
@@ -286,18 +286,21 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
 
 const callableOpts = { region: "europe-west1", memory: "256MiB", timeoutSeconds: 120 };
 
-const isJunid = (request) => request.auth?.token?.email === ADMIN_EMAIL;
+// "isJunid" kept as the name the tests and _internals use; it means a super admin (Junid or Jafer).
+const isJunid = (request) => isSuperAdminToken(request.auth?.token);
 
 const newArrivalsList = onCall(callableOpts, async (request) => {
   await assertNewArrivalsAccess(request);
   const d = request.data || {};
   const db = admin.database();
-  const [page, pause] = await Promise.all([
-    listTab(db, String(d.tab || "new"), { cursor: d.cursor || null, limit: d.limit, filter: d.filter || null, group: d.group || null }),
-    pauseSwitch.readPause(db),
-  ]);
+  // THE LIVE CARD (19 Nov 2026): New / Approved / Done. An older bundle's Skipped tab still gets the old list.
+  if (String(d.tab || "") === "skipped") {
+    const [page, pause] = await Promise.all([listTab(db, "skipped", { cursor: d.cursor || null, limit: d.limit }), pauseSwitch.readPause(db)]);
+    return { ...page, pause, canPause: isJunid(request) };
+  }
+  const page = await listLive(db, String(d.tab || "new"), { cursor: d.cursor || null, limit: d.limit, group: d.group || null });
   // THE PAUSE SWITCHES: what they say, and whether this account may flip them (Junid only).
-  return { ...page, pause, canPause: isJunid(request) };
+  return { ...page, canPause: isJunid(request) };
 });
 
 // ── the pause switches (Junid only) ──────────────────────────────────────────
@@ -309,7 +312,7 @@ async function setPause(db, { which, paused }, uid, nowMs) {
 }
 
 const newArrivalsPause = onCall(callableOpts, async (request) => {
-  if (!isJunid(request)) throw new HttpsError("permission-denied", "Only Junid can pause or resume.");
+  if (!isJunid(request)) throw new HttpsError("permission-denied", "Only Junid or Jafer can pause or resume.");
   const d = request.data || {};
   return setPause(admin.database(), { which: d.which, paused: d.paused }, request.auth?.uid, Date.now());
 });
@@ -541,21 +544,20 @@ async function approve(db, { pids, all, genId }, uid, nowMs) {
     // What the product's photo is NOW (three keyed scalars): a photo generated
     // from a product photo that staff have since replaced is never approved —
     // it would post a picture of the photo before. Junid regenerates first.
-    let live = null;
     if (from.includes(listed)) {
-      const price = Number((await db.ref(`products/${pid}/stockPrice`).once("value")).val());
-      if (!(price > 0)) { skipped.push({ pid, why: "no stock price yet — enter it on the card, then approve" }); continue; }
-      const [photoUrl, photoUrlOriginal, photoUpdatedAt] = await Promise.all(["photoUrl", "photoUrlOriginal", "photoUpdatedAt"].map((f) => val(db, `products/${pid}/${f}`)));
-      live = { photoUrl, photoUrlOriginal, photoUpdatedAt };
+      if (core.stockPriceOf({ stockPrice: await val(db, `products/${pid}/stockPrice`) }) === null) { skipped.push({ pid, why: NO_STOCK_PRICE }); continue; }
     }
     const r = await moveOne(db, pid, {
       from, to: "approved", at: nowMs, uid,
       decision: (prev) => ({ action: core.approveAction(prev, pickGen), ...(pickGen ? { genId: pickGen } : {}) }),
       // Approve only what has a generated photo — never an original — and
       // never while a new photo is being generated (it would replace this one).
+      // JUNID'S APPROVE IS FINAL (19 Nov 2026): the only block is a missing
+      // stock price (checked above). A photo made from an earlier product photo,
+      // a photo being generated meanwhile, the generation switch — none of them
+      // stops an Approve. A generation still running lands in the item's
+      // history only (studio.js landed(): it is no longer this run's claim).
       guard: (cur) => {
-        if (core.requestPending(cur, nowMs)) return "a new photo is being generated — approve when it lands";
-        if (live && core.staleGeneration(pid, cur, pickGen || cur.currentGen, live)) return "the product's photo was changed after this photo was made — tap Regenerate first";
         // No named generation: the main photo — generatedUrl, or (an older item
         // whose URL was cleared) its current generation's photo.
         if (!pickGen) return cur.generatedUrl || core.currentGenUrl(cur) ? null : "it has no generated photo";
@@ -565,9 +567,10 @@ async function approve(db, { pids, all, genId }, uid, nowMs) {
       fields: (cur) => ({
         ...(pickGen && cur.currentGen !== pickGen ? core.selectFields(cur.generations[pickGen], pickGen, nowMs) : {}),
         ...(!pickGen && !cur.generatedUrl && core.currentGenUrl(cur) ? core.selectFields(cur.generations[cur.currentGen], cur.currentGen, nowMs) : {}),
-        approvedAt: nowMs, approvedBy: uid || "unknown",
+        approvedAt: nowMs, approvedBy: uid || "unknown", generateRequest: null,
         ...(cur.status === "rejected" ? { lastRejection: cur.rejection || null, rejection: null } : {}),
       }),
+      extra: () => ({ [`requests/${pid}`]: null }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); continue; }
     approved.push(pid);
@@ -579,6 +582,325 @@ const newArrivalsApprove = onCall(callableOpts, async (request) => {
   await assertNewArrivalsAccess(request);
   return approve(admin.database(), request.data || {}, request.auth?.uid, Date.now());
 });
+
+
+// ── use current photo (19 Nov 2026) ──────────────────────────────────────────
+// Junid's second route: approve the item with the photo the product ALREADY
+// has in the app — no generation, no cost. The product's photo is never
+// touched (whatever it is, a staff photo or an earlier studio shot). The item
+// records it as its approved photo (generatedUrl, which the chain and the
+// poster read) with useCurrentPhoto: true, and what it had before, so
+// Un-approve puts it back exactly. The Shopify chain then lists THIS photo and
+// leaves the app photo alone (chainCore: useCurrentPhoto).
+const NO_STOCK_PRICE = "no stock price on this product yet — the groups post only the stock price";
+async function useCurrent(db, { pid }, uid, nowMs) {
+  if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
+  pid = String(pid);
+  const [stockPrice, photoUrl] = await Promise.all([val(db, `products/${pid}/stockPrice`), val(db, `products/${pid}/photoUrl`)]);
+  if (core.stockPriceOf({ stockPrice }) === null) return { approved: [], skipped: [{ pid, why: NO_STOCK_PRICE }] };
+  if (typeof photoUrl !== "string" || !/^https:\/\//.test(photoUrl)) return { approved: [], skipped: [{ pid, why: "the product has no photo in the app" }] };
+  const r = await moveOne(db, pid, {
+    from: core.NEW_LANES, to: "approved", at: nowMs, uid,
+    decision: () => ({ action: "approve-current" }),
+    extra: () => ({ [`requests/${pid}`]: null }),
+    fields: (cur) => ({
+      beforeUseCurrent: { generatedUrl: cur.generatedUrl || null, generatedPath: cur.generatedPath || null, status: cur.status },
+      generatedUrl: photoUrl, generatedPath: null, useCurrentPhoto: true,
+      approvedAt: nowMs, approvedBy: uid || "unknown", generateRequest: null,
+      ...(cur.status === "rejected" ? { lastRejection: cur.rejection || null, rejection: null } : {}),
+    }),
+  });
+  if (!r.item) return { approved: [], skipped: [{ pid, why: r.refusal }] };
+  return { approved: [pid], skipped: [] };
+}
+
+const newArrivalsUseCurrent = onCall(callableOpts, async (request) => {
+  await assertNewArrivalsAccess(request);
+  return useCurrent(admin.database(), request.data || {}, request.auth?.uid, Date.now());
+});
+
+// ── un-approve (19 Nov 2026) ─────────────────────────────────────────────────
+// Approved (not yet posted) → back to New: lane ready when it has a generated
+// photo, else new. A "Use current photo" approval gives back exactly what the
+// item had. Posted items cannot go back (they are in the groups). A Shopify
+// listing the chain already made is left as it is — said in the answer.
+async function unapprove(db, { pid }, uid, nowMs) {
+  if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
+  pid = String(pid);
+  // What it goes back to: its own generated photo (lane ready), else plain New.
+  const backTo = (cur) => {
+    const back = cur.useCurrentPhoto ? (cur.beforeUseCurrent || {}) : null;
+    const generatedUrl = back ? back.generatedUrl || null : cur.generatedUrl || null;
+    return { back, generatedUrl, lane: generatedUrl || core.currentGenUrl(cur) ? "ready" : "new" };
+  };
+  const now = await val(db, `${core.ITEMS}/${pid}`);
+  if (!now) return { ok: false, why: "not in the New Arrivals queue" };
+  const to = backTo(now).lane;
+  let wasChained = false;
+  const r = await moveOne(db, pid, {
+    from: core.APPROVED_LANES, to, at: nowMs, uid,
+    decision: () => ({ action: "unapprove" }),
+    guard: (cur) => {
+      if (cur.destinations && cur.destinations.groups) return "it is already posted to the groups";
+      return backTo(cur).lane === to ? null : "it changed meanwhile — try again";
+    },
+    fields: (cur) => {
+      wasChained = !!(cur.chain && (cur.chain.publish || cur.chain.shopify));
+      const { back, generatedUrl } = backTo(cur);
+      return {
+        approvedAt: null, approvedBy: null, useCurrentPhoto: null, beforeUseCurrent: null,
+        ...(back ? { generatedUrl, generatedPath: back.generatedPath || null } : {}),
+        unapprovedAt: nowMs,
+      };
+    },
+  });
+  if (!r.item) return { ok: false, why: r.refusal };
+  return { ok: true, status: r.item.status, shopifyNote: wasChained ? "it was already sent to Shopify — that listing stays as it is" : null };
+}
+
+const newArrivalsUnapprove = onCall(callableOpts, async (request) => {
+  await assertNewArrivalsAccess(request);
+  return unapprove(admin.database(), request.data || {}, request.auth?.uid, Date.now());
+});
+
+// ── post all approved (19 Nov 2026) ──────────────────────────────────────────
+// NOTHING goes to WhatsApp until Junid presses this. It builds the plan from
+// what is approved and not yet posted, read live (stock price, sizes in
+// stock, division), and either returns it (dryRun) or queues ONE request at
+// new_arrivals/post_requests/{key} for the Mac mini poster, which posts
+// exactly those items and marks the request done. Refused while the poster is
+// not ready, with the same reason the button shows.
+const APPROVED_TTL_MS = 30 * 1000;
+const approvedCache = new WeakMap(); // db → { at, v }
+async function approvedNotPosted(db, { fresh = false, nowMs = Date.now() } = {}) {
+  const hit = approvedCache.get(db);
+  if (!fresh && hit && nowMs - hit.at < APPROVED_TTL_MS) return hit.v;
+  const v = await readApprovedLanes(db);
+  approvedCache.set(db, { at: nowMs, v });
+  return v;
+}
+async function readApprovedLanes(db) {
+  const keys = new Map();
+  await Promise.all(core.APPROVED_LANES.map(async (s) => {
+    const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().limitToLast(core.INDEX_CEILING).once("value");
+    for (const k of Object.keys(snap.val() || {})) if (!keys.has(k)) keys.set(k, s);
+  }));
+  const posted = new Map();
+  await inBatches([...keys.keys()], 50, async (pid) => { posted.set(pid, await val(db, `${core.ITEMS}/${pid}/destinations/groups/at`)); });
+  return { laneOf: keys, posted };
+}
+
+async function buildPlan(db, nowMs) {
+  const { laneOf, posted } = await approvedNotPosted(db, { fresh: true });
+  const pids = [...laneOf.keys()].filter((p) => posted.get(p) == null);
+  const locations = await stockLocations(db);
+  const rows = [];
+  const skipped = [];
+  await inBatches(pids, 20, async (pid) => {
+    const item = await val(db, `${core.ITEMS}/${pid}`);
+    if (core.liveTabOf(item) !== "approved" || !item.approvedAt) return;
+    if (!item.generatedUrl) { skipped.push({ pid, why: "no approved photo" }); return; }
+    const d = await productDetail(db, pid, locations);
+    if (!d.raw) { skipped.push({ pid, why: "the product no longer exists" }); return; }
+    rows.push({
+      pid, name: d.summary.name, price: d.summary.stockPrice, division: core.divisionOf(d.raw),
+      sizes: d.stock.availableSizes, sizesText: d.stock.availableSizes.join(", "), photoUrl: item.generatedUrl, approvedAt: item.approvedAt,
+    });
+  });
+  const plan = core.postPlan(rows);
+  return { ...plan, skipped: [...skipped, ...plan.dropped], at: nowMs };
+}
+
+const planSummary = (plan) => plan.posts.map((p) => ({ division: p.division, price: p.price, part: p.part, of: p.of, count: p.items.length, items: p.items.map((i) => ({ pid: i.pid, name: i.name, sizes: i.sizesText })) }));
+
+async function postAll(db, { dryRun = true } = {}, uid, nowMs) {
+  const plan = await buildPlan(db, nowMs);
+  const posts = planSummary(plan);
+  const photos = posts.reduce((n, p) => n + p.count, 0);
+  if (dryRun) return { dryRun: true, posts, photos, skipped: plan.skipped };
+  const [poster, pause] = await Promise.all([val(db, `${core.ROOT}/poster/status`), pauseSwitch.readPause(db)]);
+  const block = core.postAllBlock({ poster, pause, approvedCount: photos }, nowMs);
+  if (block) throw new HttpsError("failed-precondition", block);
+  // THE REQUEST IS WRITTEN FIRST, THEN CLAIMED. ONE open request at a time,
+  // claimed by a transaction (two taps never both pass). A request whose claim
+  // is refused is marked "refused" — so a failure at any step never leaves a
+  // claim with no request behind it. A request the Mac mini has not finished
+  // within REQUEST_EXPIRY_MS is closed as expired: it never posts days later.
+  const key = db.ref(`${core.ROOT}/post_requests`).push().key;
+  await writeRoot(db, {
+    [`post_requests/${key}`]: { at: nowMs, by: uid || "unknown", status: "queued", posts, photos },
+    ...await decisionPaths(db, posts[0]?.items[0]?.pid || "p0000000000", { at: nowMs, uid, item: null, action: "post-all" }),
+  });
+  let blocked = null;
+  let expired = null;
+  let claim = null;
+  try {
+    claim = await db.ref(`${core.ROOT}/post_request_open`).transaction((cur) => {
+      blocked = null; expired = null;
+      if (cur && typeof cur === "object" && Number(cur.at) > nowMs - core.REQUEST_EXPIRY_MS) { blocked = "A Post all is already on its way — wait for it to finish"; return undefined; }
+      if (cur) expired = typeof cur === "object" ? cur.key : String(cur);
+      return { key, at: nowMs };
+    });
+  } catch (e) { blocked = `could not queue it (${e.message}) — press again`; }
+  if (blocked || !claim || !claim.committed) {
+    await writeRoot(db, { [`post_requests/${key}/status`]: "refused", [`post_requests/${key}/endedAt`]: nowMs }).catch(() => {});
+    throw new HttpsError("failed-precondition", blocked || "A Post all is already on its way — wait for it to finish");
+  }
+  if (expired) await writeRoot(db, { [`post_requests/${expired}/status`]: "expired", [`post_requests/${expired}/endedAt`]: nowMs }).catch(() => {});
+  return { dryRun: false, queued: key, posts, photos, skipped: plan.skipped };
+}
+
+const newArrivalsPostAll = onCall(callableOpts, async (request) => {
+  if (!isJunid(request)) throw new HttpsError("permission-denied", "Only Junid or Jafer can post to the groups.");
+  const d = request.data || {};
+  return postAll(admin.database(), { dryRun: d.dryRun !== false }, request.auth?.uid, Date.now());
+});
+
+// ── the live card's list (19 Nov 2026) ───────────────────────────────────────
+// SOLD OUT / GONE: what an item needs to know about its product before it is
+// listed on New — does it still exist, units in stock (core.stockSummary, the
+// card's own count), and is there a stock price. Keyed reads per pid, batched,
+// cached per process for STOCK_TTL_MS so the minute refresh does not re-read.
+const STOCK_TTL_MS = 3 * 60 * 1000;
+const stockCache = new WeakMap(); // db → Map(pid → { v, at })
+async function laneStock(db, pids, locations, nowMs = Date.now()) {
+  let cache = stockCache.get(db);
+  if (!cache) { cache = new Map(); stockCache.set(db, cache); }
+  const out = new Map();
+  await inBatches(pids, 50, async (pid) => {
+    const hit = cache.get(pid);
+    if (hit && nowMs - hit.at < STOCK_TTL_MS) { out.set(pid, hit.v); return; }
+    const [name, sizes, stockPrice, ...cells] = await Promise.all([
+      val(db, `products/${pid}/name`), val(db, `products/${pid}/sizes`), val(db, `products/${pid}/stockPrice`),
+      ...locations.map((loc) => val(db, `stock/${loc}/${pid}`)),
+    ]);
+    const exists = name !== null || sizes !== null;
+    const tree = {};
+    locations.forEach((loc, j) => { if (cells[j]) tree[loc] = cells[j]; });
+    const units = exists ? core.stockSummary(core.productSummary({ sizes }).sizes, tree).totalUnits : 0;
+    const v = { exists, units, priced: core.stockPriceOf({ stockPrice }) !== null };
+    cache.set(pid, { v, at: nowMs });
+    out.set(pid, v);
+  });
+  return out;
+}
+
+// Does an item carry a generated photo? generatedUrl, else its current
+// generation's url — keyed scalars, cached per process like laneStock (a photo
+// only ever arrives; an item that gains one shows within PHOTO_TTL_MS).
+const PHOTO_TTL_MS = 3 * 60 * 1000;
+const photoCache = new WeakMap(); // db → Map(pid → { v, at })
+async function hasPhotoMap(db, pids, nowMs = Date.now()) {
+  let cache = photoCache.get(db);
+  if (!cache) { cache = new Map(); photoCache.set(db, cache); }
+  const out = new Map();
+  await inBatches(pids, 50, async (k) => {
+    const hit = cache.get(k);
+    if (hit && nowMs - hit.at < PHOTO_TTL_MS) { out.set(k, hit.v); return; }
+    const [generatedUrl, currentGen] = await Promise.all([val(db, `${core.ITEMS}/${k}/generatedUrl`), val(db, `${core.ITEMS}/${k}/currentGen`)]);
+    const v = !!(generatedUrl || (currentGen && await val(db, `${core.ITEMS}/${k}/generations/${currentGen}/url`)));
+    cache.set(k, { v, at: nowMs });
+    out.set(k, v);
+  });
+  return out;
+}
+
+/**
+ * One page of one live tab.
+ *   new       the New lanes, keys from windowStartKey (the upload time IS the
+ *             key: orderByKey().startAt — never a whole lane), in stock, split
+ *             Sneakers / Clothing, NEWEST UPLOAD FIRST.
+ *   approved  approved / chaining / done lanes not yet posted — mixed.
+ *   done      the same lanes, posted — most recently posted first.
+ * The cursor is the last pid of the page.
+ */
+async function listLive(db, tabAsked, { cursor = null, limit, group = null, nowMs = Date.now() } = {}) {
+  const tab = core.normalizeLiveTab(tabAsked);
+  if (!tab) throw new HttpsError("invalid-argument", "Unknown tab.");
+  const n = core.listLimit(limit);
+  const after = cursor && core.PID_RE.test(String(cursor)) ? String(cursor) : null;
+  const since = core.windowStartKey(nowMs);
+  const locations = await stockLocations(db);
+
+  // New: the window, by key — and, in parallel, the photo lanes' OLDER keys.
+  const newLaneOf = new Map();
+  const older = new Map();
+  await Promise.all([
+    ...core.NEW_LANES.map(async (s) => {
+      // limitToLast: past the ceiling it is the OLDEST of the window that is cut, never today's uploads.
+      const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().startAt(since).limitToLast(core.INDEX_CEILING).once("value");
+      for (const k of Object.keys(snap.val() || {})) newLaneOf.set(k, newLaneOf.get(k) || s);
+    }),
+    // A PHOTO WAITING FOR JUNID STAYS, whatever its age (19 Nov 2026): an item
+    // in lane ready / rejected that really has a generated photo is his to
+    // approve, not to lose to the 20-day window. Only keys BEFORE the window
+    // (endAt), by key with the ceiling — these lanes are small.
+    ...core.PHOTO_LANES.map(async (s) => {
+      const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().endAt(since).limitToLast(core.INDEX_CEILING).once("value");
+      for (const k of Object.keys(snap.val() || {})) older.set(k, older.get(k) || s);
+    }),
+  ]);
+  const photos = await hasPhotoMap(db, [...older.keys()].filter((k) => !newLaneOf.has(k)), nowMs);
+  for (const [k, s] of older) if (!newLaneOf.has(k) && photos.get(k)) newLaneOf.set(k, s);
+  const stock = await laneStock(db, [...newLaneOf.keys()], locations, nowMs);
+  const hidden = { soldOut: 0, gone: 0 };
+  const newKeys = [...newLaneOf.keys()].filter((k) => {
+    const st = stock.get(k);
+    if (!st.exists) { hidden.gone += 1; return false; }
+    if (!(st.units > 0)) { hidden.soldOut += 1; return false; }
+    return true;
+  });
+  const groups = await groupsOf(db, newKeys, nowMs);
+  const groupCounts = Object.fromEntries(core.GROUPS.map((x) => [x, 0]));
+  const noStockPrice = Object.fromEntries(core.GROUPS.map((x) => [x, 0]));
+  for (const k of newKeys) { groupCounts[groups.get(k)] += 1; if (!stock.get(k).priced) noStockPrice[groups.get(k)] += 1; }
+
+  // Approved / Done: the approved lanes, split by the posted marker.
+  const { laneOf: apprLaneOf, posted } = await approvedNotPosted(db, { nowMs });
+  const approvedKeys = [...apprLaneOf.keys()].filter((k) => posted.get(k) == null);
+  const doneKeys = [...apprLaneOf.keys()].filter((k) => posted.get(k) != null);
+  const tabCounts = { new: newKeys.length, approved: approvedKeys.length, done: doneKeys.length };
+
+  const g = tab === "new" ? core.normalizeGroup(group) || "sneakers" : null;
+  let ordered;
+  if (tab === "new") ordered = newKeys.filter((k) => groups.get(k) === g).sort((a, b) => core.keyCmp(b, a));
+  else if (tab === "approved") ordered = approvedKeys.sort((a, b) => core.keyCmp(b, a));
+  else ordered = doneKeys.sort((a, b) => (Number(posted.get(b)) || 0) - (Number(posted.get(a)) || 0) || core.keyCmp(b, a));
+  let start = 0;
+  if (after) {
+    const i = ordered.indexOf(after);
+    // A posted item never leaves Done, so a Done cursor that is gone means the end — never page 1 again.
+    start = i >= 0 ? i + 1 : (tab === "done" ? ordered.length : ordered.findIndex((k) => core.keyCmp(k, after) < 0));
+    if (start < 0) start = ordered.length;
+  }
+  const pageKeys = ordered.slice(start, start + n);
+  const more = ordered.length > start + n;
+  const laneOf = tab === "new" ? newLaneOf : apprLaneOf;
+
+  const items = (await inBatches(pageKeys, 10, async (pid) => {
+    const item = await val(db, `${core.ITEMS}/${pid}`);
+    const repair = core.indexRepair(pid, laneOf.get(pid), item);
+    if (repair) await db.ref(core.ROOT).update(repair);
+    if (core.liveTabOf(item) !== tab) return null;
+    const d = await productDetail(db, pid, locations);
+    // The stock check above may be up to 3 minutes old: a card sold out or deleted since is left off New.
+    if (tab === "new" && (!d.raw || !(d.stock.totalUnits > 0))) return null;
+    const up = core.uploadedAt(pid, d.raw);
+    return {
+      ...core.cardItem(item), ...core.sourceFields(pid, item, d.raw),
+      product: d.summary, availableSizes: d.stock.availableSizes, totalUnits: d.stock.totalUnits, stockKnown: d.stock.stockKnown,
+      uploadedAt: up.at, uploadedFrom: up.from, division: d.raw ? core.divisionOf(d.raw) : null,
+    };
+  })).filter(Boolean);
+
+  const [stats, poster, pause] = await Promise.all([val(db, `${core.ROOT}/stats`), val(db, `${core.ROOT}/poster/status`), pauseSwitch.readPause(db)]);
+  return {
+    tab, items, total: ordered.length, nextCursor: more && pageKeys.length ? pageKeys[pageKeys.length - 1] : null,
+    tabCounts, group: g, groupCounts: tab === "new" ? groupCounts : null, noStockPrice, hidden, windowDays: core.WINDOW_DAYS,
+    stats: stats || null, defaultMethod: DEFAULT_METHOD, pause,
+    postAll: { block: core.postAllBlock({ poster, pause, approvedCount: approvedKeys.length }, nowMs), poster: poster || null },
+  };
+}
 
 // ── generate / regenerate ────────────────────────────────────────────────────
 // MOVED (4 Oct): a photo is made by newArrivalsStudio (studio.js), which calls
@@ -705,7 +1027,8 @@ const newArrivalsRetry = onCall(callableOpts, async (request) => {
 module.exports = {
   newArrivalsEnqueue, newArrivalsList, newArrivalsApprove, newArrivalsRetry,
   newArrivalsGenerate, newArrivalsSkip, newArrivalsRestore, newArrivalsReject, newArrivalsSelect, newArrivalsLove,
-  newArrivalsHow, newArrivalsMethod, newArrivalsPause,
+  newArrivalsHow, newArrivalsMethod, newArrivalsPause, newArrivalsUseCurrent, newArrivalsUnapprove, newArrivalsPostAll,
   // for tests
-  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, setPause, isJunid, assertNewArrivalsAccess, decisionPaths, NEW_LAP },
+  NO_STOCK_PRICE,
+  _internals: { NO_STOCK_PRICE, productDetail, stockLocations, listLive, laneStock, useCurrent, unapprove, postAll, buildPlan, enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, setPause, isJunid, assertNewArrivalsAccess, decisionPaths, NEW_LAP },
 };

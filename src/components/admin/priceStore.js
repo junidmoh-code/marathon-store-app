@@ -26,6 +26,24 @@ import { update as rtdbUpdate } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { buildPriceBatch, buildRestoreBatch, computeRestoreDrift } from "../../utils/priceBatch";
+import { notePendingUpdate } from "../../offline/pendingWrites";
+import { bumpLegs } from "../../offline/mirrorSignal";
+
+// THE SAVING DEVICE SEES ITS OWN PRICE AT ONCE. A device serving /products from
+// its offline mirror would otherwise show the old price until the change feed
+// carries the write back. The product price paths go into the pending-write
+// echo (offline/pendingWrites.js, a no-op with the mirror off) and the products
+// leg is bumped so mirrored screens re-read. docs/ASSISTANT-NO-PRICE-SET.md.
+export function echoPriceWrite(updates, { note = notePendingUpdate, bump = bumpLegs } = {}) {
+  const priceOnly = {};
+  for (const [path, v] of Object.entries(updates || {})) {
+    if (/^products\/[^/]+\/(retailPrice|stockPrice)$/.test(path)) priceOnly[path] = v;
+  }
+  if (!Object.keys(priceOnly).length) return 0;
+  const n = note(priceOnly);
+  if (n) bump(["products"]);
+  return n;
+}
 
 const one = async (path) => (await get(child(ref(database), path))).val();
 
@@ -94,6 +112,7 @@ export async function applyPriceBatch({ action, lines, aux = null, label = "", a
   }
   try {
     await rtdbUpdate(ref(database), built.updates);
+    echoPriceWrite(built.updates);
     return { ok: true, batchId, count: built.record.count, ...(specialsCheckSkipped ? { specialsCheckSkipped: true } : {}) };
   } catch (e) {
     return { ok: false, code: "write_failed", message: String(e?.message || e) };
@@ -241,6 +260,7 @@ export async function restorePriceBatch(batchId, productsById) {
   }
   try {
     await rtdbUpdate(ref(database), built.updates);
+    echoPriceWrite(built.updates);
     return { ok: true, batchId: restoreBatchId, restored: batchId, count: built.record.count,
              ...(check.skipped ? { specialsCheckSkipped: true } : {}) };
   } catch (e) {

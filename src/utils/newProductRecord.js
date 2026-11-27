@@ -15,7 +15,8 @@
 // ADDS `categoryKey` alongside. It never removes or rewrites a legacy field.
 
 import { SEED_REGISTRY, hubsOf } from "./networkRegistry";
-import { legacyFor, catByKey } from "./productTaxonomy.js";
+import { legacyFor, catByKey, isOneSize } from "./productTaxonomy.js";
+import { headwearCategoryKeyFor } from "./headwearCategory.js";
 import { sizesForCat } from "./sizeRuns.js";
 import { normaliseStyleCode, formatStyleCodeForDisplay } from "./styleCode.js";
 import { normalisePrintedBarcode } from "./eanBarcode.js";
@@ -56,7 +57,23 @@ export function cleanHubs(hubs, isClothing) {
  * @param {object}   extras     { id, photoUrl, brand, photoUploaded, styleCode,
  *                                 exempt: { reason, by, at } }
  */
-export function buildNewProduct(registry, form, extras = {}) {
+export function buildNewProduct(registry, formIn, extras = {}) {
+  // ── A NORMAL CAP, BEANIE OR BUCKET HAT IS ALWAYS CAPS & BEANIES (Junid,
+  // 20 Nov 2026 — utils/headwearCategory.js). A beanie filed as "Chains &
+  // Bracelets" by a slip on the category spinner was saved as-is and fell
+  // outside the caps-beanies refill policy, greying its Solve. Corrected HERE,
+  // the one builder every new product passes through, but only from one
+  // one-size category to another: the size stays the "_" sentinel, so the
+  // opening stock (keyed "_") and the minted barcode stay valid. A headwear
+  // name on a SIZED category is left as chosen: App.jsx asks the operator
+  // first (the typed letter quantities cannot be guessed into "_"), so
+  // reaching here with one means they kept it deliberately.
+  let fixKey = headwearCategoryKeyFor(formIn && formIn.name, formIn && formIn.categoryKey);
+  if (fixKey) {
+    const chosen = catByKey(registry, formIn.categoryKey);
+    if (!chosen || !isOneSize(chosen) || !legacyFor(registry, fixKey)) fixKey = null;
+  }
+  const form = fixKey ? { ...formIn, categoryKey: fixKey } : formIn;
   const cat = catByKey(registry, form && form.categoryKey);
   // legacyFor returns null for an unknown key, a RETIRED category, or a legacy
   // block whose category/productType are not legal values — see isLegalLegacy.

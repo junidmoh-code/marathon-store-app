@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runOrdersPoll } from "./poll.mjs";
 import { partialFulfilmentPlan } from "./shopifyOrders.mjs";
-import { packedLineItems } from "./partialFulfil.mjs";
+import { packedLineItems, partShipBlockers, settledOffParcel } from "./partialFulfil.mjs";
 import { fakeDb, increment } from "./fakeDb.testutil.mjs";
 import doorRates from "../../shipping/fixtures/rates-door-capetown.json";
 import lockerRates from "../../shipping/fixtures/rates-locker-capetown.json";
@@ -94,7 +94,8 @@ describe("partial fulfilment", () => {
 
   it("the pack's tick fulfils only the shipped line; an ambiguous 5xx that applied is never fulfilled twice", async () => {
     // Shopify, faked with state: TEE (LI 2) qty 2 split across two app lines,
-    // one shipped and one still resolving; the sneaker LI 1 unshipped.
+    // one shipped and one off the parcel; the sneaker LI 1 unshipped. Both left-out lines
+    // are SETTLED (store credit: Jamie's 24 h rule), the only way a pack may leave a line (Junid, 20 Nov 2026).
     const shop = { [LI(2)]: { qty: 2, fulfilled: 0 }, [LI(1)]: { qty: 1, fulfilled: 0 } };
     const sent = [];
     let failAfterApply = true;
@@ -118,8 +119,8 @@ describe("partial fulfilment", () => {
     };
     const lines = [
       tee({ source: { status: "handed", locationId: "marathon-pe" } }),
-      tee({ lineId: "l0b", source: { status: "resolving", locationId: "hub2" }, escalation: { chain: "other", home: "marathon-pe", round: 1, idx: 0, phase: "await", request: { kind: "store_order", key: "R009-1", from: "hub2", to: "marathon-pe" } } }),
-      snk({ source: { status: "unavailable" }, escalation: { phase: "unavailable", round: 2, idx: 0, chain: "footwear", home: "hub1" } }),
+      tee({ lineId: "l0b", source: { status: "resolved" }, resolution: { outcome: { kind: "store_credit", amountCents: 25000, at: NOW - 60e3, via: "ship_without" } } }),
+      snk({ source: { status: "resolved" }, resolution: { outcome: { kind: "store_credit", amountCents: 90000, at: NOW - 60e3, via: "ship_without" } } }),
     ];
     const f = fakeDb(world({ lines, order: { status: "packed", packedLines: { 0: true }, fulfilState: "pending", fulfil: { state: "pending", attempts: 0 }, attention: null, attentionOpen: null, pack: { saleId: "S1" } } }));
     await runOrdersPoll(deps(f, NOW, { graphql }).deps);
@@ -133,6 +134,53 @@ describe("partial fulfilment", () => {
     expect(shop[LI(2)].fulfilled).toBe(1);
     expect(shop[LI(1)].fulfilled).toBe(0);
     expect(f.read("online_orders/9001/fulfilState")).toBe("done");
+  });
+});
+
+describe("no part-shipping: one order ships as one parcel (Junid, 20 Nov 2026)", () => {
+  const packed = (lines, packedLines, extra = {}) => ({ status: "packed", lines, packedLines, ...extra });
+  it("a left-out line counts as settled only on a recorded decision", () => {
+    expect(settledOffParcel(tee({ source: { status: "resolved" }, resolution: { outcome: { kind: "store_credit" } } }))).toBe(true);
+    expect(settledOffParcel(tee({ source: { status: "resolved" }, resolution: { outcome: { kind: "refund", amountCents: 25000 } } }))).toBe(true);
+    expect(settledOffParcel(tee({ source: { status: "resolved" }, resolution: { outcome: { kind: "refund_requested" } } }))).toBe(true);
+    expect(settledOffParcel(tee({ source: { status: "resolved" }, resolution: { money: { kind: "credit", amountCents: 25000, state: "done" } } }))).toBe(true);
+    expect(settledOffParcel(tee({ source: { status: "cancelled" } }))).toBe(true);
+    for (const status of ["resolving", "unavailable", "no_stock", "not_found", "needs_attention", "moved", "pick", "handed", "resolved"]) expect(settledOffParcel(tee({ source: { status } }))).toBe(false);
+    // a swap is not a reason to leave the line behind: the replacement ships with the rest
+    expect(settledOffParcel(tee({ source: { status: "resolved" }, resolution: { outcome: { kind: "swap" } } }))).toBe(false);
+  });
+
+  it("the whole order, a settled leave-out, a second parcel, a follow-up and an exchange are never blocked", () => {
+    expect(partShipBlockers("9001", packed([tee(), snk()], { 0: true, 1: true }))).toEqual([]);
+    expect(partShipBlockers("9001", { status: "packed", lines: [tee(), snk()] })).toEqual([]); // packed before partial packs existed
+    expect(partShipBlockers("9001", packed([tee(), snk({ source: { status: "resolved" }, resolution: { outcome: { kind: "store_credit" } } })], { 0: true }))).toEqual([]);
+    expect(partShipBlockers("9001r1", packed([tee(), snk()], { 0: true }, { reship: { of: "9001" } }))).toEqual([]);
+    expect(partShipBlockers("9001f1", packed([snk()], { 0: true }, { followUpOf: "9001" }))).toEqual([]);
+    expect(partShipBlockers("exchange-1801-5", packed([tee(), snk()], { 0: true }))).toEqual([]);
+  });
+
+  it("#2204: the trainer packed, the T-shirt left behind unsettled: NO courier is booked, nothing is fulfilled, the reason is on the order; Retry ships once it is settled", async () => {
+    const sent = [];
+    const graphql = async (query, vars) => {
+      if (query.includes("orders(")) return { orders: { nodes: [], pageInfo: { hasNextPage: false } } };
+      if (query.includes("fulfillmentCreate")) { sent.push(vars); return { fulfillmentCreate: { fulfillment: { id: "gid://shopify/Fulfillment/1" }, userErrors: [] } }; }
+      return { order: { id: vars.id, cancelledAt: null, lineItems: { nodes: [{ id: LI(2), currentQuantity: 1, unfulfilledQuantity: 1 }, { id: LI(1), currentQuantity: 1, unfulfilledQuantity: 1 }] }, fulfillmentOrders: { nodes: [{ id: "FO1", status: "OPEN", lineItems: { nodes: [{ id: "FOL0", remainingQuantity: 1, lineItem: { id: LI(2) } }, { id: "FOL1", remainingQuantity: 1, lineItem: { id: LI(1) } }] } }] } } };
+    };
+    const lines = [tee({ source: { status: "unavailable" } }), snk({ source: { status: "handed", locationId: "hub1" } })];
+    const f = fakeDb(world({ lines, order: { status: "packed", packedLines: { 1: true }, leftOut: { 0: { at: NOW, by: "u1" } }, fulfilState: "pending", fulfil: { state: "pending", attempts: 0 }, attention: null, attentionOpen: null, pack: { saleId: "S1" } } }));
+    const courier = fakeCourier();
+    await runOrdersPoll(deps(f, NOW, { graphql, courier }).deps);
+    expect(f.read("online_orders/9001/fulfilState")).toBe("courier_failed");
+    expect(f.read("online_orders/9001/courierError")).toMatch(/part-shipping is blocked: Club Tee M \(unavailable\) is not in the parcel/);
+    expect(f.read("online_orders/9001/attention/reason")).toMatch(/^Packed, but not shipped: part-shipping is blocked/);
+    expect(f.read("online_orders/9001/shipping/waybill") ?? null).toBeNull();
+    expect(sent).toEqual([]);
+    // Jamie's 24 h rule settles the T-shirt (store credit); Retry on the packing screen then ships the parcel.
+    await f.db.ref("online_orders/9001/lines/0").update({ source: { status: "resolved" }, resolution: { outcome: { kind: "store_credit", amountCents: 25000, at: NOW + 30e3, via: "ship_without" } } });
+    await f.db.ref("online_orders/9001").update({ fulfilState: "pending", "fulfil/state": "pending" });
+    await runOrdersPoll(deps(f, NOW + 60e3, { graphql, courier }).deps);
+    expect(f.read("online_orders/9001/fulfilState")).toBe("done");
+    expect(sent).toHaveLength(1);
   });
 });
 

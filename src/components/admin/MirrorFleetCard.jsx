@@ -40,7 +40,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { getDatabase, ref, get, set, remove, onValue, query, orderByKey, startAt } from "firebase/database";
-import { ADMIN_EMAIL } from "../PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail, SUPER_ADMIN_RULE_EXPR } from "../../config/superAdmins";
 import { DEVICES_ROOT, SAST_OFFSET_MS, sastDate } from "../../offline/deviceHealth";
 import { MIRROR_SWITCH_PATH, switchVerdict } from "../../offline/killSwitch";
 import { DEVICE_OFF_ROOT, deviceOffPath, deviceOffVerdict } from "../../offline/deviceOff";
@@ -59,10 +59,10 @@ export const REJECT_DAYS = 7;
 
 const RULE_TEXT = `"mirror_switch": {
   ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
-  ".write": "auth != null && auth.token.email === '${ADMIN_EMAIL}'"
+  ".write": "auth != null && ${SUPER_ADMIN_RULE_EXPR}"
 },
 "mirror_devices": {
-  ".read": "auth != null && auth.token.email === '${ADMIN_EMAIL}'",
+  ".read": "auth != null && ${SUPER_ADMIN_RULE_EXPR}",
   "$deviceId": {
     ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
     ".validate": "newData.child('deviceId').val() === $deviceId"
@@ -274,11 +274,10 @@ export default function MirrorFleetCard({ authUser, onExit }) {
   const [offError, setOffError] = useState(null);
   // ── THE COMPONENT'S OWN GATE ──────────────────────────────────────────────
   // Re-checked here, independently of the route gate that mounted it, on the
-  // same strict, case-sensitive email condition the RTDB rule uses. A
-  // lowercasing comparison would fail safe here and then be refused by the
-  // rule, turning a clean "not for you" into a PERMISSION_DENIED nobody can
-  // explain.
-  const isSuperAdmin = authUser?.email === ADMIN_EMAIL;
+  // super-admin list the RTDB rule names (Junid or Jafer). isSuperAdmin compares
+  // lowercased and trimmed; Google delivers both addresses lowercase, so the
+  // client and the rule admit the same two accounts.
+  const isSuperAdmin = isSuperAdminEmail(authUser?.email);
 
   const [state, setState] = useState({ loading: true, devices: [] });
   const [switchOn, setSwitchOn] = useState(null);

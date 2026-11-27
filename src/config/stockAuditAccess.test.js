@@ -67,8 +67,9 @@ describe("the Stock Audit route hands the screen the viewer's shop", () => {
   it("App passes myShop (the destShop scope the order feed uses) to StockAuditView", () => {
     const src = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
     expect(src).toMatch(/<StockAuditView products=\{products\} myShop=\{myShop\}/);
-    // …and that myShop is the destShop scope, owner excepted.
-    expect(src).toMatch(/const myShop = isSuperAdmin \? null : \(permRecord\?\.destShop \|\| null\);/);
+    // …and that myShop is the account's active shop (destShop unless a switch
+    // was confirmed — all-store access, 20 Nov 2026), owner excepted.
+    expect(src).toMatch(/const myShop = isSuperAdmin \|\| !permRecord\?\.destShop \? null : \(activeShopForMe \|\| permRecord\.destShop\);/);
   });
 });
 

@@ -959,7 +959,8 @@ function buildBatchRecord({
 //
 // The parse is the slip's own strict parser: a mangled figure is refused,
 // never coerced. A STRING only — a JSON number would skip the shape check.
-const DECLARED_TOTAL_EMAIL = "gunidmoh@gmail.com";
+// The gate is mayDeclareTotal: either super admin (Junid or Jafer), verified.
+const { isSuperAdminToken } = require("./super-admins.cjs");
 // A day's takings on one terminal; anything larger is a slipped finger.
 const MAX_DECLARED_TOTAL_CENTS = 100000000; // R1,000,000
 
@@ -1013,12 +1014,12 @@ function anchorDeclaredWindow({ openedText, closedText, nowMs }) {
   return { openedAt, closedAt, windowSource: "declared-time-only" };
 }
 
-/** Only the owner's own VERIFIED token may declare a total — the eftPool
- *  isOwner test (Junid signs in with Google, always verified), and nothing a
+/** Only a super admin's (Junid or Jafer) VERIFIED token may declare a total — the eftPool
+ *  isOwner test (they sign in with Google, always verified), and nothing a
  *  permission flag grants. An unverified credential claiming the address must
  *  not inherit the one human number in card recon. (CodeRabbit, PR #649.) */
 function mayDeclareTotal(token) {
-  return !!token && token.email === DECLARED_TOTAL_EMAIL && token.email_verified === true;
+  return isSuperAdminToken(token);
 }
 
 // ─── A TYPED-TOTAL MACHINE: THE WHOLE CAPTURE, FROM ONE FIGURE ───────────────
@@ -1212,6 +1213,6 @@ module.exports = {
   planTypedCapture, sastDayIndexOf,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload,
-  DECLARED_TOTAL_EMAIL, MAX_DECLARED_TOTAL_CENTS, hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal,
+  MAX_DECLARED_TOTAL_CENTS, hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal,
   anchorDeclaredWindow,
 };

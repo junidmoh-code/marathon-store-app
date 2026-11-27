@@ -183,14 +183,16 @@ function manualEntryInputCheck(data) {
  * No payer, no raw text, no destination: nothing was read from a bank.
  */
 function manualEntryRecord({ entryId, key, reference, amountCents, note, actor, at }) {
+  // The super admin who typed it ("Junid" or "Jafer"); the fallback keeps old callers' stamp.
+  const by = actor?.name || MANUAL_ENTRY_BY;
   return {
     at,
     receivedAt: at,
     bankTs: at,
     messageId: `manual:${entryId}`,
     from: actor?.email ?? null,
-    subject: `Manual EFT entry by ${MANUAL_ENTRY_BY}`,
-    auth: { verdict: "manual", fromDomain: null, dkimDomain: null, detail: `Entered by hand by ${MANUAL_ENTRY_BY} — no bank notification was read.` },
+    subject: `Manual EFT entry by ${by}`,
+    auth: { verdict: "manual", fromDomain: null, dkimDomain: null, detail: `Entered by hand by ${by} — no bank notification was read.` },
     rawText: null,
     reader: MANUAL_READER,
     outcome: "recorded",
@@ -204,7 +206,7 @@ function manualEntryRecord({ entryId, key, reference, amountCents, note, actor, 
     destination: null,
     accountTail: null,
     manualEntry: {
-      by: MANUAL_ENTRY_BY,
+      by,
       uid: actor?.uid ?? null,
       email: actor?.email ?? null,
       at,

@@ -59,6 +59,11 @@ beforeEach(() => {
 });
 
 describe("ShippingCard gate", () => {
+  it("admits Jafer as well as Junid (one super-admin list); staff stays out", async () => {
+    await render({ uid: "jafer-uid", email: "jafermohammed340@gmail.com" });
+    expect(getMock.mock.calls.map((c) => c[0].path)).toEqual(["config/shipping"]);
+  });
+
   it("a non-owner reads nothing and writes nothing", async () => {
     const tree = await render(STAFF);
     expect(text(tree)).toContain("account owner only");

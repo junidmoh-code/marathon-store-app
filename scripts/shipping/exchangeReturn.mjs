@@ -35,6 +35,11 @@
 //            never a shop, never "whichever hub holds more". A re-run after a crash reuses the place its own claim
 //            recorded, so a unit never lands on two cells;
 //   anything else → that place when it is in section 2, else the Marathon PE shop.
+// SINCE 26 NOV 2026 (Junid, the POS's condition check; the POS's pickedFromRoutes since 12 Nov): footwear goes back to
+// Hub 1, Hub 2 or Hub 3 (the one it was picked from), clothing to Marathon PE, Trophy, Hub 2, Concrete or Marathon Pine
+// (the one it was picked from); a place outside section 2 only on the pack sale's own ledger row there, else withheld
+// ("not_deducted_there"). Junid's "good" also writes incoming/check { result: "good", via: "junid" } (markGoodCheck),
+// the POS's condition-check field the marathon-dm-agent reads to release the money.
 // A returning item with no app product id (the website's title only) is resolved against the original order's lines by
 // name, as the POS's Incoming exchanges does (resolveReturningLine, marathon-pos-app #594). Every movement carries
 // link.ref "<n>-EX", the POS's stockRef.
@@ -92,6 +97,7 @@ import { isExchangeKey } from "./bookShipment.mjs";
 import { assertSafeSegment, stockSizeKey } from "../../src/utils/sizeKey.js";
 import { isFootwearLine } from "../../src/utils/footwearLine.js";
 import { reactivateUpdates } from "../../src/utils/deactivation.js";
+import { isReturnOnlyOrder, isReturnOnlyLine } from "../../src/utils/onlineOrders.js";
 
 const require = createRequire(import.meta.url);
 const { applyMovementAdmin, cellPath } = require("../../functions/lib/admin-movement.cjs");
@@ -99,8 +105,15 @@ const { applyMovementAdmin, cellPath } = require("../../functions/lib/admin-move
 export const RETURN_TO = "marathon-pe"; // Junid: "back into stock at Marathon PE" (the shop, for everything but sneakers)
 export const SECTION_HUBS = Object.freeze(["hub1", "hub2"]); // Marathon PE's hubs (section 2), the footwear route
 export const SECTION = Object.freeze(["marathon-pe", "trophy", "hub1", "hub2"]);
-export const SECTION_SHOPS = Object.freeze(["marathon-pe", "trophy"]); // clothing goes back to a shop, never a hub (CodeRabbit, #842)
-export const PLACE = Object.freeze({ "marathon-pe": "Marathon PE", trophy: "Trophy", hub1: "Hub 1", hub2: "Hub 2" });
+export const SECTION_SHOPS = Object.freeze(["marathon-pe", "trophy"]); // (kept for old callers)
+// BACK WHERE IT WAS PICKED (Junid, 12 + 26 Nov 2026; the POS's pickedFromRoutes, marathon-pos-app incomingExchanges.js):
+// footwear to the hub it was picked from (Hub 3 included), clothing to the place it was picked from (the POS's
+// WEB_ORDER_DEDUCT_LOCATIONS: Marathon PE, Trophy, Hub 2, Concrete, Marathon Pine). A place outside section 2 is credited
+// only when the original pack sale's ledger row shows it deducted there (never a unit minted on a guess).
+export const PICKED_HUBS = Object.freeze(["hub1", "hub2", "hub3"]);
+export const PICKED_PLACES = Object.freeze(["marathon-pe", "trophy", "hub2", "concrete", "marathon-pine"]);
+export const RETURN_PLACES = Object.freeze([...new Set([...SECTION, ...PICKED_HUBS, ...PICKED_PLACES])]);
+export const PLACE = Object.freeze({ "marathon-pe": "Marathon PE", trophy: "Trophy", hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", concrete: "Concrete", "marathon-pine": "Marathon Pine" });
 export const ACTOR = "system:jimmy-exchange-return";
 export const VIA = "jimmy";
 export const SENTINEL_PLAN = Object.freeze([{ saleId: "jimmy-exchange-return", lineId: "jimmy", qty: 0, refundedBefore: 0, note: "Jimmy is putting this return back: ask Junid, never tap again" }]);
@@ -140,8 +153,8 @@ export const movementIdFor = (key, pid, sizeKey, n) => `exret_${key}_${pid}_${si
 export const FOOTWEAR_UNKNOWN_HUB = "hub2";
 export function destinationFor({ product, size, origLine = null, soldLoc = null }) {
   const picked = [str(soldLoc), str(origLine?.deductFrom), str(origLine?.source?.locationId)].filter(Boolean);
-  if (isFootwearLine(product, size)) return picked.find((l) => SECTION_HUBS.includes(l)) || FOOTWEAR_UNKNOWN_HUB;
-  return picked.find((l) => SECTION_SHOPS.includes(l)) || RETURN_TO;
+  if (isFootwearLine(product, size)) return picked.find((l) => PICKED_HUBS.includes(l)) || FOOTWEAR_UNKNOWN_HUB;
+  return picked.find((l) => PICKED_PLACES.includes(l)) || RETURN_TO;
 }
 
 // ── A returning item with no app product id (the website's title only), resolved against the original order's lines the
@@ -203,7 +216,10 @@ export const stockRefFor = (orderNumber) => `${digits(orderNumber)}-EX`;
  * movementId }] } | { ok: false, why }. Pure.
  */
 export function returnPlan(record, key, fallback = null) {
-  const own = list(record?.incoming?.returning);
+  // A RETURN-ONLY record (store credit / refund instead of a replacement) names the item coming back on its own lines
+  // (returnOnly: true): that is the record's own word, as incoming.returning is, and comes before Jamie's fallback.
+  const listed = list(record?.incoming?.returning);
+  const own = listed.length ? listed : returnOnlyItems(record);
   const from = own.length ? own : list(fallback);
   if (!from.length) return { ok: false, why: "the exchange does not say which item is coming back" };
   const seen = new Map();
@@ -226,7 +242,19 @@ export function returnPlan(record, key, fallback = null) {
       items.push({ pid, size, sizeKey, title: str(it.title) || pid, origOrderKey: str(it.origOrderKey) || null, origLineIndex: Number.isInteger(it.origLineIndex) ? it.origLineIndex : null, movementId: movementIdFor(key, pid, sizeKey, n) });
     }
   }
-  return { ok: true, fromFallback: !own.length, items };
+  // fromLines: the plan came from a return-only record's own lines (no booked incoming.returning list). Its units are
+  // checked against the ledger for a by-hand restore first, like Jamie's fallback (CodeRabbit, #1018).
+  return { ok: true, fromFallback: !own.length, fromLines: !listed.length && own.length > 0, items };
+}
+
+/**
+ * A return-only record's returning lines as returnPlan items (the whole record's lines when it is flagged on the
+ * record, else only the lines flagged returnOnly). The original order is the record's one related order. Pure.
+ */
+export function returnOnlyItems(record) {
+  const lines = list(record?.lines).filter((l) => isReturnOnlyOrder(record) || isReturnOnlyLine(l));
+  const related = Array.isArray(record?.exchange?.relatedOrders) ? record.exchange.relatedOrders.map(str).filter(Boolean) : [];
+  return lines.map((l) => ({ pid: str(l.pid), size: l.size ?? "_", ...(str(l.sizeKey) ? { sizeKey: str(l.sizeKey) } : {}), title: str(l.title) || str(l.pid), qty: Number(l.qty) || 1, origOrderKey: related.length === 1 ? related[0] : null }));
 }
 
 /** Is this exchange ready for its return to be confirmed? → null (ready) or the reason it is not. Pure. */
@@ -236,8 +264,13 @@ export function notReadyWhy(record, { orderNumber = null } = {}) {
   if (n && digits(record.orderNumber) !== n) return `the exchange record is for #${record.orderNumber}, not #${n}`;
   if (!record.exchange || typeof record.exchange !== "object") return "the record is not an exchange";
   if (!(Number(record.exchange.paidAt) > 0)) return "the exchange is not paid yet";
-  if (FINISHED.has(str(record.status))) return `the exchange record is ${record.status}`;
-  if (!list(record.lines).some((l) => l.pid)) return "no replacement is reserved on it";
+  // A return-only record closes itself once its item is back and checked good: a re-run must still answer "already
+  // back" (and a by-hand arrival's stock step is never left behind by the close), so closed is not "finished" for it.
+  if (FINISHED.has(str(record.status)) && !(isReturnOnlyOrder(record) && str(record.status) === "closed")) return `the exchange record is ${record.status}`;
+  if (isReturnOnlyOrder(record)) {
+    // Store credit / refund instead of a replacement: nothing is reserved; the line names the item coming back.
+    if (!list(record.lines).some((l) => l.pid)) return "the return-only record does not name the item coming back";
+  } else if (!list(record.lines).some((l) => l.pid && !isReturnOnlyLine(l))) return "no replacement is reserved on it";
   return null;
 }
 
@@ -253,7 +286,7 @@ export function arrivalState(arrival) {
 export function priorArrivalRow(rows, { pid, sizeKey, key }) {
   for (const [id, m] of Object.entries(rows || {})) {
     if (!m || m.productId !== pid || stockSizeKey(m.size ?? "_") !== sizeKey || !ARRIVALS.has(m.type)) continue;
-    if (!SECTION.includes(str(m.to))) continue;
+    if (!RETURN_PLACES.includes(str(m.to))) continue;
     if (m.link?.orderId === key || String(id).startsWith("exret_")) continue;
     return { id, type: m.type, to: m.to, ts: m.ts || null, reason: m.reason || null };
   }
@@ -267,7 +300,9 @@ export function priorArrivalRow(rows, { pid, sizeKey, key }) {
  */
 export function replacementCheck({ record, cells = {}, holds = {}, saleId = null, saleExists = false }) {
   const packed = str(record?.status) === "packed";
-  const lines = list(record?.lines).filter((l) => l.pid).map((l) => {
+  // A return-only record has no replacement: nothing is held, packed, deducted or shipped for it.
+  if (isReturnOnlyOrder(record)) return { lines: [], packed, saleId: saleId || null, deducted: "none", returnOnly: true, text: "return only (store credit / refund instead of a replacement): no replacement, nothing is deducted or shipped" };
+  const lines = list(record?.lines).filter((l) => l.pid && !isReturnOnlyLine(l)).map((l) => {
     const sizeKey = str(l.sizeKey) || stockSizeKey(l.size ?? "_");
     const loc = str(l.source?.locationId) || null;
     const hold = holds[`${l.pid}/${sizeKey}`] || null;
@@ -298,7 +333,7 @@ const checkSince = (record, now) => {
 
 async function checkReplacement(db, key, record) {
   const cells = {}, holds = {};
-  for (const l of list(record?.lines).filter((x) => x.pid)) {
+  for (const l of list(record?.lines).filter((x) => x.pid && !isReturnOnlyLine(x) && !isReturnOnlyOrder(record))) {
     const sizeKey = str(l.sizeKey) || stockSizeKey(l.size ?? "_");
     const loc = str(l.source?.locationId);
     if (loc) cells[`${loc}/${l.pid}/${sizeKey}`] = (await read(db, `${cellPath(loc, l.pid, l.size, sizeKey)}/qty`)) ?? 0;
@@ -321,10 +356,10 @@ async function ledgerUnit(db, it) {
  * Each unit's facts: its product (must exist), its original line (must be on one of the exchange's original orders when
  * the list is Jimmy's fallback), where it goes back. → { ok, units } | { ok: false, why }.
  */
-/** The original sale's ledger row for one product/size (the till's soldCellLookup, section 2 only). → { loc, soldQty, shortfall } | null */
+/** The original sale's ledger row for one product/size (the till's soldCellLookup, every picked place). → { loc, soldQty, shortfall } | null */
 async function soldCellOf(db, saleId, pid, sizeKey) {
   if (!saleId) return null;
-  for (const loc of SECTION) {
+  for (const loc of RETURN_PLACES) {
     const row = await read(db, `stock_movements/sold:${saleId}:${loc}:${pid}:${sizeKey}`).catch(() => null);
     if (row) return { loc, soldQty: Number(row.qty) || 0, shortfall: Number(row.shortfall) || 0 };
   }
@@ -384,11 +419,13 @@ async function resolveUnits(db, key, record, plan, { priorTo = {} } = {}) {
       cells[cellKey] = { sold, refunded, left: sold ? Math.max(0, sold.soldQty - sold.shortfall - refunded) : Infinity };
     }
     const c = cells[cellKey];
-    const to = SECTION.includes(str(priorTo[it.movementId])) ? priorTo[it.movementId] : destinationFor({ product, size: it.size, origLine, soldLoc: c.sold?.loc || null });
+    const to = RETURN_PLACES.includes(str(priorTo[it.movementId])) ? priorTo[it.movementId] : destinationFor({ product, size: it.size, origLine, soldLoc: c.sold?.loc || null });
+    // Outside section 2 only on the sale's own ledger row there: a place nothing shows deducted is never credited.
+    const unproven = !SECTION.includes(to) && c.sold?.loc !== to;
     // Capped at what the sale deducted (no negative cells, 11 Sep 2026): the part it never covered is withheld.
-    const withheld = c.left <= 0;
+    const withheld = unproven || c.left <= 0;
     if (!withheld) c.left -= 1;
-    const why = withheld ? (c.refunded > 0 ? "refunded" : "shortfall") : null;
+    const why = withheld ? (unproven ? "not_deducted_there" : c.refunded > 0 ? "refunded" : "shortfall") : null;
     units.push({ ...it, to, place: PLACE[to] || to, deactivated: product.deactivated != null, ...(withheld ? { withheld: true, why } : {}) });
   }
   return { ok: true, units };
@@ -493,6 +530,7 @@ export async function confirmExchangeReturn(key, { db, dry = false, orderNumber 
   if (st === "done" && !byHandOpen) {
     // His "good" lifts a hold even when the till confirmed the arrival first (round-2 review 1).
     const released = hold && !dry ? await releaseHold(db, key, record) : false;
+    if (!dry) await markGoodCheck(db, key, record, now);
     const mine = list(arrival.stockReturned).length > 0 || arrival.via === VIA;
     const items = mine ? list(arrival.stockReturned).map((it) => ({ ...it, place: PLACE[it.to] || it.to, already: true })) : await tillUnits(db, arrival);
     return { ok: true, already: true, key, orderNumber: n, by: mine ? "jimmy" : "till", ...(hold ? { heldBefore: true, released } : {}), arrival: { at: arrival.at || null, by: arrival.by?.name || null, returnSaleId: arrival.returnSaleId || null, receiptNumber: arrival.receiptNumber || null }, items, replacement: await checkReplacement(db, key, record) };
@@ -509,7 +547,7 @@ export async function confirmExchangeReturn(key, { db, dry = false, orderNumber 
 
   // A unit someone may already have put back (a by-hand arrival, or a return handed in with no record): the ledger since
   // the exchange was paid is read first, never twice. Junid's "add it anyway" (force) is the way past a false match.
-  if ((byHandOpen || plan.fromFallback) && !force) {
+  if ((byHandOpen || plan.fromFallback || plan.fromLines) && !force) {
     const since = checkSince(record, now());
     if (since == null) return { ok: false, notReady: true, key, reason: "the exchange has no payment time, so I can't check whether it was already put back by hand: nothing was added" };
     const rows = await rowsSince(db, since);
@@ -608,7 +646,30 @@ export async function confirmExchangeReturn(key, { db, dry = false, orderNumber 
     throw new Error(`a till took over #${n}'s arrival while the stock went back (${stockReturned.map((u) => u.movementId).join(", ")}): check it on the POS before anything else is put back`);
   }
   const released = hold ? await releaseHold(db, key, record) : false;
+  await markGoodCheck(db, key, record, now);
   return { ok: true, done: true, key, orderNumber: n, items: out, replacement, reason: reasonFor(n), ...(reactivated.length ? { reactivated } : {}), ...(hold ? { heldBefore: true, released } : {}), ...(byHandOpen ? { byHand: true } : {}), ...(withheld.length ? { withheld } : {}) };
+}
+
+/**
+ * His "good" is the condition check (Junid, 26 Nov 2026): incoming/check = { result: "good", at, by, via: "junid" }, the
+ * POS's field the marathon-dm-agent reads to release the customer's refund / replacement / credit. Only when no "good"
+ * check is there yet (a till's own check is never overwritten). A failure is reported, never undoes the stock.
+ */
+async function markGoodCheck(db, key, record, now) {
+  if (record?.incoming?.check?.result === "good") return false;
+  try {
+    // A transaction on the check as it is NOW (architect review, #1017): an existing good check is kept; a till's
+    // not_original one (its reason and photos, the evidence) is kept under `previous`, never lost.
+    const next = { result: "good", at: now(), by: { uid: ACTOR, name: "Jimmy (Junid's word on WhatsApp)" }, via: "junid" };
+    const r = await db.ref(`online_orders/${key}/incoming/check`).transaction((cur) => {
+      if (cur && typeof cur === "object" && cur.result === "good") return undefined;
+      return cur && typeof cur === "object" ? { ...next, previous: cur } : next;
+    });
+    return !!r?.committed;
+  } catch (err) {
+    console.warn(`exchangeReturn: ${key} is back in stock but its "good" check was not recorded: ${err?.message || err}`);
+    return false;
+  }
 }
 
 /**

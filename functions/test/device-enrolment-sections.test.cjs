@@ -7,6 +7,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const E = require("../lib/device-enrolment.cjs");
+const { JUNID_EMAIL } = require("../lib/super-admins.cjs");
 const { makeFakeDb, readAt } = require("./helpers/fake-rtdb.cjs");
 const { _handleEnrol, _handleAdmin, managerIdentity } = require("../deviceEnrolment/deviceEnrolment.js");
 const { sectionsFor, SEED_REGISTRY } = require("../lib/network-registry.cjs");
@@ -15,7 +16,7 @@ const NOW = Date.parse("2026-10-02T10:00:00.000Z");
 const MC = "mc-uid";
 const DEV_A = "aaaaaaaa-1111-4111-8111-111111111111";
 const DEV_B = "bbbbbbbb-2222-4222-8222-222222222222";
-const OWNER = { uid: "owner", token: { email: E.OWNER_EMAIL, email_verified: true } };
+const OWNER = { uid: "owner", token: { email: JUNID_EMAIL, email_verified: true } };
 
 let ids = 0;
 function deps(db) {

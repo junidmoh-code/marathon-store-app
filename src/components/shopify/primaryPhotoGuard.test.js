@@ -35,6 +35,8 @@ const STORE = "src/components/shopify/shopifyPublishStore.js";
 const MUTATORS = "src/components/shopify/publishMutators.js";
 const COMMIT = "src/components/shopify/publishMediaCommit.js";
 const CHAIN = "scripts/newArrivals/chainCore.mjs";
+// Black Friday → the website first (20 Nov 2026): the approved photo leads the list, the app photo follows.
+const BF_WEB = "scripts/blackFriday/webPublishCore.mjs";
 
 // db.ref(`shopify_publish/${pid}/media`).set(…) — the admin SDK form …
 const Q = "[\"'\\x60]", NQ = "[^\"'\\x60\\s]";
@@ -55,8 +57,8 @@ describe("the Shopify primary photo has ONE write path", () => {
   it("the store's list writers are called only by commitPublishMedia", () => {
     expect(offenders(/\b(setPublishMedia|appendPublishMedia|setPublishPhotos)\s*\(/, [STORE, COMMIT])).toEqual([]);
   });
-  it("the list mutators are used only by the store and the New Arrivals chain", () => {
-    expect(offenders(/\b(photosMutator|mediaMutator|appendMediaMutator)\b/, [STORE, MUTATORS, CHAIN])).toEqual([]);
+  it("the list mutators are used only by the store, the New Arrivals chain and the Black Friday website step", () => {
+    expect(offenders(/\b(photosMutator|mediaMutator|appendMediaMutator)\b/, [STORE, MUTATORS, CHAIN, BF_WEB])).toEqual([]);
   });
   it("no file writes a shopify_publish photos/media path directly", () => {
     expect(offenders(ADMIN_WRITE, [])).toEqual([]);
@@ -66,7 +68,7 @@ describe("the Shopify primary photo has ONE write path", () => {
     expect(offenders(/\.child\(\s*["'`](photos|media)["'`]\s*\)\s*\.(set|update|transaction|push|remove)\b/, [])).toEqual([]);
   });
   it("every allowed writer calls setShopifyPrimaryPhoto", () => {
-    for (const rel of [COMMIT, CHAIN]) {
+    for (const rel of [COMMIT, CHAIN, BF_WEB]) {
       const f = FILES.find((x) => x.rel === rel);
       expect(f, rel).toBeTruthy();
       expect(code(f.src), rel).toMatch(/\bsetShopifyPrimaryPhoto\s*\(/);

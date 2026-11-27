@@ -36,7 +36,7 @@
 const { parseRandsToCents, formatCents, normaliseTid } = require("./card-recon.cjs");
 const { sastDayYmd, sastDayStartMs, isDayYmd, DAY_MS } = require("./card-unread.cjs");
 
-const MANUAL_EMAIL = "gunidmoh@gmail.com";
+const { isSuperAdminToken } = require("./super-admins.cjs");
 const MAX_TOTAL_CENTS = 100000000; // R1,000,000 — a slipped finger, not a batch
 const MAX_WINDOW_MS = 7 * DAY_MS;
 // With no close typed, a manual batch closes at 18:00 SAST on its day: after
@@ -45,9 +45,9 @@ const MAX_WINDOW_MS = 7 * DAY_MS;
 const DEFAULT_CLOSE_HOUR_SAST = 18;
 const REASONS = ["no-slip", "unread", "wrong"];
 
-/** Junid's own VERIFIED token, and nothing a permission flag grants. */
+/** A super admin's (Junid or Jafer) VERIFIED token, and nothing a permission flag grants. */
 function mayEnterManually(token) {
-  return !!token && token.email === MANUAL_EMAIL && token.email_verified === true;
+  return isSuperAdminToken(token);
 }
 
 const amount = (raw, label, { required = false } = {}) => {
@@ -73,10 +73,11 @@ const ms = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : null);
  * @param {object|null} p.replaced  the record named by `replaces`, read by the caller, or null
  * @param {boolean} p.replacedIsLatest  is it the latest revision of its batch?
  * @param {number|null} p.prevClosedAt  this terminal's last settlement before the close, or null
+ * @param {string|null} p.byName  who is entering it ("Junid" / "Jafer"), or null
  * @returns {{ok:true, extraction:object, batchNo:number, correction:boolean, warnings:string[], manual:object}
  *          | {ok:false, reason:string}}
  */
-function planManualEntry({ input, nowMs, replaced = null, replacedIsLatest = true, prevClosedAt = null, prevBatchNo = null, nextOpenedAt = null }) {
+function planManualEntry({ input, nowMs, replaced = null, replacedIsLatest = true, prevClosedAt = null, prevBatchNo = null, nextOpenedAt = null, byName = null }) {
   const i = input || {};
   const tid = normaliseTid(i.tid);
   if (!tid) return { ok: false, reason: "Pick the till first." };
@@ -208,7 +209,9 @@ function planManualEntry({ input, nowMs, replaced = null, replacedIsLatest = tru
   }
   const why = { "no-slip": "no slip arrived", unread: "the slip could not be read", wrong: "the recorded figures were wrong" }[reason];
   const warnings = [
-    `Entered by hand by Junid for ${i.dayYmd} (${why}). There is no slip reading behind these figures.`,
+    // WHO entered it: Junid or Jafer (the caller passes superAdminName). A plan
+    // with no name says "by hand" and names nobody. (CodeRabbit, PR #896.)
+    `Entered by hand${byName ? ` by ${byName}` : ""} for ${i.dayYmd} (${why}). There is no slip reading behind these figures.`,
     ...(original ? [`This replaces ${original.batchKey || `batch #${batchNo}`} (${original.capturedVia || "capture"}, total ${Number.isInteger(original.totalCents) ? formatCents(original.totalCents) : "unread"}) — that record is kept unchanged.`] : []),
     ...notes,
   ];
@@ -218,4 +221,4 @@ function planManualEntry({ input, nowMs, replaced = null, replacedIsLatest = tru
   };
 }
 
-module.exports = { MANUAL_EMAIL, DEFAULT_CLOSE_HOUR_SAST, REASONS, mayEnterManually, planManualEntry };
+module.exports = { DEFAULT_CLOSE_HOUR_SAST, REASONS, mayEnterManually, planManualEntry };

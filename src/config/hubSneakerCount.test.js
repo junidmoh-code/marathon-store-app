@@ -11,7 +11,7 @@ import {
   canUseHubSneakerCount, canAdjustHubCount,
   hubSneakerCountVisibleForViewer,
 } from "./hubSneakerCount.js";
-import { ADMIN_EMAIL } from "../components/PermissionsContext";
+import { JUNID_EMAIL as ADMIN_EMAIL } from "./superAdmins";
 
 const v = (stockRole, email = "staff@marathon.internal") => ({ email, stockRole });
 

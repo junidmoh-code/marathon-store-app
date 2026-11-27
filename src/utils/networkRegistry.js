@@ -80,6 +80,7 @@ const DEFAULT_NETWORK = Object.freeze({
       tills: Object.freeze([
         Object.freeze({ tillId: "till-1", name: "Till 1" }),
         Object.freeze({ tillId: "till-2", name: "Till 2" }),
+        Object.freeze({ tillId: "till-3", name: "Till 3" }),
       ]),
     }),
     hub3: Object.freeze({

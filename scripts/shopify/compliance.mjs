@@ -9,6 +9,7 @@
 // (validatePayload) that refuses any payload containing a trigger in any
 // field. Every push path calls it LAST, after all builders — nothing reaches
 // the Shopify client without a pass. Pure functions, no I/O.
+import { STORE } from "./storeConfig.mjs";
 import { triggersInText } from "../../src/utils/shopifyTriggers.js";
 // ONE slug builder, shared with the browser: the page has to decide whether a
 // recorded handle-collision refusal still describes the product's current name,
@@ -22,7 +23,10 @@ import { CONDITIONS, buildDescriptionHtml } from "../../src/components/shopify/p
 export { CONDITIONS, buildDescriptionHtml };
 
 // Vendor is a FIXED string — never a brand, never derived from the record.
-export const VENDOR = "Marathon Club";
+// The vendor string is per store (storeConfig.mjs): "Marathon Club" on
+// Marathon, exactly as before; "Concrete" on the Concrete store. The trigger
+// checks below are the SAME validator for both — never forked.
+export const VENDOR = STORE.vendor;
 
 // Handle derives from the CLEANED title only — set explicitly so Shopify can
 // never derive it from a dirty source. Lowercase alnum + single hyphens.

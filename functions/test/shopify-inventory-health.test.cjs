@@ -113,3 +113,13 @@ test("products the sync gave up on after 6 hours are named — once", () => {
   const again = assessInventoryHealth({ nowMs: DAY + 60000, health: { ...health, watchdog: { lastAlarms: v.state.lastAlarms } } });
   assert.deepEqual(again.alarms, []);
 });
+
+// ── Junid's quiet rule (26 Nov 2026): only an outage carries the marker ──────
+test("quiet rule: [pass] and [sweepStale] are outages; [sweep] and [stuck] are not", () => {
+  const { isOutageAlarm } = require("../lib/shopify-inventory-health.cjs");
+  assert.equal(isOutageAlarm({ kind: "pass" }), true);
+  assert.equal(isOutageAlarm({ kind: "sweepStale" }), true);
+  assert.equal(isOutageAlarm({ kind: "sweep" }), false);
+  assert.equal(isOutageAlarm({ kind: "stuck" }), false);
+  assert.equal(isOutageAlarm(null), false);
+});

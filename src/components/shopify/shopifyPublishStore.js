@@ -15,14 +15,25 @@
 //   this file writes; the browser never calls Shopify), blockedReason,
 //   cleanName, cleanNameSource (lexicon|ai|manual), nameApprovedAt,
 //   condition, updatedAt, updatedBy
-import { ref, child, get, runTransaction, query, orderByChild, equalTo, startAt, endAt, limitToFirst } from "firebase/database";
+import { ref, child, get, set, runTransaction, query, orderByChild, equalTo, startAt, endAt, limitToFirst } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import { OFFERED_CONDITIONS } from "./shopifyPublishCore";
+import { RRP_DISCOUNT_CHOICES } from "../../utils/shopifyRrp";
 import { APP_STORAGE_PREFIX, publishPhotoListProblem, precheck, approveNameMutator, applyProposalMutator,
          dismissProposalMutator, publishMutator, desiredStateMutator, photosMutator, conditionMutator,
          mediaMutator, appendMediaMutator } from "./publishMutators";
 import { storedMediaKey } from "./publishShared";
+
+// ─── WHICH STORE'S PUBLISHING NODE ──────────────────────────────────────────
+// Two Shopify stores since 2026-11-15: Marathon (/shopify_publish, the
+// default, unchanged) and Concrete (/shopify_publish_concrete, same shape and
+// rules). The Publishing tab's Marathon/Concrete switch sets the target before
+// it renders the (shared) view; every read and write below addresses it. Only
+// one tab is ever mounted, and the key cache is held PER NODE so a tab switch
+// can never serve one store's keys to the other.
+import { PUBLISH_TARGETS, setPublishTarget, publishTarget, publishNodePath, holdTarget } from "./publishTarget.js";
+export { PUBLISH_TARGETS, setPublishTarget, publishTarget, publishNodePath, holdTarget };
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
 // and the Admin-SDK scripts (which use assertSafeSegment) address DIFFERENT
@@ -31,7 +42,7 @@ import { storedMediaKey } from "./publishShared";
 const safeSeg = (s) => {
   const seg = String(s ?? "");
   if (seg === "" || /[.#$/\[\]\s]/.test(seg)) {
-    throw new Error(`illegal /shopify_publish key: "${seg}"`);
+    throw new Error(`illegal /${publishNodePath()} key: "${seg}"`);
   }
   return seg;
 };
@@ -79,7 +90,7 @@ export async function loadPipelineNodes() {
   // loadProposalPage below.
   const states = ["live", "blocked", "nominated", "draft"];
   const snaps = await Promise.all(states.map((s) =>
-    get(query(ref(database, "shopify_publish"), orderByChild("state"), equalTo(s)))));
+    get(query(ref(database, publishNodePath()), orderByChild("state"), equalTo(s)))));
   const merged = {};
   for (const snap of snaps) Object.assign(merged, snap.val() || {});
   return merged;
@@ -130,7 +141,7 @@ export const PROPOSAL_PAGE_SIZE = 300;
 export async function loadProposalPage({ after = null, pageSize = PROPOSAL_PAGE_SIZE } = {}) {
   const want = after ? pageSize + 1 : pageSize; // +1 covers the inclusive overlap
   const snap = await get(query(
-    ref(database, "shopify_publish"),
+    ref(database, publishNodePath()),
     orderByChild("state"),
     ...(after ? [startAt("awaiting", after)] : [startAt("awaiting")]),
     endAt("awaiting"),
@@ -168,14 +179,16 @@ export async function loadProposalPage({ after = null, pageSize = PROPOSAL_PAGE_
 // Session cache for the shallow key set — the home badge asks on every visit
 // to the home screen and must not re-fetch each time. Writes below add the
 // pid locally so counts stay honest between refreshes.
-let keysCache = null; // { keys: Set<pid>, at: epoch-ms }
+const keysCacheByNode = new Map(); // node → { keys: Set<pid>, at: epoch-ms }
 const KEYS_TTL_MS = 60_000;
-const markSeen = (pid) => { if (keysCache) keysCache.keys.add(pid); };
+const markSeen = (pid) => { const c = keysCacheByNode.get(publishNodePath()); if (c) c.keys.add(pid); };
 
 export async function loadPublishKeys({ fresh = false } = {}) {
-  if (!fresh && keysCache && Date.now() - keysCache.at < KEYS_TTL_MS) return keysCache.keys;
-  const keys = await shallowKeys("shopify_publish");
-  keysCache = { keys, at: Date.now() };
+  const node = publishNodePath();
+  const cached = keysCacheByNode.get(node);
+  if (!fresh && cached && Date.now() - cached.at < KEYS_TTL_MS) return cached.keys;
+  const keys = await shallowKeys(node);
+  keysCacheByNode.set(node, { keys, at: Date.now() });
   return keys;
 }
 
@@ -238,6 +251,7 @@ export async function loadReviewHidden({ fresh = false, throwOnError = false } =
 // pid so the caller keeps every body that DID load.
 export async function loadNodesFor(pids) {
   const list = [...(pids || [])];
+  const node = publishNodePath();   // captured once: the whole load reads ONE store
   const out = {};
   const failed = [];
   let i = 0;
@@ -245,7 +259,7 @@ export async function loadNodesFor(pids) {
     while (i < list.length) {
       const pid = list[i++];
       try {
-        const snap = await get(child(ref(database), `shopify_publish/${safeSeg(pid)}`));
+        const snap = await get(child(ref(database), `${node}/${safeSeg(pid)}`));
         out[pid] = snap.val();
       } catch {
         failed.push(pid);
@@ -267,7 +281,7 @@ export async function loadNodesFor(pids) {
 // a null `cur` (the classic RTDB transaction trap).
 async function writeNode(productId, mutate) {
   try {
-    const result = await runTransaction(ref(database, `shopify_publish/${safeSeg(productId)}`), mutate);
+    const result = await runTransaction(ref(database, `${publishNodePath()}/${safeSeg(productId)}`), mutate);
     if (!result.committed) return { ok: false, aborted: true };
     markSeen(productId);
     return { ok: true, node: result.snapshot.val() };
@@ -393,4 +407,29 @@ export async function setCondition(productId, node, condition) {
   const problem = precheck.condition(condition);
   if (problem) return { ok: false, message: problem };
   return decide(productId, node, conditionMutator, { condition });
+}
+
+/**
+ * The RRP chip (65% / 70%): writes ONLY /shopify_publish/{pid}/rrpDiscountPct.
+ * A single-key write, deliberately not a node transaction — it changes nothing
+ * the publish flow reads, never stamps updatedAt (so the reconciler does not
+ * treat it as a new publish intent and re-push the whole listing), and needs
+ * no rule beyond the node's existing `$other`. The shopifyRrpDirty function
+ * marks the product's price dirty, so the website's RRP follows on the next
+ * reconciler tick. The node must already exist (the rules require `state`).
+ */
+export async function setRrpDiscount(productId, node, pct) {
+  if (!RRP_DISCOUNT_CHOICES.includes(pct)) return { ok: false, message: "RRP discount must be 65% or 70%." };
+  if (!node?.state) return { ok: false, message: "This product isn't in Shopify publishing yet — publish it first, then set the RRP." };
+  try {
+    await set(ref(database, `${publishNodePath()}/${safeSeg(productId)}/rrpDiscountPct`), pct);
+    markSeen(productId);
+    // Return the COMMITTED node, not the caller's copy with one field changed —
+    // the page folds this in as the truth, and a state/switch change that
+    // landed meanwhile must not be painted back to the stale snapshot.
+    const snap = await get(ref(database, `${publishNodePath()}/${safeSeg(productId)}`));
+    return { ok: true, node: snap.val() ?? { ...node, rrpDiscountPct: pct } };
+  } catch (err) {
+    return writeError(err);
+  }
 }

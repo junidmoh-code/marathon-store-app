@@ -236,6 +236,24 @@ function wrap(initial, reopen = null) {
       });
     },
 
+    // ── compare-and-put, ONE transaction ──
+    // Writes `value` at `key` only if the stored row still equals `expected`
+    // (by `same`) AND exists. The read and the put share a readwrite
+    // transaction, so a change-feed page cannot commit between them. For the
+    // row recheck (rowRecheck.js), which must never overwrite a fresher feed
+    // write and must never add a row the device does not hold. → true if put.
+    putIfUnchanged(storeName, key, expected, value, same) {
+      return txn(storeName, "readwrite", (s) => new Promise((resolve, reject) => {
+        const req = s[storeName].get(key);
+        req.onsuccess = () => {
+          if (req.result === undefined || !same(req.result, expected)) { resolve(false); return; }
+          s[storeName].put(value, key);
+          resolve(true);
+        };
+        req.onerror = () => reject(asError(req, "request failed"));
+      }));
+    },
+
     // ── generic reads ──
     get(storeName, key) {
       return txn(storeName, "readonly", (s) => reqValue(s[storeName].get(key)));

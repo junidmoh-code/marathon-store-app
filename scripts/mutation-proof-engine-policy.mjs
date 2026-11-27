@@ -295,8 +295,8 @@ const MUTATIONS = [
     id: "M-SERVER-OWNER",
     guard: "GATE 3 — the owner clause is an EQUALITY on the owner's email, not \"any caller who has one\"",
     file: WRITE,
-    from: `  if (typeof callerEmail === "string" && callerEmail === adminEmail) return;`,
-    to: `  if (typeof callerEmail === "string" && callerEmail) return;`,
+    from: `  if (caller && admins.includes(caller)) return;`,
+    to: `  if (caller) return;`,
     nodeTests: SERVER_TESTS,
   },
   {

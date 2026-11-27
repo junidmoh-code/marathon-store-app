@@ -1,0 +1,384 @@
+{
+ "summary": {
+  "firstPicksReplayed": 1222,
+  "trustedShelves": {
+   "picked": 911,
+   "rejected": 78,
+   "failedPct": 7.9
+  },
+  "riskyShelves": {
+   "picked": 130,
+   "rejected": 103,
+   "failedPct": 44.2
+  },
+  "wouldGoElsewhere": 34,
+  "ofThoseWereRejected": 13,
+  "ofThoseWerePicked": 21,
+  "failuresAvoidedAtBest": 13,
+  "failuresAvoidedExpected": 10.3,
+  "riskyButStayed": 199,
+  "riskyAndTheOnlyPlace": {
+   "picked": 95,
+   "rejected": 85,
+   "failedPct": 47.2
+  },
+  "elsewhereUnknown": 0,
+  "byRoute": {
+   "Hub 2 → Concrete": {
+    "lines": 1,
+    "wereRejected": 0
+   },
+   "Hub 1 → Hub 3": {
+    "lines": 12,
+    "wereRejected": 7
+   },
+   "Hub 2 → Hub 3": {
+    "lines": 2,
+    "wereRejected": 0
+   },
+   "Hub 1 → Hub 2": {
+    "lines": 2,
+    "wereRejected": 0
+   },
+   "Marathon PE → Pine": {
+    "lines": 3,
+    "wereRejected": 3
+   },
+   "Marathon PE → Hub 2": {
+    "lines": 5,
+    "wereRejected": 0
+   },
+   "Marathon PE → Concrete": {
+    "lines": 3,
+    "wereRejected": 1
+   },
+   "Trophy → Pine": {
+    "lines": 1,
+    "wereRejected": 1
+   },
+   "Trophy → Hub 2": {
+    "lines": 5,
+    "wereRejected": 1
+   }
+  },
+  "afterTheFirstRejection": {
+   "rejected": 181,
+   "toShopOrHub": 32,
+   "toCentralOnly": 14,
+   "nowhere": 135
+  },
+  "settings": {
+   "riskyAt": 2,
+   "staleDays": 14,
+   "rejectedDays": 30
+  }
+ },
+ "moved": [
+  {
+   "order": 2027,
+   "product": "Saint Michael  CVT -22#",
+   "size": "L",
+   "from": "Hub 2",
+   "to": "Concrete",
+   "why": "one piece, untouched 35 days",
+   "was": "picked"
+  },
+  {
+   "order": 2361,
+   "product": "Nike Portal Royal Blue",
+   "size": "4",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "one piece, untouched 25 days, rejected a website pick 17 days ago",
+   "was": "rejected"
+  },
+  {
+   "order": 2340,
+   "product": "Lacoste Powercourt Navy Blue",
+   "size": "8",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "one piece, untouched 35 days",
+   "was": "picked"
+  },
+  {
+   "order": 2266,
+   "product": "Lacoste T-Clip Winter Outdoor Green Black",
+   "size": "7",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "untouched 42 days, rejected a website pick 0 days ago",
+   "was": "rejected"
+  },
+  {
+   "order": 2362,
+   "product": "Lacoste Powercourt White/Green",
+   "size": "7",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "one piece, untouched 29 days, rejected a website pick 15 days ago",
+   "was": "rejected"
+  },
+  {
+   "order": 2181,
+   "product": "Lacoste Court Cage Green White",
+   "size": "10",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "one piece, untouched 44 days",
+   "was": "picked"
+  },
+  {
+   "order": 2051,
+   "product": "Adidas Samba Silver Metallic",
+   "size": "3",
+   "from": "Hub 2",
+   "to": "Hub 3",
+   "why": "one piece, untouched 65 days",
+   "was": "picked"
+  },
+  {
+   "order": 2368,
+   "product": "Karl lagerfeld",
+   "size": "6",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "one piece, untouched 60 days",
+   "was": "picked"
+  },
+  {
+   "order": 2347,
+   "product": "Nike Air Force 1 Low Chocolate",
+   "size": "7",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "one piece, untouched 131 days",
+   "was": "rejected"
+  },
+  {
+   "order": 2267,
+   "product": "Nike Air Max Plus White Red",
+   "size": "5",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "one piece, untouched 67 days",
+   "was": "picked"
+  },
+  {
+   "order": 2352,
+   "product": "Lacoste Powercourt White/Green",
+   "size": "7",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "untouched 28 days, rejected a website pick 14 days ago",
+   "was": "picked"
+  },
+  {
+   "order": 2320,
+   "product": "Lacoste Powercourt White/Green",
+   "size": "6",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "one piece, untouched 62 days, rejected a website pick 21 days ago",
+   "was": "rejected"
+  },
+  {
+   "order": 2395,
+   "product": "Nike SB Dunk Low Black Orange Purple",
+   "size": "7",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "one piece, untouched 38 days",
+   "was": "rejected"
+  },
+  {
+   "order": 2211,
+   "product": "Karl Lagerfeld Kapri White Black",
+   "size": "7",
+   "from": "Hub 2",
+   "to": "Hub 3",
+   "why": "one piece, untouched 71 days",
+   "was": "picked"
+  },
+  {
+   "order": 1874,
+   "product": "Karl Lagerfeld Kapri Kushion Signia Shine Black",
+   "size": "8",
+   "from": "Hub 1",
+   "to": "Hub 2",
+   "why": "one piece, untouched 23 days",
+   "was": "picked"
+  },
+  {
+   "order": 2268,
+   "product": "Lacoste T-Clip Winter Outdoor Green Black",
+   "size": "7",
+   "from": "Hub 1",
+   "to": "Hub 3",
+   "why": "one piece, untouched 42 days, rejected a website pick 0 days ago",
+   "was": "rejected"
+  },
+  {
+   "order": 1890,
+   "product": "Karl Lagerfeld Kapri Ikonik Black With Spikes",
+   "size": "9",
+   "from": "Hub 1",
+   "to": "Hub 2",
+   "why": "one piece, untouched 36 days",
+   "was": "picked"
+  },
+  {
+   "order": 1776,
+   "product": "Giorgio Armani acquadi perfume",
+   "size": "_",
+   "from": "Marathon PE",
+   "to": "Pine",
+   "why": "one piece, untouched 22 days",
+   "was": "rejected"
+  },
+  {
+   "order": 1782,
+   "product": "Lacoste L.12.12 perfume",
+   "size": "_",
+   "from": "Marathon PE",
+   "to": "Pine",
+   "why": "one piece, untouched 18 days",
+   "was": "rejected"
+  },
+  {
+   "order": 1790,
+   "product": "Stanley cap yellow",
+   "size": "57",
+   "from": "Marathon PE",
+   "to": "Hub 2",
+   "why": "one piece, untouched 22 days",
+   "was": "picked"
+  },
+  {
+   "order": 1838,
+   "product": "Hugo boss underwear men",
+   "size": "XXXL",
+   "from": "Marathon PE",
+   "to": "Hub 2",
+   "why": "one piece, untouched 51 days",
+   "was": "picked"
+  },
+  {
+   "order": 1842,
+   "product": "Sox cap  black",
+   "size": "_",
+   "from": "Marathon PE",
+   "to": "Pine",
+   "why": "one piece, untouched 24 days",
+   "was": "rejected"
+  },
+  {
+   "order": 1845,
+   "product": "Liverpool FC Crown Paints Jersey Red",
+   "size": "XL",
+   "from": "Marathon PE",
+   "to": "Hub 2",
+   "why": "one piece, untouched 94 days",
+   "was": "picked"
+  },
+  {
+   "order": 1876,
+   "product": "Short camouflage blue 438271#1",
+   "size": "XL",
+   "from": "Marathon PE",
+   "to": "Hub 2",
+   "why": "one piece, untouched 64 days",
+   "was": "picked"
+  },
+  {
+   "order": 1958,
+   "product": "LA fitted  cap black",
+   "size": "55",
+   "from": "Marathon PE",
+   "to": "Concrete",
+   "why": "one piece, untouched 47 days",
+   "was": "picked"
+  },
+  {
+   "order": 1961,
+   "product": "Ny cap black",
+   "size": "56",
+   "from": "Marathon PE",
+   "to": "Concrete",
+   "why": "one piece, untouched 22 days",
+   "was": "picked"
+  },
+  {
+   "order": 2133,
+   "product": "Saint Michael T-Shirt Black",
+   "size": "M",
+   "from": "Marathon PE",
+   "to": "Concrete",
+   "why": "one piece, untouched 43 days",
+   "was": "rejected"
+  },
+  {
+   "order": 2332,
+   "product": "Nike Arsenal Fly Emirates Home Jersey Red",
+   "size": "S",
+   "from": "Marathon PE",
+   "to": "Hub 2",
+   "why": "one piece, untouched 21 days",
+   "was": "picked"
+  },
+  {
+   "order": 1818,
+   "product": "Louis Vuitton bag black end brown ",
+   "size": "M",
+   "from": "Trophy",
+   "to": "Pine",
+   "why": "one piece, untouched 72 days",
+   "was": "rejected"
+  },
+  {
+   "order": 2094,
+   "product": "Jordan bag red",
+   "size": "_",
+   "from": "Trophy",
+   "to": "Hub 2",
+   "why": "one piece, untouched 58 days",
+   "was": "picked"
+  },
+  {
+   "order": 2122,
+   "product": "Essentials bag black: #9155",
+   "size": "_",
+   "from": "Trophy",
+   "to": "Hub 2",
+   "why": "one piece, untouched 60 days",
+   "was": "rejected"
+  },
+  {
+   "order": 2128,
+   "product": "Nike bag white",
+   "size": "_",
+   "from": "Trophy",
+   "to": "Hub 2",
+   "why": "one piece, untouched 27 days",
+   "was": "picked"
+  },
+  {
+   "order": 2147,
+   "product": "Adidas 2608 tracksuits blue",
+   "size": "XL",
+   "from": "Trophy",
+   "to": "Hub 2",
+   "why": "one piece, untouched 70 days",
+   "was": "picked"
+  },
+  {
+   "order": 2401,
+   "product": "Nike red bag",
+   "size": "_",
+   "from": "Trophy",
+   "to": "Hub 2",
+   "why": "one piece, untouched 31 days",
+   "was": "picked"
+  }
+ ]
+}

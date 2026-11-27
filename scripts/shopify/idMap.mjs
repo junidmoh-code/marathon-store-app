@@ -27,6 +27,7 @@
 //   • same product, strictly NEW size keys → merge the new keys in
 //   • same size key with different IDs, or a different shopifyProductId
 //                                          → REFUSE loudly (human decision)
+import { PUBLISH_PATH, SYNC_PATH, storeNode } from "./storeConfig.mjs";
 import { encodeSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
 // Paged reader — the claim-index backfill reads the existing map in bounded
 // pages rather than in one whole-node request.
@@ -113,7 +114,7 @@ export function planIdMapWrite(existing, mapping) {
 // happened. Until it is built the index is empty and would call every existing
 // gid unclaimed — hence the backfill is a precondition of the first claim, not
 // a lazy nicety.
-const CLAIMS_PATH = "shopify_sync/_claims";
+const CLAIMS_PATH = `${SYNC_PATH}/_claims`;
 // Underscore-prefixed like the sentinel, so it can never collide with a claim
 // key (claimKeyFor only ever produces digits).
 export const CLAIMS_CONFLICTS_KEY = "_conflicts";
@@ -156,7 +157,7 @@ export async function ensureClaimIndex(db) {
   // One paged pass over the existing map. Keys beginning with "_" are this
   // module's own bookkeeping siblings (_collections, _reconcile, _claims) and
   // are never product records.
-  const all = await readMapPaged(db, "shopify_sync", { pageSize: 300 });
+  const all = await readMapPaged(db, SYNC_PATH, { pageSize: 300 });
   const index = {};
   let n = 0;
   // Double mappings found while building. They are PERSISTED, not merely
@@ -293,7 +294,7 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
 
   // This record's own pointer first — a record that already maps elsewhere must
   // be refused before it can take a claim it would then have to give back.
-  const mineGid = (await db.ref(`shopify_sync/${productId}/shopifyProductId`).get()).val();
+  const mineGid = (await db.ref(`${SYNC_PATH}/${productId}/shopifyProductId`).get()).val();
   if (mineGid && mineGid !== shopifyProductId) {
     throw new Error(`refusing to claim ${shopifyProductId}: record already maps to ${mineGid}`);
   }
@@ -355,7 +356,7 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
       try {
         const owner = String(refusal).match(/\bp[0-9]+\b/)?.[0];
         if (owner && owner !== productId) {
-          const ownerGid = (await db.ref(`shopify_sync/${owner}/shopifyProductId`).get()).val();
+          const ownerGid = (await db.ref(`${SYNC_PATH}/${owner}/shopifyProductId`).get()).val();
           if (ownerGid !== shopifyProductId) {
             stale = ` — NOTE: ${owner} does not map ${shopifyProductId} (it maps ${JSON.stringify(ownerGid)}), so this claim is stale, left by a run that stopped between taking the claim and writing the pointer. Clearing ${CLAIMS_PATH}/${key} by hand releases it.`;
           }
@@ -416,7 +417,7 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
     // shopify_sync/{pid}/shopifyProductId, which is `get()`-read ~100 lines
     // above. It is safe only because `get()` evicts its own registration. If
     // that ever becomes an `on()`, this branch can see a warm stale value.
-    const ptr = db.ref(`shopify_sync/${productId}/shopifyProductId`);
+    const ptr = db.ref(`${SYNC_PATH}/${productId}/shopifyProductId`);
     let clash = null;
     for (let attempt = 0; ; attempt++) {
       clash = null;
@@ -567,7 +568,7 @@ export async function releaseClaim(db, productId, shopifyProductId) {
 // plan and conflict are recomputed every invocation and only the final,
 // committed invocation's plan is returned.
 export async function writeIdMap(db, productId, mapping) {
-  const ref = db.ref(`shopify_sync/${assertSafeSegment(productId, "productId")}`);
+  const ref = db.ref(`${SYNC_PATH}/${assertSafeSegment(productId, "productId")}`);
   for (let attempt = 0; ; attempt++) {
     let plan = null;
     let conflict = null;

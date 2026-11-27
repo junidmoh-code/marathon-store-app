@@ -36,6 +36,31 @@
 const { clip, parseBankTimestamp, redactAccountDigits } = require("./eft-text.cjs");
 // The fuzzed money parser, borrowed — never a second copy.
 const { parseRandsToCents } = require("./card-recon.cjs");
+// The shared label-driven extractor: asked ONLY for a field a reader's own
+// rule did not find (25 Nov 2026, eft-labels.cjs).
+const { labelledField, flatLine, fieldsSummary } = require("./eft-labels.cjs");
+
+// A bank's own transaction id, for a reader other than Capitec's: never a
+// per-DOCUMENT code (Capitec's SkyQR / Unique Document No.).
+// Same line only: a blank id (Absa prints "Transaction number:" empty) must
+// stay blank — its synthetic identity depends on it — never the next line.
+const BANK_ID_ONLY = { excludeLabels: ["skyqr reference", "unique document no"], nextLine: false };
+// The bare "amount" / "date" labels never stand in for a reader's own
+// (a fee line, a letter's date): only the specific synonyms do.
+const FALLBACK_EXCLUDE = { amount: ["amount"], date: ["date"] };
+/**
+ * A reader's own value, else the shared extractor's — never instead of one
+ * the reader read, never past a contradiction the reader refused.
+ * @returns {{ok:true, value:any} | {ok:false, why:string}}
+ */
+function orShared(own, lines, field, opts = {}) {
+  if (!own.ok || (own.value !== null && own.value !== undefined && own.value !== "")) return own;
+  // A reader whose OWN label is the bare one (Capitec prints "Amount") may
+  // let the shared form read it with any whitespace (allowGeneric).
+  const excludeLabels = [...(opts.excludeLabels ?? []), ...(opts.allowGeneric ? [] : FALLBACK_EXCLUDE[field] ?? [])];
+  const shared = labelledField(lines, field, { ...opts, excludeLabels });
+  return shared.ok ? { ok: true, value: shared.value } : shared;
+}
 
 /**
  * ONE labelled line, exactly. Standard Bank prints "Label value" with no
@@ -47,6 +72,63 @@ function labelledLine(lines, re, what) {
   const values = [...new Set(lines.map((l) => re.exec(l)?.[1]?.trim()).filter(Boolean))];
   if (values.length > 1) return { ok: false, why: `the ${what} appears ${values.length} times with different values` };
   return { ok: true, value: values[0] ?? null };
+}
+
+// ─── WHICH BANK ISSUED THIS — FROM STRONG EVIDENCE (25 Nov 2026) ─────────────
+// Each reader's detect() was keyed on ONE layout's phrases (a heading, a
+// sentence, a label). Capitec reworded its notification ("…has made an
+// immediate payment, which is intended to reflect instantly in the
+// beneficiary's account." instead of "…made a payment to your account") and
+// a genuine proof Junid uploaded was refused as "no reader". A layout tweak
+// must not dead-end a real payment, so a reader ALSO claims a document when
+// the issuing bank is proved by what every bank prints in its legal footer —
+// its company registration number, its FSP number, its own client-care
+// domain — and the document says money was paid and labels an amount and an
+// account. Never the metadata title, never a bare bank name: "Standard Bank"
+// on a Capitec notice is the DESTINATION bank, not the issuer.
+//
+// THIS ONLY CHOOSES THE READER. Nothing about what is accepted changes: the
+// reader still has to read every required field exactly, the destination is
+// still checked digit for digit, the transaction id is still the identity,
+// and in the poller the sender's DKIM domain must still be this bank's.
+// Evidence for TWO banks is a document nobody claims (as two layout matches
+// already are). A refusal word anywhere ("unsuccessful", "could not be
+// processed", "reversed", …) and the evidence path claims nothing.
+const BANK_EVIDENCE = {
+  standardbank: [/\b1962\/000738\/06\b/, /\bstandardbank\.co\.za\b/i],
+  fnb: [/\b1929\/001225\/06\b/, /\bfnb\.co\.za\b/i, /\bFSP\s*(?:No\.?\s*)?3071\b/i],
+  capitec: [/\b1980\/003695\/06\b/, /\bcapitecbank\.co\.za\b/i, /\bFSP\s*(?:No\.?\s*)?46669\b/i, /\bCapitec Bank Limited\b/i],
+  absa: [/\b1986\/004794\/06\b/, /\babsa\.co\.za\b/i],
+  nedbank: [/\b1951\/000009\/06\b/, /\bnedbank\.co\.za\b/i],
+};
+const MONEY_IN = [
+  /\bmade (?:an? )?(?:immediate |instant |real[- ]time )?payment\b/i,
+  /\bpayment has been made\b/i,
+];
+const NOT_MONEY_IN = /\b(?:unsuccessful|could not be (?:processed|paid|made)|was not (?:processed|paid|made)|failed|declined|reversed|reversal|cancell?ed|returned|recalled|rejected|insufficient funds)\b/i;
+const AMOUNT_LABEL = /^(?:payment |transaction |transfer )?amount(?: paid)?\s*(?::|\s|$)|^for the amount of\b|^cur\/amount\b/i;
+const ACCOUNT_LABEL = /^(?:beneficiary |recipient )?account (?:number|no\.?)\b|^recipient\/account no\b/i;
+const flat = (l) => String(l ?? "").replace(/[\u00a0\u2007\u2009\u202f\t]/g, " ").replace(/ {2,}/g, " ").trim();
+
+/** The banks whose legal footer this document carries (ids, possibly several). */
+function banksEvidencedBy(lines) {
+  const text = (Array.isArray(lines) ? lines : []).map(flat).join("\n");
+  return Object.keys(BANK_EVIDENCE).filter((id) => BANK_EVIDENCE[id].some((re) => re.test(text)));
+}
+
+/**
+ * Does the document prove it was issued by `bankId` and say money came in?
+ * Evidence for exactly this one bank, a money-in sentence, no refusal word,
+ * and a labelled amount and account.
+ */
+function evidenceClaims(bankId, lines) {
+  if (!Array.isArray(lines) || !lines.length) return false;
+  const banks = banksEvidencedBy(lines);
+  if (banks.length !== 1 || banks[0] !== bankId) return false;
+  const flatLines = lines.map(flat);
+  const prose = flatLines.join(" ");
+  if (!MONEY_IN.some((re) => re.test(prose)) || NOT_MONEY_IN.test(prose)) return false;
+  return flatLines.some((l) => AMOUNT_LABEL.test(l)) && flatLines.some((l) => ACCOUNT_LABEL.test(l));
 }
 
 // ─── STANDARD BANK ───────────────────────────────────────────────────────────
@@ -143,7 +225,7 @@ const standardBank = {
     }
 
     // THE AMOUNT — required, exact, single.
-    const amount = take(/^Amount\s+(.+)$/i, "Amount line");
+    const amount = orShared(take(/^Amount\s+(.+)$/i, "Amount line"), lines, "amount");
     if (!amount.ok) return { ok: false, reason: `Standard Bank notification: ${amount.why}.` };
     if (amount.value === null) return { ok: false, reason: "Standard Bank notification carries no Amount line." };
     const amountCents = parseRandsToCents(amount.value);
@@ -158,19 +240,19 @@ const standardBank = {
     // One token ("XXXXXXXXXXXX6625", "10100008534") — or an all-digit number
     // printed in groups, the way Standard Bank prints its own account numbers
     // ("10 10 000 853 4"); the spaces never reach a check (digits only).
-    const account = take(/^Beneficiary account number\s+(\S+|\d+(?: \d+)+)\s*$/i, "Beneficiary account number");
+    const account = orShared(take(/^Beneficiary account number\s+(\S+|\d+(?: \d+)+)\s*$/i, "Beneficiary account number"), lines, "account");
     if (!account.ok) return { ok: false, reason: `Standard Bank notification: ${account.why}.` };
     if (account.value === null) return { ok: false, reason: "No Beneficiary account number could be read from this Standard Bank notification (the line may be absent, or merged with another column) — the destination account cannot be checked." };
 
     // "Beneficiary reference" is what the PAYER typed — the future matching
     // key. "Reference number" is the bank's own transaction id; the two are
     // deliberately kept apart.
-    const reference = take(/^Beneficiary reference\s+(.+)$/i, "Beneficiary reference");
+    const reference = orShared(take(/^Beneficiary reference\s+(.+)$/i, "Beneficiary reference"), lines, "reference");
     if (!reference.ok) return { ok: false, reason: `Standard Bank notification: ${reference.why}.` };
-    const bankRef = take(/^Reference number\s+(.+)$/i, "Reference number");
+    const bankRef = orShared(take(/^Reference number\s+(.+)$/i, "Reference number"), lines, "txnId", BANK_ID_ONLY);
     if (!bankRef.ok) return { ok: false, reason: `Standard Bank notification: ${bankRef.why}.` };
-    const beneficiaryName = take(/^Beneficiary name\s+(.+)$/i, "Beneficiary name");
-    const destBankName = take(/^Bank name\s+(.+)$/i, "Bank name");
+    const beneficiaryName = orShared(take(/^Beneficiary name\s+(.+)$/i, "Beneficiary name"), lines, "beneficiary");
+    const destBankName = orShared(take(/^Bank name\s+(.+)$/i, "Bank name"), lines, "destBank");
 
     // "…payment has been made into your account from J SOAP:" — the payer,
     // in prose. Optional: a payment with no payer line still lands.
@@ -181,8 +263,9 @@ const standardBank = {
     // date GATES the money: a null bankTs refuses downstream as
     // refused-stale-date (eftCore.paymentDateVerdict), never carried by
     // receivedAt.
-    const when = labelledLine(lines, /^Payment date and time\s+(.+)$/i, "Payment date and time");
-    const bankTs = when.ok && when.value ? parseBankTimestamp(when.value) : null;
+    const when = orShared(labelledLine(lines, /^Payment date and time\s+(.+)$/i, "Payment date and time"), lines, "date");
+    const bankTs = when.ok && Number.isInteger(when.value) ? when.value
+      : when.ok && when.value ? parseBankTimestamp(when.value) : null;
 
     // Fix 7b: immediate only by the heading (standardBankHeading, above).
     const { immediate, paymentType } = standardBankHeading(lines);
@@ -244,6 +327,10 @@ function fnbLabelValue(lines, re, what) {
   return { ok: true, value: distinct[0] ?? null };
 }
 
+// FNB prints values ABOVE their labels in its right column, so the shared
+// extractor's next-line form would read the WRONG field: same-line only.
+const FNB_SHARED = { nextLine: false };
+
 const fnb = {
   id: "fnb",
   domain: "fnb.co.za",
@@ -287,6 +374,13 @@ const fnb = {
     }
     // Distinct by VALUE, not spelling: "R650.00" and "ZAR650.00" are one amount.
     const amounts = [...new Set(moneyLines.map((l) => parseRandsToCents(l)))];
+    if (!moneyLines.length) {
+      // No lone figure and no Cur/Amount line: a labelled amount on ONE line
+      // ("Amount : R650.00") is the only other shape accepted.
+      const shared = labelledField(lines, "amount", { ...FNB_SHARED, excludeLabels: ["amount"] });
+      if (!shared.ok) return { ok: false, reason: `FNB notification: ${shared.why}.` };
+      if (shared.value !== null) moneyLines.push(String(shared.value).replace(/[\u00a0\u202f\u2009]/g, " ").trim());
+    }
     if (!moneyLines.length) return { ok: false, reason: "FNB notification carries no amount line (a lone ZAR figure)." };
     if (amounts.length > 1) return { ok: false, reason: `FNB notification carries ${amounts.length} different amount lines — cannot tell which is the payment.` };
     const amountCents = parseRandsToCents(moneyLines[0]);
@@ -296,16 +390,16 @@ const fnb = {
     if (amountCents <= 0) return { ok: false, reason: "The amount is zero or negative — not an incoming payment." };
 
     // THE DESTINATION ACCOUNT — required: the allowlist check depends on it.
-    const account = fnbLabelValue(lines, /^Recipient\/Account no\s*:\s*(.*)$/i, "Recipient/Account no");
+    const account = orShared(fnbLabelValue(lines, /^Recipient\/Account no\s*:\s*(.*)$/i, "Recipient/Account no"), lines, "account", FNB_SHARED);
     if (!account.ok) return { ok: false, reason: `FNB notification: ${account.why}.` };
     if (!account.value) return { ok: false, reason: "No Recipient/Account no could be read from this FNB notification — the destination account cannot be checked." };
 
     // Reference is what the PAYER typed (right column, value-above-label);
     // optional — some customers type none, and the pool's amount search
     // exists for exactly that.
-    const reference = fnbLabelValue(lines, /^Reference\s*:\s*(.*)$/i, "Reference");
+    const reference = orShared(fnbLabelValue(lines, /^Reference\s*:\s*(.*)$/i, "Reference"), lines, "reference", FNB_SHARED);
     if (!reference.ok) return { ok: false, reason: `FNB notification: ${reference.why}.` };
-    const bankRef = fnbLabelValue(lines, /^Trace ID\s*:\s*(.*)$/i, "Trace ID");
+    const bankRef = orShared(fnbLabelValue(lines, /^Trace ID\s*:\s*(.*)$/i, "Trace ID"), lines, "txnId", { ...FNB_SHARED, ...BANK_ID_ONLY });
     if (!bankRef.ok) return { ok: false, reason: `FNB notification: ${bankRef.why}.` };
     const payer = fnbLabelValue(lines, /^Payment From\s+(.+)$/i, "payer line");
 
@@ -433,6 +527,80 @@ function capitecTimestamp(value) {
   return parseBankTimestamp(`${yyyy}-${mm}-${dd}${time ? ` ${time.slice(0, 5)}` : ""}`);
 }
 
+// THE SKYQR LAYOUT (real proof, 24 Nov 2026 — fixture in
+// eftReaderRobust.test.mjs, sanitised). Capitec's newer notification:
+//
+//   Payment Notification
+//   Capitec Bank Limited
+//   SkyQR reference: 4000-4000-4a00          ← the transaction id (see below)
+//   Please note that M SOAP has made an immediate payment, which is intended to reflect
+//   instantly in the beneficiary's account.
+//   Beneficiary Name concerte
+//   Account Number 10100008534               ← UNMASKED, as before
+//   Bank Standard Bank                       ← the DESTINATION bank
+//   Payment Date 24/11/2026 12:34            ← DAY-FIRST, as before
+//   Amount R15 050.00                        ← space thousands separator
+//   Reference M SOAP                         ← what the PAYER typed
+//   Unique Document No.: 0000…-…0000 / 903 / V2.0 - 01/11/2024
+//
+// THE TRANSACTION ID. The older layout's "Notification number" stays the id
+// wherever it is printed — nothing about those documents changes, and their
+// SkyQR line is still read as nothing. This layout prints no notification
+// number, so its id is the SkyQR reference, else the Unique Document No.'s
+// leading code. The code is used as TEXT, an identifier, exactly as a
+// notification number was; the QR's link is still never followed — a
+// document never vouches for itself.
+// KNOWN LIMIT (review of #995): both codes are per DOCUMENT. If Capitec ever
+// issued the payer's proof and the beneficiary's email of ONE payment with
+// different codes, the fingerprint would not link them (two numbers are two
+// payments — the house rule, eft-linked-copies.cjs); the copies would then be
+// caught only by the owner's review. The real proof and email are expected
+// to be one document; revisit with a real pair if that ever proves false.
+function capitecBankRef(lines) {
+  const notification = labelledLine(lines, /^Notification number\s+(.+)$/i, "Notification number");
+  if (!notification.ok || notification.value) return notification;
+  // Only the SkyQR layout falls back to its document codes: an OLDER-layout
+  // notice that lost its notification number stays id-less (held-no-bankref
+  // in the poller), exactly as before. (Architect review of #995.)
+  if (lines.some((l) => /made a payment to your account/i.test(String(l ?? "")))) return notification;
+  // Only the two Capitec ids qualify here — never a generic label.
+  const flatLines = lines.map(flatLine);
+  const skyOnly = labelledLine(flatLines,
+    /^SkyQR reference\s*:?\s*([A-Za-z0-9][A-Za-z0-9-]{3,59})\s*$/i, "SkyQR reference");
+  if (!skyOnly.ok || skyOnly.value) return skyOnly;
+  const doc = labelledLine(flatLines,
+    /^Unique Document No\.?\s*:?\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i, "Unique Document No.");
+  return doc;
+}
+
+// The SkyQR layout's sentence: "Please note that <PAYER> has made an immediate
+// payment, which is intended to reflect instantly in the beneficiary's
+// account." Read on the joined prose (the extraction wraps it). IMMEDIATE ONLY
+// BY THE BANK'S OWN PHRASE: the phrase must appear exactly once, it must end
+// its sentence with nothing saying "has made" after it, and the payer's name
+// in front of it may not itself carry "payment" or "made" — so a name cannot
+// pose as the bank's words. Anything else: not immediate (null).
+function capitecSkyQrSentence(lines) {
+  // POSITION-BOUND (architect review of #995): the bank's sentence stands
+  // ABOVE the payment details. Only the lines before the first labelled
+  // payment field are read — the payer-typed "Reference" (and every other
+  // field) sits below and can never supply the phrase.
+  const DETAIL = /^(?:beneficiary details|payment details|beneficiary name|account number|bank\b|payment date|amount\b|reference\b)/i;
+  const firstDetail = lines.findIndex((l) => DETAIL.test(flatLine(l)));
+  const head = firstDetail === -1 ? lines : lines.slice(0, firstDetail);
+  const prose = head.map((l) => String(l ?? "").replace(/[\u00a0\u2007\u2009\u202f\t]/g, " ")).join(" ").replace(/ {2,}/g, " ");
+  const phrase = /which is intended to reflect instantly in the beneficiary['’‘`]?s account/gi;
+  if ((prose.match(phrase) || []).length !== 1) return { payer: null, immediate: false };
+  const m = /Please note that (.{1,120}?) has made an immediate payment, which is intended to reflect instantly in the beneficiary['’‘`]?s account/i.exec(prose);
+  if (!m || /payment|\bmade\b/i.test(m[1])) return { payer: null, immediate: false };
+  // The bank's phrase ENDS its sentence, and nothing after it says "has
+  // made" again: a name that carried the whole phrase would leave the
+  // bank's own (different) verb after it, and is refused here.
+  const rest = prose.slice(m.index + m[0].length);
+  if (!/^\s*\./.test(rest) || /\bhas made\b/i.test(rest)) return { payer: null, immediate: false };
+  return { payer: m[1].trim(), immediate: true };
+}
+
 const capitec = {
   id: "capitec",
   domain: "capitecbank.co.za",
@@ -458,7 +626,7 @@ const capitec = {
     }
 
     // THE AMOUNT — required, exact, single.
-    const amount = take(/^Amount\s+(.+)$/i, "Amount line");
+    const amount = orShared(take(/^Amount\s+(.+)$/i, "Amount line"), lines, "amount", { allowGeneric: true });
     if (!amount.ok) return { ok: false, reason: `Capitec notification: ${amount.why}.` };
     if (amount.value === null) return { ok: false, reason: "Capitec notification carries no Amount line." };
     const amountCents = parseRandsToCents(amount.value);
@@ -470,33 +638,43 @@ const capitec = {
     // THE DESTINATION ACCOUNT — required: the allowlist check depends on it,
     // and a notification that stops printing it must refuse loudly rather than
     // sail past the one check that keeps other people's payments out.
-    const account = take(/^Account number\s+(\S+)\s*$/i, "Account number");
+    const account = orShared(take(/^Account number\s+(\S+)\s*$/i, "Account number"), lines, "account");
     if (!account.ok) return { ok: false, reason: `Capitec notification: ${account.why}.` };
     if (account.value === null) return { ok: false, reason: "No Account number could be read from this Capitec notification (the line may be absent, or merged with another column) — the destination account cannot be checked." };
 
     // "Payment reference" is what the PAYER typed — the matching key.
     // "Notification number" is Capitec's own id; kept apart, like Standard
     // Bank's two references.
-    const reference = take(/^Payment reference\s+(.+)$/i, "Payment reference");
+    // The SkyQR layout (25 Nov 2026) prints plain "Reference".
+    const reference = orShared(take(/^Payment reference\s+(.+)$/i, "Payment reference"), lines, "reference");
     if (!reference.ok) return { ok: false, reason: `Capitec notification: ${reference.why}.` };
-    const bankRef = take(/^Notification number\s+(.+)$/i, "Notification number");
+    const bankRef = capitecBankRef(lines);
     if (!bankRef.ok) return { ok: false, reason: `Capitec notification: ${bankRef.why}.` };
-    const beneficiaryName = take(/^Beneficiary name\s+(.+)$/i, "Beneficiary name");
-    const destBankName = take(/^Bank name\s+(.+)$/i, "Bank name");
+    const beneficiaryName = orShared(take(/^Beneficiary name\s+(.+)$/i, "Beneficiary name"), lines, "beneficiary");
+    // The SkyQR layout prints "Bank Standard Bank" — the shared extractor's
+    // "bank" label, asked only when "Bank name" is absent.
+    const destBankName = orShared(take(/^Bank name\s+(.+)$/i, "Bank name"), lines, "destBank");
 
     // "Please take note that Sicelo made a payment to your account." — the
     // payer, in prose. Optional: a payment with no payer line still lands.
-    const payer = labelledLine(lines, /take note that\s+(.+?)\s+made a payment to your account/i, "payer sentence");
+    // The SkyQR layout: "Please note that M SOAP has made an immediate payment, …".
+    const skyqr = capitecSkyQrSentence(lines);
+    let payer = labelledLine(lines, /take note that\s+(.+?)\s+made a payment to your account/i, "payer sentence");
+    if (payer.ok && !payer.value && skyqr.payer) payer = { ok: true, value: skyqr.payer };
 
-    const when = take(/^Payment date\s+(.+)$/i, "Payment date");
-    const bankTs = when.ok && when.value ? capitecTimestamp(when.value) : null;
+    const when = orShared(take(/^Payment date\s+(.+)$/i, "Payment date"), lines, "date", { dayFirst: true });
+    const bankTs = when.ok && Number.isInteger(when.value) ? when.value
+      : when.ok && when.value ? capitecTimestamp(when.value) : null;
 
     // "Payment type Immediate Payment" (fix 7b). Exactly that phrase is
     // immediate; any other type printed is not; an absent or contradictory
     // line is unknown (null) — the pool refuses unknown, never assumes.
+    // The SkyQR layout prints no type line; its sentence says so instead
+    // (capitecSkyQrSentence — the BANK's phrase, never the payer's name).
     const type = take(/^Payment type\s+(.+)$/i, "Payment type");
-    const paymentType = type.ok && type.value ? clip(type.value, 60) : null;
-    const immediate = paymentType === null ? null : /^immediate payment$/i.test(paymentType);
+    let paymentType = type.ok && type.value ? clip(type.value, 60) : null;
+    let immediate = paymentType === null ? null : /^immediate payment$/i.test(paymentType);
+    if (type.ok && type.value === null && skyqr.immediate) { paymentType = "Immediate Payment"; immediate = true; }
 
     return {
       ok: true,
@@ -629,7 +807,7 @@ const absa = {
     }
 
     // THE AMOUNT — required, exact, single.
-    const amount = take(/^For the amount of:\s*(.*)$/i, "amount line");
+    const amount = orShared(take(/^For the amount of:\s*(.*)$/i, "amount line"), lines, "amount");
     if (!amount.ok) return { ok: false, reason: `Absa notification: ${amount.why}.` };
     if (amount.value === null) return { ok: false, reason: "Absa notification carries no amount line." };
     const amountCents = parseRandsToCents(amount.value);
@@ -639,18 +817,30 @@ const absa = {
     if (amountCents <= 0) return { ok: false, reason: "The amount is zero or negative — not an incoming payment." };
 
     // THE DESTINATION ACCOUNT — required: the allowlist check depends on it.
-    const account = take(/^Beneficiary account number:\s*(.*)$/i, "Beneficiary account number");
+    const account = orShared(take(/^Beneficiary account number:\s*(.*)$/i, "Beneficiary account number"), lines, "account");
     if (!account.ok) return { ok: false, reason: `Absa notification: ${account.why}.` };
     if (!account.value) return { ok: false, reason: "No Beneficiary account number could be read from this Absa notification — the destination account cannot be checked." };
 
     // "Reference on beneficiary statement" is what the PAYER typed — the
     // matching key. "Transaction number" is Absa's own id; kept apart.
-    const reference = take(/^Reference on beneficiary statement:\s*(.*)$/i, "Reference on beneficiary statement");
+    const reference = orShared(take(/^Reference on beneficiary statement:\s*(.*)$/i, "Reference on beneficiary statement"), lines, "reference");
     if (!reference.ok) return { ok: false, reason: `Absa notification: ${reference.why}.` };
-    const bankRef = take(/^Transaction number:\s*(.*)$/i, "Transaction number");
+    let bankRef = orShared(take(/^Transaction number:\s*(.*)$/i, "Transaction number"), lines, "txnId", BANK_ID_ONLY);
+    // A blank number whose next line is a bare WORD ("Details") is still
+    // blank: an Absa transaction number carries a digit. (Architect review
+    // of #995 — the word would have become every such notice's identity.)
+    if (bankRef.ok && bankRef.value && !/\d/.test(bankRef.value)) bankRef = { ok: true, value: null };
     if (!bankRef.ok) return { ok: false, reason: `Absa notification: ${bankRef.why}.` };
     const beneficiaryName = take(/^Payment made to:\s*(.*)$/i, "Payment made to");
     const destBankName = take(/^Beneficiary bank name:\s*(.*)$/i, "Beneficiary bank name");
+    // "Bank branch code: 051001" — supporting evidence for the bank only
+    // (eft-bank-alias.cjs); the account number decides (25 Nov 2026).
+    const branch = take(/^Bank branch code:\s*(.*)$/i, "Bank branch code");
+    // Two DIFFERENT bank names or branch codes on one notice: the document
+    // contradicts itself about where the money went — refused, never read
+    // as "no bank printed". (CodeRabbit, #998.)
+    if (!destBankName.ok) return { ok: false, reason: `Absa notification: ${destBankName.why}.` };
+    if (!branch.ok) return { ok: false, reason: `Absa notification: ${branch.why}.` };
     let payer = take(/^Payment made by:\s*(.*)$/i, "Payment made by");
     // The payer's own copy names no "Payment made by:" — the payer is the
     // addressee. Only when the document says it is that copy, and only when
@@ -666,8 +856,9 @@ const absa = {
     // knows. The parse still succeeds if it will not read, but since fix 8
     // the date GATES the money: a null bankTs refuses downstream as
     // refused-stale-date, never carried by receivedAt.
-    const when = take(/^Payment date:\s*(.*)$/i, "Payment date");
-    const bankTs = when.ok && when.value ? parseBankTimestamp(when.value) : null;
+    const when = orShared(take(/^Payment date:\s*(.*)$/i, "Payment date"), lines, "date");
+    const bankTs = when.ok && Number.isInteger(when.value) ? when.value
+      : when.ok && when.value ? parseBankTimestamp(when.value) : null;
 
     // "Immediate payment:" then "Y"/"N" on the next line (fix 7b). The real
     // R80 sample printed "N" (normal clearing — by midnight); "Y" is the
@@ -688,6 +879,7 @@ const absa = {
       bankRef: bankRef.value ? clip(bankRef.value, 60) : null,
       beneficiaryName: beneficiaryName.ok && beneficiaryName.value ? clip(beneficiaryName.value, 120) : null,
       destBankName: destBankName.ok && destBankName.value ? clip(destBankName.value, 60) : null,
+      destBranchCode: branch.ok && /^\d[\d\s-]{4,10}$/.test(branch.value ?? "") ? branch.value.replace(/[\s-]/g, "") : null,
       accountMask: clip(account.value, 40),
       paymentType,
       immediate,
@@ -777,7 +969,7 @@ const nedbank = {
     }
 
     // THE AMOUNT — required, exact, single.
-    const amount = take(/^Amount\s*:\s*(.+)$/i, "Amount line");
+    const amount = orShared(take(/^Amount\s*:\s*(.+)$/i, "Amount line"), lines, "amount");
     if (!amount.ok) return { ok: false, reason: `Nedbank notification: ${amount.why}.` };
     if (amount.value === null) return { ok: false, reason: "Nedbank notification carries no Amount line." };
     const amountCents = parseRandsToCents(amount.value);
@@ -788,23 +980,24 @@ const nedbank = {
 
     // THE DESTINATION ACCOUNT — required: the allowlist check depends on it.
     // Printed masked ("...776625"); destinationVerdict checks every digit shown.
-    const account = take(/^Account Number\s*:?\s*(\S+)\s*$/i, "Account Number");
+    const account = orShared(take(/^Account Number\s*:?\s*(\S+)\s*$/i, "Account Number"), lines, "account");
     if (!account.ok) return { ok: false, reason: `Nedbank notification: ${account.why}.` };
     if (account.value === null) return { ok: false, reason: "No Account Number could be read from this Nedbank notification (the line may be absent, or merged with another column) — the destination account cannot be checked." };
 
     // THE BANK'S OWN ID — required here, not just for the hold: without it a
     // resend could not be told from a second payment.
-    const bankRef = take(/^Reference Number\s*:\s*(.+)$/i, "Reference Number");
+    const bankRef = orShared(take(/^Reference Number\s*:\s*(.+)$/i, "Reference Number"), lines, "txnId", BANK_ID_ONLY);
     if (!bankRef.ok) return { ok: false, reason: `Nedbank notification: ${bankRef.why}.` };
     // "Recipient Reference" is what the PAYER typed — the matching key.
-    const reference = take(/^Recipient Reference\s*:\s*(.*)$/i, "Recipient Reference");
+    const reference = orShared(take(/^Recipient Reference\s*:\s*(.*)$/i, "Recipient Reference"), lines, "reference");
     if (!reference.ok) return { ok: false, reason: `Nedbank notification: ${reference.why}.` };
     const beneficiaryName = take(/^Recipient\s*:\s*(.+)$/i, "Recipient");
     const destBankName = take(/^Bank\s*:?\s+(.+)$/i, "Bank");
     const payer = take(/^Paid from Account Holder\s*:\s*(.+)$/i, "Paid from Account Holder");
 
-    const when = take(/^Date of Payment\s*:\s*(.+)$/i, "Date of Payment");
-    const bankTs = when.ok && when.value ? capitecTimestamp(when.value) : null;
+    const when = orShared(take(/^Date of Payment\s*:\s*(.+)$/i, "Date of Payment"), lines, "date", { dayFirst: true });
+    const bankTs = when.ok && Number.isInteger(when.value) ? when.value
+      : when.ok && when.value ? capitecTimestamp(when.value) : null;
 
     const channel = take(/^Channel\s*:?\s+(.+)$/i, "Channel");
     const paymentType = channel.ok && channel.value ? clip(channel.value, 60) : null;
@@ -830,6 +1023,14 @@ const nedbank = {
 // ─── THE REGISTRY ────────────────────────────────────────────────────────────
 // Adding a bank = adding a reader here + its domain to EFT_ALLOWED_DOMAINS in
 // eftCore.mjs. Nothing else changes.
+// Each reader claims its own layout (detect, unchanged) OR its bank's strong
+// evidence (evidenceClaims, above). layoutDetect stays reachable so a test can
+// tell which of the two claimed a document.
+for (const reader of [standardBank, fnb, capitec, absa, nedbank]) {
+  const layoutDetect = reader.detect;
+  reader.layoutDetect = layoutDetect;
+  reader.detect = (lines) => layoutDetect(lines) || evidenceClaims(reader.id, lines);
+}
 const EFT_READERS = [standardBank, fnb, capitec, absa, nedbank];
 
 /**
@@ -858,6 +1059,11 @@ function selectReader({ fromDomain, lines }) {
  */
 function selectReaderByContent(lines) {
   if (!Array.isArray(lines)) return null;
+  // A layout match decides first, exactly as before; the evidence path is
+  // asked only when no layout matched (so no existing document changes
+  // reader), and still only when exactly one bank claims it.
+  const byLayout = EFT_READERS.filter((r) => r.layoutDetect(lines));
+  if (byLayout.length) return byLayout.length === 1 ? byLayout[0] : null;
   const claimants = EFT_READERS.filter((r) => r.detect(lines));
   return claimants.length === 1 ? claimants[0] : null;
 }
@@ -877,4 +1083,18 @@ function noReaderReason(fromDomain) {
     : `No payment-notification reader exists for ${fromDomain} yet. The raw text below is the real format — build the reader from it (scripts/cardrecon/eftBanks.mjs).`;
 }
 
-module.exports = { EFT_READERS, selectReader, selectReaderByContent, noReaderReason, standardBankHeading };
+/**
+ * One sentence for a refusal nobody could read (25 Nov 2026): the bank its
+ * footer names, and the fields the shared extractor could and could not
+ * find — names only, never values. The poller appends it to its no-reader
+ * refusal so the owner's tab says what broke, from the first message.
+ */
+function unreadSummary(lines) {
+  const L = Array.isArray(lines) ? lines : [];
+  const banks = banksEvidencedBy(L);
+  const { read, missing } = fieldsSummary(L);
+  const bank = banks.length === 1 ? `Issuer by its footer: ${banks[0]}.` : banks.length > 1 ? `Footer names several banks: ${banks.join(", ")}.` : "No bank footer recognised.";
+  return `${bank} Read: ${read.join(", ") || "nothing"}. Missing: ${missing.join(", ") || "—"}.`;
+}
+
+module.exports = { EFT_READERS, selectReader, selectReaderByContent, noReaderReason, standardBankHeading, banksEvidencedBy, evidenceClaims, unreadSummary };

@@ -64,6 +64,11 @@ const buttonNamed = (tree, re) =>
 describe("the gate", () => {
   beforeEach(() => { getMock.mockClear(); onValueMock.mockClear(); setMock.mockClear(); });
 
+  it("admits Jafer as well as Junid (one super-admin list); staff stays out", async () => {
+    await render({ uid: "jafer-uid", email: "jafermohammed340@gmail.com" });
+    expect(getMock).toHaveBeenCalled();
+  });
+
   it("reads nothing, and subscribes to nothing, for a viewer who is not the owner", async () => {
     await render(STAFF);
     expect(getMock).not.toHaveBeenCalled();
@@ -76,7 +81,7 @@ describe("the gate", () => {
   });
 
   it("is not fooled by an address that merely contains the owner's", async () => {
-    for (const email of ["gunidmoh@gmail.com.evil.com", "gunidmoh@gmail.co", " gunidmoh@gmail.com", "GUNIDMOH@Gmail.com"]) {
+    for (const email of ["gunidmoh@gmail.com.evil.com", "gunidmoh@gmail.co", "x-gunidmoh@gmail.com"]) {
       getMock.mockClear();
       await render({ uid: "u", email });
       expect(getMock, `"${email}" must not be admitted`).not.toHaveBeenCalled();

@@ -151,7 +151,7 @@ async function runStockAuditPass({
   // ── the shops: the clothing rotation ──────────────────────────────────────
   for (const store of audit.auditStores(network)) {
     try {
-      const [rotationState, resultDays] = await Promise.all([
+      const [rotationState, resultDays, skipPids] = await Promise.all([
         db.ref(`settings/stockAudit/rotation/${store}`).once("value").then((s) => s.val() || {}),
         shallowKeys(app, `settings/stockAudit/${store}/results`).catch((e) => {
           // Pruning is the only thing bounding the results node, so a read
@@ -159,6 +159,8 @@ async function runStockAuditPass({
           log.error(`[stock-audit] ${store}: results prune skipped — ${e && e.message ? e.message : e}`);
           return [];
         }),
+        // The daily shelf check's list and its recent answers at this shop (two small nodes): never asked twice.
+        shelfCheckSkip(db, store, nowMs).catch((e) => { log.error(`[stock-audit] ${store}: shelf-check list unreadable — ${e && e.message ? e.message : e}`); return null; }),
       ]);
 
       const snapshot = audit.buildStoreSnapshot({
@@ -170,6 +172,7 @@ async function runStockAuditPass({
         // per-day results node cannot say that, because a carried batch
         // outlives the day it was checked on.
         prevBatchAt: state.batch?.[store]?.at || 0,
+        skipPids,
       });
 
       // The batch identity is the PASS's state, not the card's. Lifted off the
@@ -196,4 +199,19 @@ async function runStockAuditPass({
   return { saDate, wrote: written };
 }
 
-module.exports = { runStockAuditPass, prunableResultDays, restShallowKeys, CONFIG_PATH, STATE_PATH, RESULTS_KEEP_DAYS, SHALLOW_TIMEOUT_MS };
+// ── ONE ROTATION (Junid, 24 Nov 2026 evening) ──
+// The products the daily shelf check is asking about at this shop, or settled within its recheck window — only while
+// that shop's Shelf check is switched on (a list nobody sees asks nobody). Small nodes: one shop's open list, its
+// checked stamps, the settings.
+async function shelfCheckSkip(db, store, nowMs) {
+  const cfg = (await db.ref("config/onlineOrders/shelfChecks").once("value")).val() || {};
+  if (cfg.off === true || !(cfg.shops && cfg.shops[store] && cfg.shops[store].on === true)) return null;
+  const [open, checked] = await Promise.all([
+    db.ref(`shelf_checks/${store}/open`).once("value").then((s) => s.val()),
+    db.ref(`shelf_checks/${store}/checked`).once("value").then((s) => s.val()),
+  ]);
+  const days = Number.isInteger(Number(cfg.recheckDays)) && Number(cfg.recheckDays) >= 0 ? Number(cfg.recheckDays) : 30;
+  return audit.shelfCheckPids({ open, checked, nowMs, recheckDays: days });
+}
+
+module.exports = { shelfCheckSkip, runStockAuditPass, prunableResultDays, restShallowKeys, CONFIG_PATH, STATE_PATH, RESULTS_KEEP_DAYS, SHALLOW_TIMEOUT_MS };

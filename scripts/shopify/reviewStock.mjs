@@ -29,6 +29,7 @@
 // inventory markers, so a movement that lands mid-judgement is judged again on
 // the next tick.
 
+import { PUBLISH_PATH, SYNC_PATH, storeNode } from "./storeConfig.mjs";
 import { networkTotals } from "./inventory.mjs";
 import { clearMarker, locationNames } from "./inventorySync.mjs";
 import { isOnOrGoingOn, normalizedState } from "../../src/components/shopify/publishState.js";
@@ -95,7 +96,7 @@ export function verdictFor({ node, sizes, sellable }) {
 /** Judge one product from point reads only. */
 export async function judgeProduct(db, pid, locNames) {
   const sizes = (await db.ref(`products/${pid}/sizes`).get()).val();
-  const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+  const node = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
   // Read the cells only when the answer could depend on them.
   if (isOnOrGoingOn(node) || !Array.isArray(sizes) || !sizes.length) {
     return { pid, ...verdictFor({ node, sizes, sellable: null }) };

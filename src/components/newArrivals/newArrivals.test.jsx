@@ -59,7 +59,7 @@ describe("view helpers", () => {
     const noPrice = ready({ product: { name: "x", sizes: ["6"] } });
     expect(actionsFor(noPrice).approve).toBe(true);
     expect(actionsFor(noPrice).approveEnabled).toBe(false);
-    expect(actionsFor(noPrice).approveWhy).toBe("add stock price first");
+    expect(actionsFor(noPrice).approveWhy).toBe(view.NO_STOCK_PRICE_TEXT);
     expect(statusLine(noPrice)).toBe("Photo ready — approve");
     // By PHOTO PRESENCE, never by lane: a rejected item without a photo offers Generate (regenerate flag).
     expect(actionsFor({ status: "rejected" })).toMatchObject({ approve: false, generate: true, generateRegenerate: true, regenerate: false, skip: true, reject: false });
@@ -77,7 +77,7 @@ describe("view helpers", () => {
     expect(actionsFor(noRetail).approveWhy).toBeNull();
     const retailOnly = ready({ product: { name: "x", stockPrice: 0, retailPrice: 650, sizes: ["6"] } });
     expect(actionsFor(retailOnly).approveEnabled).toBe(false);
-    expect(actionsFor(retailOnly).approveWhy).toBe("add stock price first");
+    expect(actionsFor(retailOnly).approveWhy).toBe(view.NO_STOCK_PRICE_TEXT);
     expect(actionsFor(ready({ product: { stockPrice: "550" } })).approveEnabled).toBe(true);
     expect(actionsFor(ready({ product: { stockPrice: -5 } })).approveEnabled).toBe(false);
   });
@@ -317,7 +317,7 @@ describe("ONE card on New: every generation, chips, ONE Approve (no checker line
     expect(approves[0].props.disabled).toBe(true);
     // The reason is in words on the card (a phone shows no tooltip).
     expect(tree.root.findAll((n) => n.props && n.props["data-testid"] === "approve-note" && typeof n.type === "string")).toHaveLength(1);
-    expect(text(tree)).toContain("add stock price first");
+    expect(text(tree)).toContain("No stock price on this product yet");
   });
 
   it("Done shows every generation too", async () => {
@@ -331,7 +331,7 @@ describe("ONE card on New: every generation, chips, ONE Approve (no checker line
 describe("Skip — one tap, an 8-second Undo, no Skipped tab", () => {
   it("there is no Skipped tab", async () => {
     const tree = await render(pagedApi([newItem(0)]), "new");
-    expect(tree.root.findAll((n) => n.props?.role === "tab").map((t) => label(t).replace(/[\d\s]+$/, ""))).toEqual(["New", "Done"]);
+    expect(tree.root.findAll((n) => n.props?.role === "tab").map((t) => label(t).replace(/[\d\s]+$/, ""))).toEqual(["New", "Approved", "Done"]);
     expect(view.TABS.map((t) => t.key)).not.toContain("skipped");
     expect(view.UNDO_MS).toBe(8000);
   });
@@ -486,7 +486,7 @@ describe("ONE PLACE TO GENERATE AND APPROVE (3 Oct night)", () => {
   const btns = (tree, l) => tree.root.findAll((n) => n.type === "button" && label(n) === l);
 
   it("tabs are New and Done; old 'ready'/'rejected' links open New", () => {
-    expect(view.TABS.map((t) => t.key)).toEqual(["new", "done"]);
+    expect(view.TABS.map((t) => t.key)).toEqual(["new", "approved", "done"]);
     expect(view.normalizeTab("ready")).toBe("new");
     expect(view.normalizeTab("rejected")).toBe("new");
     expect(view.normalizeTab("done")).toBe("done");

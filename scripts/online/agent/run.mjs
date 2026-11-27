@@ -78,10 +78,20 @@ async function setAgentRow(ctx, key, agent) {
   await ctx.db.ref(`${ESCALATIONS_PATH}/${key}/agent`).update(clean({ ...agent, updatedAt: ctx.now }));
 }
 
-async function tellJunid(ctx, subject, lines) {
+// JUNID'S QUIET RULE (26 Nov 2026): only money that could not be paid out
+// automatically ({ refundFailed: true }: "may or may not have gone through",
+// "PLEASE DO THIS BY HAND", a credit/refund left to do by hand) still reaches
+// him through ctx.notifyJunid. Every other handoff goes to ctx.holdForJunid
+// (the live agent writes it to ~/marathon-dm-agent/data/quiet-held.jsonl for
+// Fable's daily review). A caller with no holdForJunid (the POS swap path)
+// gets the flag and decides itself.
+async function tellJunid(ctx, subject, lines, { refundFailed = false } = {}) {
   ctx.summary.junid++;
-  try { await ctx.notifyJunid({ subject, text: lines.join("\n") }); }
-  catch (e) { ctx.log(`✗ Junid not emailed (${String(e?.message || e)}): ${subject}`); }
+  const msg = { subject, text: lines.join("\n") };
+  try {
+    if (!refundFailed && ctx.holdForJunid) await ctx.holdForJunid(msg);
+    else await ctx.notifyJunid(msg, { refundFailed });
+  } catch (e) { ctx.log(`✗ Junid not emailed (${String(e?.message || e)}): ${subject}`); }
 }
 
 const firstName = (order) => String(order.customer?.name || "").trim().split(/\s+/)[0] || null;
@@ -129,7 +139,7 @@ async function handleLine(ctx, key, row) {
     const pm = line.resolution?.money;
     const preclaimed = !!pm && typeof pm === "object" && pm.preclaimed === true && Number(pm.at) === Number(out.at) && pm.kind === "credit";
     const settledAlready = Object.values(line.resolution?.moneySettled || {}).some((x) => x && x.kind === "credit" && Number(x.at) === Number(out.at));
-    if (out.creditCents > 0 && !preclaimed && !settledAlready && !(pm && pm.at && Number(pm.at) === Number(out.at))) await tellJunid(ctx, `Website order ${order.ref}: a swap's ${rands(out.creditCents)} credit has no record of being filed`, [`Line: ${line.title}. The customer is told of the swap only; please check Shopify and credit it by hand if it is owed.`]);
+    if (out.creditCents > 0 && !preclaimed && !settledAlready && !(pm && pm.at && Number(pm.at) === Number(out.at))) await tellJunid(ctx, `Website order ${order.ref}: a swap's ${rands(out.creditCents)} credit has no record of being filed`, [`Line: ${line.title}. The customer is told of the swap only; please check Shopify and credit it by hand if it is owed.`], { refundFailed: true });
     const diff = out.creditCents > 0 && preclaimed ? await money(ctx, orderId, order, i, line, "credit", out.creditCents, "swap difference") : out.creditCents > 0 && (settledAlready || (pm && Number(pm.at) === Number(out.at))) ? (settledAlready ? { state: "done" } : pm) : null;
     // A packed order's follow-up mirror is brought in line with the parent's result too (CodeRabbit on #848).
     if (out.creditCents > 0 && (line.source?.movedTo || out.movedTo)) await syncMirror(ctx, orderId, i, { claimAt: Number(out.at), creditCents: out.creditCents, diff });
@@ -392,14 +402,14 @@ const clearHeld = (ctx, orderId, i) => lineTxn(ctx, orderId, i, (cur) => { const
 async function pick(ctx, key, orderId, order, i, line, offer, { held = false } = {}) {
   const judged = judgeSwap(line, offer, { now: ctx.now });
   if (!judged.ok && judged.why === "money_unclear") {
-    // An earlier credit or refund on this line has no known result (COMMIT 6 ledger): nothing is swapped on a guess. The
-    // pick is HELD on the conversation and tried again each run (review of #846, 4); Junid is told once.
+    // A payment for this line is being made this very minute: the pick is HELD and tried again next run.
     if (held) return; // still unclear: held, nothing new said
     const offers = Object.values(line.resolution?.conversation?.offers || {});
     const n = offers.findIndex((o) => o && o.pid === offer.pid && String(o.size ?? "") === String(offer.size ?? "")) + 1;
     await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, heldPick: { n: n || null, pid: offer.pid, at: ctx.now } } } } : undefined));
-    await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: not swapped yet, ${judged.note}` });
-    await tellJunid(ctx, `Website order ${order.ref}: the customer picked ${offer.title}, NOT swapped yet`, [`Line: ${line.title}${line.size ? ` size ${line.size}` : ""}.`, `${judged.note}. Settle that first (Jamie: "money #${order.orderNumber || order.ref} went" or "did not go"); the pick is kept and goes on by itself once it is settled.`]);
+    // Only a payment in flight this minute holds it now (Junid, 15 Nov 2026): it goes on by itself next run; nothing for
+    // Junid to do by hand.
+    await record(ctx, orderId, i, order.ref, "swap_refused", { note: `${offer.title}: not swapped yet, ${judged.note}; tried again next run` });
     return;
   }
   if (!judged.ok && judged.why === "refunded_full") {
@@ -506,7 +516,7 @@ async function pick(ctx, key, orderId, order, i, line, offer, { held = false } =
   if (followed && creditClaim) await syncMirror(ctx, orderId, i, { claimAt: creditClaim.at, creditCents: judged.creditCents, diff });
   // The customer hears of a credit only as far as money() really filed it (review of #847, 6): none filed → no amount
   // (Junid hears); filed but not done → "being added"; done → "on your account".
-  if (creditClaim && !diff) await tellJunid(ctx, `Website order ${order.ref}: ${rands(judged.creditCents)} store credit owed after the swap was NOT filed`, [`Line: ${line.title} → ${offer.title}. The customer was told of the swap, not of the credit. Please credit it by hand or tell Jamie.`]);
+  if (creditClaim && !diff) await tellJunid(ctx, `Website order ${order.ref}: ${rands(judged.creditCents)} store credit owed after the swap was NOT filed`, [`Line: ${line.title} → ${offer.title}. The customer was told of the swap, not of the credit. Please credit it by hand or tell Jamie.`], { refundFailed: true });
   await send(ctx, orderId, order, i, swapped, "swapped", creditWords(diff, judged.creditCents));
   await setAgentRow(ctx, key, null);
 }
@@ -545,7 +555,7 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
       const handed = await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, heldSettle: null, nothingLeftAt: ctx.now, state: "with_junid", withJunidAt: ctx.now } } } : undefined));
       if (!handed) return;
       await record(ctx, orderId, i, order.ref, "money_refused", { kind, amountCents: 0, note: `${rands(heldBack)} was paid on its own PayFast payment; Junid's to refund there` });
-      await tellJunid(ctx, `Website order ${order.ref}: refund asked; ${rands(heldBack)} left, paid on its own PayFast payment`, [`Line: ${line.title}. Nothing is left to refund to the order's payment; the customer's ${rands(heldBack)} difference was paid on a separate PayFast payment. Refund it there by hand, or tell Jamie to credit it. Nothing was sent to the customer.`]);
+      await tellJunid(ctx, `Website order ${order.ref}: refund asked; ${rands(heldBack)} left, paid on its own PayFast payment`, [`Line: ${line.title}. Nothing is left to refund to the order's payment; the customer's ${rands(heldBack)} difference was paid on a separate PayFast payment. Refund it there by hand, or tell Jamie to credit it. Nothing was sent to the customer.`], { refundFailed: true });
       await setAgentRow(ctx, key, { state: "needs_junid" });
       return;
     }
@@ -578,7 +588,7 @@ async function settle(ctx, key, orderId, order, i, line, kind, messageKind) {
 // resume of a filed-but-not-closed refund sends it if a crash came before it, and never twice.
 async function tellHeldBack(ctx, orderId, order, i, line, amount, heldBack) {
   if (line.resolution?.conversation?.heldBackToldAt) return;
-  await tellJunid(ctx, `Website order ${order.ref}: refund of ${rands(amount)} filed; ${rands(heldBack)} more was paid separately`, [`Line: ${line.title}. The customer also paid a ${rands(heldBack)} difference on its own PayFast payment for the swap; a refund never goes above what the order's payment took, so that part is NOT in this refund. Refund it on that PayFast payment by hand, or tell Jamie to credit it.`]);
+  await tellJunid(ctx, `Website order ${order.ref}: refund of ${rands(amount)} filed; ${rands(heldBack)} more was paid separately`, [`Line: ${line.title}. The customer also paid a ${rands(heldBack)} difference on its own PayFast payment for the swap; a refund never goes above what the order's payment took, so that part is NOT in this refund. Refund it on that PayFast payment by hand, or tell Jamie to credit it.`], { refundFailed: true });
   await lineTxn(ctx, orderId, i, (cur) => (cur.resolution?.conversation ? { ...cur, resolution: { ...cur.resolution, conversation: { ...cur.resolution.conversation, heldBackToldAt: ctx.now } } } : undefined));
 }
 
@@ -648,7 +658,7 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
       await tellJunid(ctx, `Website order ${order.ref}: CHECK SHOPIFY — a ${kind} of ${rands(amountCents)} may or may not have gone through`, [
         `The agent claimed this ${kind} at ${new Date(Number(existing.at)).toISOString()} and stopped before recording the result.`,
         `Line: ${line.title} ×${line.qty}. Check the Shopify order ${order.shopifyName || ""}; it will NOT be tried again.`,
-      ]);
+      ], { refundFailed: true });
     }
     return { ...existing, resumed: true, via: existing.via || "junid_email" };
   }
@@ -668,7 +678,12 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
   const scopes = ctx.scopes ? await ctx.scopes() : new Set();
   const need = kind === "credit" ? CREDIT_SCOPE : REFUND_SCOPE;
   let slot;
-  if (!scopes.has(need)) {
+  // A cancelled task that MAY have moved money (a lost Shopify answer, a payer that died, an unknown state) and is not yet
+  // settled by Junid's word: never paid automatically on top of it (review of #909, 1) — his by-hand task, with the reason.
+  const maybeMoved = Object.values(line?.resolution?.moneyVoided || {}).some((v) => v && typeof v === "object" && !v.settledAfterVoid && Number(v.amountCents) > 0 && (v.state === "claimed" || (v.state === "failed" && v.ambiguous !== false) || !["manual", "pending", "failed", "done"].includes(String(v.state))));
+  if (maybeMoved) {
+    slot = { state: "manual", via: "junid_email", heldBecause: "an earlier cancelled task may have gone through" };
+  } else if (!scopes.has(need)) {
     slot = { state: "manual", via: "junid_email", missingScope: need };
   } else {
     let r;
@@ -694,7 +709,7 @@ export async function money(ctx, orderId, order, i, line, kind, amountCents, why
       : slot.state === "failed"
         ? `Shopify refused or did not answer: ${slot.error}${slot.ambiguous ? " — it MAY have gone through; check the order before doing it by hand." : ""} It will not be retried.`
         : `The app is not allowed to do this yet (Shopify scope ${need} not granted). Please do it in the Shopify admin.`,
-  ]);
+  ], { refundFailed: slot.via !== "api" });
   // Junid is told FIRST (above): a write failing here can never hide money
   // that moved.
   await lineTxn(ctx, orderId, i, (cur) => ({ ...cur, resolution: { ...cur.resolution, money: { ...cur.resolution.money, ...slot } } }));

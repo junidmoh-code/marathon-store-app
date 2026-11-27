@@ -127,6 +127,8 @@ export default function TodayView({ store, active, activeItems, completedItems, 
 
   return (
     <div>
+      {/* The ONLY place a shop sees its clothing website lines. The shop's shelf check has its own tab (Junid, 24 Nov
+          2026 evening), so it never covers this strip or the display refills below. */}
       <WebsiteOrdersStrip store={store} rows={websiteRows} />
       <StatStrip stats={feed.stats} />
 

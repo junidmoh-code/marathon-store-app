@@ -4,8 +4,9 @@
 // written. The contract is docs/ONLINE-ORDERS.md.
 import {
   orderLabel, ONLINE_PICK_KIND, PACKER_INSTRUCTION, PACKING_STORE, ORDER_STATUS, LINE_STATUS,
-  ATTENTION_KIND, HOLDING_STATUSES, deriveOrderStatus,
+  ATTENTION_KIND, HOLDING_STATUSES, deriveOrderStatus, isReturnOnlyOrder, isReturnOnlyLine,
 } from "../../../src/utils/onlineOrders.js";
+import { addressSig } from "../../../src/shipping/orderShipment.js";
 
 // Only these are pulled in. A pending-payment order becomes PAID later and is
 // picked up then (its updated_at moves); a partly fulfilled one was handled by
@@ -57,7 +58,13 @@ export function shippingOf(node) {
     name: a.name, address1: a.address1, address2: a.address2, city: a.city,
     province: a.province, zip: a.zip, country: a.country, phone: a.phone,
   }) : null;
-  return address && Object.keys(address).length ? { address } : {};
+  if (!address || !Object.keys(address).length) return {};
+  // Shopify's own point for the address, when Shopify validated it: the door-to-locker booking places the customer
+  // by it (lockerDelivery.mjs shopifyGeo), and only while the address is unchanged (sig). #2181, 21 Nov 2026.
+  const lat = Number(a.latitude), lng = Number(a.longitude);
+  const geo = a.coordinatesValidated === true && a.latitude != null && a.longitude != null && Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)
+    ? { lat, lng, sig: addressSig(address) } : null;
+  return geo ? { address, geo } : { address };
 }
 
 export function totalsOf(node) {
@@ -70,6 +77,55 @@ export function totalsOf(node) {
   });
 }
 
+// ── One line = one unit (Junid, 20 Nov 2026) ────────────────────────────────
+// A Shopify item of quantity N becomes N app lines of qty 1, each with the same
+// shopifyLineItemId plus `unit` (1..N) and `units` (N), so every unit is picked,
+// found / not found, requested, offered alternatives and credited on its own.
+// Anything that counts per Shopify line item (the fulfil, a refund) sums the
+// lines that share the id (partialFulfil.mjs packedLineItems).
+
+/** Split `totalCents` over `n` units so they sum back exactly: the first (total mod n) units carry the extra cent. */
+export function allocateCents(totalCents, n) {
+  const count = Math.max(1, Math.floor(Number(n) || 1));
+  const total = Math.round(Number(totalCents) || 0);
+  const base = Math.floor(total / count);
+  const extra = total - base * count;
+  return Array.from({ length: count }, (_, k) => base + (k < extra ? 1 : 0));
+}
+
+/** Units of a Shopify line item still on the order (a removed unit is not one). */
+export const itemQty = (item) => Number(item?.currentQuantity ?? item?.quantity) || 1;
+
+/**
+ * What the customer paid for the whole Shopify line, after every discount, in
+ * cents: the original line total less its discount allocations (line and
+ * order level) when Shopify gave both and no unit was removed; otherwise the
+ * discounted unit price × units.
+ */
+export function lineTotalCents(item) {
+  const qty = itemQty(item);
+  const unit = cents(item?.discountedUnitPriceAfterAllDiscountsSet ?? item?.originalUnitPriceSet);
+  const allocs = item?.discountAllocations;
+  const removed = item?.quantity != null && item?.currentQuantity != null && Number(item.quantity) !== Number(item.currentQuantity);
+  if (item?.originalTotalSet && Array.isArray(allocs) && !removed) {
+    const off = allocs.reduce((s, a) => s + cents(a?.allocatedAmountSet), 0);
+    const total = cents(item.originalTotalSet) - off;
+    // A total that disagrees with the unit price by more than a cent per unit is not trusted.
+    if (total >= 0 && Math.abs(total - unit * qty) <= qty) return total;
+  }
+  return unit * qty;
+}
+
+/** Routed pieces → one piece per unit (qty 1 each), same place and status, in order. */
+export function unitPieces(pieces) {
+  const out = [];
+  for (const p of pieces || []) {
+    const n = Math.max(1, Math.floor(Number(p?.qty) || 1));
+    for (let k = 0; k < n; k++) out.push({ ...p, qty: 1 });
+  }
+  return out;
+}
+
 /**
  * One app line from a routed piece.
  *   item      the Shopify line item node
@@ -77,7 +133,7 @@ export function totalsOf(node) {
  *             the variant is not in /shopify_sync
  *   piece     { qty, locationId, status } from routeLine (absent when unresolved)
  */
-export function buildLine({ index, item, resolved, piece }) {
+export function buildLine({ index, item, resolved, piece, unit = null, units = null, unitPriceCents = null }) {
   const base = {
     lineId: `l${index}`,
     shopifyLineItemId: item.id,
@@ -85,12 +141,14 @@ export function buildLine({ index, item, resolved, piece }) {
     // Kept so a Resolve can look the line up again without Shopify.
     productGid: item.variant?.product?.id || null,
     title: [item.title, item.variantTitle].filter(Boolean).join(" — ") || "Item",
-    unitPriceCents: cents(item.discountedUnitPriceAfterAllDiscountsSet ?? item.originalUnitPriceSet),
+    unitPriceCents: unitPriceCents ?? cents(item.discountedUnitPriceAfterAllDiscountsSet ?? item.originalUnitPriceSet),
+    // Which unit of a quantity-N Shopify item this line is (absent for N = 1).
+    ...(Number(units) > 1 ? { unit: Number(unit), units: Number(units) } : {}),
   };
   if (!resolved?.pid) {
     return compact({
       ...base,
-      qty: Number(item.currentQuantity ?? item.quantity) || 1,
+      qty: unit != null ? 1 : itemQty(item),
       source: { status: LINE_STATUS.UNRESOLVED },
       reason: resolved?.reason || "This Shopify item is not linked to a product in the app",
     });
@@ -107,11 +165,32 @@ export function buildLine({ index, item, resolved, piece }) {
     barcode: resolved.barcode || null,
     category: p.category || null,
     isFootwear: !!resolved.isFootwear,
-    source: compact({ locationId: piece.locationId, status: piece.status }),
+    // `why`: routing's own words for why the piece went to this place (routing.mjs).
+    source: compact({ locationId: piece.locationId, status: piece.status, why: piece.why }),
   });
 }
 
-export function buildOrder({ node, lines, nowMs }) {
+/**
+ * Every app line of one Shopify item, one per unit. `pieces` is routeLine's
+ * answer for the item (absent for an unresolved item); `startIndex` is where
+ * the first line lands in the order's lines array.
+ */
+export function buildItemLines({ startIndex, item, resolved, pieces }) {
+  const n = itemQty(item);
+  const prices = allocateCents(lineTotalCents(item), n);
+  const units = resolved?.pid ? unitPieces(pieces) : Array.from({ length: n }, () => null);
+  return units.map((piece, k) => buildLine({
+    index: startIndex + k, item, resolved, piece, unit: k + 1, units: n, unitPriceCents: prices[k] ?? prices[prices.length - 1],
+  }));
+}
+
+/** Does the Shopify order carry this tag (any case)? GraphQL gives tags as a list. Pure. */
+export function hasTag(node, tag) {
+  const tags = Array.isArray(node?.tags) ? node.tags : typeof node?.tags === "string" ? node.tags.split(",") : [];
+  return tags.some((t) => String(t).trim().toLowerCase() === String(tag).toLowerCase());
+}
+
+export function buildOrder({ node, lines, nowMs, store = "marathon" }) {
   const order = {
     // The order's NAME is its Shopify number (orderLabel → "#1768"); the
     // three-letter codes belong to its hub order units, not to the order.
@@ -127,6 +206,14 @@ export function buildOrder({ node, lines, nowMs }) {
     lines,
     status: ORDER_STATUS.NEW,
   };
+  // Tagged with its store when it is not Marathon's (absent = Marathon, which
+  // is every order before 2026-11-15) — the POS, the labels and each store's
+  // poller tell the two apart by this field.
+  if (store && store !== "marathon") order.sourceStore = store;
+  // OWN COURIER (Junid, 24 Nov 2026): a WhatsApp order Jamie created with the Shopify tag "own-courier" — the customer
+  // books their own courier and sends the waybill. Marked on the order so nothing ever books Courier Guy for it
+  // (bookShipment.mjs isOwnCourier); the ship step waits for shipping/ownCourier/waybill (Jamie writes it).
+  if (hasTag(node, "own-courier")) order.shipping = { ...order.shipping, ownCourier: { at: nowMs, tag: "own-courier" } };
   if (!Object.keys(order.shipping).length) delete order.shipping;
   if (!Object.keys(order.customer).length) delete order.customer;
   return order;
@@ -146,8 +233,12 @@ export function holdRowsFor(order) {
   // climbing the escalation chain (they ship in a follow-up when they come good).
   const packed = order?.status === ORDER_STATUS.PACKED;
   if (!HOLDING_STATUSES.includes(order?.status) && !packed) return rows;
+  // A return-only collection (store credit / refund instead of a replacement) holds nothing: its line is the item
+  // coming BACK, not a unit on a shelf (src/utils/onlineOrders.js isReturnOnlyOrder).
+  if (isReturnOnlyOrder(order)) return rows;
   for (const line of linesOf(order)) {
     if (!line?.pid || !line.sizeKey) continue;
+    if (isReturnOnlyLine(line)) continue;
     // A RE-SENT item (a second parcel, `reship`) was sold and deducted by an earlier pack sale: it is in the packer's
     // hands, not on any shelf, so it holds nothing (a hold would hide a unit the cell no longer counts).
     if (line.reship) continue;
@@ -215,10 +306,19 @@ export function hubOrderKeys(ref, orderLines, index) {
   return qty === 1 ? [base] : Array.from({ length: qty }, (_, u) => `${base}-${u + 1}`);
 }
 
+// MOVED HERE (Junid, 26 Nov 2026): a line the system moves to another place
+// carries source.movedFrom; the new pick (hub card / shop strip) says so.
+export function movedNoteOf(line) {
+  const from = line?.source?.movedFrom;
+  const to = line?.source?.locationId;
+  return from && to && from !== to ? `Moved here from ${placeName(from)}` : null;
+}
+
 export function hubOrderRecord({ key, line, onlineOrderId, lineIndex, section, nowIso, orderNumber = null, unit = 0 }) {
   const hub = line.source.locationId;
   return {
     id: key,
+    ...(movedNoteOf(line) ? { movedNote: movedNoteOf(line) } : {}),
     productId: line.pid,
     productName: line.title ?? null,
     productPhoto: null,
@@ -315,6 +415,7 @@ export function displayEntry({ orderId, order, index, line, checkId, nowMs, saDa
     instruction: PACKER_INSTRUCTION,
     // Escalation round 2: the shop said "Not found" once already.
     checkProperly: line.source?.checkProperly === true ? true : null,
+    movedNote: movedNoteOf(line),
   });
 }
 
@@ -326,7 +427,7 @@ const LINE_ATTENTION = Object.freeze({
   [LINE_STATUS.NEEDS_ATTENTION]: ATTENTION_KIND.WALKIN_OVERRIDE,
 });
 
-const PLACE = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concrete", "marathon-pine": "Marathon Pine" };
+const PLACE = { central: "Central", hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "marathon-pe": "Marathon PE", trophy: "Trophy", concrete: "Concrete", "marathon-pine": "Marathon Pine" };
 export const placeName = (loc) => PLACE[loc] || loc || "nowhere";
 
 /** The attention an order's lines call for, or null. */

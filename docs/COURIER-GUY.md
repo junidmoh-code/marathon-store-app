@@ -233,6 +233,177 @@ that ever changes, the call must become `bookShipment({ ...order, key: id })`.
 Without a key, bookShipment throws before any call; it never falls back to
 the WEB- ref.
 
+## Door-to-locker (Junid, 20 Nov 2026) — the default booking
+
+Every Courier Guy booking is **door-to-locker** by default: collected from our
+shop door, delivered to the Courier Guy locker nearest the customer's address.
+When there is no locker for the parcel it is booked **door-to-door** instead
+(Junid, 24 Nov 2026: "No locker → door-to-door" below). Code:
+`scripts/shipping/lockerDelivery.mjs` (the plan), `bookShipment.mjs` (the
+booking). Exchanges and second parcels follow the same rule outbound.
+
+**The switch** (no deploy): `/config/shipping/deliveryMode`. Absent or
+`"locker"` = door-to-locker. `"door"` = the old door-to-door booking, exactly
+as before (the parcel rule below, the drop box, the box list). The Shipping
+card does not edit it; set it in the database.
+
+| What | Rule |
+|---|---|
+| How many | **One order is ONE parcel on ONE waybill** (Junid, 20 Nov 2026 evening). The first version booked one shipment per pair of shoes: #2256 (2 pairs) cost R260.62 on two waybills and #2309 (5 pairs) R651.55 on five; one parcel to the same locker is R192.72. Only a person splits an order: `shipping/lockerParcels` on the order (`rebook-locker.mjs --parcels`), N one-shoe shipments to the SAME locker. Above `locker/maxParcels` (10) a person books it. |
+| The parcel | At most one pair of shoes in the order: declared as ONE SHOE, 34 x 23 x 13 cm, 1.5 kg (`/config/shipping/locker/parcel`), never estimated from the order's lines. Two or more pairs: declared as the one parcel the parcel rule packs the order in, so Courier Guy quotes a locker size it fits (measured 20 Nov: 2 to 6 pairs is D2LL - ECO, R192.72 flat). A parcel no locker takes goes door-to-door (24 Nov 2026, below); only one that fits no standard box either is not booked and a person decides. Courier Guy measures at collection and re-rates; see "The adjustment" under the reconciliation loop. |
+| The locker | The address is placed on the map (OpenStreetMap: the street; when the map does not know the street, which is most of ours, the postal code's own point; failing that the suburb/town), then `GET /pickup-points` nearest first: online, listed, with a compartment a shoe fits. The nearest one Courier Guy prices wins (`locker/tryLockers`, 3). |
+| How near | Within `locker/maxKm` (**30 km**) of the address; within `locker/maxTownKm` (**20 km**) when only the postal code or the town could be placed on the map (`deliveryLocker.placedBy` says which: "nearest" is then nearest to that point, not to the customer's door). Further: **door-to-door instead** (24 Nov 2026, below). An address that cannot be placed at all: **not booked**. |
+| The service | The cheapest service Courier Guy quotes for that locker (`D2LM - ECO` for a shoe), `excludeServiceCodes` left out. |
+| The ceiling | `/config/shipping/maxChargeRand` (R500), per shipment. |
+| The phone | A customer with no mobile number is not booked (the locker PIN goes by SMS): "Packed, courier not booked" with that reason. |
+| The request | The normal `/rates` and `/shipments` body with the customer's address kept as `delivery_address`, plus `delivery_pickup_point_id` and `delivery_pickup_point_provider`. |
+
+**No locker → door-to-door (Junid, 24 Nov 2026, standing rule).** "If no
+Courier Guy locker is near the customer (like #2411 Alistair, Jansenville: 'no
+locker within 30 km'), book DOOR-TO-DOOR delivery to their address
+automatically instead of failing. Never leave an order unbooked because
+there's no locker." This reverses the 20 Nov rule ("no locker, no booking").
+`planShipment` books the door-to-door plan (exactly what `deliveryMode: "door"`
+books: the estimated parcel, the customer's address, the cheapest door
+service) when the locker plan fails for one of these, and only these:
+
+| `doorFallback.kind` | The locker plan's reason |
+|---|---|
+| `none_near` | "no Courier Guy locker within N km of <town> …" (30 km; 20 km when only the postal code or town was placed) |
+| `too_big` | "the parcel is bigger or heavier than the largest Courier Guy locker box" (the door plan then needs a standard box to fit) |
+| `none_priced` | "Courier Guy quoted no door-to-locker service to the lockers near <town>" (an answer, not a failed lookup) |
+
+The same ceiling (`maxChargeRand`), cost alert (> R250 email), claim and live
+switch apply; over the ceiling it is "Packed, courier not booked" with the
+ceiling's own reason, and Junid's line says both. **Still refused exactly as
+before:** an address that cannot be placed on the map, a locker a person named
+(`lockerChoice`), ruled out (`lockerAvoid`) or split (`lockerParcels` > 1), a
+half-booked split (never finished as door), more parcels than
+`locker/maxParcels`, any API error or failed lookup, no customer mobile for a
+locker that IS near and priced (door-to-door never needed the mobile). Switch (no deploy): `/config/shipping/locker/doorFallback:
+false` = the 20 Nov refusal again.
+
+On the order: `shipping/deliveryMode: "door"`, `shipping/doorFallback:
+{ reason, kind, at }`, **no** `deliveryLocker`, no `waybills[]`, `priced.mode:
+"door"`, `parcel.ruleVersion` set (a real estimate). Junid's line ("#2411:
+booked door-to-door: no Courier Guy locker within 30 km of Jansenville … ECO
+R185.00, waybill X.") is queued at `shipping_recon/junidLines/<key>-door` (its
+own slot: an order refused under the old rule already used `<key>`; a
+door-to-door try that was refused too goes to `<key>-door-refused`).
+
+**Orders already refused for no locker** (`fulfilState: "courier_failed"`,
+`shipping/booking/noLocker: true`): the poller's tick hands each back to the
+ship step ONCE (`poll.mjs retryNoLockerOrders`, `bookShipment.mjs
+doorRetryDue`: packed, the current `courierError` one of the three reasons
+above, nothing booked, no claim held, nobody steering the locker), taking
+`shipping/doorRetry { at, by, reason }` and the hand-back in ONE transaction on
+the order (`claimDoorRetry`: re-checked on the order as it is then); nothing is
+handed back while live is off, while `locker/doorFallback` is false (the one
+try is kept), or while an exchange's `incoming/conditionHold` stands. A
+`--commit` booking whose hand-back did not land is handed back by the next
+tick (`doorHandBackDue`), never booked again. By hand, to see the prices first:
+`node scripts/shipping/retry-no-locker.mjs` (dry run: each order and the door
+rate quoted now) and `… --commit` (books through `bookShipment`, then hands
+the order to the ship step for the Shopify fulfilment).
+
+**Exchange returns** (`bookReturn.mjs`): with no locker for the return (none
+near, too far, no locker rate quoted, a parcel no locker takes) the equivalent
+is a courier COLLECTION from the customer's door, delivered to ours: the same
+bodies without `collection_pickup_point_id`, the cheapest door service, the
+same ceiling and one-booking claim, the customer's SA mobile required.
+`returnShipping` then carries `mode: "door_collection"`, `collection { from:
+"door", address, contactMobile }`, `doorFallback { reason, kind, at }`, no
+`dropOffRef`, no `locker` (a locker booking: `mode: "locker_dropoff"`). It is
+**off until `/config/shipping/returnDoorCollection` is `true`** (or
+`book-return.mjs --door-collection`): Jimmy tells every customer "drop it at
+The Courier Guy locker at …" and must read `mode` first.
+
+**What is written on the order** (`/online_orders/<key>/shipping`):
+
+| Node | What |
+|---|---|
+| `deliveryMode`, `doorFallback` | `"locker"`; or `"door"` with `doorFallback { reason, kind, at }` when there was no locker (then no `deliveryLocker`). |
+| `deliveryLocker` | `{ id, provider, name, address, hours, description, km, placedBy: "street" \| "postcode" \| "town", smsTo, hasCollectionCode: false, collectionCodeNote }`: what Jamie tells the customer. |
+| `waybill`, `waybills[]`, `shipments[]` | The first waybill (what every older reader uses), every waybill, and each shipment `{ shipmentId, waybill, trackingReference, service, cost, quoted }`. |
+| `cost`, `priced.quoted` | Every shipment added up. `priced.mode` is `door_to_locker` for a locker booking (`door` after a no-locker door-to-door fallback). |
+| `doorQuote` | `{ code, rate }`: what door-to-door would have cost for the parcel the old rule declared (one more `/rates` call; `locker/doorQuote: false` switches it off). |
+| `parcel` | A locker booking: `{ declaredAs: "one_shoe", parcels: [...], estimated: [...] }`, no `ruleVersion` (a fixed declaration never teaches the parcel table). A door-to-door fallback: the parcel rule's estimate, with `ruleVersion`. |
+| `partial` | Only while a split is half booked (a later parcel failed): the parcels already booked. The retry books only the rest, to the same locker. |
+
+**There is no collection code at booking.** Courier Guy SMSes the PIN to the
+customer's phone (`deliveryLocker.smsTo`) when the parcel lands in the locker;
+the create response carries none (checked on #2257, waybill CC6LNK). The record
+says so (`hasCollectionCode: false`); nothing invents one. A wrong phone on the
+order means no PIN.
+
+**Shopify** gets the first waybill as the tracking number; a split's other
+waybills are on the order only.
+
+### Rebooking to another locker (before collection)
+
+```sh
+node scripts/shipping/rebook-locker.mjs <orderKey>                  # DRY RUN: the nearest OTHER locker
+node scripts/shipping/rebook-locker.mjs <orderKey> --locker <id>    # DRY RUN: that locker
+node scripts/shipping/rebook-locker.mjs <orderKey> --parcels 2      # DRY RUN: as two one-shoe parcels
+node scripts/shipping/rebook-locker.mjs <orderKey> --locker <id> --book   # do it (live must be on)
+```
+
+Checks at Courier Guy that every shipment is still uncollected, prices the new
+locker first (nothing is cancelled if it cannot be booked), cancels, keeps the
+old booking under `shipping/rebooks/<ms>`, and books again through
+`bookShipment`, pinned to the locker it priced. One rebook at a time per order
+(`shipping/rebooking`, a 10-minute lock). If the new booking fails after the
+cancel it says so; running it again with `--book` books only (nothing more is
+cancelled). `--parcels` is for a parcel Courier Guy refused as too big for
+one locker parcel. It does NOT change the tracking number on the Shopify
+order.
+
+### First real booking
+
+Order #2257 (Ventersdorp), booked by hand with this request on 20 Nov 2026:
+`D2LM - ECO` R130.31 (`D2LL - ECO` R192.72) against `ECOR` R519.62 to the
+door.
+
+## An "unknown" booking, and Courier Guy failing to place an address (#2181, 21 Nov 2026)
+
+#2181 (Khomanani, Limpopo 0933) sat "Packed, courier not booked" for an hour: the create came back
+HTTP 500 "cannot find a latitude/longitude for the address", which bookShipment read as a lost answer
+("unknown") and never retried. Worse, the locker it was for was in Cape Town: OpenStreetMap's only
+"Khomanani" was a building in Khayelitsha, and the town fallback ignored the province.
+
+- **Placing the customer.** Shopify's own point for the address (`shipping/geo`, written at ingest when
+  Shopify validated it, and asked once before booking for older orders) comes first, used only while the
+  address it was made for is unchanged (`geo.sig`). OpenStreetMap hits outside the order's province are
+  never used, and the suburb/town tries take only a *place* (not "Khomanani Street"). An address nothing
+  places is refused, never booked to a guess.
+- **Lockers beyond ~25 km.** `GET /pickup-points` answers `pickup_points: null` beyond its own radius;
+  with nothing found it is asked again with `max_distance` (km) out to the limit (50 km for a locker a
+  person named).
+- **Geocode 500 = definite refusal** (`isGeocodeRefusal`): never "unknown". A door-to-locker create is sent
+  once more with the locker's own address and point as `delivery_address` (the customer stays the delivery
+  contact; Courier Guy files a locker shipment under the locker's address anyway). The order records
+  `shipping/deliveryAddressFallback: "locker"`.
+- **"unknown" is checked at Courier Guy** (`scripts/shipping/unknownBooking.mjs`, from the orders tick before
+  SHIP and from fast-ship every 5 minutes): `GET /shipments` from the day before the claim, every page
+  (offset paging, oldest first — read against the live API), matched EXACTLY on `customer_reference`
+  ("#2181", a split "#2181 (1/2)"; "#1941" never matches "#1941-EX") created after the claim minus 5 minutes,
+  not cancelled. An answer that is not a shipments list, a repeated page or a page cap reached THROWS: "no
+  answer" is never "no shipment".
+  - Found → merged with the parcels already on `shipping/partial` (by shipment id) and attached like a
+    booking; the claim carries the waybill first (crash-safe), the order goes back to pending so Shopify is
+    fulfilled with it. A split with parcels still missing keeps the found ones as the checkpoint and books
+    only the rest.
+  - None after 10 minutes, live on → the claim is released in a transaction on that very claim and the order
+    booked once more. The allowance is counted by bookShipment only when that re-book reaches a create
+    (`courierBooking.rebooks`); a re-book refused (ceiling, no locker, live off) spends nothing.
+  - Attention, never a guess: more shipments than the order needs (possibly booked twice), a claim written
+    before this change (no shipment count on it), and — 30 minutes after every release — a late create that
+    made a second shipment (`shipping_recon/unknownReleased`). Nobody is asked to check the portal.
+- A door-to-door geocode 500 has no locker to fall back to: the claim is "failed" and the order shows
+  "Packed, courier not booked" with the reason (no retry loop). In a split, the fallback is decided once:
+  later parcels go straight to the locker's address. Shopify's point is checked against the order's
+  province (OpenStreetMap reverse) before it is used.
+
 ## The parcel rule (Junid, 23 Oct 2026 — ONE parcel, never split)
 
 An order ALWAYS ships as ONE parcel. The sneaker box is the unit of size —
@@ -284,6 +455,18 @@ drop-off when the parcel fits one), queued at
 `/shipping_recon/junidLines/{orderId}_{rand}`.
 
 ## The reconciliation loop (scripts/shipping/reconcile.mjs)
+
+**The adjustment (20 Nov 2026).** Every parcel is declared as one shoe, so what
+Courier Guy bills after measuring can differ from what was booked. Once a
+waybill is delivered and invoiced the pass writes
+`/online_orders/<key>/shipping/adjustment = { booked, bookedFrom, billed, diff, pct,
+declared [l,w,h,kg], measured [l,w,h,kg], chargedKg, waybills, at }` (booked =
+what Courier Guy charged when the shipment was made, `shipping/cost`; diff =
+billed minus booked, rand; a split's shipments added up, each in `parts`), on
+EVERY reconciled order, and lists each one that is not zero at
+`/shipping_recon/adjustments/<key>`. To see them:
+`node scripts/shipping/courier-recon.mjs --adjustments` (read only). No screen
+in the app shows it yet.
 
 `scripts/shipping/courier-recon.mjs` on the Mac mini (launchd
 `com.marathon.courierrecon`, every 3 h; `--dry` writes and sends nothing).

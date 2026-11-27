@@ -704,6 +704,7 @@ async function runScan(opts) {
     // locations only, and only with the division's key on. Anything holding
     // units there is seated; the plan reads this scan's seats, written below.
     let seatPlan = null;
+    let ownerPlan = null;
     if (concreteDivision.concreteDivisionPolicy(config)) {
       const scoped = (path) => Promise.all(concreteDivision.DIVISION_LOCATIONS.map(
         (l) => db.ref(`${path}/${l}`).once("value").then((s) => [l, s.val() || {}]))).then(Object.fromEntries);
@@ -711,8 +712,29 @@ async function runScan(opts) {
       // leftover zero cells do not seat it again) — three small nodes each.
       const [seats, releases] = await Promise.all([scoped(concreteDivision.SEATS_PATH), scoped(concreteDivision.SEAT_RELEASES_PATH)]);
       seatPlan = concreteDivision.planSeats({ rawStock: stock, seats, movements, releases, products, nowIso: new Date(nowMs).toISOString() });
+      // ONE SHOP PER PRODUCT (Junid, 24 Nov 2026): a non-footwear product seated
+      // at both Pine and Concrete is supplied to one of them. The owners are one
+      // small node (only products seated at both), decided once and kept.
+      const owners = (await db.ref(concreteDivision.DIVISION_OWNER_PATH).once("value")).val() || {};
+      ownerPlan = concreteDivision.planDivisionOwners({ seats: seatPlan.effective, rawStock: stock, openIndex, refillRequests, owners, products, nowIso: new Date(nowMs).toISOString() });
+      // PERSIST FIRST (CodeRabbit, #978): an owner the plan acts on must be the
+      // one the next scan reads. If the write fails, this scan plans with the
+      // owners already stored only — a new decision waits for a scan that saves it.
+      if (Object.keys(ownerPlan.writes).length) {
+        const ownerUpd = Object.fromEntries(Object.entries(ownerPlan.writes).map(([pid, v]) => [`${concreteDivision.DIVISION_OWNER_PATH}/${pid}`, v]));
+        if (await safeUpdate(db, ownerUpd, "division owners")) {
+          counts.divisionOwners = { decided: ownerPlan.decided, cleared: ownerPlan.cleared };
+        } else {
+          // Stored owners stand; a product decided only now is HELD at both shops
+          // (no new request at either) until a later scan saves its owner.
+          const stored = Object.fromEntries(Object.entries(owners).filter(([, v]) => v && typeof v === "object"));
+          for (const [pid, v] of Object.entries(ownerPlan.writes)) if (v && !stored[pid]) stored[pid] = { hold: true };
+          ownerPlan = { ...ownerPlan, effective: stored };
+          counts.divisionOwnersHeldUnsaved = Object.values(stored).filter((v) => v.hold === true).length;
+        }
+      }
     }
-    const seatArgs = seatPlan ? { seats: seatPlan.effective } : {};
+    const seatArgs = seatPlan ? { seats: seatPlan.effective, divisionOwners: ownerPlan ? ownerPlan.effective : {} } : {};
     const plan = pausedLocations.withoutPausedDestinations(engine.computeRefillPlan({
       nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines, locations,
       network, ...seatArgs,
@@ -724,6 +746,7 @@ async function runScan(opts) {
       ]);
       if (await safeUpdate(db, seatUpd, "division seats")) counts.seats = { seated: seatPlan.seated, released: seatPlan.released };
     }
+    if (ownerPlan) counts.divisionOwnersHeld = Object.keys(ownerPlan.effective).length;
     if (paused.size) counts.paused = { locations: [...paused].sort(), held: plan.pausedDropped || {} };
     if (divisionOnly) {
       scopePlanToDivision(plan);

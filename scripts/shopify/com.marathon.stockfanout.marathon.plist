@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Cross-store stock fan-out, marathon side (Concrete store, 2026-11-15). One
+  long-lived node process per store: it listens to this store's inventory-dirty
+  node and pushes products live on BOTH stores within seconds, and announces
+  this store's fresh sales of dual-listed products to the other store before
+  the app has pulled the order in. See scripts/shopify/stockFanoutCore.mjs.
+  Same install shape as com.marathon.shopifyreconcile.plist: user LaunchAgent,
+  repo checkout, .env for Shopify, the reconciler SA for Firebase. Runs at all
+  hours. Without this store's credentials it logs once, idles an hour, exits 0.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.stockfanout.marathon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/shopify/stock-fanout.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+    <key>SHOPIFY_STORE</key><string>marathon</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/stock-fanout-marathon.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/stock-fanout-marathon.err.log</string>
+</dict>
+</plist>

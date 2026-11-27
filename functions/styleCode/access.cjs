@@ -19,7 +19,7 @@
 
 const { HttpsError } = require("firebase-functions/v2/https");
 
-const ADMIN_EMAIL = "gunidmoh@gmail.com"; // super-admin (mirrors config/displayChecks.js)
+const { isSuperAdmin } = require("../lib/super-admins.cjs"); // Junid and Jafer (mirrors config/displayChecks.js)
 
 // Any ONE of these implies style-code work is part of this person's job:
 // intake (products), the shop-floor display flow, receiving stock — and, since
@@ -50,7 +50,7 @@ async function assertStyleCodeAccess(request, db) {
 
   const userRec = (await db.ref(`users/${uid}`).get()).val() || {};
   const permissions = Array.isArray(userRec.permissions) ? userRec.permissions : [];
-  const isSuper = email === ADMIN_EMAIL && emailVerified;
+  const isSuper = isSuperAdmin(email) && emailVerified;
   const allowed = isSuper || STYLE_CODE_PERMISSIONS.some((p) => permissions.includes(p));
   if (!allowed) {
     throw new HttpsError("permission-denied", "You don't have access to style-code lookup.");
@@ -65,4 +65,4 @@ async function assertStyleCodeAccess(request, db) {
   };
 }
 
-module.exports = { ADMIN_EMAIL, STYLE_CODE_PERMISSIONS, assertStyleCodeAccess };
+module.exports = { STYLE_CODE_PERMISSIONS, assertStyleCodeAccess };

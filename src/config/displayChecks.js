@@ -10,8 +10,8 @@
 // master flag below is flipped by hand.
 //
 // ── SUPER-ADMIN ──────────────────────────────────────────────────────────────
-// Super-admin is the Firebase admin account gunidmoh@gmail.com (NOT junidmoh@…).
-// We import the ONE existing ADMIN_EMAIL constant rather than re-declaring the
+// Super-admin is either super-admin Google account (Junid or Jafer).
+// We import the ONE super-admin list (config/superAdmins.js) rather than re-declaring an
 // address, so there is a single source of truth for "who is super-admin".
 //
 // ── STORE SCOPE IS PART OF THE GATE ──────────────────────────────────────────
@@ -39,7 +39,7 @@
 //   the scope read to a `displayManagerStores: string[]` field instead. Flagged
 //   for the owner; not decided here.
 
-import { ADMIN_EMAIL } from "../components/PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "./superAdmins";
 import { SEED_REGISTRY, storesOf, locationOf } from "../utils/networkRegistry";
 import { currentNetwork } from "../utils/networkStore";
 
@@ -158,17 +158,19 @@ export function isWebsiteStripStoreEnabled(storeId, network = currentNetwork(), 
 // The verified super-admin email. `user.email` comes from Firebase Auth, which
 // is the only trusted identity signal (a /users record cannot forge it).
 export function isDisplayChecksSuperAdmin(user) {
-  return !!user && user.email === ADMIN_EMAIL;
+  return !!user && isSuperAdminEmail(user.email);
 }
 
 // BASE ACCESS — may this user see the module (card, route, Today, Availability)
 // for the store being viewed? Super-admin: always. Otherwise: holds the base
-// permission AND is scoped to THIS store. Inert today (permission unseeded).
+// permission. ANY shop (Junid, 20 Nov 2026: every user works all four shops;
+// leaving your own is confirmed and banner-marked by src/utils/activeStore.js).
+// It used to also require destShop === storeId.
 export function canUseDisplayChecks(user, storeId) {
   if (isDisplayChecksSuperAdmin(user)) return true;
-  if (!storeId) return false; // non-super-admin access is always store-scoped
+  if (!storeId) return false; // a check is always for one shop
   const perms = Array.isArray(user?.permissions) ? user.permissions : [];
-  return perms.includes(DISPLAY_CHECKS_PERMISSION) && user?.destShop === storeId;
+  return perms.includes(DISPLAY_CHECKS_PERMISSION);
 }
 
 // MANAGER TIER — may this user see Analytics + Settings for the store being

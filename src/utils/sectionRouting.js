@@ -200,6 +200,14 @@ export function shopsOfHub(network, hub) {
 //   Hub 1 / Hub 2: the legacy `hub` field, defaulting a hub-less order to
 //   Hub 1 ONLY when it is Marathon PE's / Trophy's / nobody's.
 //   Every other hub (Hub 3, Concrete Stockroom, the trial hub): placedAtHub.
+// The /orders child a hub's own orders are found by — the same split as
+// orderIsAtHub below: Section 2 hubs by `hub`, the rest by `placedAtHub`. Both
+// are indexed in the live rules (26 Nov 2026), so the hub Orders card reads one
+// hub's orders instead of the whole node.
+export function hubOrderField(network, hub) {
+  return hub !== TRIAL_HUB && sectionOf(network, hub) === 2 ? "hub" : "placedAtHub";
+}
+
 export function orderIsAtHub(network, order, hub) {
   if (!order || !hub) return false;
   if (hub !== TRIAL_HUB && sectionOf(network, hub) === 2) {

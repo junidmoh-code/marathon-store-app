@@ -156,6 +156,12 @@ export async function advance(pid, deps) {
     // the item's old pin is only the last resort. The till thumbnail is
     // rebuilt by the same helper the AI Studio approve uses — the browser
     // encodes with a canvas, here the encoder is injected (sharp).
+    // "USE CURRENT PHOTO" (Junid, 19 Nov 2026): the approved photo IS the app's
+    // photo already — it is listed on Shopify as it is, and the app photo, its
+    // kept original and the till thumbnail are left exactly as they are.
+    if (item.useCurrentPhoto === true) {
+      await stampStep("photo", { thumb: false, url: item.generatedUrl, current: true });
+    } else {
     const app = await setShopifyPrimaryPhoto(pid, {
       product, oldPrimary: null, newPrimary: item.generatedUrl,
       fallbackOriginal: sourcePhoto.currentSourceUrl(pid, product, item),
@@ -175,6 +181,7 @@ export async function advance(pid, deps) {
     // A refused product write is a crash, not a rejection: the run resumes here.
     if (!app.ok) throw new Error(app.message);
     await stampStep("photo", { thumb: !!app.thumb, url: item.generatedUrl });
+    }
   }
 
   // (b) the name — the proposal Junid saw on the card, and only that one.

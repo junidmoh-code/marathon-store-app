@@ -213,6 +213,9 @@ async function runWakeSweep({ db, nowMs }) {
   const network = await loadNetwork(db, { nowMs: now });
   const stores = triggerStores(network, await loadSettingsFor(db, storesOf(network).map((l) => l.id), { nowMs: now }));
   let stockSeen = 0, activated = 0, reHeld = 0, reaped = 0;
+  // Central has a website strip and nothing else (Junid, 24 Nov 2026): its completed entries are reaped with the
+  // shops' (an online_pick is never held, so the loop below only ever reaps there).
+  if (!stores.includes("central")) stores.push("central");
 
   for (const store of stores) {
     const index = (await db.ref(`displayChecks_active/${store}`).once("value")).val() || {};

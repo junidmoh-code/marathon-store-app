@@ -541,6 +541,7 @@ describe("the Absa reader — built from the real R80 payment", () => {
       // A BARE label whose value is on the following line.
       beneficiaryName: "Marathon club",
       destBankName: "FIRST NATIONAL BANK",
+      destBranchCode: "250655",  // "Bank branch code: 250655" (25 Nov 2026)
       accountMask: "62900004321",
       paymentType: "N",          // the real R80 sample: normal clearing (fix 7b)
       immediate: false,

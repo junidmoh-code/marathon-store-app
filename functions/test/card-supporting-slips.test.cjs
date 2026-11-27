@@ -346,8 +346,9 @@ test("Junid's NEW manual entry on a day whose record is a staff slip replaces it
   assert.ok(recs["500-r2"].warnings.some((w) => /staff slip \(500\) was already the record/.test(w)));
 });
 
-test("Junid is the one constant mayDeclareTotal checks", () => {
-  const { JUNID_EMAIL } = require("../lib/card-supporting-slips.cjs");
-  const { DECLARED_TOTAL_EMAIL } = require("../lib/card-recon.cjs");
-  assert.equal(JUNID_EMAIL, DECLARED_TOTAL_EMAIL);
+test("authority and mayDeclareTotal ask the same super-admin list", () => {
+  const { authorityOf } = require("../lib/card-supporting-slips.cjs");
+  const { SUPER_ADMIN_EMAILS } = require("../lib/super-admins.cjs");
+  for (const byEmail of SUPER_ADMIN_EMAILS) assert.equal(authorityOf({ declaredTotal: { byEmail } }), "junid");
+  assert.equal(authorityOf({ declaredTotal: { byEmail: "amanda@marathon.internal" } }), "staff");
 });

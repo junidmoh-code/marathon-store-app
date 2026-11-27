@@ -111,6 +111,7 @@
     if (panel) panel.hidden = true;
     var sheet = panel && $("[data-mc-sheet]", panel);
     if (sheet) { sheet.style.transform = ""; sheet.classList.remove("is-dragging"); }
+    $$("[data-mc-enlarge-host].is-enlarged", card).forEach(function (h) { h.classList.remove("is-enlarged"); });
     card.classList.remove(OPEN_CLASS);
     openCard = null;
     unlockScroll();
@@ -236,6 +237,17 @@
       return;
     }
 
+    // ENLARGE (product view, 14 Nov 2026): the photo fills the screen; a tap
+    // on the enlarged photo puts it back. Without JS the control is a link to the
+    // full-size photograph.
+    var enlarge = target.closest && target.closest("[data-mc-enlarge]");
+    if (enlarge) {
+      var host = enlarge.closest("[data-mc-enlarge-host]");
+      if (host) { ev.preventDefault(); host.classList.add("is-enlarged"); return; }
+    }
+    var enlarged = target.closest && target.closest("[data-mc-enlarge-host].is-enlarged");
+    if (enlarged) { ev.preventDefault(); enlarged.classList.remove("is-enlarged"); return; }
+
     var size = target.closest && target.closest("[data-mc-size]");
     if (size) {
       ev.preventDefault();
@@ -261,7 +273,10 @@
   });
 
   document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && openCard) close(true);
+    if (ev.key !== "Escape" || !openCard) return;
+    var z = $("[data-mc-enlarge-host].is-enlarged", openCard);
+    if (z) { z.classList.remove("is-enlarged"); return; }
+    close(true);
   });
 
   // Back/forward: the panel state IS the history state, so honour it in both
@@ -362,6 +377,17 @@
         say("Added to cart.", false);
         trackAdded(r.body, "grid_panel");
         refreshCartCount();
+        // The panel closes after a successful add (Junid, 14 Nov 2026), after
+        // a beat so "Added to cart." is seen. Only if this panel is still the
+        // open one: a shopper who already moved on is not yanked anywhere.
+        var addedCard = btn.closest("[data-mc-card]");
+        // Focus goes back to the card's photo link, as a closed dialog should.
+        setTimeout(function () {
+          if (!addedCard || openCard !== addedCard) return;
+          close(true);
+          var opener = $("[data-mc-open]", addedCard);
+          if (opener) opener.focus({ preventScroll: true });
+        }, 700);
       })
       .catch(function (err) {
         say(String((err && err.message) || "Could not add that."), true);
@@ -396,7 +422,10 @@
   // lives in localStorage — and every access is wrapped, because a private
   // window can THROW on the accessor rather than return null, which would take
   // the whole script down with it.
-  var DENSITY_KEY = "mc-cols";
+  // "-v2" (14 Nov 2026): the default became 2 across on a phone. A value saved
+  // under the old key was very likely just the old default of 3, so it is
+  // ignored; a choice made from now on is remembered under the new key.
+  var DENSITY_KEY = "mc-cols-v2";
 
   function readDensity() {
     try {
@@ -415,8 +444,48 @@
     });
   }
 
+  // No saved choice: the CSS default stands (2 on a phone, 3 from 750px) and
+  // only the pressed button is synced to it. The grid gets no inline value,
+  // so the breakpoint keeps deciding as the window changes.
+  function syncDefaultDensity() {
+    var g = $("[data-mc-grid]");
+    if (!g) return;
+    var n = parseInt(getComputedStyle(g).getPropertyValue("--mc-cols"), 10);
+    if (!(n >= 2 && n <= 4)) return;
+    $$("[data-mc-density] [data-mc-cols]").forEach(function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-mc-cols") === String(n) ? "true" : "false");
+    });
+  }
+
+  // ── SAVE box fit ───────────────────────────────────────────────────────────
+  // The card's price block scales with the card (cqi in the CSS), and the CSS
+  // drops the SAVE box on the narrowest cards. This catches the rest: a SAVE
+  // box whose text is wider than its card (a big saving at 3 or 4 across) is
+  // hidden rather than clipped or wrapped. Re-checked when the density, the
+  // window or the fonts change, and when infinite scroll adds cards.
+  function fitSaves(scope) {
+    $$("[data-mc-pb-save]", scope || document).forEach(function (s) {
+      s.hidden = false;
+      var inner = s.firstElementChild;
+      if (inner && s.clientWidth > 0 && inner.offsetWidth > s.clientWidth + 0.5) s.hidden = true;
+    });
+  }
+  var fitQueued = false;
+  function queueFit() {
+    if (fitQueued) return;
+    fitQueued = true;
+    (window.requestAnimationFrame || setTimeout)(function () { fitQueued = false; fitSaves(); });
+  }
+  window.addEventListener("resize", function () {
+    if (!readDensity()) syncDefaultDensity();
+    queueFit();
+  });
+  try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(queueFit); } catch (e) { /* fine */ }
+
   var saved = readDensity();
   if (saved) applyDensity(saved);
+  else syncDefaultDensity();
+  fitSaves();
 
   document.addEventListener("click", function (ev) {
     var btn = ev.target.closest && ev.target.closest("[data-mc-cols]");
@@ -426,6 +495,7 @@
     if (!(n >= 2 && n <= 4)) return;
     applyDensity(n);
     writeDensity(n);
+    queueFit();
   });
 
   // ── infinite scroll ────────────────────────────────────────────────────────
@@ -509,6 +579,7 @@
         // Newly-appended cards need their hearts marked (the click handler is
         // delegated and needs nothing, but the FILLED state is per-card).
         applyLoved(grid);
+        fitSaves(grid);
 
         // Swap in the next sentinel, or the end marker.
         var nextMore = doc.querySelector("[data-mc-more]");
@@ -826,8 +897,13 @@
   // or (later) a product-page equivalent, as long as it carries these same
   // data attributes and classes.
   function captureCardMeta(card) {
-    var img = $(".mc-card__media img", card);
-    var priceEl = $(".mc-card__price", card);
+    var img = $(".mc-card__media img", card) || $("[data-mc-love-img]", card);
+    // The card's own price (the price block's red figure), or the "Sold out"
+    // slot; never the whole block, whose text would also carry RRP and SAVE.
+    // The product page's love host carries its own [data-mc-price-now]; it is
+    // only read there (on a grid card the panel's price is not the tile's).
+    var priceEl = $(".mc-card__foot [data-mc-price-now]", card) || $(".mc-card__soldout", card) ||
+      (card.hasAttribute("data-mc-love-host") ? $("[data-mc-price-now]", card) : null) || $(".mc-card__price", card);
     var singleInput = $("[data-mc-single]", card);
     // EVERY SIZE, CAPTURED OFF THE SAME HIDDEN PANEL THE QUICK-VIEW USES
     // (see marathon-card.liquid's `.mc-sizes [data-mc-size]` buttons) — so the
@@ -896,7 +972,7 @@
     var meta = readMeta();
     if (i === -1) {
       loved.push(id);
-      var card = b.closest("[data-mc-card]");
+      var card = b.closest("[data-mc-card], [data-mc-love-host]");
       if (card) meta[id] = captureCardMeta(card);
     } else {
       loved.splice(i, 1);
@@ -904,8 +980,19 @@
     }
     writeLoved(loved);
     writeMeta(meta);
-    b.setAttribute("aria-pressed", i === -1 ? "true" : "false");
+    $$("[data-mc-love]").forEach(function (h) {
+      if (String(h.getAttribute("data-product-id")) === id) h.setAttribute("aria-pressed", i === -1 ? "true" : "false");
+    });
   });
+  // PRODUCT PAGE HEART ON THE PHOTO (14 Nov 2026). main-product renders it in
+  // the media column; a portrait photo there is narrowed and centred, so the
+  // column's corner is off the photo. Move it into the first photo's own box.
+  // Without JS it stays on the column's corner and still works the same way.
+  (function () {
+    var host = $(".mc-pdp-love");
+    var box = $(".mc-pdp-media .product__media-item .product-media-container");
+    if (host && box) box.appendChild(host);
+  })();
   applyLoved(document);
   surgeLoved();
 

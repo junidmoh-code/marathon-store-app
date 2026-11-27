@@ -18,7 +18,7 @@ test("plan: a product with stock is manager-only; a brand-new one is not", () =>
   const withStock = planTypeChange(AF1, "clothing", { cellsByLoc: { central: { 6: cell(16) } }, isManager: false });
   assert.equal(withStock.ok, false);
   assert.equal(withStock.code, "permission-denied");
-  assert.match(withStock.message, /only Junid or MC/);
+  assert.match(withStock.message, /only Junid, Jafer or MC/);
   const fresh = planTypeChange(AF1, "clothing", { cellsByLoc: {}, isManager: false });
   assert.equal(fresh.ok, true);
   const zeroCell = planTypeChange(AF1, "clothing", { cellsByLoc: { hub2: { 6: cell(0) } }, isManager: false });
@@ -63,7 +63,7 @@ const req = (data, token = { email: "mike@marathon.internal", firebase: { sign_i
 
 test("callable: Mike (not a manager) cannot retype a product with stock; the product is untouched", async () => {
   const db = world({ central: { p1: { 6: cell(16) } } });
-  await assert.rejects(_handleSetProductType(req({ productType: "clothing", deviceId: "aa85821b-5a2d-4a0b" }), deps(db)), /only Junid or MC/);
+  await assert.rejects(_handleSetProductType(req({ productType: "clothing", deviceId: "aa85821b-5a2d-4a0b" }), deps(db)), /only Junid, Jafer or MC/);
   assert.equal(readAt(db.state.root, "products/p1/productType"), "sneaker");
   assert.equal(readAt(db.state.root, "product_type_log/p1"), null);
 });
@@ -112,7 +112,7 @@ test("callable: the log lives at product_type_log (no client rule), never on the
 
 test("callable: someone else's Type change a moment earlier makes this one refuse, not overwrite", async () => {
   const db = makeFakeDb({
-    locations: { hub1: { id: "hub1" } }, products: { p1: AF1 }, stock: {},
+    locations: { hub1: { id: "hub1" } }, products: { p1: AF1 }, stock: {}, users: { mike: { username: "mike" } },
   }, { beforeRead: async (path, state) => {
     if (path === "products/p1/productType" && state.root.products.p1.productType === "sneaker") state.root.products.p1.productType = "clothing";
   } });
@@ -122,7 +122,7 @@ test("callable: someone else's Type change a moment earlier makes this one refus
 
 test("callable: Hub 1 units that land while it decides are not stranded — the switch is undone", async () => {
   let landed = false;
-  const db = makeFakeDb({ locations: { hub1: { id: "hub1" } }, products: { p1: AF1 }, stock: {} }, { beforeRead: async (path, state) => {
+  const db = makeFakeDb({ locations: { hub1: { id: "hub1" } }, products: { p1: AF1 }, stock: {}, users: { mike: { username: "mike" } } }, { beforeRead: async (path, state) => {
     if (path === "stock/hub1/p1" && !landed) {
       // first read (the planner's) sees nothing; the post-write check sees the receive
       landed = true; return;
@@ -135,10 +135,15 @@ test("callable: Hub 1 units that land while it decides are not stranded — the 
 });
 
 test("callable: a Type deleted by someone else meanwhile is a clash — never logged as a success", async () => {
-  const db = makeFakeDb({ locations: { hub1: { id: "hub1" } }, products: { p1: AF1 }, stock: {} }, { beforeRead: async (path, state) => {
+  const db = makeFakeDb({ locations: { hub1: { id: "hub1" } }, products: { p1: AF1 }, stock: {}, users: { mike: { username: "mike" } } }, { beforeRead: async (path, state) => {
     if (path === "products/p1/productType") delete state.root.products.p1.productType;
   } });
   await assert.rejects(_handleSetProductType(req({ productType: "clothing" }), deps(db, { owner: true, by: "Junid" })), /Someone else changed/);
   assert.equal(readAt(db.state.root, "product_type_log"), null);
   assert.equal(readAt(db.state.root, "products/p1/typeChangedAt"), null);
+});
+
+test("callable: a signed-in account with no /users record (a stranger) is refused (Nov 2026 audit)", async () => {
+  const db = world({});
+  await assert.rejects(_handleSetProductType(req({ productType: "clothing" }, undefined, "stranger-uid"), deps(db)), /not a Marathon staff account/);
 });

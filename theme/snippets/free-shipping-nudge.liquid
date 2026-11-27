@@ -1,0 +1,17 @@
+{%- comment -%}
+  Free-shipping nudge (Junid, 21 Nov 2026): free shipping starts at R2,000 (R99 below). When the cart is between
+  R1,500 and R2,000 it says how much more makes delivery free. Rendered inside the cart drawer footer and the cart page
+  totals, which the theme re-renders on every cart change, so the amount follows the cart. Cents, like cart.total_price.
+  The two live files (not kept in this repo subset) carry {%- render 'free-shipping-nudge' -%} just above
+  <div class="totals">: snippets/cart-drawer.liquid (inside .cart-drawer__footer) and sections/main-cart-footer.liquid.
+{%- endcomment -%}
+{%- assign free_from_cents = 200000 -%}
+{%- assign nudge_from_cents = 150000 -%}
+{%- if cart.total_price >= nudge_from_cents and cart.total_price < free_from_cents -%}
+  {%- assign gap = free_from_cents | minus: cart.total_price -%}
+  <p class="free-shipping-nudge" role="status">Add {{ gap | money_without_trailing_zeros }} more for free shipping.</p>
+  <style>
+    .free-shipping-nudge { margin: 0 0 1rem; padding: .8rem 1rem; border-radius: .6rem; font-size: 1.4rem; line-height: 1.4;
+      background: rgba(var(--color-foreground, 18 18 18), .06); text-align: center; }
+  </style>
+{%- endif -%}

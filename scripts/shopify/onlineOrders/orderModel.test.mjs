@@ -73,3 +73,71 @@ describe("cents", () => {
     expect(cents(null)).toBe(0);
   });
 });
+
+// ── One line = one unit (Junid, 20 Nov 2026) ────────────────────────────────
+import { allocateCents, lineTotalCents, unitPieces, buildItemLines } from "./orderModel.mjs";
+
+describe("one line per unit", () => {
+  const item = (over = {}) => ({
+    id: "gid://shopify/LineItem/7", title: "Nike T-shirt", variantTitle: "M", quantity: 2, currentQuantity: 2,
+    variant: { id: "gid://shopify/ProductVariant/1", product: { id: "gid://shopify/Product/1" } },
+    discountedUnitPriceAfterAllDiscountsSet: { shopMoney: { amount: "333.33" } }, ...over,
+  });
+  const resolved = { pid: "P", size: "M", sizeKey: "M", product: { name: "Nike T-shirt" }, isFootwear: false };
+
+  it("allocateCents sums back exactly, the extra cents on the first units", () => {
+    expect(allocateCents(100000, 3)).toEqual([33334, 33333, 33333]);
+    expect(allocateCents(99999, 3)).toEqual([33333, 33333, 33333]);
+    expect(allocateCents(5, 2)).toEqual([3, 2]);
+    expect(allocateCents(500, 1)).toEqual([500]);
+  });
+
+  it("lineTotalCents takes the original total less every discount allocation, falling back to unit × qty", () => {
+    expect(lineTotalCents(item({ originalTotalSet: { shopMoney: { amount: "700.00" } }, discountAllocations: [{ allocatedAmountSet: { shopMoney: { amount: "33.34" } } }] }))).toBe(66666);
+    expect(lineTotalCents(item())).toBe(66666);
+    // A unit removed on Shopify: the allocations cover the old quantity — unit price × what is left.
+    expect(lineTotalCents(item({ quantity: 3, currentQuantity: 2, originalTotalSet: { shopMoney: { amount: "1050.00" } }, discountAllocations: [] }))).toBe(66666);
+    // A total far from the unit price is not trusted.
+    expect(lineTotalCents(item({ originalTotalSet: { shopMoney: { amount: "9000.00" } }, discountAllocations: [] }))).toBe(66666);
+  });
+
+  it("unitPieces turns every routed piece into qty-1 pieces in order", () => {
+    expect(unitPieces([{ qty: 2, locationId: "marathon-pe", status: "display" }, { qty: 1, locationId: "hub2", status: "pick" }])).toEqual([
+      { qty: 1, locationId: "marathon-pe", status: "display" }, { qty: 1, locationId: "marathon-pe", status: "display" }, { qty: 1, locationId: "hub2", status: "pick" },
+    ]);
+  });
+
+  it("buildItemLines: a ×2 item is two qty-1 lines, same Shopify line, unit 1/2 and 2/2, cents summing to the line", () => {
+    const lines = buildItemLines({ startIndex: 3, item: item({ discountedUnitPriceAfterAllDiscountsSet: { shopMoney: { amount: "333.335" } }, originalTotalSet: { shopMoney: { amount: "666.67" } }, discountAllocations: [] }), resolved, pieces: [{ qty: 2, locationId: "marathon-pe", status: "display" }] });
+    expect(lines.map((l) => [l.lineId, l.qty, l.unit, l.units, l.shopifyLineItemId, l.unitPriceCents, l.source.locationId])).toEqual([
+      ["l3", 1, 1, 2, "gid://shopify/LineItem/7", 33334, "marathon-pe"],
+      ["l4", 1, 2, 2, "gid://shopify/LineItem/7", 33333, "marathon-pe"],
+    ]);
+  });
+
+  it("buildItemLines: a ×1 item carries no unit fields; an unresolved ×2 item is two unresolved qty-1 lines", () => {
+    const one = buildItemLines({ startIndex: 0, item: item({ quantity: 1, currentQuantity: 1 }), resolved, pieces: [{ qty: 1, locationId: "hub2", status: "pick" }] });
+    expect(one).toHaveLength(1);
+    expect(one[0].unit).toBeUndefined();
+    expect(one[0].units).toBeUndefined();
+    const lost = buildItemLines({ startIndex: 0, item: item(), resolved: { reason: "not linked" }, pieces: null });
+    expect(lost.map((l) => [l.qty, l.unit, l.source.status])).toEqual([[1, 1, "unresolved"], [1, 2, "unresolved"]]);
+  });
+});
+
+// MOVED HERE note (Junid, 26 Nov 2026)
+import { movedNoteOf, hubOrderRecord as _hor, displayEntry as _de } from "./orderModel.mjs";
+import { describe as _d, it as _it, expect as _ex } from "vitest";
+_d("movedNoteOf", () => {
+  _it("names the place a moved line came from, on the hub record and the strip entry", () => {
+    const line = { pid: "p1", title: "Jersey", size: "S", sizeKey: "S", qty: 1, source: { status: "display", locationId: "marathon-pe", movedFrom: "concrete" } };
+    _ex(movedNoteOf(line)).toBe("Moved here from Concrete");
+    _ex(_de({ orderId: "1", order: { orderNumber: 2481 }, index: 2, line, checkId: "c", nowMs: 1, saDate: "2026-11-26", assignedTo: null }).movedNote).toBe("Moved here from Concrete");
+    const hubLine = { ...line, source: { status: "pick", locationId: "hub1", movedFrom: "hub2" } };
+    _ex(_hor({ key: "ABC", line: hubLine, onlineOrderId: "1", lineIndex: 0, section: 2, nowIso: "x" }).movedNote).toBe("Moved here from Hub 2");
+  });
+  _it("no note for a line that did not move", () => {
+    _ex(movedNoteOf({ source: { locationId: "hub1" } })).toBe(null);
+    _ex(movedNoteOf({ source: { locationId: "hub1", movedFrom: "hub1" } })).toBe(null);
+  });
+});

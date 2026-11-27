@@ -26,35 +26,52 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ref, get, update, onValue, runTransaction, push, query, orderByChild, equalTo } from "firebase/database";
+import { openRequestsByProduct } from "./missingListCore";
 import { database, auth } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey, stockCellPath, decodedCellKey, stockSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
-import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
+import { SizeStepperChip, CHIP_GRID } from "./healthWidgets";
+import MissingCard, { primaryBtn } from "./MissingCard";
+import { whyProduct, brandOf, categoryLabelOf } from "./missingScreenCore";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
-import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
+import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor, categoryPolicyLocs } from "./solvePlan";
 import { computeMissingProducts, isClothing, cardSection } from "./missingProductsCore";
 import { useMySections } from "../../utils/useMySections";
 import { solveOn, sectionName, trustedCellsOnly } from "../../utils/networkRegistry";
 import { trustStamp, cellTrusted } from "./stockTrust";
 import { centralId, isCentral, storeIds, solveHubFor, solveHubsOfSection } from "./sectionRouting";
 import { engineConfigView } from "./policyTemplate";
+import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
 import { solveBlocks, allocationOrder, planSectionSolve, mergeSolveUpdates, undoablePaths } from "./solveSections";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
 import { isCentralFedProduct, centralFedPerSize, centralFedSizes } from "./centralFed";
-import { concreteDivisionPolicy, isDivisionFootwear, isDivisionOneSize } from "./concreteDivision";
+import { concreteDivisionPolicy, isDivisionFootwear, isDivisionOneSize, divisionNeverKeeps } from "./concreteDivision";
 import { firstBatchEligible, buildFirstBatchSolveUpdate, trustExistingEmptyUpdates, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, firstBatchSizeHints, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
-import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
+import { solveReason, solveConfirmReason, moveReason, centralFedNoPlanReason, centralFedNothingSentReason } from "./actionReasons";
+import { policyFollowChain, followOrder, followRows } from "./policyFollow";
 import { setUpdateBusy } from "../../update/updateChecker";
 import { stampRecord, stampTxn } from "../../device/deviceStamp";
+// CONCRETE-ONLY + THE SOLVED TAB (Junid, 20 Nov 2026).
+import { isConcreteProduct } from "../../utils/concreteListing";
+import { markConcreteProduct } from "../concrete/concreteStore";
+import { concreteSection } from "./missingProductsCore";
+import { buildSolveLogEntry, buildConcreteLogEntry, mergeSolved, standing, normalizeSolvedEntry, newSolvedKey, undoRecordProblem } from "./solvedLog";
+import { useSolvedLog, saveSolvedRows, markSolvedUndone } from "./solvedLogStore";
+import { notePendingUpdate } from "../../offline/pendingWrites";
+import { PrimaryPhoto } from "../shared/PrimaryPhoto";
+import { switchShopPick, shopsAreExclusive, destinationProblem } from "./divisionDestinations";
 
 // The section whose list HealthView hands this screen (computeMissingProducts'
 // default) — the other section's list is one tap away for a viewer who may
 // see it.
 const HOME_SECTION = 2;
+// The BACKSTOP for a just-solved card the live list still carries unchanged:
+// the mirror's echo is 1.2–1.5 s, but its fallback cadence is a minute.
+const DONE_HOLD_MS = 90000;
 // The Source tab a shop's first-batch request lands on (App.jsx SOURCE_SHOP_TABS).
 // A shop not named here is listed under its own name.
 const SOURCE_TAB_LABEL = { "marathon-pe": "Marathon", trophy: "Trophy" };
@@ -74,6 +91,13 @@ const STD_FALLBACK = {
 // function. Do not reintroduce a local copy — that is exactly how the old count
 // and list drifted apart.
 
+// A destination pill: a full-size tap target that plainly reads on or off.
+const bigPill = (on) => ({
+  minHeight: 46, padding: "10px 20px", borderRadius: 999, fontSize: 14.5, fontWeight: 800, cursor: "pointer", fontFamily: FONT,
+  border: on ? "1px solid rgba(60,110,255,.7)" : "1px solid rgba(255,255,255,.16)",
+  background: on ? "rgba(60,110,255,.24)" : "rgba(255,255,255,.03)",
+  color: on ? "#fff" : "rgba(255,255,255,.55)",
+});
 const destChip = (on) => ({
   padding: "8px 13px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
   border: on ? "1px solid rgba(60,110,255,.55)" : "1px solid rgba(255,255,255,.1)",
@@ -88,10 +112,24 @@ const destChip = (on) => ({
 // one — the same count-disagrees-with-list class of bug this tab was just fixed
 // for. One subscription, one snapshot, and one less full-tree listener.
 // (Codex review, PR #308.) HealthView is the only renderer of this component.
-export default function NetworkTransfer({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null, targetsSettled = false, targetsError = false, undoables: undoablesProp = null, setUndoables: setUndoablesProp = null }) {
+// THE LOGIC, AS A HOOK (Junid, 22 Nov 2026). The Missing Products screen lists
+// sneakers and everything else in ONE list per division, so this component's
+// body is a hook that hands back its cards and a way to draw each one; the
+// screen interleaves them with MissingFootwear's. Every rule about what a
+// Solve writes is exactly where it was — only who calls the render changed.
+//   section   the division list being shown (controlled by the screen). Absent
+//             ⇒ this list keeps its own switch (the stand-alone list, below).
+//   cards     with `section`: that division's cards, as the screen built them
+//             for its counts. Without: the home division's (HealthView's old
+//             contract).
+export function useProductSolve({ products = [], category = "all", allStock = {}, cards: allCards = null, targets = null, targetsSettled = false, targetsError = false, solvedSession: solvedSessionProp = null, setSolvedSession: setSolvedSessionProp = null, resolving: resolvingProp = null, setResolving: setResolvingProp = null, onOpenSolved = null, section: sectionProp = null, onPhoto = null }) {
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canAct = ["store", "warehouse", "admin"].includes(actorRole);
+  // Marking Concrete-only is Junid's / a stockRole admin's (the mark IS the
+  // brand check — concreteStore.canVerifyBrand's identities).
+  const canMarkConcrete = isSuperAdmin || permRecord?.stockRole === "admin";
+  const actorName = permRecord?.displayName || permRecord?.username || null;
 
   // THE NETWORK REGISTRY: every store, hub, section and name on this screen.
   const { registry: network, sections: mySections } = useMySections();
@@ -115,7 +153,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     [network, mySections],
   );
   const [sectionPick, setSectionPick] = useState(null);
-  const listSection = sectionPick && sectionPick !== HOME_SECTION && sectionChoices.includes(sectionPick) ? sectionPick : null;
+  const pickedSection = sectionProp || (sectionChoices.includes(sectionPick) ? sectionPick : null);
+  const listSection = pickedSection && pickedSection !== HOME_SECTION ? pickedSection : null;
 
   const [openPid, setOpenPid] = useState(null);
   const [dests, setDests] = useState({});     // pid → chosen destination
@@ -180,28 +219,67 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // Solve (engine-managed) — separate from the manual transfer above.
   const [solvePid, setSolvePid] = useState(null);   // which row's Solve panel is open
   const [solveTicks, setSolveTicks] = useState({}); // pid → the stores ticked, IN THE ORDER TICKED (absent = the default tick)
-  const [solveBusy, setSolveBusy] = useState(null);
+  // Solves still writing, by pid. Several may be in flight at once (each card
+  // resolves the moment it is tapped — Junid, 20 Nov 2026); one pid never twice.
+  const [solving, setSolving] = useState({});
+  const solveBusy = Object.keys(solving)[0] ?? null;   // "a solve is writing" — for setUpdateBusy
   const [solved, setSolved] = useState({});         // pid → {store, sizes, msg, ok}
 
-  // ── SOLVE UNDO — this session's solves, each reversible while safe ─────────
-  // A solved card leaves the list the moment its seed lands, so the undo
-  // affordance cannot live on the card: each successful solve is recorded
-  // and rendered as a strip above the list. The record and every guard rule
-  // live in solveUndo.js. The list itself is OWNED BY HealthView and passed
-  // down, so a glance at the Sneakers or Hidden chip — which unmounts this
-  // component — cannot silently drop a fresh undo (Sonnet substitute review,
-  // PR #361); the local fallback only serves standalone use.
-  const [localUndoables, setLocalUndoables] = useState([]);
-  const undoables = undoablesProp ?? localUndoables;
-  const setUndoables = setUndoablesProp ?? setLocalUndoables;
-  // In-flight keys in a ref: the render-closure `u.busy` is stale under a
+  // ── SOLVED — every solve and Concrete mark, each reversible while safe ─────
+  // (Junid, 20 Nov 2026.) A solved card leaves the list the moment Junid taps,
+  // so its Undo cannot live on the card. Every action is recorded twice:
+  //   • the SESSION list (owned by HealthView, so a glance at the Sneakers or
+  //     Hidden chip — which unmounts this component — cannot drop a fresh
+  //     undo; Sonnet substitute review, PR #361), and
+  //   • the saved history /settings/missingProductsSolved (solvedLog.js), which
+  //     the Solved tab pages through, newest first.
+  // The main list shows only the LAST action (one confirm may be several
+  // stores); everything else lives in the Solved tab. Every guard rule lives
+  // in solveUndo.js, unchanged.
+  const [localSession, setLocalSession] = useState([]);
+  const solvedSession = solvedSessionProp ?? localSession;
+  const setSolvedSession = setSolvedSessionProp ?? setLocalSession;
+  // RESOLVING: cards hidden the moment their action was tapped (pid → "pending"
+  // while the write is in flight, "done" once it landed — kept hidden until the
+  // live list stops carrying the card, so it never flickers back). Owned by
+  // HealthView too, so the chip counts drop with the card.
+  const [localResolving, setLocalResolving] = useState({});
+  const resolving = resolvingProp ?? localResolving;
+  const setResolving = setResolvingProp ?? setLocalResolving;
+  const solvedLog = useSolvedLog(true);
+  const solvedAll = useMemo(() => mergeSolved(solvedLog.entries, solvedSession), [solvedLog.entries, solvedSession]);
+  // The rows still standing: the siblings an undo must not take shared cells from.
+  const undoables = useMemo(() => standing(solvedAll), [solvedAll]);
+  // Busy / error per row, by key.
+  const [undoUi, setUndoUi] = useState({});
+  const setRow = (key, patch) => setUndoUi((m) => ({ ...m, [key]: { ...(m[key] || {}), ...patch } }));
+  // A row fully undone: the saved row says so (best effort — the session row
+  // says so regardless), the card may return, and its stale banner clears.
+  const finishUndo = async (u) => {
+    setSolvedSession((l) => {
+      const hit = l.some((x) => x.key === u.key);
+      return hit ? l.map((x) => (x.key === u.key ? { ...x, status: "undone" } : x)) : [...l, { ...u, status: "undone" }];
+    });
+    clearTimeout(doneTimers.current[u.pid]); delete doneTimers.current[u.pid]; delete doneSnap.current[u.pid];
+    setResolving((m) => { const n = { ...m }; delete n[u.pid]; return n; });
+    setSolved((d) => { const n = { ...d }; delete n[u.pid]; return n; });
+    if (u.saved !== false) {
+      try { await markSolvedUndone(u.key, { at: serverNowMs(), by: auth.currentUser?.uid }); }
+      catch { /* the session row already says Undone; the saved row just keeps "done" */ }
+    }
+  };
+  // In-flight keys in a ref: the render-closure `busy` is stale under a
   // double-tap, and two overlapping undos of one entry would race their own
   // reads (Kimi substitute review, PR #361).
   const undoInFlight = useRef(new Set());
   const undoSolve = async (u) => {
-    if (!canAct || u.busy || undoInFlight.current.has(u.key)) return;
+    // (Every exit also RETURNS { ok, msg } — the one-tap toast says it.)
+    if (!canAct || undoUi[u.key]?.busy || undoInFlight.current.has(u.key)) return { ok: false, msg: "Already undoing." };
+    // A row read back from the (staff-writable) history is checked first.
+    const bad = undoRecordProblem(u, Object.keys(network.locations || {}));
+    if (bad) { setRow(u.key, { err: `This row cannot be undone safely — it names ${bad}. Nothing was changed.` }); return { ok: false, msg: "This row cannot be undone safely. Nothing was changed." }; }
     undoInFlight.current.add(u.key);
-    setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: true, err: null } : x)));
+    setRow(u.key, { busy: true, err: null });
     try {
       // Engine guard first: any CURRENT lock on a seeded size that was not in
       // the solve-time snapshot means the engine has raised work on the seed —
@@ -221,10 +299,16 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         await Promise.all(u.firstBatch.requestIds.map(async (id) => {
           liveFb[id] = (await get(ref(database, `refill_requests/${id}`))).val();
         }));
+        // Every request this row names must be THIS product's, raised for
+        // THIS store — a history row is staff-writable, and the cancel below
+        // must never reach another product's request (substitute Sonnet
+        // review, PR #952).
+        const foreign = Object.entries(liveFb).find(([, r]) => r && (r.productId !== u.pid || r.requestingLocation !== u.firstBatch.store));
+        if (foreign) { setRow(u.key, { busy: false, err: "This row names a request that is not this solve's — nothing was changed." }); return { ok: false, msg: "Not undone — nothing was changed." }; }
         const fbBlockers = firstBatchUndoBlockers({ liveRequests: liveFb, storeLabel: LOC_LABEL[u.store] });
         if (fbBlockers.length) {
-          setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: fbBlockers[0] } : x)));
-          return;
+          setRow(u.key, { busy: false, err: fbBlockers[0] });
+          return { ok: false, msg: fbBlockers[0] };
         }
       }
       // The cells this undo may take back: its own seeds, minus any a sibling
@@ -234,8 +318,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const ownPaths = undoablePaths(u, undoables);
       const blockers = solveUndoBlockers({ paths: ownPaths, openByLoc, priorOpenByLoc: u.priorOpen, ownRunId: u.firstBatch ? firstBatchRunId(u.firstBatch.solveId) : null });
       if (blockers.length) {
-        setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: blockers[0] } : x)));
-        return;
+        setRow(u.key, { busy: false, err: blockers[0] });
+        return { ok: false, msg: blockers[0] };
       }
       // Cancel the shop's open requests FIRST, with the solve_undone reason:
       // the trigger then raises no Hub 2 leg and the engine withdraws the lock
@@ -264,20 +348,77 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const results = await Promise.all(ownPaths.map((p) => runTransaction(ref(database, p), undoCellTxn)));
       const kept = ownPaths.filter((p, i) => !results[i].committed);
       if (kept.length || stood.length) {
-        const standing = stood.length ? ` Central had already started on size${stood.length === 1 ? "" : "s"} ${stood.map(sizeLabel).join(", ")} — ${stood.length === 1 ? "that request stands" : "those requests stand"}.` : "";
-        setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `${ownPaths.length - kept.length} of ${ownPaths.length} seeded cells removed — the rest took real stock or counts since the solve and were kept. Use Adjust for those.${standing}` } : x)));
+        const standingMsg = stood.length ? ` Central had already started on size${stood.length === 1 ? "" : "s"} ${stood.map(sizeLabel).join(", ")} — ${stood.length === 1 ? "that request stands" : "those requests stand"}.` : "";
+        setRow(u.key, { busy: false, err: `${ownPaths.length - kept.length} of ${ownPaths.length} seeded cells removed — the rest took real stock or counts since the solve and were kept. Use Adjust for those.${standingMsg}` });
+        return { ok: false, msg: `Only partly undone — Central or a count got there first.${standingMsg}` };
       } else {
-        // Fully undone: the entry leaves the strip (the card reappearing IS
-        // the feedback), and the stale "Solved ✓" banner is cleared so the
+        // Fully undone: the row reads Undone (the card reappearing IS the
+        // feedback), and the stale "Solved ✓" banner is cleared so the
         // returning card offers Solve again, not last week's success message.
-        setUndoables((l) => l.filter((x) => x.key !== u.key));
-        setSolved((d) => { const n = { ...d }; delete n[u.pid]; return n; });
+        setRow(u.key, { busy: false, err: null });
+        await finishUndo(u);
+        return { ok: true, msg: null };
       }
     } catch (e) {
-      setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `Couldn't undo — nothing changed, retry. (${e?.message || "error"})` } : x)));
+      setRow(u.key, { busy: false, err: `Couldn't undo — nothing changed, retry. (${e?.message || "error"})` });
+      return { ok: false, msg: `Couldn't undo — nothing changed, retry. (${e?.message || "error"})` };
     } finally {
       undoInFlight.current.delete(u.key);
     }
+  };
+  // Undo a Concrete mark: the product returns to Marathon's list, and a
+  // Marathon listing the mark itself switched off is switched back on.
+  const undoConcrete = async (u) => {
+    if (!canMarkConcrete || undoInFlight.current.has(u.key)) return;
+    undoInFlight.current.add(u.key);
+    setRow(u.key, { busy: true, err: null });
+    try {
+      const r = await markConcreteProduct(u.pid, false);
+      if (!r.ok) { setRow(u.key, { busy: false, err: `Couldn't undo — ${r.message}` }); return; }
+      // markConcreteProduct(…, false) also puts back a Marathon listing the
+      // mark itself switched off (concreteStore.restoreMarathonListing).
+      setRow(u.key, { busy: false, err: r.warning || null });
+      await finishUndo(u);
+    } finally {
+      undoInFlight.current.delete(u.key);
+    }
+  };
+  const undoEntry = (u) => (u.kind === "concrete" ? undoConcrete(u) : undoSolve(u));   // → { ok, msg } for a solve
+  // Record actions in the session list now and in the saved history after
+  // (best effort, AFTER the action committed — a refused log write must never
+  // fail a Solve; solvedLog.js). A row that did not save says so.
+  const recordSolved = async (rows) => {
+    if (!rows.length) return;
+    setSolvedSession((l) => [...rows, ...l]);
+    try {
+      await saveSolvedRows(rows);
+    } catch (e) {
+      const keys = new Set(rows.map((r) => r.key));
+      setSolvedSession((l) => l.map((x) => (keys.has(x.key) ? { ...x, saved: false, saveErr: String(e?.message || e) } : x)));
+    }
+  };
+
+  // ── CONCRETE — one tap, the row moves to the Concrete division ─────────────
+  // Sets concreteProduct through the ONE helper (concreteListing.js). The row
+  // leaves the Marathon list at once; the product appears in the Concrete
+  // division's list (missingProductsCore.listedInSection). A refused write
+  // brings the row back and says why in red.
+  const markConcrete = async (card) => {
+    if (!canMarkConcrete || resolving[card.pid]) return;
+    doneSnap.current[card.pid] = (card.missing || []).join("|");
+    setResolving((m) => ({ ...m, [card.pid]: "pending" }));
+    setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; });
+    const r = await markConcreteProduct(card.pid, true);
+    if (!r.ok) {
+      setResolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: null, sizes: [], msg: `Not marked Concrete — ${r.message}` } }));
+      return;
+    }
+    setResolving((m) => ({ ...m, [card.pid]: "done" }));
+    const at = serverNowMs();
+    const key = newSolvedKey(at);
+    const log = buildConcreteLogEntry({ pid: card.pid, name: card.name, photo: card.photo, at, by: auth.currentUser?.uid, byName: actorName, division: divisionOf(card) });
+    await recordSolved([{ ...log, key, batch: key, log }]);
   };
 
   // The engine config, LIVE (onValue, not the one-shot get this used to do).
@@ -354,15 +495,51 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // union and its size arithmetic on every stock write. The fallback keeps the
   // component usable on its own; it just isn't the path the app takes.
   // (Senior-architect review, PR #308.)
-  const cards = useMemo(() => {
+  // The list before the chip filter — "is this card still live anywhere on
+  // this screen" is asked of it, never of one chip's slice.
+  const allLive = useMemo(() => (sectionProp && allCards ? allCards : listSection
     // The other section's list is built here, on demand, from the same
     // function (it is not HealthView's to count while that section has no
     // live shop).
-    const all = listSection
-      ? computeMissingProducts({ allStock, products, network, section: listSection, centralFed: cfg })
-      : (allCards || computeMissingProducts({ allStock, products }));
-    return category && category !== "all" ? all.filter((c) => c.group === category) : all;
-  }, [allCards, allStock, products, category, listSection, network, cfg]);
+    ? computeMissingProducts({ allStock, products, network, section: listSection, centralFed: cfg })
+    : (allCards || computeMissingProducts({ allStock, products }))), [allCards, allStock, products, listSection, network, cfg]);
+  const cardsLive = useMemo(
+    () => (category && category !== "all" ? allLive.filter((c) => c.group === category) : allLive),
+    [allLive, category],
+  );
+  // RESOLVING (Junid, 20 Nov 2026): a card Junid has just solved or marked
+  // Concrete leaves at once. A "done" entry (the write landed) is dropped as
+  // soon as the live list stops carrying the card — or after DONE_HOLD_MS
+  // whatever happens, so a card that is STILL missing somewhere (one store of
+  // several solved) comes back with what is left (Sonnet review, PR #952 B1).
+  const cards = useMemo(() => cardsLive.filter((c) => !resolving[c.pid]), [cardsLive, resolving]);
+  // What the card was missing when its action was tapped: a live card whose
+  // missing set has CHANGED has caught up with the write (one store of
+  // several solved) and comes back with what is left. A card unchanged stays
+  // hidden until it goes, or until the backstop (substitute Sonnet review,
+  // PR #952: a fixed 8 s could show Solve again before a slow echo).
+  const doneSnap = useRef({});
+  const doneTimers = useRef({});
+  const releaseDone = (pids) => {
+    for (const pid of pids) { clearTimeout(doneTimers.current[pid]); delete doneTimers.current[pid]; delete doneSnap.current[pid]; }
+    setResolving((m) => { const n = { ...m }; let ch = false; for (const pid of pids) if (n[pid] === "done") { delete n[pid]; ch = true; } return ch ? n : m; });
+  };
+  useEffect(() => {
+    const live = new Map(allLive.map((c) => [c.pid, c]));
+    const release = Object.keys(resolving).filter((pid) => {
+      if (resolving[pid] !== "done") return false;
+      const c = live.get(pid);
+      if (!c) return true;
+      const snap = doneSnap.current[pid];
+      return snap != null && snap !== (c.missing || []).join("|");
+    });
+    if (release.length) releaseDone(release);
+    for (const [pid, st] of Object.entries(resolving)) {
+      if (st !== "done" || doneTimers.current[pid]) continue;
+      doneTimers.current[pid] = setTimeout(() => releaseDone([pid]), DONE_HOLD_MS);
+    }
+  }, [allLive, resolving]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { for (const t of Object.values(doneTimers.current)) clearTimeout(t); }, []);
 
   // Typed quantities on a card still in the list, or a move going through,
   // are a job in hand — see Transfer.jsx's transfer-basket for why this is
@@ -374,10 +551,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const typed = Object.keys(edits).some((k) => live.has(k.split("|")[0]) && !done[k.split("|")[0]]);
     // A solve, an undo or a bulk hide still writing is a job in hand too.
     // (CodeRabbit, PR #640.)
-    const undoBusy = (undoables || []).some((u) => u?.busy);
+    const undoBusy = Object.values(undoUi).some((x) => x?.busy);
     setUpdateBusy("network-transfer", typed || busyPid != null || solveBusy != null || undoBusy || !!bulkBusy || hideBusy != null);
     return () => setUpdateBusy("network-transfer", false);
-  }, [cards, edits, busyPid, done, solveBusy, undoables, bulkBusy, hideBusy]);
+  }, [cards, edits, busyPid, done, solving, undoUi, bulkBusy, hideBusy]);
   // Selection reconciled against the RENDERED list (`cards`, not the allCards
   // prop): a selected card that resolves out mid-select — or that the
   // standalone-fallback path computed locally, where allCards is null — must
@@ -439,19 +616,27 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // exists to prevent. solvePlan.js's own header called this the "one mirror
   // gap that lives elsewhere" back when the cards list was clothing-only; with
   // perfume admitted, "elsewhere" is here. Clothing is byte-for-byte unchanged.
-  const runFor = (pid) => {
-    const ruleEligible = isClothing(byId.get(pid));
+  const runFor = (pid) => runWith(pid, targetRows, catalogSizes(pid));
+  // `targets` and `sizes` are runFor's own for every caller but one: a shop
+  // that FOLLOWS another's policy asks what that shop's policy answers
+  // (followedKeep below), with that shop's switch-off rows left out.
+  const runWith = (pid, targets, sizes, { rules = true } = {}) => {
+    const ruleEligible = rules && isClothing(byId.get(pid));
     return resolvedRun({
       std: ruleEligible ? stdRun : {}, subRun: ruleEligible ? subRun : undefined,
-      subcategory: byId.get(pid)?.subcategory, sizes: catalogSizes(pid),
-      targets: targetRows, pid, ruleBasedTargets: pcfg?.ruleBasedTargets,
+      subcategory: byId.get(pid)?.subcategory, sizes,
+      targets, pid, ruleBasedTargets: pcfg?.ruleBasedTargets,
       // CATEGORY POLICY (2026-08-13): the engine's standing owner-armed source,
       // between the rules and the explicit rows — a mapped category (perfume)
       // is solvable with NO row, exactly as the engine will refill it. Rides
       // the same config subscription as every other switch on this screen.
       // unitsAnywhere feeds the per-size dead-size test from the same decoded
       // allStock map the coverage estimate reads.
-      categoryPolicy: pcfg?.categoryPolicy, categoryKey: byId.get(pid)?.categoryKey,
+      // The EFFECTIVE key (trimmed; legacy sneaker → "sneakers") and the
+      // policy groups — the engine's own resolution (policyCategoryKey +
+      // effectivePolicyFor), so a padded or grouped key cannot grey a card
+      // the engine is refilling. (Junid, 20 Nov 2026 — solvePlan.js entryFor.)
+      categoryPolicy: pcfg?.categoryPolicy, policyGroups: pcfg?.policyGroups, categoryKey: effectiveCategoryKey(byId.get(pid)),
       unitsAnywhere: (sz) => Object.keys(allStock || {}).reduce((t, loc) => t + qtyAt(loc, pid, sz), 0),
     });
   };
@@ -484,14 +669,98 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const leg = divisionPolicy?.shopOnly;
     return leg ? (isDivisionOneSize(byId.get(card.pid)) ? leg.oneSize : leg.perSize) : null;
   };
+  // PINE FOLLOWS TROPHY (policyFollow.js; Junid, 22 Nov 2026): what the shop a
+  // division shop follows keeps of this size — its rows above zero, its
+  // category policy, its size run — or null where that shop has no policy for
+  // it (the division's own keep then stands). The engine's own answer
+  // (refill-engine.cjs resolveTarget → followedTarget), mirrored on the run
+  // map this screen already builds.
+  // POLICIES ARE UNIVERSAL (Junid, 24 Nov 2026): Trophy first, Marathon PE
+  // where Trophy has no policy — per category (policyFollow.js followOrder).
+  const followedAnswer = (card, st, sz) => {
+    const chain = divisionCard(card, st) ? policyFollowChain(cfg, st) : [];
+    if (!chain.length) return null;
+    const catLocs = categoryPolicyLocs(pcfg?.categoryPolicy, effectiveCategoryKey(byId.get(card.pid)), pcfg?.policyGroups);
+    const sizes = centralFedSizes(byId.get(card.pid));
+    // The engine applies the size run and the subcategory rule only to a size
+    // the product's catalogue DECLARES (resolveTarget: productSizes). A product
+    // declaring none is answered "_" here, so for it only the category policy
+    // and rows count — never Trophy's subcategory run.
+    const declared = (byId.get(card.pid)?.sizes || []).map(String).includes(String(sz));
+    for (const leader of followOrder(chain, (loc) => catLocs.includes(loc))) {
+      const rows = followRows(targetRows?.[leader]?.[card.pid]);
+      const rowMap = { [leader]: rows ? { [card.pid]: rows } : {} };
+      const run = runWith(card.pid, rowMap, sizes, { rules: declared })[leader] || {};
+      const t = run[String(sz).toUpperCase()];
+      if (typeof t === "number") return { target: t, leader };
+    }
+    return null;
+  };
+  const followedKeep = (card, st, sz) => { const a = followedAnswer(card, st, sz); return a ? a.target : null; };
   // The run a store's lines are planned from: the policy run, with a
   // central-fed store's row replaced by N per declared size.
   // An explicit /stock_targets row for the size wins (0 = excluded) — the
-  // engine's own precedence (resolveTarget: explicit row before central-fed).
+  // engine's own precedence (resolveTarget: explicit row, then the followed
+  // policy, then the division's keep).
   const cfTargetAt = (card, st, sz) => {
+    // A category the shop NEVER keeps (Concrete: perfume) keeps nothing, above
+    // every row and policy — the engine's own first gate (resolveTarget).
+    if (divisionNeverKeeps(st, byId.get(card.pid))) return 0;
     const row = targetRows?.[st]?.[card.pid]?.[encodeSizeKey(sz)];
     if (row && typeof row.target === "number") return row.target;
+    const followed = followedKeep(card, st, sz);
+    if (followed !== null) return followed;
     return divisionCard(card, st) ? divisionShopKeep(card) : centralFedPerSize(cfg, network, st);
+  };
+  // "Marathon Pine keeps this in the shop: …" — the numbers the shop will keep,
+  // size by size when they differ, and whose policy they are.
+  const cfKeepLine = (card, st) => {
+    const sizes = centralFedSizes(byId.get(card.pid));
+    const keeps = sizes.map((sz) => [sz, cfTargetAt(card, st, sz)]);
+    const leader = sizes.map((sz) => followedAnswer(card, st, sz)).find(Boolean)?.leader || null;
+    const same = keeps.every(([, n]) => n === keeps[0][1]);
+    const numbers = same
+      ? `${keeps[0][1]} ${sizes[0] === "_" ? "per design" : "of every size"}`
+      : keeps.map(([sz, n]) => `${sizeLabel(sz)}×${n}`).join(" · ");
+    return `${LOC_LABEL[st]} keeps this in the shop${leader ? `, the same as ${LOC_LABEL[leader] || leader}` : ""}: ${numbers}, refilled straight from Central.`;
+  };
+  // Why a central-fed shop has nothing to solve for this card, or null when a
+  // size can be solved there (actionReasons.centralFedNoPlanReason).
+  const cfNoPlanWhy = (card, st) => {
+    if (!targetsReady || !cfAt(card, st)) return null;
+    // Units already requested for this shop, when the panel has read the
+    // engine's open requests for the product (it reads them on opening).
+    const locks = openLocks[card.pid]?.[st];
+    const onTheWay = locks && typeof locks === "object"
+      ? Object.values(locks).reduce((t, l) => t + (l && typeof l === "object" ? Math.max(Number(l.qty) || 1, 1) : 0), 0) : 0;
+    const r = centralFedNoPlanReason({
+      storeLabel: LOC_LABEL[st], paused: cfg?.pausedLocations?.[st] === true, onTheWay,
+      sizes: centralFedSizes(byId.get(card.pid)).map((sz) => {
+        const c = allStock?.[st]?.[card.pid]?.[decodedCellKey(sz)];
+        const row = targetRows?.[st]?.[card.pid]?.[encodeSizeKey(sz)];
+        return { size: sz, target: cfTargetAt(card, st, sz), switchedOff: !!row && typeof row.target === "number" && row.target <= 0,
+          hasCell: c != null, trusted: c != null && cellTrusted(c), qty: Number(c?.qty) || 0 };
+      }),
+    });
+    return r ? r.text : null;
+  };
+  // Sizes can be solved but nothing is being sent: where Central's stock is.
+  const cfNothingSentWhy = (card, st, sizes, free) => {
+    const node = allStock?.[CENTRAL]?.[card.pid] || {};
+    const held = Object.keys(node).filter((k) => Number(node[k]?.qty) > 0);
+    const keys = new Set((sizes || []).map((sz) => decodedCellKey(sz)));
+    // Listed in the catalogue but outside this solve (carried / switched off)
+    // vs not listed at all: only the second is a catalogue problem.
+    const listed = new Set(centralFedSizes(byId.get(card.pid)).map((sz) => decodedCellKey(sz)));
+    const rest = held.filter((k) => !keys.has(k));
+    return centralFedNothingSentReason({
+      storeLabel: LOC_LABEL[st],
+      centralUnits: held.reduce((t, k) => t + Number(node[k].qty), 0),
+      inSizes: (sizes || []).reduce((t, sz) => t + qtyAt(CENTRAL, card.pid, sz), 0),
+      free: (sizes || []).reduce((t, sz) => t + (Number(free(sz)) || 0), 0),
+      otherSizes: rest.filter((k) => !listed.has(k)).map(sizeLabel),
+      excludedSizes: rest.filter((k) => listed.has(k)).map(sizeLabel),
+    });
   };
   const runAt = (card, stores) => {
     const run = runFor(card.pid);
@@ -574,7 +843,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // sentence that says why and cannot be ticked (solveSections.solveBlocks).
   // The card's division — the list it is on — is the only block offered.
   const divisionOf = (card) => cardSection(card, network);
-  const blocksFor = (card) => solveBlocks({ network, sections: [divisionOf(card)].filter((s) => mySections.includes(s)), source: card.source, product: byId.get(card.pid), productId: card.pid, engineConfig: cfg });
+  // DESTINATIONS FOLLOW THE LIST (Junid, 22 Nov 2026 — divisionDestinations.js):
+  // a card offers its OWN division's shops and nothing else. "Missing from
+  // Concrete" offers Pine and Concrete; "Missing from Marathon" offers
+  // Marathon's shops. (A Concrete-only row used to offer both divisions.)
+  const solveSectionsFor = (card) => [divisionOf(card)].filter((x) => mySections.includes(x));
+  const blocksFor = (card) => solveBlocks({ network, sections: solveSectionsFor(card), source: card.source, product: byId.get(card.pid), productId: card.pid, engineConfig: cfg });
   const tickableStores = (card) => blocksFor(card).flatMap((b) => b.stores).filter((st) => !st.blocked).map((st) => st.id);
   // HUB PRESENCE (the hard precondition — firstBatchCore.hub2PresenceSignals),
   // judged at the STORE'S OWN hub. From the /stock node this screen already
@@ -637,9 +911,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const raw = solveTicks[card.pid] ?? [defaultStoreFor(card)].filter(Boolean);
     return allocationOrder({ network, ticked: raw, tickable: (st) => tickable.has(st) });
   };
+  // PINE AND CONCRETE ARE ONE OR THE OTHER: on the Concrete list a tap is a
+  // switch (the tapped shop on, the other off). Marathon's shops tick freely,
+  // as they always have. A tap always changes the selection.
   const toggleTick = (card, store) => {
     const cur = ticksFor(card);
-    setSolveTicks((prev) => ({ ...prev, [card.pid]: cur.includes(store) ? cur.filter((x) => x !== store) : [...cur, store] }));
+    setSolveTicks((prev) => ({ ...prev, [card.pid]: switchShopPick(cur, store, { exclusive: shopsAreExclusive(network, divisionOf(card)) }) }));
   };
 
   // CENTRAL'S OPEN RESERVATIONS (2026-09-17, firstBatchCore.js
@@ -750,28 +1027,53 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     });
   };
 
-  const solve = async (card) => {
-    const ticks = ticksFor(card);
-    if (solveBusy || !canAct || !ticks.length) return;
+  // `only` (Junid, 22 Nov 2026 — one-tap solve): the Missing Products card
+  // names its ONE shop itself, so there is no panel and no tick state. The
+  // shop goes through the same tickable filter and every gate below; what is
+  // planned and written for it is exactly what a panel confirm with that one
+  // shop ticked writes. The outcome is also RETURNED ({ ok, msg, rows, units })
+  // so the caller can say it in a toast — the card no longer carries it.
+  // opts (the one-tap Missing Products screen, Junid 24 Nov 2026):
+  //   expect        { [store]: { units } } — what the card showed; a plan
+  //                 that would send a different number is refused, nothing written
+  //   liveRequests  this product's request records, read live a moment ago —
+  //                 Central's reservations are planned from THEM, the same
+  //                 records the card was drawn from (a solve-raised request has
+  //                 no engine lock, so the lock table alone under-reserves)
+  const solve = async (card, only = null, opts = {}) => {
+    const ticks = only ? allocationOrder({ network, ticked: only, tickable: (st) => tickableStores(card).includes(st) }) : ticksFor(card);
+    if (solving[card.pid] || resolving[card.pid] || !canAct || !ticks.length) {
+      return { ok: false, msg: !canAct ? "You need a stock role to solve." : !ticks.length ? "That shop cannot take this product." : "Already being solved." };
+    }
     // ONE DIVISION PER SOLVE — the list's own. A tick from the other division
     // (or a hub across the wall) is refused here, whatever the panel offered.
     const division = divisionOf(card);
-    const stray = ticks.find((st) => sectionOfStore(st) !== division || (!cfAt(card, st) && sectionOfStore(hubOf(card, st) || st) !== division));
+    // (Since 22 Nov 2026 every row offers its own division's shops only.)
+    const allowed = new Set(solveSectionsFor(card));
+    // THE SECOND GATE (divisionDestinations.js): a shop outside this list's
+    // division, or Pine and Concrete together, is refused here whatever a
+    // screen — a stale one included — offered.
+    const wrong = destinationProblem({ network, section: division, destinations: ticks, kind: "product" });
+    if (wrong) {
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: ticks[0], sizes: [], msg: `Not solved — ${wrong}` } }));
+      return { ok: false, msg: `Not solved — ${wrong}` };
+    }
+    const stray = ticks.find((st) => !allowed.has(sectionOfStore(st)) || (!cfAt(card, st) && sectionOfStore(hubOf(card, st) || st) !== sectionOfStore(st)));
     if (stray) {
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: stray, sizes: [], msg: `Not solved — ${LOC_LABEL[stray] || stray} is not in ${sectionName(network, division)}. Solve from the "Missing from ${sectionName(network, sectionOfStore(stray))}" list instead.` } }));
-      return;
+      return { ok: false, msg: `Not solved — ${LOC_LABEL[stray] || stray} is not in ${sectionName(network, division)}.` };
     }
     // Never a hub seed for a sneaker or slide (see `offTab` in the render).
     if (isSneakerOrSlide(byId.get(card.pid))) {
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: ticks[0], sizes: [], msg: "Not seeded — sneakers and slides are refilled from the Sneakers tab." } }));
-      return;
+      return { ok: false, msg: "Not seeded — sneakers and slides are refilled from the Sneakers tab." };
     }
     // Unreachable while the confirm button is gated on the same stores — but a
     // bare `return` here is a dead button by another name, so it speaks.
     const empty = ticks.find((st) => !qualifyingSizes(card, st).length);
     if (empty) {
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: empty, sizes: [], msg: `Nothing to seed at ${LOC_LABEL[empty]} — no refill policy covers this product there.` } }));
-      return;
+      return { ok: false, msg: `Nothing to seed at ${LOC_LABEL[empty]} — no refill policy covers this product there.` };
     }
     // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17). For an in-scope
     // store — the card Central-stranded, the shop routed via its hub, any
@@ -782,7 +1084,29 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // old path unchanged. Everything else (hub-stranded, a shop not routed via
     // its hub) is byte-for-byte the old Solve: qty-0 seeds, nothing more.
     const onPath = ticks.some((st) => eligibleAt(card, st, openLocks[card.pid]));
-    setSolveBusy(card.pid);
+    // ── FAST SOLVE (Junid, 20 Nov 2026) ──────────────────────────────────────
+    // MEASURED before (scripts/diag + solveLatency.harness.test.jsx, live
+    // RTTs ~180 ms): the row waited on FOUR sequential read waves and the
+    // write (~0.9 s), then on the offline mirror's change feed bringing the
+    // seeds back to /stock (~1.2–1.6 s more; up to a minute if the live signal
+    // is missed) before it left the list. Now:
+    //   1. OPTIMISTIC — the row resolves the moment Junid taps (resolving
+    //      "pending"); the panel closes. Nothing below blocks the screen.
+    //   2. TWO read waves, not four — the live lock table, every /stock row
+    //      and every prior-lock snapshot this confirm needs are read IN
+    //      PARALLEL (they never depended on each other); only the lock
+    //      table's own request lookups follow.
+    //   3. The ONE atomic multi-path update, unchanged — then echoed into the
+    //      mirror (notePendingUpdate) so the live list drops the card too.
+    //   4. A failure brings the row back with the reason in red; nothing was
+    //      written (atomic).
+    // What is written is byte-for-byte what was written before: the same
+    // reads feed the same builders in the same order.
+    setSolving((m) => ({ ...m, [card.pid]: true }));
+    doneSnap.current[card.pid] = (card.missing || []).join("|");
+    setResolving((m) => ({ ...m, [card.pid]: "pending" }));
+    setSolvePid((cur) => (cur === card.pid ? null : cur));
+    setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; });
     const uid = auth.currentUser?.uid || null;
     const now = serverNowIso();
     // A Solve seed is TRUSTED from the start (stockTrust.js): Solve is the act
@@ -790,30 +1114,73 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // "solved products only" location before its first batch has even landed.
     const seedCell = (loc) => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: now, updatedBy: uid, ...(trustedCellsOnly(network, loc) ? trustStamp("solve", now) : {}) });
     const many = ticks.length > 1;
+    let outcome;   // what the caller is told (the one-tap toast)
     try {
-      // LIVE lock table first (one scoped read per routed location): the
-      // split is sized from Central's free at the moment of the write, never
-      // from the panel's earlier read. A size the reservations leave nothing
-      // of takes the normal path — and if that is every size, the whole
-      // Solve does (the seed-only branch below), exactly as when Central had
-      // none. An unreadable lock table is an UNKNOWN hub presence: the guard
-      // fails closed and this Solve is the old one (hub + shop seeded).
-      let openNow = null;
-      if (onPath) { try { openNow = await readOpenLocks(card.pid); } catch { openNow = null; } }
-      const plan = planFor(card, ticks, openNow || {}, { firstBatchOk: onPath && !!openNow });
-      const baseSolveId = solveIdFor(card.pid, serverNowMs());
-      // /stock rows already read in this confirm (two shops share their hub).
+      // Every location this confirm can touch: each ticked store and the hub
+      // behind it (a central-fed store has none).
+      const touchLocs = [...new Set(ticks.flatMap((st) => (cfAt(card, st) ? [st] : [hubOf(card, st), st])).filter(Boolean))];
+      // /stock rows and the solve-time lock snapshots, in parallel with the
+      // LIVE lock table (one scoped read per routed location): the split is
+      // sized from Central's free at the moment of the write, never from the
+      // panel's earlier read. A size the reservations leave nothing of takes
+      // the normal path — and if that is every size, the whole Solve does
+      // (the seed-only branch below), exactly as when Central had none. An
+      // unreadable lock table is an UNKNOWN hub presence: the guard fails
+      // closed and this Solve is the old one (hub + shop seeded).
       const rows = {};
-      const rowOf = async (loc) => {
-        if (!(loc in rows)) rows[loc] = (await get(ref(database, `stock/${loc}/${card.pid}`))).val() || {};
-        return rows[loc];
-      };
+      const priorRaw = {};
+      let openNow = null;
+      await Promise.all([
+        onPath ? readOpenLocks(card.pid).then((v) => { openNow = v; }, () => { openNow = null; }) : null,
+        ...touchLocs.map(async (loc) => { rows[loc] = (await get(ref(database, `stock/${loc}/${card.pid}`))).val() || {}; }),
+        // The engine locks that exist BEFORE this solve, snapshotted into the
+        // undo record. Undo blocks on any lock NOT in this snapshot — identity
+        // comparison, never clocks: a lock's createdAt is its scan's START
+        // time, so a scan spanning the solve would timestamp-classify as
+        // "before" while being causally after (substitute pair, PR #361).
+        ...touchLocs.map(async (loc) => { priorRaw[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val(); }),
+      ]);
+      const rowOf = (loc) => rows[loc] || {};
+      let openForPlan = openNow || {};
+      if (Array.isArray(opts.liveRequests)) {
+        // Reservations from the request records; the presence test keeps the
+        // lock table's hub rows (non-enumerable, as readOpenLocks sets them).
+        const fromRequests = { ...(openRequestsByProduct(opts.liveRequests).get(card.pid) || {}) };
+        for (const k of ["hubRaw", "heldByHub", "openHubRequests"]) {
+          if (openNow && openNow[k] !== undefined) Object.defineProperty(fromRequests, k, { value: openNow[k], enumerable: false });
+        }
+        openForPlan = fromRequests;
+      }
+      const plan = planFor(card, ticks, openForPlan, { firstBatchOk: onPath && !!openNow });
+      // SOLVE SENDS WHAT THE CARD SHOWS: a different number of units for any
+      // shop is refused before anything is written.
+      if (opts.expect) {
+        const sizesOf = (l) => (l.got || []).map((g) => String(g.size)).sort().join("|");
+        const off = plan.lines.find((l) => {
+          const e = opts.expect[l.store];
+          if (!e) return false;
+          if (Number(l.units || 0) !== Number(e.units || 0)) return true;
+          // a shop fed straight from Central: the very sizes the card named
+          return !l.hub && !e.joint && Array.isArray(l.got) && sizesOf(l) !== (e.sizes || []).map(String).sort().join("|");
+        });
+        if (off || plan.lines.length !== Object.keys(opts.expect).length) {
+          const msg = off
+            ? `Solve would now send ${off.units || 0} to ${LOC_LABEL[off.store] || off.store} (the card showed ${opts.expect[off.store].units}) — nothing sent. Check the card and Solve again.`
+            : "The numbers changed while you were looking — nothing sent. Check the card and Solve again.";
+          setSolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
+          setResolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
+          return { ok: false, stale: true, msg };
+        }
+      }
+      const baseSolveId = solveIdFor(card.pid, serverNowMs());
       const parts = [];      // each store's part of the ONE update
       const entries = [];    // each store's undo record
       const msgs = [];
       for (const line of plan.lines) {
         const { store, hub, sizes } = line;
-        const key = many ? `${card.pid}_${now}_${store}` : `${card.pid}_${now}`;
+        // The row's key in the Solved history (chronological, and unique per
+        // store, so two shops of one confirm are two rows).
+        const key = newSolvedKey(serverNowMs());
         const direct = cfAt(card, store);
         // CENTRAL-FED with nothing Central can send: nothing to write — the
         // sizes stay on "Missing from" until Central has them.
@@ -826,7 +1193,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           const existing = {};
           const priorOpen = {};
           for (const loc of locs) {
-            existing[loc] = await rowOf(loc);
+            existing[loc] = rowOf(loc);
             priorOpen[loc] = openNow[loc] ?? null;
           }
           // One solve id per store: the server stamps it on that shop's lock
@@ -854,22 +1221,17 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         }
         const locs = seedLocations(card.source, store, hub);
         const updates = {};
-        // The engine locks that exist BEFORE this solve, snapshotted into the
-        // undo record. Undo blocks on any lock NOT in this snapshot — identity
-        // comparison, never clocks: a lock's createdAt is its scan's START
-        // time, so a scan spanning the solve would timestamp-classify as
-        // "before" while being causally after (substitute pair, PR #361).
         const priorOpen = {};
         for (const loc of locs) {
-          const existing = await rowOf(loc);
-          priorOpen[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val();
+          const existing = rowOf(loc);
+          priorOpen[loc] = priorRaw[loc] ?? null;
           for (const sz of sizes) {
             if (existing[stockSizeKey(sz)] === undefined) updates[stockCellPath(loc, card.pid, sz)] = seedCell(loc);
           }
         }
         parts.push(updates);
         const existingRows = {};
-        for (const loc of locs) existingRows[loc] = await rowOf(loc);
+        for (const loc of locs) existingRows[loc] = rowOf(loc);
         parts.push(trustExistingEmptyUpdates({ pid: card.pid, locs, sizes, existing: existingRows, nowIso: now, uid, isSolvedLoc: (l) => trustedCellsOnly(network, l), cellTrusted }));
         // Reversible while safe — recorded with the EXACT paths written, so
         // undo can never touch a cell the solve did not create (a cell that
@@ -879,21 +1241,47 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       }
       // ONE atomic update for the whole confirm: every store's seeds and
       // requests land together or not at all (the old Solve's contract — a
-      // failure leaves NOTHING written and the row stays for a clean retry).
+      // failure leaves NOTHING written and the row comes back for a clean retry).
       const updates = mergeSolveUpdates(parts);
       if (Object.keys(updates).length) {
         await update(ref(database), updates);
-        setUndoables((l) => [...entries, ...l]);
+        // THE WRITE HAS LANDED. Nothing below may report "nothing changed":
+        // a retry would raise the first batch twice (Sonnet review, PR #952 S4).
+        setResolving((m) => ({ ...m, [card.pid]: "done" }));
+        // The undo records exist from the moment the write lands — before
+        // the history entry is built, so nothing below can lose the Undo.
+        outcome = { ok: true, msg: msgs.join(" "), rows: entries.map((e) => ({ ...e, batch: baseSolveId, saved: false })), units: plan.lines.reduce((t, l) => t + (l.units || 0), 0) };
+        try {
+          // The offline mirror shows this device its own write at once.
+          try { notePendingUpdate(updates); } catch { /* the echo is a courtesy */ }
+          // Into the Solved history — AFTER the write landed (solvedLog.js).
+          const at = serverNowMs();
+          const msg = msgs.join(" ");
+          const solvedRows = entries.map((e) => {
+            const log = buildSolveLogEntry(e, { at, by: uid, byName: actorName, photo: card.photo, msg, division });
+            return { ...normalizeSolvedEntry(e.key, log), batch: baseSolveId, log };
+          });
+          outcome.rows = solvedRows;
+          await recordSolved(solvedRows);
+        } catch { /* recordSolved already keeps the row for this visit and flags it unsaved */ }
+      } else {
+        // Nothing to write (a central-fed store Central cannot serve): the
+        // row comes back and says so.
+        setResolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
+        outcome = { ok: false, msg: msgs.join(" ") || "Nothing to send." };
       }
       setSolved((d) => ({ ...d, [card.pid]: { ok: true, store: ticks[0], sizes: plan.lines[0]?.sizes || [], msg: msgs.join(" ") } }));
     } catch (e) {
-      // Nothing was written (atomic). Collapse the panel and surface the error on
-      // the row so its Solve button reads "Solve" again — one click re-opens the
+      // Nothing was written (atomic). The row comes back with the error on it
+      // so its Solve button reads "Solve" again — one click re-opens the
       // confirm (which clears this) for a clean retry.
+      setResolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
       setSolvePid((cur) => (cur === card.pid ? null : cur));
-      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: ticks[0], sizes: [], msg: `Couldn't seed — nothing changed, retry. (${e?.message || "error"})` } }));
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: ticks[0], sizes: [], msg: `Couldn't solve ${card.name} — nothing changed, retry. (${e?.message || "error"})` } }));
+      outcome = { ok: false, msg: `Couldn't solve ${card.name} — nothing changed, retry. (${e?.message || "error"})` };
     }
-    setSolveBusy(null);
+    setSolving((m) => { const n = { ...m }; delete n[card.pid]; return n; });
+    return outcome;
   };
 
   // MOVE MANUALLY — by hand, inside the wall. From Central: the hubs and
@@ -902,9 +1290,17 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // division's stores. A location with its switches off can be sent to by hand.
   const destOptions = (card) => {
     const p = byId.get(card.pid);
-    if (!isCentral(card.source, network)) return storeIds(network, { section: sectionOfStore(card.source) });
     const home = divisionOf(card);
-    return mySections.includes(home) ? [...solveHubsOfSection(network, home, p, card.pid), ...storeIds(network, { section: home })] : [];
+    if (!mySections.includes(home)) return [];
+    // From a hub: that hub's own division's shops — and only on that
+    // division's list (a Concrete-list card can sit in a Marathon hub; it is
+    // not moved to Marathon's shops from here).
+    if (!isCentral(card.source, network)) return sectionOfStore(card.source) === home ? storeIds(network, { section: home }) : [];
+    // From Central: the list's own shops, and its hubs — except on the
+    // Concrete list, where everything that is not a sneaker goes to Pine or
+    // Concrete and never to a hub (Junid, 22 Nov 2026).
+    const hubs = shopsAreExclusive(network, home) ? [] : solveHubsOfSection(network, home, p, card.pid);
+    return [...hubs, ...storeIds(network, { section: home })];
   };
   // The stored choice counts only while it is one of THIS list's options — a
   // choice made on the other division's list falls back to the first option.
@@ -941,35 +1337,102 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       if (res.ok) moved += qty; else failed.push(`${s.size}: ${res.reason}`);
     }
     setDone((d) => ({ ...d, [card.pid]: { moved, dest, failed } }));
+    // Close the panel so the card shows what moved and what failed (the
+    // result is the card's notice, which an open panel covers).
+    setOpenPid((cur) => (cur === card.pid ? null : cur));
     setBusyPid(null);
   };
 
-  // The undo strip renders in BOTH branches — solving the last card empties
-  // the list, and that is exactly when its undo must not vanish.
-  const undoStrip = undoables.map((u) => (
-    <div key={u.key} style={{ ...GLASS, padding: "9px 12px", marginBottom: 8, fontSize: 12.5 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ flex: 1, color: "rgba(255,255,255,.75)" }}>
-          {u.firstBatch
-            ? <>Solved — <b style={{ color: "#fff" }}>{u.name}</b>: {u.firstBatch.units} unit{u.firstBatch.units === 1 ? "" : "s"} requested from Central for {LOC_LABEL[u.store]} ({LOC_LABEL[u.locs[0]]}'s batch follows)</>
-            : <>Solved — <b style={{ color: "#fff" }}>{u.name}</b> now carried at {LOC_LABEL[u.store]}{u.locs.length > 1 && u.locs[0] !== u.store ? ` (via ${LOC_LABEL[u.locs[0]]})` : ""}</>}
-        </span>
-        {canAct && (
-          <button onClick={() => undoSolve(u)} disabled={u.busy}
-                  style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.4)", color: AMBER, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>
-            {u.busy ? "…" : "Undo"}
-          </button>
-        )}
+  // ── ONE ROW OF THE SOLVED HISTORY — where it went, who, when, and Undo ─────
+  // "Where it went", lower-case so it reads after the name: "…: 4 units
+  // requested from Central for Marathon PE" / "… now carried at Trophy".
+  const whereText = (u) => {
+    if (u.kind === "concrete") return ": made Concrete-only — moved to the Concrete division's list";
+    if (u.firstBatch) return `: ${u.firstBatch.units} unit${u.firstBatch.units === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[u.store] || u.store}${u.locs[0] && u.locs[0] !== u.store ? ` (${LOC_LABEL[u.locs[0]] || u.locs[0]}'s batch follows)` : ""}`;
+    return ` now carried at ${LOC_LABEL[u.store] || u.store}${u.locs.length > 1 && u.locs[0] !== u.store ? ` (via ${LOC_LABEL[u.locs[0]] || u.locs[0]})` : ""}`;
+  };
+  const whenText = (at) => {
+    if (!at) return "";
+    const d = new Date(at);
+    return d.toLocaleString("en-ZA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  };
+  const canUndo = (u) => (u.kind === "concrete" ? canMarkConcrete : canAct);
+  const solvedRow = (u, { compact = false } = {}) => {
+    const ui = undoUi[u.key] || {};
+    const p = byId.get(u.pid);
+    const undone = u.status === "undone";
+    return (
+      <div key={u.key} data-solved-key={u.key} style={{ ...GLASS, padding: "9px 12px", marginBottom: 8, fontSize: 12.5, opacity: undone ? 0.55 : 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {!compact && (
+            <div style={{ width: 44, height: 44, borderRadius: 9, overflow: "hidden", flexShrink: 0, background: "rgba(60,110,255,.1)" }}>
+              {(p || u.photo) && <PrimaryPhoto product={p || { id: u.pid, photoUrl: u.photo }} productId={u.pid} snapshot={u.photo || null} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+            </div>
+          )}
+          <span style={{ flex: 1, minWidth: 0, color: "rgba(255,255,255,.75)" }}>
+            {u.kind === "concrete" ? "Concrete — " : "Solved — "}<b style={{ color: "#fff" }}>{u.name}</b>{whereText(u)}
+            {!compact && <span style={{ display: "block", fontSize: 11, color: GRAY, marginTop: 2 }}>{[u.byName, whenText(u.at)].filter(Boolean).join(" · ")}{undone ? " · Undone" : ""}</span>}
+          </span>
+          {!undone && canUndo(u) && (
+            <button onClick={() => undoEntry(u)} disabled={!!ui.busy}
+                    style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.4)", color: AMBER, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: FONT, flexShrink: 0 }}>
+              {ui.busy ? "…" : "Undo"}
+            </button>
+          )}
+        </div>
+        {/* The solve's own sentence — what Central does next, what the engine
+            will refill (it used to sit on the row, which now leaves at once). */}
+        {u.msg && u.kind !== "concrete" && <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginTop: 6 }}>{u.msg}</div>}
+        {ui.err && <div style={{ fontSize: 11.5, color: RED, lineHeight: 1.4, marginTop: 6 }}>{ui.err}</div>}
+        {u.saved === false && <div style={{ fontSize: 11, color: AMBER, lineHeight: 1.4, marginTop: 6 }}>Not saved to the Solved history ({u.saveErr || "write refused"}) — Undo works until you leave this screen.</div>}
       </div>
-      {u.err && <div style={{ fontSize: 11.5, color: RED, lineHeight: 1.4, marginTop: 6 }}>{u.err}</div>}
-    </div>
-  ));
+    );
+  };
 
-  // WHICH SECTION'S LIST — only when this viewer has more than one to look at.
-  const sectionSwitch = sectionChoices.length > 1 ? (
+  // THE LAST ACTION — the only undo on the main list (one confirm may be
+  // several stores, so it is every row of the newest batch still standing).
+  // Everything older lives in the Solved tab. It renders in BOTH branches —
+  // solving the last card empties the list, and that is exactly when its undo
+  // must not vanish.
+  const lastBatch = solvedSession[0]?.batch;
+  const lastRows = lastBatch ? solvedSession.filter((u) => u.batch === lastBatch && u.status !== "undone") : [];
+  // Still saving (a slow or offline line): never a silently missing card.
+  const pendingNames = Object.keys(resolving).filter((pid) => resolving[pid] === "pending").map((pid) => byId.get(pid)?.name || pid);
+  const savingLine = pendingNames.length ? (
+    <div style={{ fontSize: 11.5, color: GRAY, margin: "0 2px 8px" }}>Saving {pendingNames.join(", ")}… it comes back here with the reason if the save fails.</div>
+  ) : null;
+  const undoStrip = lastRows.length || savingLine ? (
+    <div>
+      {savingLine}
+      {lastRows.map((u) => solvedRow(u, { compact: true }))}
+      {onOpenSolved && lastRows.length > 0 && (
+        <button onClick={onOpenSolved} style={{ background: "none", border: "none", color: BLUE_L, fontSize: 11.5, fontWeight: 600, cursor: "pointer", padding: "0 2px 10px", fontFamily: FONT }}>
+          Everything solved → Queued & solved
+        </button>
+      )}
+    </div>
+  ) : null;
+
+  // ── THE SOLVED TAB ─────────────────────────────────────────────────────────
+  const solvedView = (
+      <>
+        <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginBottom: 10 }}>
+          Everything solved or marked Concrete from Missing Products, newest first. Undo reverses exactly what that action wrote.
+        </div>
+        {solvedLog.error && <div style={{ fontSize: 11.5, color: AMBER, marginBottom: 8 }}>Couldn't read the saved history ({solvedLog.error}) — showing this visit's actions only.</div>}
+        {!solvedAll.length && <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>{solvedLog.settled ? "Nothing solved yet." : "Loading…"}</div>}
+        {solvedAll.map((u) => solvedRow(u))}
+        {solvedLog.hasMore && (
+          <button onClick={solvedLog.loadMore} style={{ ...destChip(false), display: "block", margin: "6px auto 0" }}>Show older</button>
+        )}
+      </>
+  );
+
+  // WHICH DIVISION'S LIST — only for the stand-alone list (the screen has its own).
+  const sectionSwitch = !sectionProp && sectionChoices.length > 1 ? (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
       {sectionChoices.map((sec) => (
-        <button key={sec} onClick={() => { setSectionPick(sec); setOpenPid(null); setSolvePid(null); setHidePid(null); exitSelect(); }}
+        <button key={sec} data-division={sec} onClick={() => { setSectionPick(sec); setOpenPid(null); setSolvePid(null); setHidePid(null); exitSelect(); }}
                 style={destChip((listSection || HOME_SECTION) === sec)}>
           Missing from {sectionName(network, sec)}
         </button>
@@ -977,68 +1440,42 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     </div>
   ) : null;
 
-  if (!cards.length) {
-    return <>
-      {undoStrip}
-      {sectionSwitch}
-      <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>No stranded products — everything upstream also exists in at least one shop.</div>
-    </>;
-  }
+  const viewOnly = !canAct ? <div style={{ color: AMBER, fontSize: 12.5, marginBottom: 10 }}>You need a stock role to solve or move — viewing only.</div> : null;
 
-  return (
-    <>
-      {!canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to transfer — viewing only.</div>}
-      {undoStrip}
-      {sectionSwitch}
-      {canAct && (
-        <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", justifyContent: "flex-end" }}>
-          {selectMode ? (
-            <>
-              <span style={{ fontSize: 11.5, color: GRAY, marginRight: "auto" }}>{selectedPids.length} marked — tap cards to mark</span>
-              <button onClick={() => setSelected(Object.fromEntries(cards.map((c) => [c.pid, true])))}
-                      style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-                Mark all ({cards.length})
-              </button>
-              <button onClick={exitSelect}
-                      style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-                Cancel
-              </button>
-            </>
-          ) : (
-            <button onClick={() => { setSelectMode(true); setOpenPid(null); setSolvePid(null); setHidePid(null); }}
-                    style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.4)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-              Mark &amp; hide
-            </button>
-          )}
-        </div>
+  // MARK & HIDE — the bar that turns the list into checkboxes.
+  const smallBtn = { background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.12)", color: "rgba(255,255,255,.6)", borderRadius: 10, padding: "9px 12px", minHeight: 40, fontWeight: 600, fontSize: 12.5, cursor: "pointer", fontFamily: FONT };
+  // Shown while marking even if the last card has just gone (another device
+  // solved it) — its Cancel is the way out of the mode.
+  const selectBar = canAct && (cards.length > 0 || selectMode) ? (
+    <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", justifyContent: "flex-end" }}>
+      {selectMode ? (
+        <>
+          <span style={{ fontSize: 12, color: GRAY, marginRight: "auto" }}>{selectedPids.length} marked — tap cards to mark</span>
+          <button data-action="mark-all" onClick={() => setSelected(Object.fromEntries(cards.map((c) => [c.pid, true])))} style={smallBtn}>Mark all ({cards.length})</button>
+          <button data-action="mark-cancel" onClick={exitSelect} style={smallBtn}>Cancel</button>
+        </>
+      ) : (
+        <button data-action="mark-and-hide" onClick={() => { setSelectMode(true); setOpenPid(null); setSolvePid(null); setHidePid(null); }} style={smallBtn}>Mark &amp; hide</button>
       )}
-      {cards.map((card) => {
-        // Select mode: the card IS the checkbox — panels and actions stand
-        // down so a mis-tap can only toggle selection, never move stock.
-        if (selectMode) {
-          const on = !!selected[card.pid];
-          const toggle = () => setSelected((s) => ({ ...s, [card.pid]: !s[card.pid] }));
-          return (
-            <div key={card.pid} role="checkbox" aria-checked={on} tabIndex={0} onClick={toggle}
-                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
-                 style={{ cursor: "pointer" }}>
-              <ProductCard
-                photo={card.photo} name={card.name}
-                badges={<>
-                  <Badge tone={AMBER}>{card.kind.toUpperCase()}</Badge>
-                  <Badge tone={BLUE_L}>{card.units} units at {LOC_LABEL[card.source]}</Badge>
-                </>}
-                right={
-                  <div style={{ width: 26, height: 26, borderRadius: 13, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 14,
-                                border: on ? "1px solid rgba(74,222,128,.6)" : "1px solid rgba(255,255,255,.2)",
-                                background: on ? "rgba(74,222,128,.2)" : "rgba(255,255,255,.03)", color: on ? GREEN : "rgba(255,255,255,.3)" }}>
-                    {on ? "✓" : ""}
-                  </div>
-                }
-              />
-            </div>
-          );
-        }
+    </div>
+  ) : null;
+
+  const nameOfLoc = (l) => LOC_LABEL[l] || l;
+  const metaOf = (pid) => { const p = byId.get(pid); return [brandOf(p), categoryLabelOf(p, effectiveCategoryKey(p))].join(" · "); };
+  // ── ONE CARD ───────────────────────────────────────────────────────────────
+  const renderCard = (card) => {
+    const product = byId.get(card.pid);
+    const { why, holds } = whyProduct(card, { nameOf: nameOfLoc, central: CENTRAL, division: sectionName(network, divisionOf(card)) });
+    // Select mode: the card IS the checkbox — panels and actions stand down so
+    // a mis-tap can only toggle selection, never move stock.
+    if (selectMode) {
+      const on = !!selected[card.pid];
+      return (
+        <MissingCard key={`product:${card.pid}`} pid={card.pid} name={card.name} product={product} photo={card.photo}
+          meta={metaOf(card.pid)} why={why} holds={holds}
+          select={{ on, toggle: () => setSelected((x) => ({ ...x, [card.pid]: !x[card.pid] })) }} />
+      );
+    }
         const open = openPid === card.pid;
         const result = done[card.pid];
         const dest = chosenDest(card);
@@ -1078,8 +1515,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // path, the confirm waits for the lock read so the estimate shown IS
         // the request written (never a false "2" over a promised 1).
         const confirmBlocked = sOpen ? (
-          (ticks.length ? null : (solveConfirmReason({ canAct, busy: solveBusy === card.pid, sizesInPlan: 1 }) || "Tick at least one store."))
-          || sPlan.lines.map((l) => solveConfirmReason({ canAct, busy: solveBusy === card.pid, sizesInPlan: l.sizes.length, storeLabel: LOC_LABEL[l.store] })).find(Boolean)
+          (ticks.length ? null : (solveConfirmReason({ canAct, busy: !!solving[card.pid], sizesInPlan: 1 }) || "Tick at least one store."))
+          || sPlan.lines.map((l) => solveConfirmReason({ canAct, busy: !!solving[card.pid], sizesInPlan: l.sizes.length, storeLabel: LOC_LABEL[l.store], why: l.sizes.length ? null : cfNoPlanWhy(card, l.store) })).find(Boolean)
           || (sPlan.lines.some((l) => l.split) && !locksReadyFor(card.pid) ? "One moment — checking what Central has already promised…" : null)
         ) : null;
         const anyFirstBatch = !!sPlan && sPlan.lines.some((l) => l.firstBatch);
@@ -1119,56 +1556,34 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           // product with no usable catalogue size "one-size" and told the operator
           // to go and set a target for a size it does not have. (Sonnet, PR #342.)
           oneSize: catalogSizes(card.pid).length > 0 && catalogSizes(card.pid).every((s) => s === "_"),
+          // Nothing solvable at any shop: say what is actually in the way.
+          why: policyAtAnyStore ? null : (tickable.map((st) => cfNoPlanWhy(card, st)).find(Boolean) || null),
         });
-        return (
-          <ProductCard key={card.pid}
-            photo={card.photo} name={card.name}
-            badges={<>
-              <Badge tone={AMBER}>{card.kind.toUpperCase()}</Badge>
-              <Badge tone={BLUE_L}>{card.units} units at {LOC_LABEL[card.source]}</Badge>
-            </>}
-            right={
-              // The action row keeps the card's established language — ONE
-              // green primary (Solve), ONE ghost secondary (Move manually).
-              // Hide is deliberately NOT a third button box: as one it read
-              // as a disabled sibling and crowded the name column (owner
-              // feedback, 2026-08-13). It rides below the row as a small dim
-              // text control — subordinate, but a full-size tap target.
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
-              <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setHidePid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!!solveBlocked}
-                        title={solveBlocked || undefined}
-                        style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: solveBlocked ? "default" : "pointer", opacity: solveBlocked ? 0.4 : 1, fontFamily: FONT }}>
-                  {sOpen ? "Close" : "Solve"}
-                </button>
-                <button onClick={() => { setOpenPid(open ? null : card.pid); setSolvePid(null); setHidePid(null); }}
-                        style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-                  {open ? "Close" : "Move manually"}
-                </button>
-              </div>
-              {canAct && (
-                <button onClick={() => { setHidePid(hOpen ? null : card.pid); setSolvePid(null); setOpenPid(null); }}
-                        /* dim but not small: the visual is a text link, the
-                           HIT AREA is button-sized (CodeRabbit, PR #359 — a
-                           1px-padded target on a warehouse tablet is a miss) */
-                        style={{ background: "none", border: "none", color: "rgba(255,255,255,.35)", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: "8px 6px 4px", margin: "-6px -4px 0", minHeight: 28, fontFamily: FONT }}>
-                  {hOpen ? "Cancel" : "Hide from list"}
-                </button>
-              )}
-              </div>
-            }
-          >
-            {/* NEVER A SILENTLY DEAD BUTTON. Whenever Solve is greyed the row says
-                why, in the same words the (hover-only, tablet-invisible) tooltip
-                used to hide. It sits above the panels so it is readable with the
-                row collapsed — which is the state an operator meets it in. */}
-            {solveBlocked && (
-              <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: sOpen || open || hOpen ? 8 : 0 }}>
-                Solve unavailable — {solveBlocked}
-              </div>
-            )}
-            {hOpen ? (
-              <>
+
+    const panel = hOpen ? "hide" : sOpen ? "solve" : open ? "move" : null;
+    const closePanels = () => { setSolvePid(null); setOpenPid(null); setHidePid(null); };
+    const links = [];
+    if (destOptions(card).length) links.push({ action: "open-move", label: "Move by hand", onClick: () => { setOpenPid(card.pid); setSolvePid(null); setHidePid(null); setDone((d) => { const n = { ...d }; delete n[card.pid]; return n; }); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); } });
+    if (canAct) links.push({ action: "open-hide", label: "Hide from list", onClick: () => { setHidePid(card.pid); setSolvePid(null); setOpenPid(null); } });
+    // CONCRETE (Junid, 20 Nov 2026): one tap makes it Concrete-only — it leaves
+    // this Marathon list and appears in the Concrete division's.
+    if (canMarkConcrete && divisionOf(card) !== concreteSection(network) && !isConcreteProduct(product)) {
+      links.push({ action: "mark-concrete", label: "Concrete-only", disabled: !!resolving[card.pid], title: "Concrete-only — sold on the Concrete website only; handled by the Concrete division", onClick: () => markConcrete(card) });
+    }
+    const notice = sResult ? { ok: !!sResult.ok, text: sResult.msg }
+      : result ? { ok: !result.failed.length, text: `${result.moved} units → ${LOC_LABEL[result.dest]}${result.failed.length ? ` · failed: ${result.failed.join(" · ")}` : " ✓"}` }
+      : hideErr[card.pid] ? { ok: false, text: hideErr[card.pid] } : null;
+    return (
+      <MissingCard key={`product:${card.pid}`} pid={card.pid} name={card.name} product={product} photo={card.photo}
+        meta={metaOf(card.pid)} why={why} holds={holds}
+        onPhoto={onPhoto ? () => onPhoto(product || { id: card.pid, photoUrl: card.photo }) : undefined}
+        primary={{ label: "Solve", action: "open-solve", tone: GREEN, disabled: !!solveBlocked, title: solveBlocked,
+          onClick: () => { setSolvePid(card.pid); setOpenPid(null); setHidePid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); } }}
+        explains="Starts keeping it at the shop you pick. Central sends the first batch; refills follow by themselves."
+        blocked={solveBlocked ? `Solve unavailable — ${solveBlocked}` : null}
+        notice={panel ? null : notice} links={links}
+        panelOpen={!!panel} onClosePanel={closePanels}>
+        {panel === "hide" && <>
                 {/* Hide = discretion, not action: the sentence says so, and the
                     reason is one optional tap — never a form, never required. */}
                 <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginBottom: 8 }}>
@@ -1187,13 +1602,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 {hideErr[card.pid] && (
                   <div style={{ fontSize: 11.5, color: RED, lineHeight: 1.4, marginTop: 8 }}>{hideErr[card.pid]}</div>
                 )}
-              </>
-            ) : sResult ? (
-              <div style={{ fontSize: 12.5 }}>
-                <span style={{ color: sResult.ok ? GREEN : RED, fontWeight: 700 }}>{sResult.msg}</span>
-              </div>
-            ) : sOpen ? (
-              <>
+</>}
+        {panel === "solve" && <>
                 {/* ONE SCREEN, BOTH SECTIONS: tick the stores this product
                     should be carried at — any in either or both sections —
                     and confirm once. A store that cannot be routed to is
@@ -1209,8 +1619,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                         const on = ticks.includes(st.id);
                         return (
                           <button key={st.id} onClick={() => toggleTick(card, st.id)} disabled={!!st.blocked}
-                                  role="checkbox" aria-checked={on} title={st.blocked || undefined}
-                                  style={{ ...destChip(on), ...(st.blocked ? { opacity: 0.4, cursor: "default" } : null) }}>
+                                  role="checkbox" aria-checked={on} data-dest={st.id} title={st.blocked || undefined}
+                                  style={{ ...bigPill(on), ...(st.blocked ? { opacity: 0.4, cursor: "default" } : null) }}>
                             {on ? `✓ ${st.name}` : st.name}
                           </button>
                         );
@@ -1243,17 +1653,34 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                     const cfSplit = line.split;
                     const sent = cfSplit ? cfSplit.firstBatch : [];
                     const none = cfSplit ? cfSplit.normal : line.sizes;
+                    // Nothing to solve here at all (already carried, uncounted,
+                    // switched off): that sentence stands alone — never "Central
+                    // has none" beside a card that says Central holds 28.
+                    const noPlan = line.sizes.length ? null : cfNoPlanWhy(card, sStore);
+                    if (noPlan) {
+                      return (
+                        <div key={sStore} data-central-fed={sStore} data-no-plan style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>
+                          {noPlan}
+                        </div>
+                      );
+                    }
                     return (
                       <div key={sStore} data-central-fed={sStore} style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>
                         {sent.length > 0
                           ? <><b style={{ color: "#fff" }}>{line.units} unit{line.units === 1 ? "" : "s"}</b> ({sent.map((l) => `${sizeLabel(l.size)}×${l.qty}`).join(" · ")}) go to <b style={{ color: "#fff" }}>{LOC_LABEL[sStore]}</b> — requested from Central now; Central picks it from Source › {sourceTab(sStore)} at the next release.</>
-                          : <>Central has none of this product's sizes — nothing to send to <b style={{ color: "#fff" }}>{LOC_LABEL[sStore]}</b> yet.</>}
-                        {sent.length > 0 && none.length > 0 && (
-                          <div style={{ marginTop: 5, color: AMBER }}>{none.map(sizeLabel).join(" · ")}: Central has none — they stay on the Missing list until it does.</div>
+                          : <span data-nothing-sent>{cfNothingSentWhy(card, sStore, line.sizes, sPlan.centralLeft)}</span>}
+                        {/* "Central has none" only for sizes Central truly holds
+                            none of; a size it holds but has promised elsewhere is
+                            said as that. */}
+                        {sent.length > 0 && none.some((sz) => !(qtyAt(CENTRAL, card.pid, sz) > 0)) && (
+                          <div data-central-none style={{ marginTop: 5, color: AMBER }}>{none.filter((sz) => !(qtyAt(CENTRAL, card.pid, sz) > 0)).map(sizeLabel).join(" · ")}: Central has none — they stay on the Missing list until it does.</div>
+                        )}
+                        {sent.length > 0 && none.some((sz) => qtyAt(CENTRAL, card.pid, sz) > 0) && (
+                          <div data-central-promised style={{ marginTop: 5, color: AMBER }}>{none.filter((sz) => qtyAt(CENTRAL, card.pid, sz) > 0).map(sizeLabel).join(" · ")}: Central holds these, all already promised to other requests — they stay on the Missing list until units are free.</div>
                         )}
                         <div style={{ marginTop: 5, color: GRAY }}>
                           {divisionCard(card, sStore)
-                            ? `${LOC_LABEL[sStore]} keeps this in the shop: ${divisionShopKeep(card)} ${isDivisionOneSize(byId.get(card.pid)) ? "per design" : "of every size"}, refilled straight from Central.`
+                            ? cfKeepLine(card, sStore)
                             : <>{LOC_LABEL[sStore]} keeps this clothing in the shop: {centralFedPerSize(cfg, network, sStore)} of every size, refilled straight from Central.</>}
                         </div>
                       </div>
@@ -1313,22 +1740,16 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 {confirmBlocked && (
                   <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 8 }}>{confirmBlocked}</div>
                 )}
-                <button onClick={() => solve(card)} disabled={!!confirmBlocked}
+                <button data-action="confirm-solve" onClick={() => solve(card)} disabled={!!confirmBlocked}
                         title={confirmBlocked || undefined}
-                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked ? 0.5 : 1 }}>
-                  {solveBusy === card.pid ? (anyFirstBatch ? "Requesting…" : "Seeding…")
+                        style={{ ...primaryBtn(GREEN, !!confirmBlocked), marginTop: 10 }}>
+                  {solving[card.pid] ? (anyFirstBatch ? "Requesting…" : "Seeding…")
                     : sPlan.lines.length === 1
                       ? (sPlan.lines[0].firstBatch ? `Solve — send ${sPlan.lines[0].units} to ${LOC_LABEL[sPlan.lines[0].store]} first` : `Solve — carry at ${LOC_LABEL[sPlan.lines[0].store]}`)
                       : `Solve — ${sPlan.lines.length ? `${sPlan.lines.length} stores` : "tick a store"}`}
                 </button>
-              </>
-            ) : result ? (
-              <div style={{ fontSize: 12.5 }}>
-                <span style={{ color: GREEN, fontWeight: 700 }}>{result.moved} units → {LOC_LABEL[result.dest]} ✓</span>
-                {result.failed.length > 0 && <div style={{ color: RED, marginTop: 4 }}>Failed: {result.failed.join(" · ")}</div>}
-              </div>
-            ) : open && (
-              <>
+</>}
+        {panel === "move" && <>
                 <div style={{ fontSize: 10.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", margin: "2px 0 6px" }}>
                   Missing from: {card.missing.map((l) => LOC_LABEL[l]).join(" · ")}
                 </div>
@@ -1344,7 +1765,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 </div>
                 <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
                   {destOptions(card).map((d) => (
-                    <button key={d} onClick={() => setDests((prev) => ({ ...prev, [card.pid]: d }))} style={destChip(dest === d)}>
+                    <button key={d} data-move-dest={d} onClick={() => setDests((prev) => ({ ...prev, [card.pid]: d }))} style={destChip(dest === d)}>
                       → {LOC_LABEL[d]}
                     </button>
                   ))}
@@ -1352,16 +1773,18 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 {moveBlocked && (
                   <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 8 }}>{moveBlocked}</div>
                 )}
-                <button onClick={() => transfer(card)} disabled={!!moveBlocked}
+                <button data-action="confirm-move" onClick={() => transfer(card)} disabled={!!moveBlocked}
                         title={moveBlocked || undefined}
                         style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: moveBlocked ? 0.5 : 1 }}>
                   {busyPid === card.pid ? "Transferring…" : `Transfer ${total} unit${total === 1 ? "" : "s"} to ${LOC_LABEL[dest]}`}
                 </button>
-              </>
-            )}
-          </ProductCard>
-        );
-      })}
+</>}
+      </MissingCard>
+    );
+  };
+
+  const bulkBar = (
+    <>
       {selectMode && selectedPids.length > 0 && (
         <div style={{ ...GLASS, position: "sticky", bottom: 8, padding: "10px 12px", marginTop: 10, background: "rgba(20,22,30,.97)" }}>
           {/* ONE primary action: hide everything marked, no reason attached —
@@ -1382,6 +1805,40 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           {bulkErr && <div style={{ fontSize: 11.5, color: RED, marginTop: 8 }}>{bulkErr}</div>}
         </div>
       )}
+    </>
+  );
+
+  // THE ONE-TAP SURFACE (Junid, 22 Nov 2026): what the Missing Products screen
+  // needs to decide, BEFORE a card is drawn, what a Solve to each shop would
+  // send (planFor — the very function the write plans with), and to do that
+  // Solve in one tap (solveTo → solve above, one shop). Nothing here decides a
+  // quantity; it hands out the functions that already do.
+  const api = {
+    canAct, ready: cfg !== null && targetsReady,
+    // One shop, or (Marathon's list, where both may be chosen) several: the
+    // same solve the panel's confirm made with those shops ticked.
+    solveTo: (card, stores, opts = {}) => solve(card, [].concat(stores), opts),
+    planFor, tickableStores, undoEntry,
+  };
+  return { cards, renderCard, sectionSwitch, viewOnly, selectBar, bulkBar, strip: undoStrip, solvedView, selectMode, section: listSection || HOME_SECTION, busy: solveBusy != null || busyPid != null, api };
+}
+
+// THE STAND-ALONE LIST: one division's cards with its own switch (and, with
+// view="solved", the Solved history). The Missing Products screen does not use
+// this — it calls the hook — but it is the same cards drawn by the same function.
+export default function NetworkTransfer(props) {
+  const n = useProductSolve(props);
+  if (props.view === "solved") return n.solvedView;
+  return (
+    <>
+      {n.viewOnly}
+      {n.strip}
+      {n.sectionSwitch}
+      {n.selectBar}
+      {n.cards.length
+        ? n.cards.map(n.renderCard)
+        : <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>No stranded products — everything upstream also exists in at least one shop.</div>}
+      {n.bulkBar}
     </>
   );
 }

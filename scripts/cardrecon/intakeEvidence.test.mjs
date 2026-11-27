@@ -95,7 +95,7 @@ describe("where the evidence lives", () => {
   it("the storage path is owner-only in storage.rules, and never writable", () => {
     const rules = readFileSync(join(HERE, "../../storage.rules"), "utf8");
     const block = rules.slice(rules.indexOf(`match /${REFUSED_PDF_PREFIX}/`));
-    expect(block).toMatch(/allow read: if request\.auth != null\s+&& request\.auth\.token\.email == "gunidmoh@gmail\.com";/);
+    expect(block).toMatch(/allow read: if request\.auth != null\s+&& request\.auth\.token\.email == "gunidmoh@gmail\.com"(\s+&& request\.auth\.token\.email_verified == true)?;/);
     // The block's own body: from its opening line to the first closing brace
     // on a line of its own.
     const body = block.slice(0, block.search(/\n\s*\}\n/));

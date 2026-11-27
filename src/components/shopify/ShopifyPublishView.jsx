@@ -51,6 +51,7 @@
 // Thumb follow LabelPrintView.jsx, rows use the home list's separator
 // treatment (RoleCard in App.jsx), and every colour/spacing value comes from
 // stock/ui.js. Writes go ONLY to /shopify_publish, through the store.
+import { isConcreteProduct } from "../../utils/concreteListing";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bGray, bGreen } from "../stock/ui";
 import {
@@ -65,6 +66,7 @@ import { productMatchesQuery } from "../../utils/productSearch.js";
 import {
   loadPipelineNodes, loadPublishKeys, loadReviewHidden, loadNodesFor, publishProduct, setCondition,
 } from "./shopifyPublishStore";
+import { holdTarget } from "./publishTarget.js";
 import ShopifyProductPage from "./ShopifyProductPage";
 import { PrimaryPhoto } from "../shared/PrimaryPhoto.jsx";
 import { primaryPhotoUrl } from "../../utils/primaryPhoto";
@@ -409,12 +411,13 @@ export function useShopifyAwaitingCount(products, enabled) {
     // nothing on the page to work off.
     // A product with no sellable stock online is not on the page to work off
     // either (docs/SHOPIFY-REVIEW-INSTOCK.md), so it is not counted.
-    for (const p of products || []) if (p?.id && isPublishableProduct(p) && !keys.has(p.id) && !hidden.has(p.id)) n += 1;
+    // Concrete-only products (Junid, 20 Nov 2026) are not Marathon's to publish.
+    for (const p of products || []) if (p?.id && isPublishableProduct(p) && !isConcreteProduct(p) && !keys.has(p.id) && !hidden.has(p.id)) n += 1;
     return n;
   }, [enabled, keys, hidden, products]);
 }
 
-export default function ShopifyPublishView({ products = [], onExit }) {
+export default function ShopifyPublishView({ products = [], onExit, topSlot = null, title = "SHOPIFY PUBLISHING" }) {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   // Opens on Awaiting review — the work. "All" is gone with the categories,
@@ -1085,6 +1088,8 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const runBatch = async () => {
     if (batchBusy) return;
     setBatchBusy(true);
+    // The store tab cannot switch until the whole batch is written (publishTarget.js).
+    const releaseTarget = holdTarget();
     const failures = [];
     let okCount = 0;
     try {
@@ -1110,6 +1115,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         }
       }
     } finally {
+      releaseTarget();
       setBatchBusy(false);
       setBatchConfirm(false);
     }
@@ -1178,10 +1184,11 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         </div>
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,.4)", letterSpacing: "0.5px" }}>Viewing as:</div>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#4A7FFF", letterSpacing: "0.5px" }}>SHOPIFY PUBLISHING</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#4A7FFF", letterSpacing: "0.5px" }}>{title}</div>
         </div>
         <div style={{ width: 92 }} />
       </div>
+      {topSlot}
 
       {/* STICKY HEADER (Junid, 6 Nov): Live / Awaiting review as ONE
           segmented toggle, then ONE scrolling department row (with counts),

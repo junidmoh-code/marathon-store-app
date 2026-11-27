@@ -151,9 +151,11 @@ describe("source pins — the call sites exist", () => {
     const app = src("../../App.jsx");
     expect(app).toContain("<ReactivationNotice />");
   });
-  it("MissingFootwear write paths carry the stale-screen guard, twice (solve and request)", () => {
+  it("MissingFootwear write paths carry the stale-screen guard, on both (the Marathon hubs' and Hub 3's)", () => {
+    // (22 Nov 2026: the third, the typed-quantity request, was switched off on
+    // 1 Nov and its dead writer is gone.)
     const mf = src("./MissingFootwear.jsx");
-    expect(mf.split("isDeactivated(byId.get(card.pid))").length - 1).toBe(3);
+    expect(mf.split("isDeactivated(byId.get(card.pid))").length - 1).toBe(2);
   });
   it("placeOrders carries the submit-time stale-cart guard", () => {
     const app = src("../../App.jsx");

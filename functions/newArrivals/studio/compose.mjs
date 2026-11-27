@@ -19,8 +19,10 @@ export const APPAREL_KEYS = Object.freeze([...SINGLE_KEYS, ...TWOPIECE_KEYS]);
 export const UNKNOWN_FRAMING = "unknown framing";
 
 export const ROLES = Object.freeze({
-  // The footwear reference is G-0102 on the untouched plate (Junid, 5 Oct): the size and position to match.
-  footwear: { plate: "footwear-plate.png", reference: "footwear-reference-g0102.jpg", layoutBox: "footwear-layout-box.png" },
+  // The footwear reference is the LAST-GOOD one again (Junid, 20 Nov 2026): footwear-reference.png, as sent with
+  // the 4 Oct batch (G-0087 to G-0117). G-0102 (footwear-reference-g0102.jpg, 5 Oct) made the shoe small and the
+  // box float; it stays locked in plates.lock.json but is no longer sent.
+  footwear: { plate: "footwear-plate.png", reference: "footwear-reference.png", layoutBox: "footwear-layout-box.png" },
   single: { plate: "fence-single.png", reference: null },
   twopiece: { plate: "fence-twopiece.png", reference: "twopiece-reference.png" },
 });
@@ -154,6 +156,20 @@ export function closestAspect(width, height, only = null) {
 
 /** The plate's EXACT canvas: uniform scale to cover, centred — never a stretch. */
 export const toCanvas = (buf, { width, height }) => sharp(buf).resize(width, height, { fit: "cover", position: "centre" }).jpeg({ quality: 93 }).toBuffer();
+
+/**
+ * THE MASTER (Junid, 20 Nov 2026 — the shared generator's ONE finishing step): the model's photo at its OWN
+ * full resolution, only cropped (centred, never stretched) to the plate's shape, saved as a high-quality JPEG
+ * (q92, full-colour 4:4:4). Never downsized to the plate's 1086x1448, never PNG (no transparency is needed).
+ */
+export const MASTER_JPEG_QUALITY = 92;
+export async function toMaster(buf, { width, height }) {
+  const m = await sharp(buf).metadata();
+  const r = width / height;
+  let w = m.width, h = Math.round(m.width / r);
+  if (h > m.height) { h = m.height; w = Math.round(m.height * r); }
+  return sharp(buf).resize(w, h, { fit: "cover", position: "centre" }).jpeg({ quality: MASTER_JPEG_QUALITY, chromaSubsampling: "4:4:4" }).toBuffer();
+}
 
 export const forModel = (buf, edge = 2048) => sharp(buf).rotate().resize(edge, edge, { fit: "inside", withoutEnlargement: true }).jpeg({ quality: 92 }).toBuffer();
 

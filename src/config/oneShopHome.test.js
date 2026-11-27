@@ -21,6 +21,8 @@ describe("home stats for a one-shop account", () => {
     // shop's own where it is used (the Admin hub card list).
     expect(src).toContain('primaryTile("assistant") && { ...primaryTile("assistant"), badge: undefined }');
     expect(src).toContain('badge:assistantBadge');
-    expect(src).toMatch(/const myShop = isSuperAdmin \? null : \(permRecord\?\.destShop \|\| null\);\s*\n\s*const orders = useOrders\(myShop\)/);
+    // The feed is the account's ACTIVE shop (its destShop unless it confirmed a
+    // switch — all-store access, 20 Nov 2026); unscoped accounts read it all.
+    expect(src).toMatch(/const myShop = isSuperAdmin \|\| !permRecord\?\.destShop \? null : \(activeShopForMe \|\| permRecord\.destShop\);\s*\n\s*const orders = useOrders\(myShop\)/);
   });
 });

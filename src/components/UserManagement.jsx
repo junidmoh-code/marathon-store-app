@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // User Management (super-admin only) — /#admin/users
 // ─────────────────────────────────────────────────────────────────────────────
-// Master-detail UI for staff account lifecycle. Gated on the super-admin email
-// gunidmoh@gmail.com (matches the gate used by AdminSignInScreen in App.jsx and
+// Master-detail UI for staff account lifecycle. Gated on the super-admin list
+// (config/superAdmins.js — Junid and Jafer; matches the gate used by AdminSignInScreen in App.jsx and
 // the assertAdmin helper in functions/index.js).
 //
 // ── 2026-07 permissions redesign — read this before touching gating ──────────
@@ -37,13 +37,14 @@
 // super-admin email on /users writes, and the UI is super-admin gated.
 
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ref, onValue, update } from "firebase/database";
+import { ref, update } from "firebase/database";
+import { subscribeLivePath } from "../utils/sharedLiveRead";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../firebase";
 import { SHOP_IDS, SHOP_LABELS } from "../utils/stores";
 import { PERMISSION_GROUPS, ALL_PERMISSIONS, STOCK_PERM_KEYS, ROLE_DEFAULT_PERMS, permFlagsFor } from "./permissionCatalog";
 // The one super-admin identity, shared with AuthGate and every admin card.
-import { ADMIN_EMAIL } from "./PermissionsContext";
+import { isSuperAdmin as isSuperAdminEmail } from "../config/superAdmins";
 import { useNetwork } from "../utils/useNetwork";
 import { listLocations } from "../utils/networkRegistry";
 import { accountSections, sectionChoiceOf, sectionPatch, sectionName } from "./sectionAccess";
@@ -165,7 +166,7 @@ function friendlyError(err) {
 // this component at all for a non-super-admin. Both layers are real; neither
 // relies on the other.
 export default function UserManagement({ authUser, onExit }) {
-  if (!authUser || authUser.email !== ADMIN_EMAIL) {
+  if (!authUser || !isSuperAdminEmail(authUser.email)) {
     return <NotAuthorized onExit={onExit} />;
   }
   return <UserManagementAuthed authUser={authUser} onExit={onExit} />;
@@ -186,7 +187,9 @@ function UserManagementAuthed({ authUser, onExit }) {
   // return placed after them.
   useEffect(() => {
     if (!authUser) return;
-    const unsub = onValue(ref(database, "users"), (snap) => {
+    // Shared and held through a short hide (utils/sharedLiveRead.js): a trip
+    // to another app and back no longer downloads every account again.
+    const unsub = subscribeLivePath("users", (snap) => {
       const data = snap.val() || {};
       const list = Object.entries(data)
         .map(([uid, v]) => ({ uid, ...(v || {}) }))
@@ -332,7 +335,7 @@ function NotAuthorized({ onExit }) {
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "1rem", gap: 16 }}>
       <div style={{ fontSize: 22, fontWeight: 600 }}>Not authorized</div>
       <div style={{ color: TEXT_2, fontSize: 14, textAlign: "center", maxWidth: 320 }}>
-        Only the super-admin (gunidmoh@gmail.com) can manage staff accounts.
+        Only a super-admin (Junid or Jafer) can manage staff accounts.
       </div>
       <button onClick={onExit} style={primaryBtn}>Back to home</button>
     </div>
@@ -358,7 +361,7 @@ function UserListView({ users, loading, onSelect, onAdd, onExit }) {
   // dedicated large-title row below the bar.
   return (
     <>
-      <div style={{ position: "sticky", top: 0, zIndex: 10, background: "rgba(0,0,0,.85)", backdropFilter: "blur(10px)",
+      <div style={{ position: "sticky", top: "env(safe-area-inset-top, 0px)", zIndex: 10, background: "rgba(0,0,0,.85)", backdropFilter: "blur(10px)",
                     borderBottom: `1px solid ${DIVIDER}`, padding: "12px 16px",
                     display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <button onClick={onExit} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4 }}>
@@ -904,7 +907,7 @@ function UserDetailView({ user, onBack }) {
 
 function TopBar({ title, onBack }) {
   return (
-    <div style={{ position: "sticky", top: 0, zIndex: 10, background: "rgba(0,0,0,.85)", backdropFilter: "blur(10px)",
+    <div style={{ position: "sticky", top: "env(safe-area-inset-top, 0px)", zIndex: 10, background: "rgba(0,0,0,.85)", backdropFilter: "blur(10px)",
                   borderBottom: `1px solid ${DIVIDER}`, padding: "12px 16px",
                   display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <button onClick={onBack} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 2 }}>

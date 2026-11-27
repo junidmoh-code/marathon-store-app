@@ -72,7 +72,12 @@ function isGranted(flagValue) {
 const GONE = { changed: false, missing: true, before: false, otherClaims: [] };
 const isGone = (err) => err && err.code === "auth/user-not-found";
 
-async function reconcileClaim({ auth, uid, granted, dryRun = false }) {
+// `claim` defaults to card_recon. The staff claim (functions/security/staffClaim.js)
+// reuses this exact converge-and-preserve logic under its own name, so the two
+// never overwrite each other's claim or any other claim on the account.
+async function reconcileClaim({ auth, uid, granted, dryRun = false, claim = CLAIM }) {
+  if (typeof claim !== "string" || !claim) throw new Error("reconcileClaim: claim name required");
+  const CLAIM_NAME = claim;
   if (typeof uid !== "string" || !uid) throw new Error("reconcileClaim: uid required");
   let user;
   try {
@@ -83,22 +88,22 @@ async function reconcileClaim({ auth, uid, granted, dryRun = false }) {
   }
 
   const current = { ...(user.customClaims || {}) };
-  const before = current[CLAIM] === true;
-  const otherClaims = Object.keys(current).filter((k) => k !== CLAIM);
+  const before = current[CLAIM_NAME] === true;
+  const otherClaims = Object.keys(current).filter((k) => k !== CLAIM_NAME);
 
   // Idempotent: converge, do not toggle. Note the `before` test is on `=== true`
   // while the write below DELETES rather than sets false, so a legacy
   // `card_recon: false` claim is treated as not-granted AND cleaned up when the
   // desired state is also not-granted.
   const needsWrite = granted
-    ? !(CLAIM in current) || current[CLAIM] !== true
-    : CLAIM in current;
+    ? !(CLAIM_NAME in current) || current[CLAIM_NAME] !== true
+    : CLAIM_NAME in current;
   if (!needsWrite) return { uid, granted, changed: false, before, otherClaims };
   if (dryRun) return { uid, granted, changed: true, dryRun: true, before, otherClaims };
 
   const next = { ...current };
-  if (granted) next[CLAIM] = true;
-  else delete next[CLAIM];
+  if (granted) next[CLAIM_NAME] = true;
+  else delete next[CLAIM_NAME];
 
   // `null` is the documented "no custom claims at all"; passing {} would leave
   // an empty claims object behind. Either works, but null is the clean state.

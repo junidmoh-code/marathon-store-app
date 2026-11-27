@@ -75,3 +75,31 @@ test("the emailed line stays inside the label bound however many there are, and 
   assert.equal(d.lines.length, 136);
   assert.ok(!/[\r\n]/.test(d.summary));
 });
+
+// ── Junid's quiet rule (26 Nov 2026): the digest is archived, never emailed ──
+test("quiet rule: runDigestHeld archives and dequeues, writes NOTHING to the mini's outbox and logs no marker", async () => {
+  const { runDigestHeld, OUTBOX, STATUS } = require("../lib/writeoff-digest.cjs");
+  const db = makeFakeDb({ refill_engine: { refusalWriteoffs: { a: rec("a") }, refusalWriteoffDigestQueue: { a: NOW } } });
+  const logged = [];
+  const origErr = console.error;
+  console.error = (...a) => { logged.push(a.join(" ")); };
+  let res;
+  try { res = await runDigestHeld({ db, nowMs: NOW, log: () => {} }); } finally { console.error = origErr; }
+  assert.equal(res.sent, true);
+  assert.equal(logged.filter((l) => l.includes(MARKER)).length, 0);
+  assert.equal((await db.ref(OUTBOX).once("value")).val(), null);
+  assert.equal((await db.ref("refill_engine/refusalWriteoffDigestQueue").once("value")).val(), null);
+  const status = (await db.ref(STATUS).once("value")).val();
+  assert.equal(status.outcome, "held");
+  assert.equal(status.count, 1);
+  const arch = Object.values((await db.ref("refill_engine/refusalWriteoffDigests").once("value")).val())[0];
+  assert.equal(arch.channels.held.ok, true);
+});
+
+test("quiet rule: nothing new → status says so, nothing archived", async () => {
+  const { runDigestHeld, STATUS } = require("../lib/writeoff-digest.cjs");
+  const db = makeFakeDb({ refill_engine: { refusalWriteoffs: { a: rec("a") } } });
+  const res = await runDigestHeld({ db, nowMs: NOW, log: () => {} });
+  assert.equal(res.sent, false);
+  assert.equal((await db.ref(STATUS).once("value")).val().outcome, "nothing_new");
+});

@@ -25,7 +25,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { resolveTarget, computeRefillPlan } = require("../lib/refill-engine.cjs");
-const { footwearPolicyDrift, FOOTWEAR_CATEGORY_KEYS, FOOTWEAR_GROUP_KEY } = require("../lib/policy-resolve.cjs");
+const { footwearPolicyDrift, FOOTWEAR_CATEGORY_KEYS, FOOTWEAR_GROUP_KEY, locationPolicyFor } = require("../lib/policy-resolve.cjs");
 const { applyCategoryPolicy, invalidateCensusCache } = require("../lib/category-policy-write.cjs");
 const { makeFakeDb, readAt } = require("./helpers/fake-rtdb.cjs");
 const W = require("./helpers/footwear-world.cjs");
@@ -211,6 +211,38 @@ test("write: a footwear category cannot get its own numbers while the footwear p
   assert.equal(readAt(db.state.root, "config/refillEngine/categoryPolicy/boots"), null);
 });
 
+test("write: Kids Shoes is the ONE footwear category that may have its own numbers while the policy is armed (Junid, 22 Nov 2026)", async () => {
+  invalidateCensusCache();
+  const db = dbWorld();
+  // every other footwear category is still refused…
+  for (const key of ["sneakers", "slides", "running-shoes", "loafers", "soccer-boots", "designer-shoes", "boots"]) {
+    // eslint-disable-next-line no-await-in-loop
+    await rejects(() => call(db, { categoryKey: key, policy: OWN, dryRun: true }), /Footwear is set once/);
+  }
+  // …and Kids Shoes is not refused BY THIS RULE (whatever else the write
+  // checks, the answer is never "Footwear is set once").
+  let refusedByRule = false;
+  try { await call(db, { categoryKey: "kids-shoes", policy: OWN, dryRun: true }); }
+  catch (e) { refusedByRule = /Footwear is set once/.test(String(e && e.message)); }
+  assert.equal(refusedByRule, false);
+});
+
+test("write: a Kids Shoes entry must be carried-only at every location — it never spreads to a hub that does not keep it", async () => {
+  invalidateCensusCache();
+  const db = dbWorld();
+  const loose = { perSize: true, hub1: { sizes: { 26: { target: 2, minQty: 1, reorderPoint: 1 } } } };
+  await rejects(() => call(db, { categoryKey: "kids-shoes", policy: loose, dryRun: true }), /carried-only/);
+  await rejects(() => call(db, { categoryKey: "kids-shoes", policy: { ...loose, hub2: { carriedOnly: true, sizes: { 26: { target: 2, minQty: 1 } } } } }), /carried-only/);
+  assert.equal(readAt(db.state.root, "config/refillEngine/categoryPolicy/kids-shoes"), null);
+});
+
+test("drift: Kids Shoes with its own numbers is NOT drift; any other footwear category with its own still is", () => {
+  const base = () => W.world().config;
+  const leg = { perSize: true, hub1: W.standingLeg() };
+  assert.deepEqual(kinds({ ...base(), categoryPolicy: { "kids-shoes": leg } }), []);
+  assert.deepEqual(kinds({ ...base(), categoryPolicy: { "kids-shoes": leg, boots: leg } }), ["own_entry:boots"]);
+});
+
 test("write: a non-footwear category is untouched by the rule", async () => {
   invalidateCensusCache();
   const db = dbWorld();
@@ -297,4 +329,13 @@ test("write: a STALE history entry for the same key is not a revert — only the
   await rejects(() => call(db, { categoryKey: "slides", policy: legB, expectedBefore: null, revertOf: e0.historyId }), /Footwear is set once/);
   const ok = await call(db, { categoryKey: "slides", policy: legA, expectedBefore: null, revertOf: e1.historyId });
   assert.equal(ok.ok, true);
+});
+
+test("engine: a Kids Shoes entry of its own is what Hub 1 resolves for a kids size while Footwear stays armed; other members still follow Footwear", () => {
+  const cfg = { ...W.world().config, categoryPolicy: { "kids-shoes": { perSize: true, hub1: { carriedOnly: true, sizes: { 26: { target: 2, minQty: 1, reorderPoint: 1 } } } } } };
+  const kids = locationPolicyFor(cfg, "kids-shoes", "hub1");
+  assert.equal(kids.source, "category");
+  assert.equal(kids.sizes["26"].target, 2);
+  assert.equal(locationPolicyFor(cfg, "kids-shoes", "hub2"), null);          // only where Junid gave it numbers
+  assert.equal(locationPolicyFor(cfg, "sneakers", "hub1").source, "group");   // everyone else: unchanged
 });

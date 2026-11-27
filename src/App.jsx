@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue, useLayoutEffect } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue, useLayoutEffect, Fragment } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, orderByKey, equalTo, startAt, endAt } from "firebase/database";
 import AiSpendTab from "./components/AiSpendTab";
+import { useActiveStore, requestSwitch as requestActiveStoreSwitch, activeStoreStamp } from "./utils/activeStore";
 import { ref as storageRef, uploadBytes, getDownloadURL, getBlob, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
@@ -12,7 +13,7 @@ import { ProductActionsButton, DeactivatedChip } from "./components/stock/Produc
 import { showsDeactivated } from "./config/assistantVisibility";
 import { useAssistantVisibility } from "./config/useAssistantVisibility";
 import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
-import { heldProductKey, heldPredicate, stockedHerePredicate, hubReadState, unavailableProductIds, unavailableHint } from "./components/assistant/divisionAvailability";
+import { heldProductKey, heldPredicate, stockedHerePredicate, hubReadState, unavailableProductIds, unavailableHint, unavailableLast } from "./components/assistant/divisionAvailability";
 import { reactiveRefillHubs, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
@@ -29,6 +30,7 @@ import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
 import { useMirroredPath, useMirrorLeg } from "./offline/useMirroredPath";
 import { MirrorDot } from "./offline/MirrorDot.jsx";
+import { ResumeUpdatingMarker } from "./offline/ResumeUpdatingMarker.jsx";
 import { MirroredImg } from "./offline/MirroredImg.jsx";
 import { PrimaryPhoto } from "./components/shared/PrimaryPhoto.jsx";
 import { notePendingUpdate } from "./offline/pendingWrites";
@@ -46,6 +48,12 @@ import { categorize, brandOf, brandInfo, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGO
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
+import AllProductsList from "./components/concrete/AllProductsList";
+import BrandCheckTab, { useBrandCheckCount } from "./components/concrete/BrandCheckTab";
+import { canVerifyBrand, useConcreteLiveSet } from "./components/concrete/concreteStore";
+import { BRAND_CHECK_TAB, CONCRETE_PRODUCTS_CARD } from "./config/temporaryCards";
+import ConcreteProductsCard from "./components/concrete/ConcreteProductsCard";
+import { isSuperAdmin as isSuperAdminEmail } from "./config/superAdmins";
 import { toAuthPassword } from "./utils/auth-utils";
 import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, phoneGroupKey } from "./utils/phone";
 import { filterCustomerList } from "./utils/customerSearch";
@@ -60,6 +68,11 @@ import { hasSlipScope } from "./components/cardrecon/slipScope";
 import { usePrefetchSlipTerminals } from "./components/cardrecon/slipTerminals";
 import NewArrivalsScreen from "./components/newArrivals/NewArrivalsScreen";
 import { newArrivalsApi } from "./components/newArrivals/newArrivalsApi";
+import BlackFridayScreen from "./components/blackFriday/BlackFridayScreen";
+import { blackFridayApi } from "./components/blackFriday/blackFridayApi";
+import BfCandidatesScreen from "./components/bfCandidates/BfCandidatesScreen";
+import BfSaleStoreList from "./components/bfCandidates/BfSaleStoreList";
+import { bfCandidatesApi } from "./components/bfCandidates/bfCandidatesApi";
 import { enginePolicyVisibleForViewer } from "./config/enginePolicy";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import { createVoiceKeeper, isKioskLaunch, readVoiceArmed, shouldShowVoiceHint, voiceWanted } from "./components/tv/tvVoiceKeeper";
@@ -91,9 +104,12 @@ import DisplayRegistrationCard from "./components/stock/DisplayRegistrationCard"
 // are precomputed once a day inside refillHealthScan; the screen reads one
 // small node per store and nothing else.
 import StockAuditView from "./components/stock/StockAuditView";
+import { WebOrderBanner } from "./components/online/WebOrderBadge.jsx";
+import { hubQueueDay } from "./utils/onlineOrders.js";
 import { stockAuditVisibleForViewer } from "./config/stockAudit";
 import DisplayRegistrationView from "./components/stock/DisplayRegistrationView";
-import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
+import { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
+import ShopifyPublishTabs from "./components/shopify/ShopifyPublishTabs";
 import SocialView from "./components/social/SocialView";
 import TvAdSettingsCard from "./components/TvAdSettingsCard";
 import { isCardHidden, isRoleHidden } from "./components/hiddenCards";
@@ -107,6 +123,7 @@ import { STOCK_HOLD_ENABLED, canReleaseStockHold } from "./config/stockHold";
 import { loadHoldConfig } from "./components/stock/stockHoldStore";
 import RefillQueue from "./components/stock/RefillQueue";
 import { countsTowardSourceQueue } from "./components/stock/firstBatchCore";
+import { hubLineCounts as countHubLines } from "./components/stock/hubLineCounts";
 import NotificationSettingsRow from "./push/NotificationSettingsRow";
 import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
@@ -128,6 +145,8 @@ import { orderCardKey } from "./push/deepLink";
 import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
 import HealthView from "./components/stock/HealthView";
+import MissingProductsScreen from "./components/stock/MissingProductsScreen";
+import { isMissingProductsHash } from "./utils/missingProductsRoute";
 import NetworkTotals from "./components/stock/NetworkTotals";
 import AttentionView from "./components/stock/AttentionView";
 import MarketingView from "./components/stock/MarketingView";
@@ -148,6 +167,8 @@ import { IconCart, IconBox, IconBag, IconLayers, IconExpand, IconCamera as SkyIc
 import { HiResPhoto } from "./components/assistant/HiResPhoto.jsx";
 import { buildBrandIndex, matchBrandQuery, brandResults } from "./components/assistant/brandSearch";
 import { useAssistantOrderModel, quickAddSizeState, sneakerBlockNoteText, sizesOf, fmtR, AD_PAGE } from "./components/assistant/assistantOrderModel";
+import { retailPriceOf } from "./utils/retailPrice";
+import { usePriceRecheck } from "./components/assistant/usePriceRecheck";
 import { answerStyleCodeSibling, recordLabelCodes } from "./components/stock/hubCleanupStore";
 import { extractDominantColours } from "./utils/dominantColours";
 import { displaySendNeedsSize } from "./utils/displaySend";
@@ -170,11 +191,12 @@ import { wallAllows, storesOf, backStockHubsOf } from "./utils/networkRegistry";
 import { useMySections } from "./utils/useMySections";
 import {
   fallbackHub, hubOfRecord, placementHub, servingHubFor, usesSection2Hubs, stockHubIds, crHubIds, hubLabel as registryHubLabel,
-  warehouseHubGroups, hubAllowedForViewer, shopsOfHub, orderIsAtHub, orderPlacementCheck, sectionStamp,
+  warehouseHubGroups, hubAllowedForViewer, shopsOfHub, orderIsAtHub, hubOrderField, orderPlacementCheck, sectionStamp,
   dispatchHoldMs, sourceTabsFor, TRIAL_HUB, shopOfRecord, storedHubVerdict, warehouseTabKeys,
   insightsStoreOptions, insightsBucketKey, insightsStoreMatcher,
 } from "./utils/sectionRouting";
-import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequenceOrderKey, orderKeyFromInput } from "./utils/orderNumbering";
+import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequenceOrderKey } from "./utils/orderNumbering";
+import { lookupOrderByNumber, rankOrdersForNumber, parseTypedOrderNumber, saDayOf, orderWhenLabel, shortCustomerName } from "./utils/orderNumberLookup";
 import { siblingOrderShop, mergeSharedOrders, withSharedRange, boardShowsOrder, tvSectionForShop } from "./utils/sharedOrders";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests, useEngineConfig } from "./components/stock/useStock";
 import { policyKeepFor } from "./components/stock/saleRowPolicyCap";
@@ -195,7 +217,8 @@ import InitialDistributionWizard from "./components/stock/InitialDistributionWiz
 import { ensureBarcodes } from "./components/stock/barcodeStore";
 import { attachPrintedBarcode, readBarcodeOwners, inspectPrintedBarcode, labelIsRedundant } from "./components/stock/printedBarcodeStore";
 import { PRINTED_ALREADY, PRINTED_CONFLICT, PRINTED_SIZE_MISMATCH } from "./utils/eanBarcode";
-import { printDispatchLabel } from "./components/stock/printDispatch";
+import { printDispatchLabel, SEND_PRINTS_LABEL } from "./components/stock/printDispatch";
+import { withoutUndefined } from "./utils/withoutUndefined";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
 import { dispatchSkipsStock } from "./utils/dispatchStockPolicy";
@@ -212,6 +235,7 @@ import { printOrderSlips } from "./print/orderSlip";
 // category later is a data edit — no code change, no deploy. `legacyFor` is the
 // derivation that keeps newly-created products inside every existing automation.
 import { catByKey, isOneSize, legacyFor, needsAssignment, isAssignable } from "./utils/productTaxonomy";
+import { headwearCategoryKeyFor, headwearRenamePatch } from "./utils/headwearCategory.js";
 import { sizesForCat, sizeRunsOf, runSizes, compareSizes, sizeFamily } from "./utils/sizeRuns";
 import { orderSizesForDisplay } from "./utils/sizeDisplayOrder";
 import { findSubmitShortfall, submitShortfallMessage } from "./components/stock/orderSubmitGuard";
@@ -466,10 +490,10 @@ export function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon", CARD_SLIP: "card_slip", TV_AD: "tv_ad", STOCK_AUDIT: "stock_audit" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", MISSING_PRODUCTS: "missing_products", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon", CARD_SLIP: "card_slip", TV_AD: "tv_ad", STOCK_AUDIT: "stock_audit" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
-// signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
+// signed-in user lacks the permission. Super-admin (isSuperAdmin — Junid or Jafer)
 // bypasses every check via hasPermission's email shortcut.
 // TV Display and Customer are auxiliary admin-only tiles — no dedicated perm
 // in the spec, so they ride on product_admin (admin and super_admin only).
@@ -883,7 +907,13 @@ function updateProductName(id, newName, product = null) {
       // A product with no brand (or a flagged one) gets its brand re-derived
       // from the new name; a set brand is never touched (brands.js brandOnRename).
       const b = product && product.id === id ? brandOnRename(product, newName.trim()) : null;
-      return update(ref(database, `products/${id}`), { name: newName.trim(), ...(b || {}) });
+      // A rename to a cap / beanie / bucket hat name re-files a one-size
+      // product under Caps & Beanies in the same write (utils/headwearCategory.js).
+      // Read by key, fresh: the caller may hold only the outgoing name.
+      return get(ref(database, `products/${id}`)).then((snap) => {
+        const hw = headwearRenamePatch(snap.val(), newName.trim());
+        return update(ref(database, `products/${id}`), { name: newName.trim(), ...(b || {}), ...(hw || {}) });
+      });
     })
     .catch(err => console.warn("updateProductName failed:", err));
 }
@@ -1023,6 +1053,10 @@ function updateProductHubs(id, hubs) {
 // live & orderable. Any legacy `depletedAt` left on a product is inert.
 
 // ─── ORDERS HOOK + DIRECT FIREBASE WRITES ────────────────────────────────────
+// A "cancelled" order (the on-hold orders closed by Junid on 26 Nov 2026) is
+// kept in the database but never handed to a screen: every order feed below
+// drops it, so it shows in no Incoming / Ready / Out of Stock / Complete /
+// History list, on no TV and in no tracker.
 // Orders are stored at /orders/{orderId} so each order is its own node — that
 // way two devices mutating different orders (or the same one) never clobber
 // each other. Each component does its own update() against the specific path
@@ -1043,7 +1077,7 @@ function updateProductHubs(id, hubs) {
 // (independent review, 2026-09-06).
 function useOrders(scopeShop = null, enabled = true) {
   const authReady = useAuthReady() && enabled;
-  const [orders, setOrders] = useState(() => Object.assign([], { settled: false }));
+  const [orders, setOrders] = useState(() => Object.assign([], { settled: false, scope: scopeShop }));
 
   // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
   // /orders is 2.6 MB. The mirror holds the whole node, so a SCOPED caller
@@ -1055,8 +1089,8 @@ function useOrders(scopeShop = null, enabled = true) {
   useEffect(() => {
     if (liveOrders || !mirroredOrders.settled) return;
     const data = mirroredOrders.value;
-    if (!data) { setOrders(Object.assign([], { settled: true })); return; }
-    const arr = Object.values(data)
+    if (!data) { setOrders(Object.assign([], { settled: true, scope: scopeShop })); return; }
+    const arr = Object.values(data).filter((o) => o?.status !== "cancelled")
       // Not just filter(Boolean). The legacy {items:[...]} shape would yield
       // ONE element that is an array, which sorts by an undefined createdAt
       // and renders as a broken order row. The live path detects and MIGRATES
@@ -1065,7 +1099,7 @@ function useOrders(scopeShop = null, enabled = true) {
       .filter(o => o && typeof o === "object" && !Array.isArray(o))
       .filter(o => !scopeShop || o?.destShop === scopeShop)
       .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
-    setOrders(Object.assign(arr, { settled: true }));
+    setOrders(Object.assign(arr, { settled: true, scope: scopeShop }));
   }, [liveOrders, mirroredOrders.settled, mirroredOrders.value, scopeShop]);
 
   useEffect(() => {
@@ -1085,7 +1119,7 @@ function useOrders(scopeShop = null, enabled = true) {
     const unsub = subscribeLiveQuery(readKey, () => readRef, (snap) => {
       const data = snap.val();
       if (!data) {
-        setOrders(Object.assign([], { settled: true }));
+        setOrders(Object.assign([], { settled: true, scope: scopeShop }));
         return;
       }
       // Legacy shape detected — migrate.
@@ -1103,14 +1137,14 @@ function useOrders(scopeShop = null, enabled = true) {
         const arr = data.items.slice().sort((a, b) =>
           tsMs(b?.createdAt) - tsMs(a?.createdAt)
         );
-        setOrders(Object.assign(arr, { settled: true }));
+        setOrders(Object.assign(arr, { settled: true, scope: scopeShop }));
         return;
       }
       // Normal shape: map of id → order. Convert to sorted array.
-      const arr = Object.values(data)
+      const arr = Object.values(data).filter((o) => o?.status !== "cancelled")
         .filter(Boolean)
         .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
-      setOrders(Object.assign(arr, { settled: true }));
+      setOrders(Object.assign(arr, { settled: true, scope: scopeShop }));
     }, (err) => {
       // A read ERROR leaves settled FALSE deliberately: the promise map is
       // empty for a reason that has nothing to do with the shelf.
@@ -1120,12 +1154,66 @@ function useOrders(scopeShop = null, enabled = true) {
       // as current (final gate review). The flag says so without disturbing
       // `settled`, which every other consumer reads: the display self-heal is
       // the one consumer that WRITES from this evidence, and it stops.
-      setOrders((prev) => Object.assign(prev.slice(), { settled: prev.settled === true, error: true }));
+      // A refused read for a shop just switched to (all-store access) must not
+      // leave the PREVIOUS shop's orders on screen under the new shop's name:
+      // a different scope gets an empty, unsettled, errored list instead.
+      setOrders((prev) => (prev.scope === scopeShop
+        ? Object.assign(prev.slice(), { settled: prev.settled === true, error: true, scope: scopeShop })
+        : Object.assign([], { settled: false, error: true, scope: scopeShop })));
     });
     return () => unsub();
   }, [authReady, scopeShop, liveOrders]);
 
+  // ALL-STORE ACCESS (20 Nov 2026): the scope can change in place (a confirmed
+  // switch of the active shop). Until the new scope's first answer, hand back
+  // an EMPTY UNSETTLED list — never the previous shop's orders — so every
+  // guard that waits for `settled` fails closed instead of reading the wrong
+  // shop's evidence.
+  const pendingForScope = useMemo(() => Object.assign([], { settled: false, scope: scopeShop }), [scopeShop]);
+  if (orders.scope !== scopeShop) return pendingForScope;
   return orders;
+}
+
+// ─── ONE HUB'S ORDERS (Junid, 26 Nov 2026) ───────────────────────────────────
+// The hub Orders card used to read the WHOLE /orders node (4.4 MB on 26 Nov).
+// It now asks for the selected hub's orders only — orderByChild(hub field)
+// .equalTo(hub), indexed in the live rules — and a device with the offline
+// mirror filters its local copy the same way (orderIsAtHub), downloading nothing.
+// Measured 26 Nov: Hub 1 805 KB, Hub 2 3,110 KB (its clothing refill lines),
+// Hub 3 488 KB, against 4,402 KB for the whole node.
+function useHubOrders(hub, network) {
+  const authReady = useAuthReady() && !!hub;
+  const [orders, setOrders] = useState(() => Object.assign([], { settled: false, scope: hub }));
+  const mirrored = useMirroredPath("orders", authReady);
+  const live = mirrored.verdict === "fallback";
+  const field = hub ? hubOrderField(network, hub) : null;
+  const shape = useCallback((data) => Object.assign(
+    Object.values(data || {}).filter((o) => o?.status !== "cancelled")
+      .filter((o) => o && typeof o === "object" && !Array.isArray(o))
+      .filter((o) => orderIsAtHub(network, o, hub))
+      .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt)),
+    { settled: true, scope: hub },
+  ), [network, hub]);
+
+  useEffect(() => {
+    if (live || !mirrored.settled || !hub) return;
+    setOrders(shape(mirrored.value));
+  }, [live, mirrored.settled, mirrored.value, hub, shape]);
+
+  useEffect(() => {
+    if (!authReady || !live || !field) return undefined;
+    const readRef = query(ref(database, "orders"), orderByChild(field), equalTo(hub));
+    const unsub = subscribeLiveQuery(childQueryKey("orders", field, hub), () => readRef,
+      (snap) => setOrders(shape(snap.val())),
+      (err) => {
+        console.warn(`Firebase read error on /orders (${field}=${hub}):`, err);
+        setOrders((prev) => (prev.scope === hub ? Object.assign(prev.slice(), { settled: prev.settled === true, error: true, scope: hub }) : Object.assign([], { settled: false, error: true, scope: hub })));
+      });
+    return () => unsub();
+  }, [authReady, live, field, hub, shape]);
+
+  const pending = useMemo(() => Object.assign([], { settled: false, scope: hub }), [hub]);
+  return orders.scope === hub ? orders : pending;
 }
 
 // ─── TV ORDERS (BANDWIDTH-SCOPED) ────────────────────────────────────────────
@@ -1147,7 +1235,7 @@ function useTvOrders() {
 
   const shapeTvOrders = useCallback((data) => (
     data
-      ? Object.values(data).filter(Boolean)
+      ? Object.values(data).filter((o) => o?.status !== "cancelled").filter(Boolean)
           .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
       : []
   ), []);
@@ -1211,7 +1299,7 @@ function useSectionTvOrders(section) {
   const { registry: tvNetwork } = useNetwork();
   const ranges = useMemo(() => withSharedRange(tvOrderKeyRanges(tvNetwork, section), section), [tvNetwork, section]);
   const shape = useCallback((data) => (
-    Object.values(data || {}).filter(Boolean).filter((o) => boardShowsOrder(tvNetwork, section, o)).sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
+    Object.values(data || {}).filter((o) => o?.status !== "cancelled").filter(Boolean).filter((o) => boardShowsOrder(tvNetwork, section, o)).sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
   ), [tvNetwork, section]);
   const mirrored = useMirroredPath("orders", authReady);
   const live = mirrored.verdict === "fallback";
@@ -1284,17 +1372,34 @@ function writeOrder(order) {
 // Every action carries the device stamp — who, on which device, when — under
 // orders/{id}/stamps, one key per action (src/device/deviceStamp.js).
 function updateOrder(id, patch) {
-  return update(ref(database, `orders/${id}`), stampPatch(patch, orderActionName(patch))).catch((err) => {
-    console.warn(`Firebase updateOrder(${id}) failed:`, err);
-  });
+  // Undefined values dropped first: update() throws on them synchronously,
+  // which escaped as a red banner (Junid 26 Nov 2026). A real failure is
+  // logged, never thrown at the person who tapped.
+  try {
+    return update(ref(database, `orders/${id}`), withoutUndefined(stampPatch(patch, orderActionName(patch)))).catch((err) => {
+      console.warn(`Firebase updateOrder(${id}) failed:`, err);
+    });
+  } catch (err) {
+    console.warn(`Firebase updateOrder(${id}) refused:`, err?.message || err);
+    return Promise.resolve();
+  }
 }
 
 // ─── INSIGHTS LOG ────────────────────────────────────────────────────────────
 // Permanently appended — never deleted. Each entry is pushed to /insights_log
 // with a Firebase-generated chronological key.
 function logInsight(entry) {
-  push(ref(database, "insights_log"), entry)
-    .catch(err => console.warn("logInsight failed:", err));
+  // A website order has no customerPhone: an undefined field made push() throw
+  // synchronously ("push failed: value argument contains undefined in property
+  // 'insights_log.customerPhone'") and the throw reached staff as a red banner
+  // and stopped the Send mid-way (Junid 26 Nov 2026). Undefined is dropped; any
+  // failure is logged quietly.
+  try {
+    push(ref(database, "insights_log"), withoutUndefined(entry))
+      .catch(err => console.warn("logInsight failed:", err));
+  } catch (err) {
+    console.warn("logInsight refused:", err?.message || err);
+  }
 }
 
 // Whole-node readers share ONE subscription via InsightsLogProvider — this hook
@@ -1470,7 +1575,7 @@ function dateStrToLocal(s) {
 //   emptyMessage — string shown when all buckets are empty
 //   includeOlder — when true, items older than 2-days-ago land in an "Older"
 //                  bucket (default collapsed). When false, they're dropped.
-function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, includeOlder = false, keyOf = null, columns = 1 }) {
+function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, includeOlder = false, keyOf = null, columns = 1, overflowing = null }) {
   // Read initial open state from sessionStorage. Default: today open, rest closed.
   const STORAGE_KEY = `dayCollapsible:${sectionKey}`;
   const [openMap, setOpenMap] = useState(() => {
@@ -1540,7 +1645,14 @@ function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, i
                 <polyline points="6 9 12 15 18 9"/>
               </svg>
             </div>
-            <div style={{ maxHeight: open ? 5000 : 0, overflow:"hidden", transition:"max-height 150ms ease" }}>
+            {/* SMOOTH ON HUB TABLETS (Junid, 26 Nov 2026). A closed day renders
+                nothing (it used to build every card hidden: Hub 2 had ~300 cards
+                in Yesterday re-rendered on each update), and an open day has no
+                height cap (the old 5000px max-height cut the end of a long list
+                off — staff could not scroll to the last orders). Each card skips
+                layout and paint while off screen (content-visibility), so a long
+                list scrolls like a short one and still scrolls to its very end. */}
+            {open && (
               <div style={{ borderTop:"1px solid rgba(60,110,255,.1)", padding:"10px 8px 12px", ...(columns > 1
                      ? { display:"grid", gridTemplateColumns:`repeat(${columns}, minmax(0,1fr))`, gap:12, alignItems:"start" }
                      : { display:"flex", flexDirection:"column", gap:10 }) }}>
@@ -1548,12 +1660,15 @@ function DayCollapsible({ sectionKey, items, dateOf, renderItem, emptyMessage, i
                     fallback reuses component state across neighbours when items
                     sharing a timestamp shift position (fine for stateless rows). */}
                 {s.items.map((item, i) => (
-                  <div key={keyOf ? keyOf(item) : (dateOf(item) ? `${dateOf(item)}-${i}` : i)}>
+                  <div key={keyOf ? keyOf(item) : (dateOf(item) ? `${dateOf(item)}-${i}` : i)}
+                       // A card with a menu open hangs outside its box; paint
+                       // containment would clip it, so it renders normally then.
+                       style={overflowing && overflowing(item) ? undefined : { contentVisibility:"auto", containIntrinsicSize:"auto 240px" }}>
                     {renderItem(item)}
                   </div>
                 ))}
               </div>
-            </div>
+            )}
           </div>
         );
       })}
@@ -2295,17 +2410,18 @@ function CustomerSuggestionDropdown({ query, mode, customers, onPick, onAddNew }
   );
 }
 
-function useBroadcastHistory() {
+export function useBroadcastHistory() {
   const authReady = useAuthReady();
   const [broadcasts, setBroadcasts] = useState([]);
   useEffect(() => {
     if (!authReady) return;
-    const unsub = onValue(ref(database, "broadcasts"), snap => {
+    // Shared and held through a short hide (utils/sharedLiveRead.js).
+    const unsub = subscribeLivePath("broadcasts", snap => {
       const data = snap.val();
       if (!data) { setBroadcasts([]); return; }
       setBroadcasts(Object.values(data).filter(Boolean)
         .sort((a, b) => tsMs(b.sentAt) - tsMs(a.sentAt)));
-    });
+    }, (err) => console.warn("/broadcasts read failed:", err?.message ?? err));
     return () => unsub();
   }, [authReady]);
   return broadcasts;
@@ -3089,6 +3205,28 @@ export const RoleIcons = {
       <path d="M22 2 11 13"/>
     </svg>
   ),
+  concrete_products: (
+    // A plain block — Concrete. TEMPORARY card (src/config/temporaryCards.js).
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#E5E5E5" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 8 12 3l9 5v8l-9 5-9-5z"/>
+      <path d="M3 8l9 5 9-5"/>
+      <path d="M12 13v8"/>
+    </svg>
+  ),
+  bf_candidates: (
+    // A falling price — BF Candidates drops slow stock to one sale price.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#FBBF24" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6l6 6 4-4 8 8"/>
+      <path d="M15 16h6v-6"/>
+    </svg>
+  ),
+  black_friday: (
+    // A price tag — the Black Friday card groups everything by its stock price.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/>
+      <circle cx="7.5" cy="7.5" r="1.2"/>
+    </svg>
+  ),
   cost_watch: (
     // lucide-style "trending line in a frame": a cost chart, not a currency
     // symbol — the card is about where the money goes, not about money.
@@ -3236,6 +3374,14 @@ export const RoleIcons = {
     // this is the only zigzag in the set, so it separates at a glance.
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+    </svg>
+  ),
+  missing_products: (
+    // An empty shelf slot — a dashed outline where a product should be, with
+    // the plus that fills it. The only dashed shape in the set.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3.5" y="5.5" width="17" height="13" rx="3" strokeDasharray="3.2 3"/>
+      <path d="M12 9.2v5.6M9.2 12h5.6"/>
     </svg>
   ),
   marketing: (
@@ -3569,6 +3715,9 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // and writes /social_posts and /social_style_refs, whose console rules name
   // Junid or a stockRole admin. The route below re-checks the same gate.
   const socialVisible = isSuperAdmin || homePerm?.stockRole === "admin";
+  // Brand Check's waiting count on the Admin tile — Junid or a stockRole admin.
+  // Hidden with the tab (src/config/temporaryCards.js BRAND_CHECK_TAB).
+  const brandCheckBadge = useBrandCheckCount(products, BRAND_CHECK_TAB && canVerifyBrand(homeUser, homePerm));
 
   // TV Ad — writes /settings/tvAd, which the TV screen overlay reads live.
   // Same identity as Social/Shopify: super-admin or stockRole admin, matching
@@ -3619,11 +3768,14 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
     ].filter(Boolean) },
     { label: "Administration", cards: [
       hasPermission(ROLE_TO_PERMISSION[ROLES.CUSTOMERS_DB])     && { key:"customers", icon:RoleIcons.customers_db, name:"Customers", desc:"Customer database", onClick:()=>onSelect(ROLES.CUSTOMERS_DB) },
-      hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && { key:"admin", icon:RoleIcons.admin, name:"Admin", desc:"Manage products", onClick:()=>onSelect(ROLES.ADMIN) },
+      hasPermission(ROLE_TO_PERMISSION[ROLES.ADMIN])            && { key:"admin", icon:RoleIcons.admin, name:"Admin", desc:"Manage products", badge: brandCheckBadge || undefined, onClick:()=>onSelect(ROLES.ADMIN) },
       canAccessStock                                           && { key:"stock", icon:RoleIcons.stock, name:"Stock", desc:"Inventory & transfers", onClick:()=>onSelect(ROLES.STOCK) },
       // Inventory Health — the AI refill engine's control centre, promoted to its
       // own primary card (owner decision 2026-07-12). Same access as Stock.
       canAccessStock                                           && { key:"health", icon:RoleIcons.health, name:"Inventory Health", desc:"Refill engine & exceptions", onClick:()=>onSelect(ROLES.HEALTH) },
+      // Missing Products — its own destination since 22 Nov 2026 (it was a tab
+      // inside Inventory Health). Same access as Inventory Health.
+      canAccessStock                                           && { key:"missing_products", icon:RoleIcons.missing_products, name:"Missing Products", desc:"At Central, not in the shops — solve or request", onClick:()=>onSelect(ROLES.MISSING_PRODUCTS) },
       // Attention — the BUYING read of the same stock: what to reorder, what's
       // piled up, what isn't selling. Deliberately separate from Inventory
       // Health, which is the refill engine's operational control centre.
@@ -3643,6 +3795,17 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // Approve. Junid or the Shopify Publishing grant (Approve ends in a
       // Shopify publish); the callables re-check the same grant server-side.
       (isSuperAdmin || hasPermission("shopify_publish"))      && { key:"new_arrivals", icon:RoleIcons.new_arrivals, name:"New Arrivals", desc:"New uploads · generated photo · approve", onClick:()=>(window.location.hash = "#new-arrivals") },
+      // Black Friday 2026 — Junid approves each stock-price group; the Mac mini posts
+      // the approved ones to the 14 WhatsApp groups. Super-admin only (the
+      // bfCampaign* callables re-check it server-side).
+      // CONCRETE PRODUCTS — TEMPORARY (Junid, 20 Nov 2026): mark which clothing
+      // is Concrete-only. Junid or a stockRole admin (canVerifyBrand — the
+      // mark IS the brand check). One flag removes tile and route:
+      // src/config/temporaryCards.js CONCRETE_PRODUCTS_CARD.
+      CONCRETE_PRODUCTS_CARD && canVerifyBrand(homeUser, homePerm) && { key:"concrete_products", icon:RoleIcons.concrete_products, name:"Concrete Products", desc:"Temporary · mark clothing Concrete-only", onClick:()=>(window.location.hash = "#concrete-products") },
+      isSuperAdmin                                             && { key:"black_friday", icon:RoleIcons.black_friday, name:"Black Friday", desc:"Price groups · approve · WhatsApp", onClick:()=>(window.location.hash = "#black-friday") },
+      // BF Candidates (Junid, 23 Nov 2026): stock that isn't moving → ONE in-store sale price until Mon 30 Nov.
+      isSuperAdmin                                             && { key:"bf_candidates", icon:RoleIcons.bf_candidates, name:"BF Candidates", desc:"Slow stock · one sale price · stores + WhatsApp", onClick:()=>(window.location.hash = "#bf-candidates") },
       shopifyVisible                                           && { key:"shopify_publish", icon:RoleIcons.shopify_publish, name:"Shopify Publishing", desc:"Clean names · condition · publish", badge:shopifyBadge, onClick:()=>onSelect(ROLES.SHOPIFY_PUBLISH) },
       // Social — generated posts waiting for approval, the style reference
       // library, and the generator. Nothing goes out without approval, so
@@ -3848,10 +4011,15 @@ function parseProductHash() {
 // admin approves a row here; nothing auto-applies. Approve writes the (optionally
 // edited) suggested name to /products/{id}.name and marks the proposal approved;
 // Reject marks it rejected; both decisions stop the row reappearing on a re-run.
-function useNameProposals() {
+export function useNameProposals() {
   const [proposals, setProposals] = useState({});
+  // Shared and held (utils/sharedLiveRead.js): AI Studio opened this list once
+  // per mount — and the photo list twice, from two tabs — and a trip to
+  // another app cost it again. Measured 27 Nov 2026: names 873,650 B, photos
+  // 592,901 B. One listener now, kept through a short hide.
   useEffect(() => {
-    const unsub = onValue(ref(database, "aiAssistant/nameProposals"), snap => setProposals(snap.val() || {}));
+    const unsub = subscribeLivePath("aiAssistant/nameProposals", snap => setProposals(snap.val() || {}),
+      (err) => console.warn("/aiAssistant/nameProposals read failed:", err?.message ?? err));
     return () => unsub();
   }, []);
   return proposals;
@@ -3863,10 +4031,15 @@ function useNameProposals() {
 // product's photoUrl to the white-bg version but KEEPS the original (stored in
 // photoUrlOriginal; the original file at products/{id}/photo.jpg is never touched).
 // Reject discards. Nothing auto-applies.
-function usePhotoProposals() {
+export function usePhotoProposals() {
   const [proposals, setProposals] = useState({});
+  // Shared and held (utils/sharedLiveRead.js): AI Studio opened this list once
+  // per mount — and the photo list twice, from two tabs — and a trip to
+  // another app cost it again. Measured 27 Nov 2026: names 873,650 B, photos
+  // 592,901 B. One listener now, kept through a short hide.
   useEffect(() => {
-    const unsub = onValue(ref(database, "aiAssistant/photoProposals"), snap => setProposals(snap.val() || {}));
+    const unsub = subscribeLivePath("aiAssistant/photoProposals", snap => setProposals(snap.val() || {}),
+      (err) => console.warn("/aiAssistant/photoProposals read failed:", err?.message ?? err));
     return () => unsub();
   }, []);
   return proposals;
@@ -4609,88 +4782,32 @@ function RegenerateModal({ row, quality, house = false, product = null, extraCou
   );
 }
 
-// ─── STYLE KIT — HOUSE-STYLE REFERENCE MANAGER ────────────────────────────────
+// ─── STYLE KIT — HOUSE-STYLE REFERENCE MANAGER + CATALOGUE ────────────────────
 // Super-admin panel (inside AI Studio) for the reference images + locked prompts
-// that drive house-style generations. Two templates keyed on productType:
-// "sneaker" (shoe + its box) and "clothing" (garment sets). Everything lives at
-// /aiAssistant/styleKit/{template} = { prompt, refs:{refId:{url,path,enabled,…}} }
-// and Storage aiStudio/styleKit/{template}/{refId}.jpg — the generate function
-// re-reads it per call, so changes apply to the NEXT generation, no redeploy.
-const STYLE_KIT_TEMPLATES = [
-  { key: "sneaker",  label: "Sneaker",  hint: "shoe displayed with its box" },
-  { key: "clothing", label: "Clothing", hint: "garment sets on the backdrop" },
-];
+// that drive house-style generations. Since 20 Nov 2026 (Junid) it is a
+// CATALOGUE: one kit per catalogue category (Sneakers, Clothing, Caps, Beanies,
+// Sunglasses, Perfumes, Bags, Belts, Jerseys, Slides, Tracksuits, Accessories …),
+// sub-categories Junid makes himself (Caps > Trucker), and one-tap assignment of
+// any category or product to a kit. Which kit a product uses is decided by ONE
+// shared module — functions/lib/style-kit-catalogue.mjs — imported here, by the
+// Shopify / AI Studio publisher and by the New Arrivals / Black Friday generator.
+// Everything lives at /aiAssistant/styleKit/{kit} = { label?, parent?, prompt?, refs }
+// (+ _routes/categories, _routes/products) and Storage aiStudio/styleKit/{kit}/{refId}.jpg;
+// every generator re-reads it per call — changes apply to the NEXT generation.
 // Cosmetic garment-type labels for CLOTHING refs — organisation only, so the
 // spread across types is visible at a glance. The generator ignores them and
 // sends the first enabled clothing refs regardless of label.
 const STYLE_KIT_KINDS = ["cap", "tee", "jeans", "jacket", "tracksuit", "other"];
-const STYLE_KIT_MAX_SENT = 6; // KEEP IN SYNC with HOUSE_MAX_REFS in functions/index.js
+const STYLE_KIT_MAX_SENT = SK_MAX_REFS_SENT; // the generators' "first 6 sent" (lib/style-kit-catalogue.mjs)
 
-// Panel starting text for the locked prompts — display copies of the function's
-// code defaults. KEEP IN SYNC with HOUSE_PROMPT_* in functions/index.js: the
-// function only reads /aiAssistant/styleKit/{template}/prompt when one is SAVED;
-// until then it uses its own identical built-in.
-const STYLE_KIT_DEFAULT_PROMPTS = {
-  clothing: [
-    "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
-    "images show our exact studio scene — recreate that scene precisely: the same backdrop and wall,",
-    "the same hangers and display hardware, the same lighting direction, softness and colour grade,",
-    "the same camera height, distance, angle and framing, and the same layout and spacing. The output",
-    "must look like it was shot in the SAME session, in the SAME spot, with the SAME lighting rig as",
-    "the references.",
-    "CRITICAL — the references define ONLY the scene and styling. The garments shown in the references",
-    "are DIFFERENT products: none of their design, colour, fabric, branding or details may appear in",
-    "the output.",
-    "The PRODUCT image shows the actual item to photograph. Keep the product's design EXACTLY —",
-    "identical shape, proportions, colour, materials, patterns, logos and text. Never redesign,",
-    "restyle, recolour, or invent details the real product does not have. Render every brand wordmark",
-    "and logo crisply and correctly — properly letter-formed, correctly spelled, matching the real",
-    "brand's exact lettering; never garbled, warped or fake-looking.",
-    "Present the garments as a coordinated SET, displayed exactly the way the reference sets are",
-    "displayed — every piece visible in the product photo (e.g. hoodie and matching joggers) arranged",
-    "together in the same configuration, on the same hangers, with the same spacing as the references.",
-    "If the product photo shows a single piece, present just that piece in the identical scene and",
-    "position. Settle out the creases a garment picks up from packing, folding or a hanger — but anything",
-    "set into the cloth by WEAR stays. Natural drape, squared shoulders and straight hems; nothing cropped",
-    "or cut off.",
-    "Render the product's colours as the ITEM ACTUALLY IS — never washed out or over-exposed by the",
-    "rendering, and never freshened either: colour genuinely lost to fading or yellowing stays lost. Darks",
-    "must not be lifted or greyed by the exposure. Match the exposure and white balance of the reference",
-    "scene so the product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a",
-    "photorealistic result indistinguishable from a real photo of THIS item taken in our studio.",
-  ].join(" "),
-  sneaker: [
-    "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
-    "images show our exact studio scene — recreate it precisely: the same backdrop, surface, lighting",
-    "direction, softness and colour grade, the same camera height, angle and framing, and the same",
-    "shoe-and-box composition and spacing as the references. The output must look like it was shot in",
-    "the SAME session, in the SAME spot, with the SAME lighting rig.",
-    "CRITICAL — the references define ONLY the scene, layout and styling. The sneakers and boxes shown",
-    "in them are DIFFERENT products: none of their design, colourway or branding may appear in the",
-    "output.",
-    "The PRODUCT image shows the actual sneaker to photograph. Keep its design EXACTLY — identical",
-    "shape, proportions, colourway, materials, patterns, logos and text. Show the OUTER (lateral)",
-    "branded display side facing the camera, keeping the SAME side and SAME left/right facing as the",
-    "product photo — never flip, mirror or rotate to the plain inner side. Never redesign or invent",
-    "details.",
-    "Display the sneaker WITH its retail box, positioned exactly as the boxes are positioned in the",
-    "references. If a BOX image is provided, reproduce that exact box — its true colours, graphics,",
-    "logos and label text, correctly spelled and crisply rendered. If no box image is provided, show",
-    "this exact model's authentic retail box using your knowledge of the real product; keep all box",
-    "text and branding accurate and legible, and never invent box artwork that doesn't exist.",
-    "Colours as the ITEM ACTUALLY IS — darks not lifted or greyed by the exposure, and colour genuinely",
-    "lost to fading left lost; match the reference scene's exposure and white balance. Tack-sharp focus",
-    "and detail; a photorealistic result indistinguishable from a real photo of THIS item in our studio.",
-  ].join(" "),
-};
-
-function StyleKitPanel() {
+function StyleKitPanel({ products = [] }) {
   const { user } = usePermissions();
   const [kit, setKit] = useState({});
   useEffect(() => {
     const unsub = onValue(ref(database, "aiAssistant/styleKit"), snap => setKit(snap.val() || {}));
     return () => unsub();
   }, []);
+  const { registry: taxonomy } = useTaxonomy();
   const [template, setTemplate] = useState("sneaker");
   const [uploadKind, setUploadKind] = useState("other");
   const [uploading, setUploading] = useState(false);
@@ -4699,9 +4816,26 @@ function StyleKitPanel() {
   // Prompt draft: null = showing the saved (or default) text; a string = edited.
   const [draft, setDraft] = useState(null);
   const [savingPrompt, setSavingPrompt] = useState(false);
-  useEffect(() => { setDraft(null); setMsg(null); }, [template]);
+  const [showCats, setShowCats] = useState(false);
+  const [prodQ, setProdQ] = useState("");
+  useEffect(() => { setDraft(null); setMsg(null); setProdQ(""); }, [template]);
 
-  const t = kit[template] || {};
+  // ── The Catalogue: every kit, what it covers, what it sends ──
+  const defs = useMemo(() => skKitDefs(kit), [kit]);
+  const counts = useMemo(() => skKitCounts(products, kit), [products, kit]);
+  const liveOf = (k) => skEnabledRefs(kit, k).length;
+  const children = (parent) => Object.values(defs).filter(d => (d.parent || null) === parent);
+  // Top-level kits in the built-in order, Junid's own after.
+  const topKits = [...children(null)].sort((a, b) => (a.custom - b.custom));
+  // A kit's products include its sub-kits' (Caps covers Caps > Trucker too).
+  const coverTotal = (k, seen = new Set()) => {
+    if (seen.has(k)) return 0; seen.add(k);
+    return (counts[k] || 0) + children(k).reduce((n, c) => n + coverTotal(c.key, seen), 0);
+  };
+  const sel = defs[template] ? template : "sneaker";
+  const selDef = defs[sel];
+
+  const t = kit[sel] || {};
   const refsArr = useMemo(() => Object.entries(t.refs || {})
     .map(([id, r]) => ({ id, ...r }))
     .sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0)), [t.refs]);
@@ -4709,9 +4843,11 @@ function StyleKitPanel() {
   // The generator sends the FIRST STYLE_KIT_MAX_SENT enabled refs (oldest first)
   // — badge exactly those so what's "live" is never a guess.
   const sentIds = new Set(enabled.slice(0, STYLE_KIT_MAX_SENT).map(r => r.id));
+  // Where this kit's products go while it has no enabled photos.
+  const fallbackFor = (k) => { let cur = defs[k]?.parent; while (cur && !liveOf(cur)) cur = defs[cur]?.parent; return cur ? defs[cur].label : "the house-style default (Sneakers / Clothing)"; };
 
   const isCustomPrompt = typeof t.prompt === "string" && t.prompt.trim().length > 0;
-  const effectivePrompt = isCustomPrompt ? t.prompt : STYLE_KIT_DEFAULT_PROMPTS[template];
+  const effectivePrompt = skPromptFor(kit, sel).prompt;
   const shownPrompt = draft !== null ? draft : effectivePrompt;
   const promptDirty = draft !== null && draft.trim() !== effectivePrompt.trim();
 
@@ -4719,56 +4855,124 @@ function StyleKitPanel() {
     const files = [...(e.target.files || [])];
     e.target.value = "";
     if (!files.length) return;
-    setUploading(true); setMsg(`Uploading ${files.length} reference${files.length === 1 ? "" : "s"}…`);
+    const target = sel; // the kit the files were picked for, even if Junid taps another kit mid-upload
+    setUploading(true); setMsg(`Uploading ${files.length} reference${files.length === 1 ? "" : "s"} to ${defs[target]?.label || target}…`);
+    // A new app version never reloads this tab under an upload (the updater's busy registry).
+    setUpdateBusy("stylekit-upload", true);
+    try {
     let ok = 0, fail = 0;
     for (const file of files) {
       try {
         // References drive scene fidelity — keep more detail than product thumbs.
         const blob = await compressImageFile(file, 1600, 800 * 1024);
         const refId = `r${serverNowMs()}_${Math.random().toString(36).slice(2, 7)}`;
-        const path = `aiStudio/styleKit/${template}/${refId}.jpg`;
+        const path = `aiStudio/styleKit/${target}/${refId}.jpg`;
         const sRef = storageRef(storage, path);
         await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=31536000, immutable" });
         const url = await getDownloadURL(sRef);
-        await set(ref(database, `aiAssistant/styleKit/${template}/refs/${refId}`), {
+        await set(ref(database, `aiAssistant/styleKit/${target}/refs/${refId}`), {
           url, path, enabled: true, addedAt: serverNowMs(), by: user?.email || "",
-          ...(template === "clothing" ? { kind: uploadKind } : {}),
+          ...(target === "clothing" ? { kind: uploadKind } : {}),
         });
         ok++;
       } catch (err) { fail++; console.warn("styleKit ref upload failed:", err); }
     }
-    setMsg(`Added ${ok} reference${ok === 1 ? "" : "s"}${fail ? ` · ${fail} failed` : ""}.`);
-    setUploading(false);
+    setMsg(`Added ${ok} reference${ok === 1 ? "" : "s"} to ${defs[target]?.label || target}${fail ? ` · ${fail} failed` : ""}.`);
+    } finally { setUpdateBusy("stylekit-upload", false); setUploading(false); }
   };
-  const toggleRef = (r) => update(ref(database, `aiAssistant/styleKit/${template}/refs/${r.id}`), { enabled: r.enabled === false });
-  const setRefKind = (r, kind) => update(ref(database, `aiAssistant/styleKit/${template}/refs/${r.id}`), { kind });
+  const toggleRef = (r) => update(ref(database, `aiAssistant/styleKit/${sel}/refs/${r.id}`), { enabled: r.enabled === false });
+  const setRefKind = (r, kind) => update(ref(database, `aiAssistant/styleKit/${sel}/refs/${r.id}`), { kind });
   const deleteRef = async (r) => {
     if (!window.confirm("Delete this reference image?")) return;
     try {
-      await remove(ref(database, `aiAssistant/styleKit/${template}/refs/${r.id}`));
+      await remove(ref(database, `aiAssistant/styleKit/${sel}/refs/${r.id}`));
       if (r.path) deleteObject(storageRef(storage, r.path)).catch(() => {}); // best-effort; the RTDB entry is the source of truth
       setMsg("Reference deleted.");
     } catch (err) { setMsg(`Couldn't delete: ${err?.message || err}`); }
+  };
+  // Move a photo to another kit in one write: the same file, its entry re-homed (added time kept, so its
+  // place in "first 6 sent" order is its own). One multi-path update — never in two kits, never in none.
+  const moveRef = async (r, to) => {
+    if (!to || to === sel) return;
+    const { id, ...entry } = r;
+    try {
+      await update(ref(database, "aiAssistant/styleKit"), {
+        [`${to}/refs/${id}`]: { ...entry, movedFrom: sel, movedAt: serverNowMs() },
+        [`${sel}/refs/${id}`]: null,
+      });
+      setMsg(`Moved to ${defs[to]?.label || to}.`);
+    } catch (err) { setMsg(`Couldn't move: ${err?.message || err}`); }
   };
   const savePrompt = async () => {
     const text = shownPrompt.trim();
     if (!text) { setMsg("Prompt can't be empty — use Reset to go back to the default."); return; }
     setSavingPrompt(true);
-    try { await set(ref(database, `aiAssistant/styleKit/${template}/prompt`), text); setDraft(null); setMsg("Prompt saved — applies from the next generation."); }
+    try { await set(ref(database, `aiAssistant/styleKit/${sel}/prompt`), text); setDraft(null); setMsg("Prompt saved — applies from the next generation."); }
     catch (err) { setMsg(`Couldn't save: ${err?.message || err}`); }
     finally { setSavingPrompt(false); }
   };
   const resetPrompt = async () => {
-    if (!window.confirm("Reset this template's prompt to the built-in default?")) return;
+    if (!window.confirm("Reset this kit's prompt to the built-in default?")) return;
     setSavingPrompt(true);
-    try { await set(ref(database, `aiAssistant/styleKit/${template}/prompt`), null); setDraft(null); setMsg("Reset to the built-in default prompt."); }
+    try { await set(ref(database, `aiAssistant/styleKit/${sel}/prompt`), null); setDraft(null); setMsg("Reset to the built-in default prompt."); }
     catch (err) { setMsg(`Couldn't reset: ${err?.message || err}`); }
     finally { setSavingPrompt(false); }
   };
+  // ── Sub-categories (Caps > Trucker) ──
+  const addSubKit = async () => {
+    const name = (window.prompt(`New sub-category under ${selDef.label} (e.g. Trucker):`) || "").trim();
+    if (!name) return;
+    let key = skSlugKitKey(`${sel}-${name}`);
+    if (!key || defs[key] || key.startsWith("_")) key = `${key || "kit"}-${Math.random().toString(36).slice(2, 5)}`;
+    try {
+      await update(ref(database, `aiAssistant/styleKit/${key}`), { label: name, parent: sel, createdAt: serverNowMs(), by: user?.email || "" });
+      setTemplate(key); setMsg(`Made ${selDef.label} › ${name}. Add its photos, then assign products or categories to it.`);
+    } catch (err) { setMsg(`Couldn't make it: ${err?.message || err}`); }
+  };
+  const deleteSubKit = async () => {
+    if (!selDef.custom) return;
+    if (refsArr.length) { setMsg("Remove or move its photos first."); return; }
+    if (children(sel).length) { setMsg("Delete or move its own sub-categories first."); return; }
+    if (!window.confirm(`Delete the sub-category ${selDef.label}? Its products go back to ${defs[selDef.parent]?.label || "their category kit"}.`)) return;
+    // Its own fields only — never the whole node, so a photo moved in from another tab meanwhile is not wiped.
+    const updates = { [`${sel}/label`]: null, [`${sel}/parent`]: null, [`${sel}/prompt`]: null, [`${sel}/createdAt`]: null, [`${sel}/by`]: null };
+    for (const [pid, k] of Object.entries(kit._routes?.products || {})) if (k === sel) updates[`_routes/products/${pid}`] = null;
+    for (const [c, k] of Object.entries(kit._routes?.categories || {})) if (k === sel) updates[`_routes/categories/${c}`] = null;
+    try { await update(ref(database, "aiAssistant/styleKit"), updates); setTemplate(selDef.parent || "sneaker"); }
+    catch (err) { setMsg(`Couldn't delete: ${err?.message || err}`); }
+  };
+  // ── One-tap assignment ──
+  const assignCategory = async (catKey, kitKey) => {
+    // An explicit pick is stored as picked; "automatic" (empty) clears it back to the default map.
+    try { await set(ref(database, `aiAssistant/styleKit/_routes/categories/${catKey}`), kitKey || null); }
+    catch (err) { setMsg(`Couldn't assign: ${err?.message || err}`); }
+  };
+  const assignProduct = async (pid, kitKey) => {
+    try { await set(ref(database, `aiAssistant/styleKit/_routes/products/${pid}`), kitKey || null); }
+    catch (err) { setMsg(`Couldn't assign: ${err?.message || err}`); }
+  };
+  const productRoutes = kit._routes?.products || {};
+  const assignedHere = useMemo(() => products.filter(p => p && productRoutes[p.id] === sel), [products, productRoutes, sel]);
+  const prodHits = useMemo(() => {
+    const q = prodQ.trim().toLowerCase();
+    if (q.length < 2) return [];
+    const words = q.split(/\s+/);
+    return products.filter(p => p && p.id && !p.deleted && words.every(w => `${p.name || ""} ${p.sku || ""} ${p.barcode || ""}`.toLowerCase().includes(w))).slice(0, 12);
+  }, [products, prodQ]);
+  const catRows = useMemo(() => {
+    const byCat = {};
+    for (const p of products) { if (!p || p.deleted || p.archived) continue; const k = p.categoryKey || ""; byCat[k] = (byCat[k] || 0) + 1; }
+    const cats = Object.values(taxonomy?.cats || {}).filter(c => c && c.key && c.active !== false);
+    const known = new Set(cats.map(c => c.key));
+    const extra = Object.keys(byCat).filter(k => k && !known.has(k)).map(k => ({ key: k, label: k }));
+    return [...cats, ...extra].map(c => ({ key: c.key, label: c.label || c.key, n: byCat[c.key] || 0, kit: skCategoryKitOf(kit, c.key) }))
+      .sort((a, b) => String(a.label).localeCompare(String(b.label)));
+  }, [products, taxonomy, kit]);
+  const kitOptions = Object.values(defs).map(d => ({ key: d.key, label: d.parent ? `${defs[d.parent]?.label || d.parent} › ${d.label}` : d.label }));
 
-  // Clothing tab: group by cosmetic garment-type label so the spread across
-  // types is visible. Sneaker tab: one flat group.
-  const groups = template === "clothing"
+  // Clothing kit: group by cosmetic garment-type label so the spread across
+  // types is visible. Every other kit: one flat group.
+  const groups = sel === "clothing"
     ? STYLE_KIT_KINDS.map(k => ({ kind: k, items: refsArr.filter(r => (r.kind || "other") === k) })).filter(g => g.items.length)
     : [{ kind: null, items: refsArr }];
 
@@ -4777,6 +4981,19 @@ function StyleKitPanel() {
     border: "1px solid " + (on ? `${tint}90` : "rgba(255,255,255,.13)"),
     borderRadius: 999, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer",
   });
+  const kitChip = (d, depth = 0) => {
+    const on = sel === d.key;
+    const live = liveOf(d.key);
+    return (
+      <Fragment key={d.key}>
+        <button onClick={() => setTemplate(d.key)} title={live ? `${live} enabled photos` : `No photos yet — its products use ${fallbackFor(d.key)}`}
+                style={{ ...chip(on, "#A78BFA"), ...(depth ? { padding: "5px 11px", fontSize: 11.5 } : {}), opacity: live || on ? 1 : .72 }}>
+          {depth ? "› " : ""}{d.label} <span style={{ opacity:.65, fontWeight:600 }}>· {live} live · {coverTotal(d.key)} products</span>
+        </button>
+        {children(d.key).map(c => kitChip(c, depth + 1))}
+      </Fragment>
+    );
+  };
 
   return (
     <div style={{ padding:"0 14px 30px" }}>
@@ -4787,27 +5004,50 @@ function StyleKitPanel() {
         </span>
       </div>
       <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginBottom:12, lineHeight:1.5 }}>
-        Upload 5–10 photos of the Marathon scene per template. Every house-style generation sends the product photo
-        {" "}(+ box photo for sneakers) plus the first {STYLE_KIT_MAX_SENT} enabled references — changes apply from the
-        next generation, no redeploy.
+        One kit per catalogue category. Every Generate — Photo Studio, Shopify, New Arrivals, Black Friday, Regenerate — uses the
+        kit for the product's category: its own kit first, then the parent kit, then the house-style default. A kit with no
+        enabled photos is skipped. Each generation sends the product photo (+ box photo for sneakers) plus the first {STYLE_KIT_MAX_SENT} enabled
+        references, then checks the result against the original photo.
       </div>
 
-      {/* Template tabs */}
-      <div style={{ display:"flex", gap:8, marginBottom:14 }}>
-        {STYLE_KIT_TEMPLATES.map(tp => {
-          const on = template === tp.key;
-          const count = Object.values((kit[tp.key] || {}).refs || {}).filter(r => r && r.enabled !== false).length;
-          return (
-            <button key={tp.key} onClick={() => setTemplate(tp.key)} title={tp.hint} style={chip(on, "#A78BFA")}>
-              {tp.label} <span style={{ opacity:.65, fontWeight:600 }}>· {count} live</span>
-            </button>
-          );
-        })}
+      {/* The Catalogue: every kit, its sub-categories, what it covers */}
+      <div style={{ fontSize:11, fontWeight:800, letterSpacing:.6, textTransform:"uppercase", color:"rgba(196,181,253,.85)", margin:"4px 2px 8px" }}>Catalogue</div>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+        {topKits.map(d => kitChip(d))}
+      </div>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14 }}>
+        <button onClick={addSubKit} style={{ ...chip(false), padding:"6px 12px", fontSize:11.5 }}>＋ Sub-category under {selDef.label}</button>
+        <button onClick={() => setShowCats(v => !v)} style={{ ...chip(showCats), padding:"6px 12px", fontSize:11.5 }}>{showCats ? "Hide" : "Show"} categories → kits</button>
+        {selDef.custom && <button onClick={deleteSubKit} style={{ ...chip(false), padding:"6px 12px", fontSize:11.5, color:"rgba(255,140,140,.9)" }}>Delete {selDef.label}</button>}
+      </div>
+
+      {showCats && (
+        <div style={{ background:"rgba(8,11,20,.95)", border:"1px solid rgba(255,255,255,.1)", borderRadius:12, padding:"8px 10px", marginBottom:14 }}>
+          <div style={{ fontSize:10.5, color:"rgba(255,255,255,.4)", margin:"2px 2px 8px" }}>
+            Every category in the product catalogue and the kit it uses. Pick a kit to move a whole category.
+          </div>
+          {catRows.map(c => (
+            <div key={c.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 2px", borderTop:"1px solid rgba(255,255,255,.05)" }}>
+              <span style={{ flex:1, fontSize:12, color:"rgba(255,255,255,.8)" }}>{c.label} <span style={{ color:"rgba(255,255,255,.35)" }}>· {c.n}</span></span>
+              <select value={kit._routes?.categories?.[c.key] && defs[kit._routes.categories[c.key]] ? kit._routes.categories[c.key] : ""} onChange={e => assignCategory(c.key, e.target.value)}
+                      style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, color:"rgba(255,255,255,.8)", padding:"4px 6px", fontSize:11.5, maxWidth:190 }}>
+                <option value="">{SK_CATEGORY_KIT[c.key] ? `automatic (${defs[SK_CATEGORY_KIT[c.key]]?.label || SK_CATEGORY_KIT[c.key]})` : "house-style default"}</option>
+                {kitOptions.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+              </select>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* The selected kit */}
+      <div style={{ display:"flex", alignItems:"baseline", gap:8, margin:"6px 2px 8px", flexWrap:"wrap" }}>
+        <span style={{ fontSize:15, fontWeight:800, color:"#fff" }}>{selDef.parent ? `${defs[selDef.parent]?.label} › ` : ""}{selDef.label}</span>
+        <span style={{ fontSize:11.5, color:"rgba(255,255,255,.45)" }}>covers {coverTotal(sel)} product{coverTotal(sel) === 1 ? "" : "s"}</span>
       </div>
 
       {/* Upload row */}
       <div style={{ background:"rgba(8,11,20,.95)", border:"1px solid rgba(167,139,250,.3)", borderRadius:12, padding:12, marginBottom:14 }}>
-        {template === "clothing" && (
+        {sel === "clothing" && (
           <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginBottom:10 }}>
             <span style={{ fontSize:11, fontWeight:700, color:"rgba(255,255,255,.45)", marginRight:2 }}>LABEL UPLOADS AS</span>
             {STYLE_KIT_KINDS.map(k => (
@@ -4832,7 +5072,9 @@ function StyleKitPanel() {
         </div>
         {enabled.length === 0 && (
           <div style={{ marginTop:8, fontSize:11.5, color:"#FFC46B" }}>
-            ⚠ No enabled references — house-style runs for this template will rely on the prompt alone until you add some.
+            {skBaseKits.includes(sel)
+              ? "⚠ No enabled references — house-style runs for this kit will fail until you add some."
+              : `No photos yet — its products use ${fallbackFor(sel)} until you add some.`}
           </div>
         )}
       </div>
@@ -4867,18 +5109,25 @@ function StyleKitPanel() {
                     <button onClick={() => deleteRef(r)} aria-label="Delete reference" title="Delete reference"
                             style={{ position:"absolute", top:5, right:5, width:20, height:20, borderRadius:"50%", background:"rgba(10,12,20,.85)", color:"rgba(255,140,140,.9)", border:"1px solid rgba(255,255,255,.2)", fontSize:12, lineHeight:1, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>×</button>
                   </div>
-                  <div style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 8px" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 8px 4px" }}>
                     <button onClick={() => toggleRef(r)}
                             style={{ flex:1, background: on ? "rgba(74,202,122,.14)" : "rgba(255,255,255,.05)", color: on ? "#5FD894" : "rgba(255,255,255,.5)",
                                      border:"1px solid " + (on ? "rgba(74,202,122,.4)" : "rgba(255,255,255,.13)"), borderRadius:8, padding:"5px 0", fontSize:10.5, fontWeight:800, cursor:"pointer" }}>
                       {on ? "✓ Enabled" : "Off"}
                     </button>
-                    {template === "clothing" && (
+                    {sel === "clothing" && (
                       <select value={r.kind || "other"} onChange={e => setRefKind(r, e.target.value)} title="Garment-type label (organisation only)"
                               style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.14)", borderRadius:8, color:"rgba(255,255,255,.75)", padding:"4px 5px", fontSize:10.5, maxWidth:86 }}>
                         {STYLE_KIT_KINDS.map(k => <option key={k} value={k}>{k}</option>)}
                       </select>
                     )}
+                  </div>
+                  <div style={{ padding:"0 8px 7px" }}>
+                    <select value="" onChange={e => moveRef(r, e.target.value)} title="Move this photo to another kit"
+                            style={{ width:"100%", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.1)", borderRadius:8, color:"rgba(255,255,255,.55)", padding:"3px 5px", fontSize:10.5 }}>
+                      <option value="">Move to kit…</option>
+                      {kitOptions.filter(o => o.key !== sel).map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                    </select>
                   </div>
                 </div>
               );
@@ -4888,13 +5137,44 @@ function StyleKitPanel() {
       ))}
       {refsArr.length === 0 && (
         <div style={{ textAlign:"center", color:"#555", padding:"2rem 1rem", fontSize:"0.9rem" }}>
-          No {template} references yet — add the photos that define the Marathon look for this template.
+          No {selDef.label} references yet — add the photos that define the Marathon look for this kit.
         </div>
       )}
 
+      {/* Products assigned to this kit (one tap) */}
+      <div style={{ display:"flex", alignItems:"center", gap:8, margin:"18px 0 8px" }}>
+        <span style={{ fontSize:13.5, fontWeight:800, color:"#fff" }}>Products assigned to {selDef.label}</span>
+        <span style={{ fontSize:11, color:"rgba(255,255,255,.4)" }}>{assignedHere.length} by hand · the rest come from their category</span>
+      </div>
+      {assignedHere.length > 0 && (
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
+          {assignedHere.map(p => (
+            <span key={p.id} style={{ ...chip(true, "#A78BFA"), cursor:"default", padding:"4px 6px 4px 11px", fontSize:11, display:"inline-flex", alignItems:"center", gap:6 }}>
+              {p.name || p.id}
+              <button onClick={() => assignProduct(p.id, null)} aria-label="Unassign" style={{ background:"transparent", border:"none", color:"rgba(255,160,160,.9)", cursor:"pointer", fontSize:13, padding:"0 4px" }}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <input value={prodQ} onChange={e => setProdQ(e.target.value)} placeholder={`Find a product to put in ${selDef.label}…`}
+             style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.05)", border:"1px solid rgba(255,255,255,.13)", borderRadius:10, color:"#fff", padding:"9px 12px", fontSize:12.5 }}/>
+      {prodHits.map(p => {
+        const here = productRoutes[p.id] === sel;
+        const now = skCoveringKit(p, p.id, kit);
+        return (
+          <div key={p.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 2px", borderBottom:"1px solid rgba(255,255,255,.05)" }}>
+            {p.photoUrl ? <img src={p.photoUrl} alt="" style={{ width:34, height:34, borderRadius:7, objectFit:"cover" }}/> : <span style={{ width:34 }}/>}
+            <span style={{ flex:1, fontSize:12, color:"rgba(255,255,255,.8)" }}>{p.name || p.id} <span style={{ color:"rgba(255,255,255,.35)" }}>· now {defs[now]?.label || now}</span></span>
+            <button onClick={() => assignProduct(p.id, here ? null : sel)} style={{ ...chip(here, "#A78BFA"), padding:"5px 12px", fontSize:11 }}>
+              {here ? "✓ In this kit" : `Put in ${selDef.label}`}
+            </button>
+          </div>
+        );
+      })}
+
       {/* Locked prompt editor */}
       <div style={{ display:"flex", alignItems:"center", gap:8, margin:"18px 0 8px" }}>
-        <span style={{ fontSize:13.5, fontWeight:800, color:"#fff" }}>Locked prompt · {template}</span>
+        <span style={{ fontSize:13.5, fontWeight:800, color:"#fff" }}>Locked prompt · {selDef.label}</span>
         <span style={{ background: isCustomPrompt ? "rgba(167,139,250,.16)" : "rgba(255,255,255,.06)", border:"1px solid " + (isCustomPrompt ? "rgba(167,139,250,.45)" : "rgba(255,255,255,.13)"),
                        color: isCustomPrompt ? "#C4B5FD" : "rgba(255,255,255,.5)", fontSize:10.5, fontWeight:700, padding:"2px 9px", borderRadius:999 }}>
           {isCustomPrompt ? "custom" : "built-in default"}
@@ -4918,8 +5198,8 @@ function StyleKitPanel() {
       </div>
       <div style={{ fontSize:10.5, color:"rgba(255,255,255,.35)", marginTop:8, lineHeight:1.5 }}>
         The prompt locks scene rules (product identity, layout, no reference-product leakage); the reference photos are
-        the authority on the exact backdrop, lighting and framing. Product name + any regenerate fix-note are added
-        automatically per product.
+        the authority on the exact backdrop, angle, lighting and framing — never on the product. Product name + any
+        regenerate fix-note are added automatically per product.
       </div>
     </div>
   );
@@ -5234,6 +5514,12 @@ import BulkPricingTab from "./components/admin/BulkPricingTab";
 import SpecialsTab from "./components/admin/SpecialsTab";
 import { btHandoff } from "./btHandoff/handoff.js";
 import BtHandoffStatus from "./btHandoff/BtHandoffStatus.jsx";
+// The Style Kit Catalogue's routing — the SAME module the generators import (functions/lib).
+import {
+  kitDefs as skKitDefs, kitCounts as skKitCounts, enabledRefs as skEnabledRefs, promptFor as skPromptFor,
+  slugKitKey as skSlugKitKey, categoryKitOf as skCategoryKitOf, coveringKit as skCoveringKit,
+  CATEGORY_KIT as SK_CATEGORY_KIT, BASE_KITS as skBaseKits, MAX_REFS_SENT as SK_MAX_REFS_SENT,
+} from "../functions/lib/style-kit-catalogue.mjs";
 
 // Missing-Prices category chips: All + the real top-levels (so a new category
 // appears automatically) + an Uncategorized catch-all. Keys match typeOf()
@@ -6009,7 +6295,7 @@ function AiStudioView({ products, onExit }) {
   );
 
   const sidebar = (
-    <aside style={{ width:224, flexShrink:0, position:"sticky", top:0, height:"100vh", boxSizing:"border-box",
+    <aside style={{ width:224, flexShrink:0, position:"sticky", top:"env(safe-area-inset-top, 0px)", height:"100vh", boxSizing:"border-box",
                     display:"flex", flexDirection:"column", gap:4, padding:"24px 14px 18px",
                     background:"rgba(255,255,255,.015)", borderRight:"1px solid rgba(255,255,255,.07)" }}>
       <div data-legacy-header="" style={{ padding:"0 10px 20px" }}>
@@ -6058,7 +6344,7 @@ function AiStudioView({ products, onExit }) {
   const toolBody =
     activeId === "names"    ? <AdminReviewNamesTab products={products} /> :
     activeId === "reorder"  ? <InsightReorderTab productPhotoMap={productPhotoMap} /> :
-    activeId === "stylekit" ? <StyleKitPanel /> :
+    activeId === "stylekit" ? <StyleKitPanel products={products} /> :
     activeId === "spend"    ? <AiSpendTab /> :
                               <AdminReviewPhotosTab products={products} />;
 
@@ -6103,6 +6389,15 @@ function AiStudioView({ products, onExit }) {
 }
 
 export function AdminView({ products, orders, onExit }) {
+  // Concrete (second Shopify store): the All products marking list and the
+  // Brand Check queue. Brand Check is Junid or a stockRole admin only.
+  const { user: adminUser, permRecord: adminPerm } = usePermissions();
+  const canBrandCheck = canVerifyBrand(adminUser, adminPerm);
+  // The Brand Check TAB is hidden (temporaryCards.js) — canBrandCheck still
+  // gates verify on All products.
+  const showBrandCheck = BRAND_CHECK_TAB && canBrandCheck;
+  const brandCheckCount = useBrandCheckCount(products, showBrandCheck);
+  const concreteLive = useConcreteLiveSet(!!adminUser);
   // The AI features (Claude name-cleanup, Gemini/OpenAI photo generation,
   // pickup-board voice) moved to the super-admin-only AI Studio view — this
   // view is pure product management now (products + category sorting).
@@ -6325,6 +6620,22 @@ export function AdminView({ products, orders, onExit }) {
     // and POS browse. Refuse rather than half-type it.
     if (!form.name.trim() || !form.categoryKey || !selectedCat || !formLegacy) return;
     if (!formSizes.length) return;
+    // ── A CAP, BEANIE OR BUCKET HAT IS CAPS & BEANIES, ONE SIZE (Junid, 20 Nov
+    // 2026 — utils/headwearCategory.js). From another one-size category the
+    // builder re-files it silently (same "_" size, nothing typed is lost).
+    // From a SIZED category the typed quantities are keyed by sizes the product
+    // will not have, so the form offers to switch to Caps & Beanies and asks
+    // for the one quantity again rather than guess which size's number to
+    // keep. Cancel keeps the chosen category (a name the rule misreads must
+    // never block a save).
+    {
+      const fixKey = headwearCategoryKeyFor(form.name, form.categoryKey);
+      if (fixKey && !formOneSize && isAssignable(taxonomy, fixKey)
+          && window.confirm("Caps, beanies and bucket hats are Caps & Beanies, one size. Switch the category to Caps & Beanies? (You will enter the quantity once more.)\n\nCancel keeps the category you picked.")) {
+        selectCategory(fixKey);
+        return;
+      }
+    }
     // Opening stock is required as a SECTION: the destination must be picked.
     // The quantities themselves are not — an explicit 0 everywhere is a valid
     // answer ("received nothing yet"), it just writes no movements.
@@ -6564,6 +6875,9 @@ export function AdminView({ products, orders, onExit }) {
       // onValueCreated trigger) turns it into the queue entry — the client
       // never writes /new_arrivals itself, so no rule is involved.
       newProduct.newArrivalAt = serverNowMs();
+      // CONCRETE: the upload form no longer marks anything (Junid, 20 Nov
+      // 2026) — staff add products exactly as before; Junid marks
+      // Concrete-only products on the Concrete Products card.
       // The AI source copies uploaded above. Set only when present — the
       // record never carries a null for a photo it was not given.
       if (photoSourceUrl) newProduct.photoSourceUrl = photoSourceUrl;
@@ -7001,7 +7315,7 @@ export function AdminView({ products, orders, onExit }) {
   // spilled outside the chips. The counts still live on the desktop rail.
   const sectionToggle = (
     <div className="sky-row1 sky-row1--gutter" data-testid="admin-sections" style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"],["taxonomy","Taxonomy"]]
+      {[["products","Products"],["all-products","All products"],...(showBrandCheck ? [["brand-check","Brand Check"]] : []),["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"],["taxonomy","Taxonomy"]]
         .map(([val, label]) => {
         const on = adminSection === val;
         return (
@@ -7236,7 +7550,7 @@ export function AdminView({ products, orders, onExit }) {
   // ── DESKTOP WORKSPACE (>=1024px) — rail of sections + titled main pane.
   //    Handles both admin sections; mobile keeps the single column below. ──
   if (isWide) {
-    const NAV = [["products", "Products", products.length], ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount], ["bulk-pricing", "Bulk Pricing", 0], ["specials", "Specials", 0], ["taxonomy", "Taxonomy", 0]];
+    const NAV = [["products", "Products", products.length], ["all-products", "All products", 0], ...(showBrandCheck ? [["brand-check", "Brand Check", brandCheckCount]] : []), ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount], ["bulk-pricing", "Bulk Pricing", 0], ["specials", "Specials", 0], ["taxonomy", "Taxonomy", 0]];
     const navItem = ([key, label, count]) => {
       const on = adminSection === key;
       return (
@@ -7264,13 +7578,19 @@ export function AdminView({ products, orders, onExit }) {
         </button>
       );
     };
-    const title = adminSection === "assign-categories" ? "Assign Categories"
+    const title = adminSection === "all-products" ? "All products"
+      : adminSection === "brand-check" ? "Brand Check"
+      : adminSection === "assign-categories" ? "Assign Categories"
       : adminSection === "review-categories" ? "Categories"
       : adminSection === "missing-prices" ? "Missing Prices"
       : adminSection === "bulk-pricing" ? "Bulk Pricing"
       : adminSection === "specials" ? "Specials"
       : adminSection === "taxonomy" ? "Taxonomy" : "Products";
-    const subtitle = adminSection === "assign-categories"
+    const subtitle = adminSection === "all-products"
+      ? "Every product. Mark which ones are Concrete-only (sold on the Concrete website only)."
+      : adminSection === "brand-check"
+      ? "New and re-marked products waiting for a brand check."
+      : adminSection === "assign-categories"
       ? "Give every product its real category. Nothing else changes."
       : adminSection === "review-categories"
       ? "Sort uncategorised products into the browse tree."
@@ -7319,7 +7639,9 @@ export function AdminView({ products, orders, onExit }) {
           </div>
           <div style={{ flex:1, overflow:"auto", padding:"18px 30px 48px" }}>
             <div style={{ maxWidth:1160, margin:"0 auto" }}>
-              {adminSection === "assign-categories" ? <AssignCategoriesTab products={products} registry={taxonomy} />
+              {adminSection === "all-products" ? <AllProductsList products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />
+                : adminSection === "brand-check" && showBrandCheck ? <BrandCheckTab products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />
+                : adminSection === "assign-categories" ? <AssignCategoriesTab products={products} registry={taxonomy} />
                 : adminSection === "review-categories" ? <AdminReviewCategoriesTab products={products} />
                 : adminSection === "missing-prices" ? <MissingPricesTab products={products} />
                 : adminSection === "bulk-pricing" ? <BulkPricingTab products={products} />
@@ -7333,6 +7655,8 @@ export function AdminView({ products, orders, onExit }) {
     );
   }
 
+  if (adminSection === "all-products") return reviewShell(<AllProductsList products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />);
+  if (adminSection === "brand-check" && showBrandCheck) return reviewShell(<BrandCheckTab products={products} ProductPhoto={ProductPhoto} canVerify={canBrandCheck} liveOnConcrete={concreteLive} />);
   if (adminSection === "assign-categories") return reviewShell(<AssignCategoriesTab products={products} registry={taxonomy} />);
   if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
   if (adminSection === "missing-prices") return reviewShell(<MissingPricesTab products={products} />);
@@ -7463,7 +7787,10 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       // Seed FIRST, then rename (see updateProductName).
       seedSearchIdentityFrom(product)
         // Same rule as updateProductName: only an empty brand is re-derived.
-        .then(() => save({ name: next, ...(brandOnRename(product, next) || {}) }, "the name"))
+        .then(() => save({ name: next, ...(brandOnRename(product, next) || {}),
+          // Renamed to a cap / beanie / bucket hat while filed elsewhere: re-file
+          // it under Caps & Beanies in the same save (one-size products only).
+          ...(headwearRenamePatch(product, next, (k) => legacyFor(detailTaxonomy.registry, k)) || {}) }, "the name"))
         .catch((err) => setSaveError(`Could not save the name: ${err?.message || err}. Try again.`));
     }
     else if (!next) setNameDraft(product.name);
@@ -8033,7 +8360,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           })}
         </div>
         <div style={{ padding:"0 12px 10px", fontSize:11.5, color:"rgba(255,255,255,.4)", lineHeight:1.4 }}>
-          {typeBusy ? "Changing…" : "A product with stock or sales can only change Type by Junid or MC. Every change is logged."}
+          {typeBusy ? "Changing…" : "A product with stock or sales can only change Type by Junid, Jafer or MC. Every change is logged."}
         </div>
       </div>
 
@@ -8711,8 +9038,8 @@ function RefillTrackingCard({ orders = [], shop, registry, products = [], onView
 // cards. Sits under the GalleryLightbox (z 2000) so photo taps still enlarge.
 function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onClose }) {
   return (
-    <div style={{ position:"fixed", inset:0, zIndex:1500, background:BG, overflowY:"auto", fontFamily:FONT }}>
-      <div style={{ position:"sticky", top:0, zIndex:1, background:"rgba(0,0,0,.85)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", borderBottom:"1px solid rgba(60,110,255,.2)", display:"flex", alignItems:"center", gap:10, padding:"14px 14px" }}>
+    <div style={{ position:"fixed", inset:0, zIndex:1500, background:BG, overflowY:"auto", fontFamily:FONT, paddingTop:"env(safe-area-inset-top, 0px)", paddingBottom:"env(safe-area-inset-bottom, 0px)" }}>
+      <div style={{ position:"sticky", top:"env(safe-area-inset-top, 0px)", zIndex:1, background:"rgba(0,0,0,.85)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", borderBottom:"1px solid rgba(60,110,255,.2)", display:"flex", alignItems:"center", gap:10, padding:"14px 14px" }}>
         <button onClick={onClose} aria-label="Back"
                 style={{ width:34, height:34, borderRadius:10, border:"1px solid rgba(60,110,255,.35)", background:"rgba(60,110,255,.1)", color:"#9CB8FF", fontSize:16, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
           ←
@@ -8740,7 +9067,7 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 // components/assistant/assistantOrderModel.js (shared with the sneaker wall).
 
 // Exported for orderViewRestore.render.test.jsx only.
-export function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
+export function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, confirmShopLocally = true, shopRegistry,
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
                             onViewPhoto, onSwitchView, userEmail, mode, setMode,
                             customerName, setCustomerName, customerPhone, setCustomerPhone,
@@ -8777,6 +9104,17 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const setBrand = setBrandProp ?? setOwnBrand;
   const [sort, setSort]   = useState("feat");
   const [qv, setQv]       = useState(null);   // quick-view product
+  // The quick view holds the product as it was when opened. Its PRICE is read
+  // from the current catalogue, so a price that lands while it is open (the
+  // change feed, or the one-row recheck) shows at once. If the product has
+  // left the catalogue, the opened copy stands. docs/ASSISTANT-NO-PRICE-SET.md
+  // `qvLive` is that current record, and it is also what an order add from the
+  // quick view hands on, so the order line carries the price on screen.
+  const qvLive = useMemo(() => {
+    if (!qv) return null;
+    return (products || []).find((x) => x && x.id === qv.id) || qv;
+  }, [qv, products]);
+  const qvPrice = qvLive ? retailPriceOf(qvLive) : null;
   const [qvSize, setQvSize] = useState(null);
   const [qvQty, setQvQty] = useState(1);
   const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
@@ -8798,6 +9136,10 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const [nameDD, setNameDD] = useState(false);
   const [phoneDD, setPhoneDD] = useState(false);
   const [pendingShop, setPendingShop] = useState(null); // shop-switch confirm
+  // ONE confirmation per switch: an account with a home shop gets the app-wide
+  // full-screen modal (onSelectShop opens it), so this screen's own confirm is
+  // only for accounts with no home shop.
+  const pickShop = (id) => { if (!id || id === effectiveShop) return; if (confirmShopLocally) setPendingShop(id); else onSelectShop(id); };
   const searchRef = useRef(null);
 
   // Catalog by MODE — the mode/hub-filtered candidate set, computed ONCE by
@@ -8825,11 +9167,13 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
   const shown = useMemo(() => {
     const results = searchResults || catalog;   // defensive: never render undefined
     let list = filterByBrand(results, brand);
-    if (sort === "ph") list = [...list].sort((a, b) => (b.retailPrice || 0) - (a.retailPrice || 0));
-    else if (sort === "pl") list = [...list].sort((a, b) => (a.retailPrice || 0) - (b.retailPrice || 0));
+    if (sort === "ph") list = [...list].sort((a, b) => (retailPriceOf(b) || 0) - (retailPriceOf(a) || 0));
+    else if (sort === "pl") list = [...list].sort((a, b) => (retailPriceOf(a) || 0) - (retailPriceOf(b) || 0));
     else if (sort === "az") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
-    return list;
-  }, [searchResults, catalog, brand, sort]);
+    // UNAVAILABLE LAST (Junid, 27 Nov 2026), after the chosen sort so each
+    // group keeps it. Same Set as the card badge; the wall shares this list.
+    return unavailableLast(list, unavailableIds);
+  }, [searchResults, catalog, brand, sort, unavailableIds]);
 
   // Switching store or Sneakers / Clothing recomputes the options: the brand
   // stays chosen while it is still one of them, else back to All.
@@ -8910,7 +9254,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
           <div className="sky-pop__lab">Order for</div>
           {(availableShops || []).map(s => (
             <button key={s.id} type="button" role="menuitemradio" className="sky-pop__i" aria-checked={effectiveShop === s.id}
-                    onClick={() => { setPanel(null); if (s.id !== effectiveShop) setPendingShop(s.id); }}>
+                    onClick={() => { setPanel(null); pickShop(s.id); }}>
               {labelFor(s.id, shopRegistry)}
             </button>
           ))}
@@ -8931,7 +9275,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
               type, in place of the two big pills and the search round. A
               different store still goes through the red switch-confirm. */}
           <SkyStorePill value={effectiveShop} stores={availableShops || []} labelOf={(id) => labelFor(id, shopRegistry)}
-                        onPick={(id) => { if (id !== effectiveShop) setPendingShop(id); }}
+                        onPick={pickShop}
                         open={panel === "storepill"} onOpenChange={(v) => setPanel(v ? "storepill" : null)}
                         mode={mode === "clothing" ? "clothing" : "sneaker"}
                         modes={[["sneaker", "Sneakers"], ["clothing", "Clothing"]]} onMode={(v) => setMode(v)}
@@ -8996,7 +9340,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
         ) : (
           <div className="ad-grid">
             {visible.map(p => {
-              const priced = typeof p.retailPrice === "number" && p.retailPrice > 0;
+              const price = retailPriceOf(p);   // docs/ASSISTANT-NO-PRICE-SET.md
+              const priced = price !== null;
               const szs = sizesOf(p);
               return (
                 <article key={p.id} className="sky-card sky-glass ad-card" tabIndex={0}
@@ -9021,7 +9366,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                     <div className="sky-name ad-name" data-contrast-exempt>{p.name}
                       {isDeactivated(p) && <span className="ad-deact">DEACTIVATED</span>}
                     </div>
-                    {priced ? <span className="sky-price ad-price" data-contrast-exempt>{fmtR(p.retailPrice)}</span> : <span className="ad-price no" data-contrast-exempt>No price set</span>}
+                    {priced ? <span className="sky-price ad-price" data-contrast-exempt>{fmtR(price)}</span> : <span className="ad-price no" data-contrast-exempt>No price set</span>}
                   </div>
                   {/* Order flow: hover reveals per-size quick-add. Refill flow:
                       multi-size qty is set in the quick-view (tap the card). */}
@@ -9174,8 +9519,8 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                     return hub ? <span data-testid="popup-hub">{hub}</span> : null;
                   })()}
                 </div>
-                {typeof qv.retailPrice === "number" && qv.retailPrice > 0
-                  ? <div className="ad-svprice">{fmtR(qv.retailPrice)}</div>
+                {qvPrice !== null
+                  ? <div className="ad-svprice">{fmtR(qvPrice)}</div>
                   : <div className="ad-noprice">No price set</div>}
               </div>
               {flow === "order" ? (
@@ -9314,7 +9659,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
                       // Clothing: quickAdd caps at hub-minus-cart availability
                       // and returns what it actually added — a short add keeps
                       // the quick-view open with the explanatory note.
-                      const added = onQuickAdd(qv, qvSize, qvQty);
+                      const added = onQuickAdd(qvLive, qvSize, qvQty);
                       if (clothingOrder && added < qvQty) { setQvNa({ size: qvSize, left: 0 }); return; }
                       // A ZERO add (a sneaker size that went ✕ while the panel
                       // was open) must not close the panel as if it succeeded.
@@ -9448,7 +9793,7 @@ export function AssistantDesktop({ products, searchResults, effectiveShop, avail
         <SkyConfirm title={`Change shop to ${labelFor(pendingShop, shopRegistry)}?`} eyebrow="Warning · this re-routes orders"
                     confirmLabel="Yes, switch" onCancel={() => setPendingShop(null)} testId="shop-switch-confirm"
                     onConfirm={() => { onSelectShop(pendingShop); setPendingShop(null); }}>
-          You're ordering for <b>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ textDecoration: "underline" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} stay in the cart.` : ""}
+          You're ordering for <b>{labelFor(effectiveShop, shopRegistry)}</b> right now. Every order you place next goes to <b style={{ textDecoration: "underline" }}>{labelFor(pendingShop, shopRegistry)}</b> — <b>if this is a mistake, the wrong store gets the stock.</b>{units ? ` Your ${units} unplaced item${units !== 1 ? "s" : ""} will be removed from the cart.` : ""}
         </SkyConfirm>
       )}
     </div>
@@ -9705,7 +10050,8 @@ html[data-sky="on"] #root .ad-root .ad-card,.ad-root .ad-card{display:grid;grid-
 // ─── ASSISTANT LABEL FINDER — lives in components/assistant/AssistantLabelFinder.jsx
 // (lifted out 2026-08-23 so it renders in a test like every other label surface).
 
-function AssistantView({ products, onExit, orders = [] }) {
+// Exported for assistantView.allStores.render.test.jsx only.
+export function AssistantView({ products, onExit, orders = [] }) {
   // The tongue-label finder (owner fix 4): a small overlay, visually secondary
   // to search — a shortcut, not the main path.
   const [labelFinderOpen, setLabelFinderOpen] = useState(false);
@@ -9756,33 +10102,36 @@ function AssistantView({ products, onExit, orders = [] }) {
   // (isSuperAdmin/hasPermission no longer destructured here — their only
   // consumer, the "Shop stock · view only" card's canAccessStock gate, was
   // removed with the card. Owner decision 2026-07-16.)
-  const { user: assistantUser, storeIds: allowedStores, permRecord: stockPermRecord } = usePermissions();
+  const { user: assistantUser, permRecord: stockPermRecord } = usePermissions();
   // Desktop workspace kicks in at ≥1024px (laptop); phone + iPad keep tap→sheet.
   const isDesktop = !useIsNarrow(1024);
-  // Single-store assignment (destShop) locks the picker to exactly that shop — the
-  // user can only place/act on their store. Falls back to the older central/pine
-  // storeIds gating when no destShop is set (warehouse/admin/unassigned).
-  const myShop = stockPermRecord?.destShop || null;
-  // Sections: the viewer's sections narrow the picker too (a Section 1 account
-  // is never offered Marathon PE), and `sectionNet` is the registry every hub
-  // question below is asked of.
-  const { canSee: canSeeLoc, registry: sectionNet } = useMySections();
-  const availableShops = myShop
-    ? allShops.filter(s => s.id === myShop)
-    : allShops.filter(s => allowedStores.includes(shopUniverse(s.id, sectionNet)) && canSeeLoc(s.id));
+  // ALL-STORE ACCESS (Junid, 20 Nov 2026). Every account may order for every
+  // shop. The shop shown here is THE active shop (src/utils/activeStore.js),
+  // shared with every other screen: a destShop account starts at its HOME shop
+  // and leaves it only through the full-screen confirmation; an account with no
+  // home keeps its per-device choice (selectedShop) until it picks one here.
+  // Before: destShop locked the picker to that one shop, otherwise the storeIds
+  // universes and the viewer's sections narrowed it.
+  const homeShop = stockPermRecord?.destShop || null;
+  const activeStoreNow = useActiveStore();
+  const activeShopMine = activeStoreNow.uid === assistantUser?.uid ? activeStoreNow.activeShop : null;
+  const chosenShop = homeShop ? (activeShopMine || homeShop) : (activeShopMine || selectedShop);
+  // `sectionNet` is the registry every hub question below is asked of. Hubs
+  // stay behind the sections exactly as before; only the SHOP list is open.
+  const { registry: sectionNet } = useMySections();
+  const availableShops = allShops;
   const noStoreAccess = availableShops.length === 0;
   const singleShop    = availableShops.length === 1;
   useEffect(() => {
-    if (availableShops.length === 0) return;        // block screen handles this
+    if (availableShops.length === 0 || homeShop) return; // block screen / active store handle these
     if (!availableShops.some(s => s.id === selectedShop)) selectShop(availableShops[0].id);
-  }, [availableShops, selectedShop]);
+  }, [availableShops, selectedShop, homeShop]);
   // Clamp at RENDER too: the effect above persists the correction but only runs
   // after commit, so the first paint (and the product filtering / order routing it
-  // drives) must use this derived value — never a stale per-device shop the user
-  // isn't assigned to.
-  const effectiveShop = availableShops.some(s => s.id === selectedShop)
-    ? selectedShop
-    : (availableShops[0]?.id || selectedShop);
+  // drives) must use this derived value — never a stale per-device shop.
+  const effectiveShop = availableShops.some(s => s.id === chosenShop)
+    ? chosenShop
+    : (availableShops[0]?.id || chosenShop);
   // Routing universe derived from the chosen shop. THIS keeps every downstream
   // consumer keyed on central/pine unchanged.
   const effectiveStoreMode = shopUniverse(effectiveShop, sectionNet);
@@ -10131,15 +10480,28 @@ function AssistantView({ products, onExit, orders = [] }) {
   // and a hard, red confirm modal stands between the tap and the switch.
   // `pendingShopSwitch` holds the target shop id awaiting confirmation (null =
   // no prompt showing).
+  // A destShop account goes through the app-wide switch instead (its full-screen
+  // modal, banner and audit line — src/components/ActiveStoreLayer.jsx); this
+  // local modal stays for accounts with no home shop.
   const [pendingShopSwitch, setPendingShopSwitch] = useState(null);
   const requestShopSwitch = (next) => {
     if (!next || next === effectiveShop) return;   // tapping the current shop is a no-op
+    if (homeShop) { requestActiveStoreSwitch(next); return; }
     setPendingShopSwitch(next);
+  };
+  // No home shop, already confirmed on the desktop's own sheet: commit.
+  const commitShopDirect = (next) => {
+    if (!next || next === effectiveShop) return;
+    selectShop(next); setAffirmedShop(next); requestActiveStoreSwitch(next);
   };
   const confirmShopSwitch = () => {
     // An explicit, confirmed switch IS an affirmation of the destination, so the
     // placement guard below won't prompt again for the shop they just chose.
-    if (pendingShopSwitch) { selectShop(pendingShopSwitch); setAffirmedShop(pendingShopSwitch); }
+    if (pendingShopSwitch) {
+      selectShop(pendingShopSwitch);
+      setAffirmedShop(pendingShopSwitch);
+      requestActiveStoreSwitch(pendingShopSwitch); // no home: switches at once, logged
+    }
     setPendingShopSwitch(null);
   };
   // ── PLACEMENT DESTINATION GUARD ────────────────────────────────────────────
@@ -10153,7 +10515,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Single-shop-locked users can't mis-route, so they are never prompted.
   const [affirmedShop, setAffirmedShop] = useState(null);
   const [destConfirm,  setDestConfirm]  = useState(null);   // { run } — a placement awaiting affirmation
-  const needsDestConfirm = !singleShop && !noStoreAccess && affirmedShop !== effectiveShop;
+  // A destShop account confirmed any shop other than its own in the app-wide
+  // modal already, and its own shop needs no affirming — so it is never asked.
+  const needsDestConfirm = !homeShop && !singleShop && !noStoreAccess && affirmedShop !== effectiveShop;
   const runDestConfirm = () => {
     setAffirmedShop(effectiveShop);
     const pending = destConfirm;
@@ -10222,6 +10586,29 @@ function AssistantView({ products, onExit, orders = [] }) {
   const [marketingOptIn, setMarketingOptIn]             = useState(true);
   const [lastOrders, setLastOrders]                     = useState([]);
   const [submitting, setSubmitting]                     = useState(false);
+  // ── CART BELONGS TO ONE SHOP ──────────────────────────────────────────────
+  // All-store access (20 Nov 2026): the active shop can change under a full
+  // cart — a confirmed switch, the banner's "Back to …", or the automatic
+  // return home at SA midnight. Lines were priced, routed and stock-checked
+  // for the shop they were added under, so a shop change EMPTIES the cart and
+  // says so, rather than silently placing them for another shop.
+  const cartShopRef = useRef(effectiveShop);
+  const [cartClearedNote, setCartClearedNote] = useState(null);
+  // A checkout in flight finishes for the shop it started in (its lines are
+  // already captured); the cart is emptied once it is done. A destination
+  // confirmation waiting for the old shop is dropped — the next placement asks
+  // again for the current shop.
+  useEffect(() => {
+    if (submitting) return;
+    const prev = cartShopRef.current;
+    if (prev === effectiveShop) return;
+    cartShopRef.current = effectiveShop;
+    setDestConfirm(null);
+    setCart((c) => {
+      if (c.length > 0) setCartClearedNote({ from: prev, to: effectiveShop, n: c.length });
+      return c.length > 0 ? [] : c;
+    });
+  }, [effectiveShop, submitting]);
   // The submit-time stock guard's refusal, shown ON the checkout sheet (both
   // the phone sheet and the desktop panel) rather than in an alert that a tap
   // dismisses. Any cart change clears it: the assistant's next move is to drop
@@ -10291,6 +10678,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   // feeds BOTH the phone grid (`filtered` below) and the desktop overlay (which
   // takes `products={browse}` + `searchResults={filtered}`), so neither can drift.
   const browse = useMemo(() => (showDeactivated ? base : browsableProducts(base)), [base, showDeactivated]);
+  // A card about to say "No price set" while this device serves /products from
+  // its mirror: that one row is re-read once against the server, and patched if
+  // the mirror missed the price (docs/ASSISTANT-NO-PRICE-SET.md).
+  usePriceRecheck(base);
 
   // THE ORDERING PREDICATE, once. At a strict store `base` no longer contains a
   // deactivated product at all, so this can only ever fire on a cart line added
@@ -10685,6 +11076,12 @@ function AssistantView({ products, onExit, orders = [] }) {
       servingHubCells, extraHubCells, shopHeld, sectionNet, effectiveShop, deadForOrder]);
   // The alternatives sheet is footwear's (computeAlternatives), so only a shoe
   // is promised "similar shoes"; clothing is told where it is not.
+  // UNAVAILABLE LAST on the phone / iPad photo grid (Junid, 27 Nov 2026):
+  // browse and search results alike, sorted by the same Set the badge reads.
+  // The desktop overlay does the same to its own list (after its sort), so it
+  // is handed the unsorted `filtered`. The refill list has no badge and is
+  // left alone. Recomputes when stock lands, so a card moves up live.
+  const photoGrid = useMemo(() => unavailableLast(phoneShown, unavailableIds), [phoneShown, unavailableIds]);
   const unavailableHintFor = (p) => unavailableHint(
     shopShelfAnswers(p) ? shopHeldLabels() : sectionHubIds.map((h) => HUB_LABELS[h] || h),
     { similar: !shopShelfAnswers(p) && (p?.productType || "sneaker") !== "clothing" });
@@ -11300,8 +11697,10 @@ function AssistantView({ products, onExit, orders = [] }) {
       // Here it cannot arise, for two reasons that are worth naming because
       // both are load-bearing and neither is local to this line:
       //
-      //   • `availableShops` is CLAMPED to `myShop` when there is one (8878),
-      //     so a scoped user's `effectiveShop` IS the feed's scope; an unscoped
+      //   • a scoped user's `effectiveShop` and the root feed's `myShop` are
+      //     BOTH the active shop (src/utils/activeStore.js — one singleton,
+      //     all-store access 20 Nov 2026), so `effectiveShop` IS the feed's
+      //     scope; an unscoped
       //     user (super-admin, warehouse) has myShop null and sees every order.
       //     Either way the feed covers the store this guard asks about.
       //   • the other branch — `displayPairStore`, a CROSS-store target — has
@@ -11411,6 +11810,9 @@ function AssistantView({ products, onExit, orders = [] }) {
           // The shop's section, stamped on NEW orders only. An order without
           // it is read as "derive from destShop" (utils/sectionRouting.js).
           section: sectionStamp(sectionNet, effectiveShop),
+          // All-store access: the shop this order counts for, the placer's own
+          // shop, and whether they were working away from it.
+          ...activeStoreStamp({ activeShop: effectiveShop, homeShop }),
           requestDisplay: item.requestDisplay || false,
           requestDisplayPartner: item.requestDisplayPartner || false,
           // Display-pair PULL (2026-08-26): the pair to send IS the display
@@ -11727,7 +12129,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           products={browse} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
           brand={brand} setBrand={setBrand}
           deadForOrder={deadForOrder}
-          onSelectShop={selectShop} shopRegistry={shopRegistry}
+          onSelectShop={homeShop ? requestShopSwitch : commitShopDirect} confirmShopLocally={!homeShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
           onViewPhoto={setFullPhoto} onSwitchView={onExit}
@@ -11786,7 +12188,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           shops={singleShop ? [] : availableShops} effectiveShop={effectiveShop}
           shopLabel={(id) => labelFor(id, shopRegistry)} onShop={requestShopSwitch}
           search={search} onSearch={setSearch} onScan={() => setLabelFinderOpen(true)}
-          products={isRefillMode ? [] : phoneShown} showGrid={!isRefillMode}
+          products={isRefillMode ? [] : photoGrid} showGrid={!isRefillMode}
           brands={isRefillMode ? null : brandOpts} brand={brand} onBrand={setBrand}
           emptyText={wantsClothing ? "No clothing products yet. Add one from Admin." : "No products match your search."}
           selectedId={selected?.id || null}
@@ -11846,6 +12248,18 @@ function AssistantView({ products, onExit, orders = [] }) {
         </AssistantPhone>
       )}
 
+      {cartClearedNote && (
+        <div role="status" data-testid="cart-cleared-note"
+             style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:96, zIndex:99980, width:"min(560px, calc(100vw - 28px))", boxSizing:"border-box",
+                      padding:"12px 14px", borderRadius:12, display:"flex", gap:10, alignItems:"center",
+                      background:"rgba(40,26,4,.96)", border:"1px solid rgba(255,159,10,.7)", color:"#fff", fontSize:13.5, boxShadow:"0 10px 30px rgba(0,0,0,.6)" }}>
+          <span style={{ flex:1 }}>
+            Shop changed to {labelFor(cartClearedNote.to, shopRegistry)} — the {cartClearedNote.n} item{cartClearedNote.n > 1 ? "s" : ""} in the cart for {labelFor(cartClearedNote.from, shopRegistry)} were removed. Add them again if they are for {labelFor(cartClearedNote.to, shopRegistry)}.
+          </span>
+          <button onClick={() => setCartClearedNote(null)} aria-label="Dismiss"
+                  style={{ background:"transparent", border:"none", color:"#fff", cursor:"pointer", fontSize:16 }}>✕</button>
+        </div>
+      )}
       {/* ── SHOP-SWITCH WARNING MODAL ──────────────────────────────────────────
           Red, blocking, deliberately alarming. Fires when the assistant taps a
           DIFFERENT shop on the toggle. Names the from/to shops in plain words,
@@ -11924,8 +12338,8 @@ function AssistantView({ products, onExit, orders = [] }) {
                 })(),
                 !selected.styleCode && selected.category ? selected.category : null,
               ]}
-              price={typeof selected.retailPrice === "number" && selected.retailPrice > 0
-                ? fmtR(selected.retailPrice)
+              price={retailPriceOf(selected) !== null
+                ? fmtR(retailPriceOf(selected))
                 : <span className="sky-sheet__noprice">No price set</span>}
               actions={<ProductActionsButton product={selected} products={products} />} />
 
@@ -12145,7 +12559,7 @@ function AssistantView({ products, onExit, orders = [] }) {
 
       {/* ── Checkout bottom sheet ── */}
       {checkoutOpen && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000 }}>
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:1000, paddingBottom:"env(safe-area-inset-bottom, 0px)" }}>
           <div style={sheetStyle}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1.25rem" }}>
               <span style={{ fontWeight:"800", fontSize:"1.2rem" }}>Checkout</span>
@@ -12323,7 +12737,7 @@ const WH_TAB_ICON = {
 // An unresolvable row (no productId/size, unreadable cell) keeps today's
 // Tomorrow behaviour — fail-open, because a false OOS wrongly messages the
 // customer while a false Tomorrow merely keeps the human's own promise.
-function TomorrowActionButton({ order, product, onOutcome }) {
+function TomorrowActionButton({ order, product, onOutcome, hideWhenOOS = false }) {
   // sentSize is what physically left when a substitute was sent; the promise
   // (and the refill request updateStatus raises) draws on the same cell.
   const gateSize = order.sentSize ?? order.size ?? null;
@@ -12383,6 +12797,8 @@ function TomorrowActionButton({ order, product, onOutcome }) {
       setBusy(false);
     }
   };
+  // The card's own "Out of stock" button is the one reject button (Junid 26 Nov 2026).
+  if (hideWhenOOS && offersOOS && !busy) return null;
   return (
     <button onClick={tap} disabled={busy}
             title={offersOOS ? "Central has none of this size — this will mark the order out of stock" : undefined}
@@ -12398,8 +12814,16 @@ function TomorrowActionButton({ order, product, onOutcome }) {
     </button>
   );
 }
+// ONE REJECT BUTTON (Junid, 26 Nov 2026): when Central has none, this button
+// used to read "Out of stock" right beside the card's own "Out of stock" — two
+// buttons for one action. The card's button is the one (it runs the same
+// updateStatus out-of-stock path; the website chain move and single-piece
+// write-down follow from that status on the poller). So in that case this slot
+// shows nothing (hideWhenOOS); with Central holding the size it is
+// "Schedule for Tomorrow".
 
-function WarehouseView({ products = [], orders, onExit }) {
+const SEND_CONFIRM_MS = 15000;
+function WarehouseView({ products = [], onExit }) {
   const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
   // The display ROW LEDGER (/settings/displayRows). The send closes whatever is
   // open for that wall in the same write that opens the new row, so it needs to
@@ -12426,6 +12850,37 @@ function WarehouseView({ products = [], orders, onExit }) {
   const { canSee: canSeeHub, registry: whNet } = useMySections();
   const [storedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
   const selectedHub = hubAllowedForViewer(whNet, canSeeHub, storedHub) ? storedHub : null;
+  // This hub's orders only (useHubOrders) — the app-wide whole-node read is
+  // switched off while this card is open (Junid 26 Nov 2026).
+  const liveOrders = useHubOrders(selectedHub, whNet);
+  // Orders this device has just sent, shown as sent at once while the write
+  // runs (markSentAndPrint). An entry stops applying the moment the live
+  // record has left Incoming, or if it is a different order (number reused).
+  const [optimisticSent, setOptimisticSent] = useState({});
+  // The newest live list, for the send's confirmation timer (no re-render).
+  const liveOrdersRef = useRef(liveOrders);
+  liveOrdersRef.current = liveOrders;
+  // One send per order at a time: a double tap must not write Ready, the
+  // insight row and the WhatsApp twice (the ledger itself is idempotent).
+  const sendingRef = useRef(new Set());
+  const orders = useMemo(() => {
+    const keys = Object.keys(optimisticSent);
+    if (!keys.length) return liveOrders;
+    return Object.assign((liveOrders || []).map((o) => {
+      const p = optimisticSent[o?.id];
+      return p && p.createdAt === (o.createdAt ?? null) && (o.status === STATUS.INCOMING || o.status === STATUS.COMING_TOMORROW) ? { ...o, ...p.patch } : o;
+    }), { settled: liveOrders?.settled, scope: liveOrders?.scope, error: liveOrders?.error });
+  }, [liveOrders, optimisticSent]);
+  // Drop entries the live list has caught up with.
+  useEffect(() => {
+    const keys = Object.keys(optimisticSent);
+    if (!keys.length) return;
+    // Only when the live record has LEFT Incoming, or the number now belongs to
+    // another order. A missing row is a scope or hub switch mid-write, not an
+    // answer (architect review of #1002).
+    const stale = keys.filter((k) => { const o = (liveOrders || []).find((x) => x?.id === k); return !!o && ((o.status !== STATUS.INCOMING && o.status !== STATUS.COMING_TOMORROW) || (o.createdAt ?? null) !== optimisticSent[k].createdAt); });
+    if (stale.length) setOptimisticSent((m) => { const n = { ...m }; for (const k of stale) delete n[k]; return n; });
+  }, [liveOrders, optimisticSent]);
   // …AND A HUB THAT IS NOT ALLOWED DOES NOT STAY ON THE DEVICE. Not honouring
   // it was enough to keep the screen right, but the id sat in localStorage for
   // good — a Section 2 device went on carrying "hub3" from a mis-tapped link.
@@ -12522,7 +12977,9 @@ function WarehouseView({ products = [], orders, onExit }) {
   };
   const [nowTick, setNowTick] = useState(() => serverNowMs());
   useEffect(() => {
-    const id = setInterval(() => setNowTick(serverNowMs()), 30 * 1000);
+    // Once a minute (was 30 s): every tick re-renders the whole queue, and no
+    // reading on it needs finer than a minute (Junid 26 Nov 2026, tablets).
+    const id = setInterval(() => setNowTick(serverNowMs()), 60 * 1000);
     return () => clearInterval(id);
   }, []);
   // ── Layby (warehouse side) ───────────────────────────────────────────────
@@ -12861,13 +13318,22 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Website orders arrive here as ordinary /orders records (customer "Shopify",
   // the order's three-letter code as the number) — the same queue, the same
   // Mark as Sent; dispatch moves no stock for them (dispatchSkipsStock).
-  const hubOrders = [...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill"), ...hubLaybyOrders];
+  // NO ON HOLD (Junid, 26 Nov 2026 11:32): on-hold orders were closed as
+  // cancelled and none can be made; anything still on hold or cancelled is
+  // never shown on the card (a missing item is raised by the refill scan).
+  const hubOrders = [
+    ...orders.filter(o => orderInHub(o, selectedHub) && o.customerName !== "Shop Refill")
+      .filter(o => o.status !== STATUS.COMING_TOMORROW && o.status !== "cancelled"),
+    ...hubLaybyOrders,
+  ];
 
   // extraPatch is merged into the Firebase update — used to stamp sentSize when
   // the warehouse picks a substitute size. Insights/restock logs continue to
   // log order.size (the customer-requested value); only Source view surfaces
   // sentSize, by design.
   const updateStatus = async (order, status, extraPatch = {}, { gateChecked = false } = {}) => {
+    // No on-hold orders can be made (Junid, 26 Nov 2026 11:32).
+    if (status === STATUS.COMING_TOMORROW) { console.warn(`[on-hold removed] #${order?.id} not put on hold`); return false; }
     // A phone Junid has quarantined changes nothing (src/device/deviceRejects.js).
     // gateChecked: the caller already asked, and stock may have moved since —
     // asking again could strand a transfer with its order never marked.
@@ -13142,12 +13608,52 @@ function WarehouseView({ products = [], orders, onExit }) {
     return transfer;
   };
 
-  const markSentAndPrint = async (order, extraPatch = {}) => {
+  // SEND IS INSTANT (Junid, 26 Nov 2026). The card moves the moment Send is
+  // pressed (optimisticSent, applied to the list this view renders); the
+  // transfer and the status write run in the background in the same order as
+  // before (A3: transfer first). Only a real failure brings the card back,
+  // with a plain message and Retry. No label is printed on send
+  // (SEND_PRINTS_LABEL, printDispatch.js) — the printer is never contacted.
+  const markSentAndPrint = (order, extraPatch = {}) => {
     const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
-    const transfer = await markSentWithTransfer(order, extraPatch);
-    // A skipped footwear transfer still gets its label — the parcel physically
-    // travels to the shop exactly as before; only the ledger move is gone.
-    if (!transfer.moved && !transfer.skipped) return;  // recordDispatchTransfer already raised the explaining toast
+    const key = order.id;
+    const flightKey = `${order.id}|${order.createdAt ?? ""}`;
+    if (sendingRef.current.has(flightKey)) return Promise.resolve();
+    sendingRef.current.add(flightKey);
+    setOptimisticSent((m) => ({ ...m, [key]: { createdAt: order.createdAt ?? null, patch: { status: STATUS.READY, readyAt: serverNowIso(), ...extraPatch } } }));
+    const undo = (text) => {
+      setOptimisticSent((m) => { const n = { ...m }; delete n[key]; return n; });
+      if (text) setPrintToast({ kind: "err", text, retry: () => { setPrintToast(null); markSentAndPrint(order, extraPatch); } });
+    };
+    // CONFIRMATION. A rejected status write is reverted by the database to
+    // Incoming, and the overlay would hide that. So if the live record is still
+    // Incoming SEND_CONFIRM_MS after the tap, the card comes back with Retry
+    // (an offline write is applied locally at once, so it never trips this).
+    const confirm = () => {
+      sendingRef.current.delete(flightKey);
+      setTimeout(() => {
+        const live = (liveOrdersRef.current || []).find((x) => x?.id === key && (x.createdAt ?? null) === (order.createdAt ?? null));
+        if (live && (live.status === STATUS.INCOMING || live.status === STATUS.COMING_TOMORROW)) undo(`#${order.id} did not save — check the connection and tap Retry.`);
+      }, SEND_CONFIRM_MS);
+    };
+    return markSentWithTransfer(order, extraPatch).then((transfer) => {
+      // The refusal already explained itself (paused toast / "NOT sent — hub shows 0").
+      if (transfer?.blockSend) { sendingRef.current.delete(flightKey); undo(null); return transfer; }
+      confirm();
+      if (!SEND_PRINTS_LABEL) return transfer;
+      // A skipped footwear transfer still gets its label — the parcel physically
+      // travels to the shop exactly as before; only the ledger move is gone.
+      if (!transfer.moved && !transfer.skipped) return transfer;
+      sendTimeLabel(order, sentSize);
+      return transfer;
+    }).catch((err) => {
+      console.warn(`Send failed for #${order.id}:`, err?.message || err);
+      sendingRef.current.delete(flightKey);
+      undo(`#${order.id} did not save — check the connection and tap Retry.`);
+    });
+  };
+  // Kept for the day SEND_PRINTS_LABEL returns; nothing calls it while it is false.
+  const sendTimeLabel = (order, sentSize) => {
     printDispatchLabel({ ...order, sentSize })
       .then((res) => {
         const diag = res?.diag ? ` [${res.diag}]` : "";
@@ -13288,7 +13794,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           // Unreachable for a footwear line: allowNegative bypasses the floor,
           // and the floor is the only source of this reason. So this branch
           // cannot change sneaker behaviour.
-          setPrintToast({ kind: "err", text: `#${order.id} NOT sent — ${HUB_LABELS[fromHub] || fromHub} shows ${res.available ?? 0} on this size. Mark it Out of Stock instead.` });
+          setPrintToast({ kind: "err", text: `#${order.id} NOT sent — ${HUB_LABELS[fromHub] || fromHub} shows ${res.available ?? 0} on this size. Tap Out of stock instead.` });
           setTimeout(() => setPrintToast(null), 9000);
           return { moved: false, reason: "insufficient_stock", blockSend: true };
         }
@@ -13752,7 +14258,8 @@ function WarehouseView({ products = [], orders, onExit }) {
     return { ok, fail, errors };
   };
 
-  const onHoldOrders = hubOrders.filter(o => o.status === STATUS.COMING_TOMORROW);
+  // The ON HOLD box is gone (Junid 26 Nov 2026); kept empty so nothing renders it.
+  const onHoldOrders = [];
 
   const queueFilters = [
     { key:"incoming",     label:"Incoming",     count: hubOrders.filter(o=>o.status===STATUS.INCOMING).length },
@@ -13769,9 +14276,14 @@ function WarehouseView({ products = [], orders, onExit }) {
     return o.createdAt; // incoming + all
   };
 
+  // WEBSITE ORDERS FIRST (Junid, 24 Nov 2026): a website pick still to be pulled sits at the top of the
+  // queue, oldest first (the one waiting longest is the one to pull), above walk-in and refill work.
+  const webWaitingPick = (o) => o.channel === "online" && o.status === STATUS.INCOMING;
   const filtered = hubOrders
     .filter(o => filter === "all" ? o.status !== STATUS.COMING_TOMORROW : o.status === filter)
-    .sort((a, b) => (queueDateOf(b) || "").localeCompare(queueDateOf(a) || ""));
+    // A held order back on its day leads the list (Junid 26 Nov 2026), then website picks.
+    .sort((a, b) => (webWaitingPick(b) - webWaitingPick(a))
+      || (webWaitingPick(a) ? (queueDateOf(a) || "").localeCompare(queueDateOf(b) || "") : (queueDateOf(b) || "").localeCompare(queueDateOf(a) || "")));
 
   // Tally for the incoming pill at top right
   const incomingCount = hubOrders.filter(o => o.status === STATUS.INCOMING).length;
@@ -13860,10 +14372,14 @@ function WarehouseView({ products = [], orders, onExit }) {
           {laybyPhoto && <GalleryLightbox photos={laybyPhoto} onClose={() => setLaybyPhoto(null)}/>}
           {/* ORDER CARDS — grouped by day, last 3 days only (Phase 10) */}
           <div style={{ padding:"0 13px" }}>
+            {/* This hub's daily shelf checks (Junid, 24 Nov 2026). Website picks still to be pulled are NOT
+                repeated in a box of their own (Junid, 24 Nov 2026 evening): they lead the list below, in the
+                Today group whatever day they came in, bold, with their three-letter code and waiting time. */}
+            {/* SHELF CHECK card removed (Junid, 26 Nov 2026 11:15: routine off everywhere). */}
             <DayCollapsible
               sectionKey={`wh-${filter}`}
               items={filtered}
-              dateOf={queueDateOf}
+              dateOf={(o) => hubQueueDay(o, webWaitingPick, queueDateOf, serverNowIso())}
               columns={isWide ? 2 : 1}
               // Cards here are STATEFUL now (TomorrowActionButton holds a
               // Central probe); the date-index fallback key would hand one
@@ -13872,6 +14388,7 @@ function WarehouseView({ products = [], orders, onExit }) {
               // every render, so a date key would remount its card each tick and
               // drop a half-typed reject reason (CodeRabbit, #830).
               keyOf={(o) => (o.isLayby ? `layby:${o._pull?.pullId || o._pull?.key || o.id}` : `${queueDateOf(o) || ""}:${o.id}`)}
+              overflowing={(o) => menuOpenId === o.id || pickerOpenId === o.id}
               emptyMessage="No orders in the last 3 days."
               renderItem={(order) => {
             // Layby pull request — render the real PullCard inline (same L-xxxxx
@@ -13890,12 +14407,15 @@ function WarehouseView({ products = [], orders, onExit }) {
             const incoming = status === STATUS.INCOMING;
             const ready    = status === STATUS.READY;
             const oos      = status === STATUS.OUT_OF_STOCK;
+            // A website pick still to be pulled: its code is the headline of the red box, not the header (Junid, 24 Nov 2026, 21:05).
+            const webPick  = order.channel === "online" && incoming;
             // Card backgrounds + bar by status
             const cardBg = incoming ? "rgba(15,25,60,.5)"
                           : ready   ? "rgba(0,30,15,.4)"
                           : oos     ? "rgba(40,10,10,.4)"
                                     : "rgba(6,9,20,1)";
-            const cardBorder = incoming ? "1px solid rgba(60,110,255,.2)"
+            const cardBorder = incoming && order.channel === "online" ? "2px solid #FF453A"
+                              : incoming ? "1px solid rgba(60,110,255,.2)"
                               : ready   ? "1px solid rgba(0,180,80,.15)"
                               : oos     ? "1px solid rgba(200,40,40,.15)"
                                         : "1px solid rgba(255,255,255,.07)";
@@ -13923,7 +14443,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                   <ProductPhoto productId={order.productId} product={whProductsById[order.productId]} url={order.productPhotoUrl} photo={order.productPhoto} size={60} radius={10}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
-                      <div style={{ fontSize:13, fontWeight:800, color:"#4A7FFF", letterSpacing:"0.5px" }}>#{order.id}</div>
+                      {!webPick && <div style={{ fontSize:13, fontWeight:800, color:"#4A7FFF", letterSpacing:"0.5px" }}>#{order.id}</div>}
                       <div style={{ fontSize:10, fontWeight:600, padding:"2px 8px", borderRadius:10, display:"flex", alignItems:"center", gap:4, background:chipBg, color:chipColor }}>
                         {incoming && <span style={{ width:5, height:5, borderRadius:"50%", background:"#4A7FFF", boxShadow:"0 0 3px #4A7FFF", display:"inline-block" }}/>}
                         {chipLabel}
@@ -13954,7 +14474,11 @@ function WarehouseView({ products = [], orders, onExit }) {
                         <div style={{ marginLeft:"auto", color:"rgba(255,255,255,.2)", fontSize:16 }}>···</div>
                       )}
                     </div>
-                    <div style={{ fontSize:15, fontWeight:600, color:"#fff" }}>{order.productName}{order.size ? ` — Size ${order.size}` : ""}{order.qty > 1 ? ` × ${order.qty}` : ""}</div>
+                    {/* A website pick still to be pulled: red, bold, with how long it has waited (Junid, 24 Nov 2026). */}
+                    {webPick && <WebOrderBanner since={order.createdAt} code={order.id} />}
+                    {/* Moved here by the system from another place (Junid, 26 Nov 2026). */}
+                    {order.movedNote && <div data-testid="moved-note" style={{ display:"inline-block", margin:"4px 0 6px", padding:"3px 9px", borderRadius:8, fontSize:12, fontWeight:800, color:"#FBBF24", background:"rgba(251,191,36,.12)", border:"1px solid rgba(251,191,36,.35)" }}>{order.movedNote}</div>}
+                    <div style={{ fontSize: webPick ? 17 : 15, fontWeight: webPick ? 800 : 600, color:"#fff" }}>{order.productName}{order.size ? ` — Size ${order.size}` : ""}{order.qty > 1 ? ` × ${order.qty}` : ""}</div>
                     <div style={{ fontSize:11, color:"rgba(255,255,255,.4)", marginTop:3, display:"flex", alignItems:"center", gap:4 }}>
                       <svg width="10" height="10" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                       {order.customerName}{order.customerPhone ? ` · ${order.customerPhone}` : ""}
@@ -14134,10 +14658,9 @@ function WarehouseView({ products = [], orders, onExit }) {
                           <button onClick={() => updateStatus(order, STATUS.OUT_OF_STOCK)} className="wh-act--oos"
                                   style={{ padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B" }}>
                             <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                            Mark as Out of Stock
+                            Out of stock
                           </button>
-                          <TomorrowActionButton order={order} product={whProductsById[order.productId]}
-                            onOutcome={(kind) => updateStatus(order, kind === "out_of_stock" ? STATUS.OUT_OF_STOCK : STATUS.COMING_TOMORROW)} />
+                          {/* "Schedule for Tomorrow" REMOVED (Junid, 26 Nov 2026 11:32): no on-hold orders. */}
                           <button onClick={() => subAvailable && setPickerOpenId(order.id)}
                                   disabled={!subAvailable}
                                   title={subAvailable ? "" : "No valid substitute size in range"}
@@ -14277,7 +14800,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     return (
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
         {printToast && (
-          <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
+          <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:"calc(24px + env(safe-area-inset-bottom, 0px))", zIndex:9999, maxWidth:400, width:"90%",
                         background: printToast.kind === "ok" ? "rgba(6,20,12,.97)" : "rgba(24,8,8,.97)",
                         border:"1px solid " + (printToast.kind === "ok" ? "rgba(74,222,128,.4)" : "rgba(248,113,113,.4)"),
                         color:"#fff", borderRadius:12, padding:"12px 16px", fontSize:13, fontWeight:600, boxShadow:"0 20px 50px -20px rgba(0,0,0,.8)" }}>
@@ -14311,10 +14834,7 @@ function WarehouseView({ products = [], orders, onExit }) {
               <div style={{ fontSize:18, fontWeight:800, color:"#9DBCFF", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{incomingCount}</div>
               <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>Incoming</div>
             </div>
-            <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
-              <div style={{ fontSize:18, fontWeight:800, color: onHoldOrders.length ? "#F59E0B" : "rgba(233,238,255,.5)", lineHeight:1, fontVariantNumeric:"tabular-nums" }}>{onHoldOrders.length}</div>
-              <div style={{ fontSize:9.5, color:"rgba(233,238,255,.45)", marginTop:3, letterSpacing:".04em", textTransform:"uppercase", fontWeight:600 }}>On hold</div>
-            </div>
+            {/* "On hold" tile removed (Junid 26 Nov 2026). */}
           </div>
         </aside>
         {/* MAIN */}
@@ -14357,11 +14877,17 @@ function WarehouseView({ products = [], orders, onExit }) {
       )}
       {/* Dispatch-label print toast — auto-print result on "Mark as Sent" (non-blocking). */}
       {printToast && (
-        <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:24, zIndex:9999, maxWidth:400, width:"90%",
+        <div style={{ position:"fixed", left:"50%", transform:"translateX(-50%)", bottom:"calc(24px + env(safe-area-inset-bottom, 0px))", zIndex:9999, maxWidth:400, width:"90%",
                       padding:"11px 14px", borderRadius:10, fontSize:12, fontWeight:600, textAlign:"center",
                       background: printToast.kind === "ok" ? "rgba(0,150,70,.92)" : "rgba(150,30,30,.94)",
                       color:"#fff", border:"1px solid rgba(255,255,255,.18)", boxShadow:"0 6px 24px rgba(0,0,0,.4)" }}>
           {printToast.text}
+          {printToast.retry && (
+            <button onClick={printToast.retry} style={{ marginLeft:10, padding:"5px 12px", borderRadius:8, border:"1px solid rgba(255,255,255,.5)", background:"rgba(255,255,255,.15)", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer" }}>Retry</button>
+          )}
+          {printToast.retry && (
+            <button onClick={() => setPrintToast(null)} aria-label="Dismiss" style={{ marginLeft:6, padding:"5px 8px", borderRadius:8, border:0, background:"transparent", color:"#fff", fontSize:13, cursor:"pointer" }}>✕</button>
+          )}
         </div>
       )}
       {/* THE SKY TOP BAND (Junid, 6 Nov): the header is the shell's (one header
@@ -15105,10 +15631,16 @@ function absTime(iso) {
 }
 
 
-function CustomerView({ orders, onExit }) {
+function CustomerView({ orders, shop = null, onExit }) {
   const [orderId, setOrderId] = useState("");
   const [found, setFound] = useState(null);
   const [searched, setSearched] = useState(false);
+  // More than one OPEN order with the typed number (orderNumberLookup.js):
+  // a short picker, staff tap the right one. null = no picker.
+  const [picks, setPicks] = useState(null);
+  // The number the picker answers for — not the live input, which may be
+  // edited after the search.
+  const [pickedNumber, setPickedNumber] = useState("");
   // Use the whole screen on desktop (≥1024px); phones keep the single column.
   const isWide = !useIsNarrow(1024);
   // Respect the Hub-2 dispatch hold on this customer-facing page: a READY order
@@ -15122,21 +15654,81 @@ function CustomerView({ orders, onExit }) {
   // its reveal, and later live status changes (Ready→Collected/OOS) stay hidden
   // until the customer re-searches. No-op when nothing is open.
   useEffect(() => {
-    setFound(prev => (prev ? (heldOrders.find(o => o.id === prev.id) || prev) : prev));
+    // Same key AND same createdAt: the number is a daily counter, so a newer
+    // order written over this key is a DIFFERENT order — the pane keeps the
+    // one the person chose rather than swapping to it silently.
+    setFound(prev => (prev ? (heldOrders.find(o => o.id === prev.id && o.createdAt === prev.createdAt) || prev) : prev));
   }, [heldOrders]);
 
+  // A typed NUMBER goes through the one lookup rule (utils/orderNumberLookup.js,
+  // Junid 26 Nov 2026): customer orders only — never a refill line "R007-22" —
+  // this shop first, open before finished, today's first; several open → a
+  // picker; an earlier day's order only when nothing else matched, and dated.
+  // Anything else typed (a full key) must match an order's key exactly.
   const doSearch = (idOverride) => {
     const raw = (idOverride ?? orderId).toString();
     const clean = raw.trim().replace(/^#/, "");
     if (!clean) return;
-    // orderKeyFromInput also reads a prefixed number ("p7" → "P007") — a Pine or
-    // Concrete order's own sequence. "7" → "007" exactly as before.
-    const o = heldOrders.find(o => o.id === clean.padStart(3, "0") || o.id === clean || o.id === orderKeyFromInput(clean));
     setOrderId(clean);
-    setFound(o || null);
     setSearched(true);
+    if (parseTypedOrderNumber(clean)) {
+      const res = lookupOrderByNumber(heldOrders, clean, { shop, nowMs: serverNowMs() });
+      setFound(res.kind === "one" ? res.options[0].order : null);
+      setPicks(res.kind === "pick" ? res.options : null);
+      setPickedNumber(clean);
+      return;
+    }
+    setPicks(null);
+    setFound(heldOrders.find(o => o.id === clean || o.id === clean.toUpperCase()) || null);
   };
-  const reset = () => { setFound(null); setSearched(false); setOrderId(""); };
+  // A row tapped in a list (picker, rail, recent orders) IS the order — never
+  // re-resolved from its number, which another order may share.
+  const pickOrder = (o) => { setOrderId(o.id); setFound(o); setPicks(null); setSearched(true); };
+  const reset = () => { setFound(null); setSearched(false); setOrderId(""); setPicks(null); };
+
+  // An order from an EARLIER day is always shown with its date, so a recycled
+  // number can never pass for today's order.
+  const foundEarlier = found ? (saDayOf(Date.parse(found.createdAt || "")) ?? "") < (saDayOf(serverNowMs()) ?? "") : false;
+  // The key now holds a NEWER order (the daily number came round again): the
+  // pane keeps the order the person chose, and says plainly it has been replaced.
+  const foundReplaced = !!found && heldOrders.some(o => o.id === found.id && o.createdAt !== found.createdAt);
+  const earlierMark = foundReplaced ? (
+    <div role="note" style={{ marginBottom: 12, background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.4)", color: "#FBBF24", borderRadius: 12, padding: "10px 14px", fontSize: 13, fontWeight: 700 }}>
+      #{found.id} now belongs to a newer order — this one was placed {orderWhenLabel(found)}. Track another order to see the new one.
+    </div>
+  ) : foundEarlier ? (
+    <div role="note" style={{ marginBottom: 12, background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.4)", color: "#FBBF24", borderRadius: 12, padding: "10px 14px", fontSize: 13, fontWeight: 700 }}>
+      {found.createdAt ? `Not today's order — placed ${orderWhenLabel(found)}` : "Not today's order — date unknown"}
+    </div>
+  ) : null;
+  // Each row shows the order as it is NOW (status moves while the picker is
+  // open): the snapshot is re-found in the live list by number + createdAt.
+  const livePick = (o) => heldOrders.find(x => x.id === o.id && x.createdAt === o.createdAt) || o;
+  const pickerList = picks ? (
+    <div role="group" aria-label={`Orders with number ${pickedNumber}`} style={{ marginTop: 16 }}>
+      <div role="status" style={{ fontSize: 13, fontWeight: 700, color: "rgba(233,238,255,.75)", marginBottom: 10 }}>
+        {picks.length} orders have #{pickedNumber}. Tap the right one.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {picks.map(({ order: snap, earlier }, i) => {
+          const o = livePick(snap);
+          const c = STATUS_CONFIG[o.status];
+          return (
+            <button key={`${o.id}:${o.createdAt || i}`} onClick={() => pickOrder(o)} className="ot-press"
+                    style={{ width: "100%", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", borderRadius: 14, padding: 12, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 11, fontFamily: FONT }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 800, color: earlier ? "#FBBF24" : "#fff" }}>{orderWhenLabel(o)}</div>
+                <div style={{ fontSize: 12, color: "rgba(233,238,255,.6)", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {orderShopLabel(o) || "—"} · {shortCustomerName(o.customerName)} · {o.productName}
+                </div>
+              </div>
+              {c && <span style={{ flexShrink: 0, background: c.bg, color: c.color, border: `1px solid ${c.border}`, borderRadius: 999, padding: "3px 10px", fontSize: 11, fontWeight: 700 }}>{c.label}</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  ) : null;
 
   const cfg = found ? STATUS_CONFIG[found.status] : null;
 
@@ -15180,7 +15772,12 @@ function CustomerView({ orders, onExit }) {
   // ── FULL-SCREEN DESKTOP WORKSPACE (≥1024px) — search/recent rail + rich pane ──
   if (isWide) {
     const q = orderId.trim().toLowerCase();
-    const railList = (q ? heldOrders.filter(o => o.id.includes(q) || (o.customerName || "").toLowerCase().includes(q)) : heldOrders).slice(0, 60);
+    // A number lists only customer orders with that number (this shop first,
+    // open first, newest first) — a substring of the key used to pull in every
+    // refill line "R007-…" from other days. Anything else searches by name.
+    const railList = (q
+      ? (parseTypedOrderNumber(q) ? rankOrdersForNumber(heldOrders, q, { shop, nowMs: serverNowMs() }) : heldOrders.filter(o => String(o.id).toLowerCase() === q || (o.customerName || "").toLowerCase().includes(q)))
+      : heldOrders).slice(0, 60);
     const statusAt = found ? ({ [STATUS.INCOMING]: found.createdAt, [STATUS.READY]: found.readyAt, [STATUS.OUT_OF_STOCK]: found.outOfStockAt, [STATUS.COMING_TOMORROW]: found.comingTomorrowAt, [STATUS.COLLECTED]: found.collectedAt }[found.status] || found.updatedAt) : null;
     const subbed = found && found.sentSize && found.sentSize !== found.size ? found.sentSize : null;
     const tags = [];
@@ -15219,9 +15816,9 @@ function CustomerView({ orders, onExit }) {
             {railList.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "rgba(233,238,255,.4)", fontSize: 13 }}>No matching orders.</div>}
             {railList.map(o => {
               const c = STATUS_CONFIG[o.status];
-              const on = found && found.id === o.id;
+              const on = found && found.id === o.id && found.createdAt === o.createdAt;
               return (
-                <button key={o.id} className="ot-row" onClick={() => { setOrderId(o.id); setFound(o); setSearched(true); }}
+                <button key={`${o.id}:${o.createdAt || ""}`} className="ot-row" onClick={() => pickOrder(o)}
                   style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, cursor: "pointer", textAlign: "left", fontFamily: FONT,
                            background: on ? "rgba(74,127,255,.14)" : "transparent", border: on ? "1px solid rgba(74,127,255,.45)" : "1px solid transparent" }}>
                   <ProductPhoto productId={o.productId} url={o.productPhotoUrl} photo={o.productPhoto} size={40} radius={9} />
@@ -15238,8 +15835,11 @@ function CustomerView({ orders, onExit }) {
 
         {/* MAIN — detail or empty state */}
         <div style={{ minWidth: 0, overflow: "auto" }}>
-          {found && cfg ? (
+          {!found && picks ? (
+            <div style={{ padding: "36px 40px 60px", maxWidth: 640, margin: "0 auto" }}>{pickerList}</div>
+          ) : found && cfg ? (
             <div style={{ padding: "36px 40px 60px", maxWidth: 880, margin: "0 auto" }}>
+              {earlierMark}
               {/* HERO — compact, cohesive */}
               <div style={{ display: "flex", gap: 20, alignItems: "center", background: "linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))", border: "1px solid rgba(255,255,255,.1)", borderRadius: 22, padding: 20, boxShadow: "0 26px 60px -36px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.08)", marginBottom: 16 }}>
                 <div style={{ width: 116, height: 116, borderRadius: 18, overflow: "hidden", border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 50, flexShrink: 0 }}>
@@ -15352,13 +15952,16 @@ function CustomerView({ orders, onExit }) {
         </div>
       )}
 
-      {searched && !found && (
+      {!found && pickerList}
+
+      {searched && !found && !picks && (
         <div style={{ maxWidth: isWide ? 460 : "100%", marginTop: 16, color: "#F87171", background: "rgba(248,113,113,.1)", border: "1px solid rgba(248,113,113,.35)", borderRadius: 14, padding: "14px 16px", fontSize: 13.5, textAlign: "center" }}>
           No order <b>#{orderId}</b> found. Double-check the number on your slip.
         </div>
       )}
 
       {/* Result */}
+      {found && cfg && earlierMark}
       {found && cfg && (
         <div style={{ display: isWide ? "grid" : "block", gridTemplateColumns: isWide ? "minmax(0, 460px) minmax(0, 1fr)" : undefined, gap: isWide ? 18 : 0, alignItems: "start" }}>
           {/* Hero card — photo, product, shop, status */}
@@ -15453,7 +16056,7 @@ function CustomerView({ orders, onExit }) {
             {heldOrders.slice(0, isWide ? 12 : 5).map(o => {
               const c = STATUS_CONFIG[o.status];
               return (
-                <button key={o.id} onClick={() => doSearch(o.id)} className="ot-press"
+                <button key={`${o.id}:${o.createdAt || ""}`} onClick={() => pickOrder(o)} className="ot-press"
                         style={{ width: "100%", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 14, padding: 10, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 11, fontFamily: FONT }}>
                   <ProductPhoto productId={o.productId} url={o.productPhotoUrl} photo={o.productPhoto} size={44} radius={10} />
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -16601,7 +17204,7 @@ function ClothingSoldView({ products }) {
 
       {/* 60-second accidental-transfer undo — reverses only untouched store cells. */}
       {undo && (
-        <div style={{ position:"fixed", left:12, right:12, bottom:16, zIndex:70, maxWidth:430, margin:"0 auto",
+        <div style={{ position:"fixed", left:12, right:12, bottom:"calc(16px + env(safe-area-inset-bottom, 0px))", zIndex:70, maxWidth:430, margin:"0 auto",
                       background:"rgba(4,5,10,.97)", border:"1px solid rgba(74,222,128,.5)", borderRadius:14, padding:"12px 14px",
                       display:"flex", alignItems:"center", gap:12, boxShadow:"0 10px 30px rgba(0,0,0,.5)" }}>
           <div style={{ flex:1, minWidth:0 }}>
@@ -16615,7 +17218,7 @@ function ClothingSoldView({ products }) {
         </div>
       )}
       {undoMsg && !undo && (
-        <div style={{ position:"fixed", left:12, right:12, bottom:16, zIndex:70, maxWidth:430, margin:"0 auto",
+        <div style={{ position:"fixed", left:12, right:12, bottom:"calc(16px + env(safe-area-inset-bottom, 0px))", zIndex:70, maxWidth:430, margin:"0 auto",
                       background:"rgba(4,5,10,.97)", border:"1px solid rgba(60,110,255,.4)", borderRadius:14, padding:"11px 14px",
                       color:"rgba(255,255,255,.85)", fontSize:12, boxShadow:"0 10px 30px rgba(0,0,0,.5)" }}>
           {undoMsg}
@@ -16970,6 +17573,14 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const lineMatches = useCallback((product, size, mode) =>
     mode === "sneakers" ? isFootwearLine(product, size) : !isFootwearLine(product, size),
   []);
+  // How many open requests sit behind each half of Hub 2's / Hub 3's toggle
+  // (Junid, 24 Nov 2026: the tab opens on Sneakers, and 519 Hub 2 clothing
+  // requests waited behind "Clothing" with nothing on the button to say so).
+  // Same count as the tab badge (countsTowardSourceQueue), split by the
+  // toggle's own classifier. Data the screen already holds — no read.
+  const hubLineCounts = useMemo(
+    () => countHubLines(allRefillRequests, (pid) => productsById.get(pid), SOURCE_SHOP_LOCS),
+    [allRefillRequests, productsById]);
   // All Source responses: { date: { productKey: { size: { response, respondedOn } } } }
   // History tab derives its straggler list from this + live orders (5-day window).
   // fulfilProgress carries the partial Transfer & Fulfil leaves (same node).
@@ -17192,12 +17803,12 @@ function SourceView({ onExit, orders, returnsLog, products }) {
             {[["sneakers", "Sneakers"], ["clothing", "Clothing"]].map(([val, label]) => {
               const active = mode === val;
               return (
-                <button key={val} onClick={() => setLineOf(h)(val)} aria-pressed={active}
+                <button key={val} onClick={() => setLineOf(h)(val)} aria-pressed={active} data-hub-line={val}
                         style={{ flex: 1, minHeight: 44, padding: "10px 12px", borderRadius: 14, cursor: "pointer",
                                  border: active ? "1px solid rgba(60,110,255,.6)" : "1px solid rgba(255,255,255,.08)",
                                  background: active ? "rgba(60,110,255,.14)" : "rgba(255,255,255,.02)",
                                  color: active ? BLUE_L : "rgba(255,255,255,.55)", fontWeight: 700, fontSize: 13 }}>
-                  {label}
+                  {label}{hubLineCounts[h]?.[val] ? <span style={{ fontVariantNumeric: "tabular-nums" }}>{` · ${hubLineCounts[h][val]}`}</span> : null}
                 </button>
               );
             })}
@@ -17215,6 +17826,10 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   };
   const content = (
     <>
+        {/* WEBSITE ORDERS THAT REACHED CENTRAL (Junid, 24 Nov 2026): Central is the last stop of every
+            website line's chain. The same strip as a shop's Display Checks — pull the piece, tap Found or
+            Not found; a found piece goes on the next morning stock run. Shown above every tab. */}
+        {/* SHELF CHECK card removed (Junid, 26 Nov 2026). */}
         {tab==="hub1refill" && hubTabContent("hub1")}
         {tab==="clothing" && hubTabContent("hub2")}
         {/* Shop tabs — first-batch requests from Central (request rows only). */}
@@ -17360,9 +17975,11 @@ function ReturnsView({ orders, products = [], onExit }) {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return last3DaysOrders;
-    return last3DaysOrders.filter(o =>
-      o.id.toLowerCase().includes(q) || (o.customerName || "").toLowerCase().includes(q)
-    );
+    // A number finds the customer orders WITH that number — newest first,
+    // open first (utils/orderNumberLookup.js, Junid 26 Nov 2026) — not every
+    // key that happens to contain the digits. Anything else searches by name.
+    if (parseTypedOrderNumber(q)) return rankOrdersForNumber(last3DaysOrders, q, { nowMs: serverNowMs() });
+    return last3DaysOrders.filter(o => String(o.id).toLowerCase() === q || (o.customerName || "").toLowerCase().includes(q));
   }, [last3DaysOrders, search]);
 
   // R1 (stock-integrity) — a confirmed return MOVES THE LEDGER, not just the log.
@@ -18930,7 +19547,7 @@ function InsightSalesSummaryTab({ log, returnsLog, productPhotoMap, filterStart,
 // keeps running server-side; status subscription will flip to "running" on its
 // own. Synchronous rejections (rate limit, concurrent run, permission) surface
 // as triggerError. The Run buttons are super-admin-only because the function's
-// assertAdmin only accepts ADMIN_EMAIL.
+// assertAdmin only accepts a super-admin email.
 function InsightReorderTab({ productPhotoMap }) {
   const { isSuperAdmin } = usePermissions();
   const [status, setStatus]   = useState(null);
@@ -19822,7 +20439,7 @@ function AuditModal({ audit, onClose }) {
   };
 
   return (
-    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.85)", zIndex:9999, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"20px 8px", overflowY:"auto" }}
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.85)", zIndex:9999, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"calc(20px + env(safe-area-inset-top, 0px)) 8px calc(20px + env(safe-area-inset-bottom, 0px))", overflowY:"auto" }}
          onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
            style={{ width:"100%", maxWidth:560, background:"#000", border:"1px solid rgba(60,110,255,.4)", borderRadius:14, padding:16, color:"#fff", fontFamily:FONT, boxShadow:"0 0 32px rgba(60,110,255,.2)" }}>
@@ -19993,7 +20610,7 @@ function ReactivationNotice() {
   if (!notice) return null;
   return (
     <div onClick={() => setNotice(null)} role="status"
-         style={{ position:"fixed", bottom:18, left:"50%", transform:"translateX(-50%)", zIndex:10000,
+         style={{ position:"fixed", bottom:"calc(18px + env(safe-area-inset-bottom, 0px))", left:"50%", transform:"translateX(-50%)", zIndex:10000,
                   maxWidth:"min(92vw, 480px)", background:"#173B2A", border:"1px solid rgba(74,222,128,.55)",
                   color:"#C9F3D8", borderRadius:14, padding:"12px 16px", fontSize:13.5, fontWeight:600,
                   boxShadow:"0 4px 18px rgba(0,0,0,.45)", cursor:"pointer" }}>
@@ -20017,7 +20634,7 @@ function PWAUpdateBanner() {
   };
   return (
     <div onClick={reload} role="button"
-         style={{ position:"fixed", top:0, left:0, right:0, zIndex:10000, background:"#4A7FFF", color:"#fff",
+         style={{ position:"fixed", top:"env(safe-area-inset-top, 0px)", left:0, right:0, zIndex:10000, background:"#4A7FFF", color:"#fff",
                   fontFamily:"-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif", fontSize:13, fontWeight:600,
                   padding:"10px 14px", display:"flex", alignItems:"center", justifyContent:"center", gap:8,
                   cursor:"pointer", boxShadow:"0 2px 12px rgba(0,0,0,.4)" }}>
@@ -20081,7 +20698,7 @@ function IOSInstallTooltip() {
   if (!show) return null;
   const dismiss = () => { localStorage.setItem(DISMISS_KEY, "1"); setShow(false); };
   return (
-    <div style={{ position:"fixed", left:10, right:10, bottom:14, zIndex:9999,
+    <div style={{ position:"fixed", left:10, right:10, bottom:"calc(14px + env(safe-area-inset-bottom, 0px))", zIndex:9999,
                   background:"rgba(4,5,10,.95)", border:"1px solid rgba(60,110,255,.5)", borderRadius:14,
                   padding:"12px 14px", display:"flex", alignItems:"center", gap:10,
                   boxShadow:"0 4px 24px rgba(0,0,0,.6)", backdropFilter:"blur(8px)",
@@ -20357,7 +20974,7 @@ function BroadcastGroupsView({ authUser, onExit }) {
 
 function BroadcastTopBar({ onExit, onRefresh, refreshing }) {
   return (
-    <div style={{ position:"sticky", top:0, zIndex:10, background:"rgba(0,0,0,.85)", backdropFilter:"blur(10px)", borderBottom:BORDER, padding:"0.75rem 1rem", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+    <div style={{ position:"sticky", top:"env(safe-area-inset-top, 0px)", zIndex:10, background:"rgba(0,0,0,.85)", backdropFilter:"blur(10px)", borderBottom:BORDER, padding:"0.75rem 1rem", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
       <button onClick={onExit} style={{ background:"transparent", border:"none", color:BLUE, cursor:"pointer", fontSize:"0.9rem", fontWeight:600, padding:"4px 8px", display:"flex", alignItems:"center", gap:6 }}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
         Exit
@@ -20556,19 +21173,27 @@ if (typeof document !== "undefined" && !document.getElementById("__bcast_spin"))
 // ─────────────────────────────────────────────────────────────────────────────
 // Triggered by visiting the site with #admin in the URL, e.g.
 //   https://marathon-club.web.app/#admin
-// Sign-in opens a Google popup. Only ADMIN_EMAIL is allowed; any other Google
+// Sign-in opens a Google popup. Only a super-admin email (Junid or Jafer) is allowed; any other Google
 // account is signed out immediately and an error is shown.
 //
 // While admin is signed in:
 //   • All views render normally (the home hero shows the bare name; the one
 //     sign-out is the red row at the bottom of the home page).
-//   • request.auth.token.email === ADMIN_EMAIL → broadcast Cloud Functions
+//   • request.auth.token.email is a super admin → broadcast Cloud Functions
 //     and broadcast-media writes are allowed.
 //
 // Sign-out drops back to anonymous (not fully out) so the database keeps
 // working for the next visitor on the device.
 
-const ADMIN_EMAIL = "gunidmoh@gmail.com";
+
+// The TEMPORARY Concrete Products card's mount: the live taxonomy (labels for
+// the subcategory filter) and the Concrete live set (unmarking one live there
+// also switches its Concrete listing off). temporaryCards.js removes it.
+function ConcreteProductsCardRoute({ products }) {
+  const { registry } = useTaxonomy();
+  const live = useConcreteLiveSet(true);
+  return <ConcreteProductsCard products={products} ProductPhoto={ProductPhoto} registry={registry} liveOnConcrete={live} onExit={() => (window.location.hash = "")} />;
+}
 
 function AdminSignInScreen({ onCancel }) {
   const [busy,  setBusy]  = useState(false);
@@ -20578,10 +21203,10 @@ function AdminSignInScreen({ onCancel }) {
     setBusy(true); setError(null);
     try {
       const result = await signInWithPopup(auth, googleProvider);
-      if (result.user.email !== ADMIN_EMAIL) {
+      if (!isSuperAdminEmail(result.user.email)) {
         const wrong = result.user.email;
         await signOut(auth); // existing onAuthStateChanged effect re-signs anonymously
-        setError(`Wrong account: ${wrong}. Sign in with ${ADMIN_EMAIL}.`);
+        setError(`Wrong account: ${wrong}. Sign in with an admin Google account.`);
         return;
       }
       window.location.hash = ""; // success → parent unmounts this screen
@@ -20602,7 +21227,7 @@ function AdminSignInScreen({ onCancel }) {
       <div style={{ width:"100%", maxWidth:380, background:CARD, border:BORDER, borderRadius:RADIUS, padding:"2rem 1.5rem", boxShadow:GLOW }}>
         <h1 style={{ margin:0, fontSize:"1.5rem", color:"#fff", fontWeight:600 }}>Admin Sign In</h1>
         <p style={{ marginTop:"0.5rem", marginBottom:"1.5rem", color:"#888", fontSize:"0.875rem", lineHeight:1.5 }}>
-          Use the <span style={{ color:BLUE_L }}>{ADMIN_EMAIL}</span> Google account.
+          Use an admin Google account (Junid or Jafer).
         </p>
         <button
           onClick={handleSignIn}
@@ -20737,6 +21362,15 @@ function AppInner() {
   // Recognises the hash only; the mount below gates, and the callables are
   // what actually refuse.
   const wantNewArrivals = hash === "#new-arrivals" || hash === "#new-arrivals/";
+  // /#black-friday — the Black Friday 2026 card. Recognises the hash only; the
+  // mount below gates (super admin), and the callables are what actually refuse.
+  const wantBlackFriday = hash === "#black-friday" || hash === "#black-friday/";
+  // /#bf-candidates — the BF Candidates card (super admin; the bfSale* callables are what refuse).
+  // /#bf-sale-list[/<location>] — the staff re-tag list of what is on sale (any signed-in staff).
+  const wantBfCandidates = hash === "#bf-candidates" || hash === "#bf-candidates/";
+  const wantBfSaleList = hash === "#bf-sale-list" || hash.startsWith("#bf-sale-list/");
+  // /#concrete-products — the TEMPORARY Concrete Products card (temporaryCards.js).
+  const wantConcreteProducts = CONCRETE_PRODUCTS_CARD && (hash === "#concrete-products" || hash === "#concrete-products/");
   // /#admin/network — NETWORK. Recognises the HASH only and grants nothing;
   // authorization happens at the mount below, and the RTDB rule on /network
   // is what actually refuses the write.
@@ -20787,7 +21421,7 @@ function AppInner() {
     // Attention once would keep landing straight back on it every time they
     // opened the app, tile or no tile.
     if (isRoleHidden(role, permRecord, isSuperAdmin)) { setRole(null); return; }
-    if ((role === ROLES.STOCK || role === ROLES.HEALTH || role === ROLES.ATTENTION || role === ROLES.MARKETING || role === ROLES.TOTAL_STOCK) && !canAccessStock) { setRole(null); return; }
+    if ((role === ROLES.STOCK || role === ROLES.HEALTH || role === ROLES.MISSING_PRODUCTS || role === ROLES.ATTENTION || role === ROLES.MARKETING || role === ROLES.TOTAL_STOCK) && !canAccessStock) { setRole(null); return; }
     // AI Studio is isSuperAdmin-gated (not permission-mapped) — drop anyone
     // else (e.g. a stale persisted role) back to the selector instead of
     // leaving them on the null view.
@@ -20817,6 +21451,20 @@ function AppInner() {
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
   }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, displayRegRouteOpen, stockAuditRouteOpen, shopifyRouteOpen, socialRouteOpen, tvAdRouteOpen, aiStudioRouteOpen, permRecord]);
+  // A LINK TO MISSING PRODUCTS — the new address, or the old one under
+  // Inventory Health — opens the Missing Products screen (missingProductsRoute.js).
+  // Only once this account is KNOWN to have stock access: acting earlier would
+  // set the role, have the gate below reset it, and lose the link. The fragment
+  // is REPLACED, not pushed, so the browser's Back does not land on the link
+  // again and reopen the screen. DECLARED AFTER the stored-role guard above on
+  // purpose: both run in one commit, and the later setRole wins — a stored role
+  // the guard resets must not take the link with it (CodeRabbit, PR #961).
+  useEffect(() => {
+    if (!isMissingProductsHash(hash) || !canAccessStock) return;
+    setRole(ROLES.MISSING_PRODUCTS);
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setHash("");
+  }, [hash, canAccessStock]);
 
   // The network registry (/network): one small node, read here once so every
   // writer outside React (applyMovement, order placement) asks the same
@@ -20830,8 +21478,16 @@ function AppInner() {
   // set — e.g. "trophy") reads ONLY their shop's orders, enforced by the /orders
   // rule (an unscoped read from them is rejected). Warehouse/admin/super-admin have
   // no destShop → full read. This is the single feed for every authenticated view.
-  const myShop = isSuperAdmin ? null : (permRecord?.destShop || null);
-  const orders = useOrders(myShop);
+  //
+  // ALL-STORE ACCESS (Junid, 20 Nov 2026): the feed follows the ACTIVE shop
+  // (src/utils/activeStore.js), which is the home destShop unless this person
+  // confirmed a switch. An account with no home keeps its full, unscoped read.
+  const activeStoreState = useActiveStore();
+  const activeShopForMe = activeStoreState.uid === authUser?.uid ? activeStoreState.activeShop : null;
+  const myShop = isSuperAdmin || !permRecord?.destShop ? null : (activeShopForMe || permRecord.destShop);
+  // Off while the hub Orders card is open: it reads its own hub's orders only
+  // (useHubOrders), so the whole node is not downloaded behind it (26 Nov 2026).
+  const orders = useOrders(myShop, role !== ROLES.WAREHOUSE);
   // Pine and Concrete share their orders: the sibling's feed joins the three
   // screens that show a customer's order (utils/sharedOrders.js). Everything
   // else keeps the shop's own feed. Marathon PE / Trophy have no sibling, read
@@ -21036,6 +21692,22 @@ function AppInner() {
     view = (isSuperAdmin || deviceIdentity?.canManageCodes === true)
       ? <DeviceCodesCard isOwner={isSuperAdmin} onExit={() => (window.location.hash = "")} />
       : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantConcreteProducts) {
+    view = canVerifyBrand(authUser, permRecord)
+      ? <ConcreteProductsCardRoute products={products} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantBfCandidates) {
+    view = isSuperAdmin
+      ? <BfCandidatesScreen api={bfCandidatesApi} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantBfSaleList) {
+    view = authUser
+      ? <BfSaleStoreList api={bfCandidatesApi} store={decodeURIComponent(hash.split("/")[1] || "") || null} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantBlackFriday) {
+    view = isSuperAdmin
+      ? <BlackFridayScreen api={blackFridayApi} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantNewArrivals) {
     view = (isSuperAdmin || hasPermission("shopify_publish"))
       ? <NewArrivalsScreen api={newArrivalsApi} onExit={() => (window.location.hash = "")} />
@@ -21129,7 +21801,7 @@ function AppInner() {
   // already holds the catalogue, and the count view freezes it on entry.
   // viewer.stockRole is the STORED role, deliberately NOT the super-admin-widened
   // `stockRole` above: the RTDB rules read /users/{uid}/stockRole and know nothing
-  // about ADMIN_EMAIL, so the write gate must be told the truth or it would
+  // about the client super-admin list, so the write gate must be told the truth or it would
   // promise corrections it cannot deliver.
   else if (role === ROLES.HUB_SNEAKER_COUNT) view = hubCountRouteOpen
     ? <HubCleanup products={products} actorRole={stockRole}
@@ -21157,7 +21829,10 @@ function AppInner() {
     // photos come off it, so a picture costs the audit snapshot nothing.
     ? <StockAuditView products={products} myShop={myShop} onExit={() => setRole(null)} />
     : null;
-  else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} onOpenMissingProducts={() => setRole(ROLES.MISSING_PRODUCTS)} /> : null;
+  // Missing Products — its own route (22 Nov 2026). Same gate as Inventory Health.
+  else if (role === ROLES.MISSING_PRODUCTS) view = canAccessStock ? <MissingProductsScreen products={products} onExit={() => setRole(null)}
+    onOpenEnginePolicy={enginePolicyVisibleForViewer({ email: authUser?.email, permFlags: permRecord?.permFlags }) ? () => setRole(ROLES.ENGINE_POLICY) : null} /> : null;
   else if (role === ROLES.TOTAL_STOCK) view = canAccessStock ? <NetworkTotals products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.ATTENTION) view = canAccessStock ? <AttentionView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.MARKETING) view = canAccessStock ? <MarketingView products={products} onExit={() => setRole(null)} /> : null;
@@ -21166,7 +21841,7 @@ function AppInner() {
   // Shopify Publishing — the full-page review tab. Reads /shopify_publish in
   // partial slices only; writes only /shopify_publish (store-enforced).
   else if (role === ROLES.SHOPIFY_PUBLISH) view = shopifyRouteOpen
-    ? <ShopifyPublishView products={products} onExit={() => setRole(null)} />
+    ? <ShopifyPublishTabs products={products} onExit={() => setRole(null)} />
     : null;
   // Social — the content engine. Reads /social_posts in bounded per-status
   // queries and /social_style_refs one page at a time; writes only those two
@@ -21216,8 +21891,8 @@ function AppInner() {
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} myShop={myShop} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} myShop={myShop} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={sharedOrders} onExit={() => setRole(null)} />);
-  else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} orders={orders} onExit={() => setRole(null)} />);
-  else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={sharedOrders} onExit={() => setRole(null)} />);
+  else if (role === ROLES.WAREHOUSE) view = guard(ROLES.WAREHOUSE,        <WarehouseView products={products} onExit={() => setRole(null)} />);
+  else if (role === ROLES.CUSTOMER)  view = guard(ROLES.CUSTOMER,         <CustomerView  orders={sharedOrders} shop={myShop} onExit={() => setRole(null)} />);
   else if (role === ROLES.BROADCAST_GROUPS) view = guard(ROLES.BROADCAST_GROUPS, <BroadcastGroupsView authUser={authUser} onExit={() => setRole(null)} />);
 
   // "This device's clock is wrong" — gated on ROLE, not on tree position. Being a
@@ -21716,7 +22391,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
           onPointerDown={enableVoice}
           aria-label="Enable pickup announcements"
           style={{
-            position: "fixed", right: 14, bottom: 14, zIndex: 400,
+            position: "fixed", right: 14, bottom:"calc(14px + env(safe-area-inset-bottom, 0px))", zIndex: 400,
             display: "flex", alignItems: "center", gap: 6,
             background: "rgba(40,36,32,.62)", color: "rgba(247,243,238,.85)", border: "1px solid rgba(255,244,230,.2)", borderRadius: 999,
             padding: "6px 12px", fontSize: 11.5, fontWeight: 600, letterSpacing: 0.2, cursor: "pointer",
@@ -21765,7 +22440,10 @@ export default function App() {
           Fixed rather than in a header because this app has several shells
           (warehouse, assistant, TV) and the one question it answers — "is what
           I am looking at current?" — is the same in all of them. */}
-      <div style={{ position: "fixed", right: 10, top: 8, zIndex: 900 }}>
+      <div style={{ position: "fixed", right: 10, top: 8, zIndex: 900, display: "flex", alignItems: "center", gap: 6 }}>
+        {/* "Updating…" while a saved or mirrored copy catches up after the
+            app comes back (src/offline/resumeFreshness.js). */}
+        <ResumeUpdatingMarker />
         <MirrorDot />
       </div>
       <AuthGate renderTv={() => (tvSectionFromSearch(window.location.search) === 1 ? <SectionTvShell section={1} /> : <TvOnlyShell />)}>

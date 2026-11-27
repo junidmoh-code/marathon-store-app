@@ -18,6 +18,8 @@
 // still holds the revision it processed, so an edit landing mid-push survives.
 
 const PRICE_DIRTY_PATH = "shopify_price_dirty";
+const CONCRETE_PUBLISH_PATH = "shopify_publish_concrete";
+const CONCRETE_PRICE_DIRTY_PATH = "shopify_price_dirty_concrete";
 
 /** Listed on Shopify — the same test as isListedOnShopify in inventorySync.mjs. */
 function isListed(node) {
@@ -35,6 +37,14 @@ async function markPriceDirty({ db, increment, log = () => {} }, { pid, before }
   if (!pid) return { marked: false, why: "no product id" };
   const after = (await db.ref(`products/${pid}/retailPrice`).get()).val();
   if (cents(before) === cents(after)) return { marked: false, why: "retail price unchanged" };
+  // Concrete (second store, 2026-11-15): a product listed there is marked for
+  // ITS price sweep too. Independent of, and never changing, Marathon's mark.
+  try {
+    if (isListed((await db.ref(`${CONCRETE_PUBLISH_PATH}/${pid}`).get()).val())) {
+      await db.ref(`${CONCRETE_PRICE_DIRTY_PATH}/${pid}`).set(increment(1));
+      log(`concrete price marked dirty: ${pid}`);
+    }
+  } catch (e) { log(`concrete price mark failed for ${pid}: ${String(e?.message || e)}`); }
   const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
   if (!isListed(node)) return { marked: false, why: "not listed on Shopify" };
   await db.ref(`${PRICE_DIRTY_PATH}/${pid}`).set(increment(1));
@@ -42,4 +52,22 @@ async function markPriceDirty({ db, increment, log = () => {} }, { pid, before }
   return { marked: true };
 }
 
-module.exports = { PRICE_DIRTY_PATH, isListed, markPriceDirty };
+/**
+ * The RRP chip (13 Nov 2026): /shopify_publish/{pid}/rrpDiscountPct moved
+ * between 65 and 70. The website's struck-through RRP is derived from it at
+ * push time (scripts/shopify/priceSync.mjs), so a change earns the SAME price
+ * marker — the next tick re-pushes price + compareAtPrice. Re-reads the value
+ * (absent = 65) rather than trusting the event, like markPriceDirty.
+ */
+const rrpPct = (v) => (Number(v) === 70 ? 70 : 65);
+async function markRrpDirty({ db, increment, log = () => {} }, { pid, before }) {
+  if (!pid) return { marked: false, why: "no product id" };
+  const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+  if (rrpPct(before) === rrpPct(node?.rrpDiscountPct)) return { marked: false, why: "RRP discount unchanged" };
+  if (!isListed(node)) return { marked: false, why: "not listed on Shopify" };
+  await db.ref(`${PRICE_DIRTY_PATH}/${pid}`).set(increment(1));
+  log(`shopify price marked dirty (RRP discount): ${pid}`);
+  return { marked: true };
+}
+
+module.exports = { PRICE_DIRTY_PATH, isListed, markPriceDirty, markRrpDirty };

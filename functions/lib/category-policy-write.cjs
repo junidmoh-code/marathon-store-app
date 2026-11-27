@@ -59,14 +59,36 @@ const {
   MAX_TARGET, MAX_REORDER_POINT, policyRouting,
 } = require("./category-policy.cjs");
 const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
-const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf,
-  FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
+const { effectivePolicyFor, locationEntryMode, locationPolicyFor, armedGroupForCategory, carriedOnlyOf,
+  FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, FOOTWEAR_OWN_NUMBERS_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
+const { normaliseEmail } = require("./super-admins.cjs");
 const { encodeSizeKey, resolveTarget, policyCategoryKey, maskUntrustedStock } = require("./refill-engine.cjs");
 const { loadNetwork } = require("./network-load.cjs");
 const { CENTRAL_FED_KEY, CENTRAL_FED_MAX, centralFedPerSize } = require("./central-fed.cjs");
 const CENTRAL_FED_PATH = `config/refillEngine/${CENTRAL_FED_KEY}`;
 const { CONCRETE_DIVISION_KEY, concreteDivisionPolicy, divisionContext, divisionKeepCounts, DIVISION_LOCATIONS, SEATS_PATH } = require("./concrete-division.cjs");
 const CONCRETE_DIVISION_PATH = `config/refillEngine/${CONCRETE_DIVISION_KEY}`;
+const { POLICY_FOLLOW_KEY, POLICY_FOLLOW_ALLOWED, policyFollowMap, policyFollowChain, validatePolicyFollow } = require("./policy-follow.cjs");
+const POLICY_FOLLOW_PATH = `config/refillEngine/${POLICY_FOLLOW_KEY}`;
+
+// PINE / CONCRETE FOLLOW TROPHY on the card (lib/policy-follow.cjs): which
+// location a row's numbers are read from, for the "follows …" chip. Universal
+// policy (Junid, 24 Nov 2026): Trophy's category entry, else Marathon PE's
+// (policyFollowChain), else the division's own keep — asked with the engine's
+// own test (locationPolicyFor: a usable entry, positive target), so the chip
+// names the shop the scan reads. Concrete never keeps perfumes, so it follows
+// nobody's perfume row. Display only.
+function linkedFollows(cfg, categoryKey, effEntry, base) {
+  const out = { ...(base || {}) };
+  if (FOOTWEAR_CATEGORY_KEYS.includes(categoryKey)) return out;
+  for (const loc of Object.keys(policyFollowMap(cfg))) {
+    const from = isPlainObject(effEntry) ? policyFollowChain(cfg, loc).find((l) => !!locationPolicyFor(cfg, categoryKey, l)) : undefined;
+    if (loc === "concrete" && categoryKey === "perfumes") delete out[loc];
+    else if (from) out[loc] = from;
+    else if (concreteDivisionPolicy(cfg)) delete out[loc];
+  }
+  return out;
+}
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
@@ -163,7 +185,11 @@ const sameValue = (a, b) => canonical(a) === canonical(b);
 // scripts/mutation-proof-engine-policy.mjs (M-SERVER).
 async function assertEnginePolicyCaller({ db, callerEmail, callerUid, adminEmail }) {
   if (!adminEmail) throw httpsError("failed-precondition", "Admin identity is not configured.");
-  if (typeof callerEmail === "string" && callerEmail === adminEmail) return;
+  // adminEmail is one address or a list (index.js passes SUPER_ADMIN_EMAILS:
+  // Junid and Jafer). Compared normalised, the same way isSuperAdmin compares.
+  const admins = [].concat(adminEmail).map(normaliseEmail).filter(Boolean);
+  const caller = normaliseEmail(callerEmail);
+  if (caller && admins.includes(caller)) return;
   if (typeof callerUid !== "string" || !callerUid) {
     throw httpsError("permission-denied", "Engine Policy permission required.");
   }
@@ -785,7 +811,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations, network: hand
       // show — it is NOT in `entry` / `effectiveEntry`, which stay exactly
       // what is stored, so a save can never write a follower's numbers down
       // and stop it following. A location that is not live is never here.
-      follows: m ? m.follows : {},
+      follows: linkedFollows(config, key, effEntry, m ? m.follows : {}),
       // The shape each armed location holds — "uniform" or "per-size".
       shapes: isPlainObject(effEntry)
         ? Object.fromEntries(effArmed.map((l) => [l, locationEntryMode(effEntry[l])])) : {},
@@ -829,6 +855,9 @@ async function buildCensus(db, { config, taxonomy, knownLocations, network: hand
       resolvesMapProducts: m ? Math.max(pids.length - m.overriddenProducts, 0) : 0,
       // A footwear category's numbers live on the footwear policy only.
       footwearMember: FOOTWEAR_CATEGORY_KEYS.includes(key),
+      // Kids Shoes: the one footwear category that may be given its own
+      // numbers while the footwear policy is armed (policy-resolve.cjs).
+      ownNumbersAllowed: FOOTWEAR_OWN_NUMBERS_KEYS.includes(key),
       footwearDrift: FOOTWEAR_CATEGORY_KEYS.includes(key) ? footwearDrift.filter((i) => i.key === key) : [],
     });
   }
@@ -941,7 +970,14 @@ async function buildCensus(db, { config, taxonomy, knownLocations, network: hand
     const { stock: stockView } = maskUntrustedStock(stock, network);
     // Hub 3's counted view decides which sizes it serves — as the scan does.
     const division = divisionContext({ config, rawStock: stock, seats, openIndex, heldLines: null, refillRequests: null, hub3View: stockView.hub3, nowMs: Date.now() });
-    divisionKeeps = divisionKeepCounts({ division, stockView, products });
+    // A linked location (Pine follows Trophy) is counted through the engine's
+    // resolver, so the card's "keeps N units" is the number the scan will use.
+    const linkedTargetAt = {};
+    for (const loc of Object.keys(policyFollowMap(config))) {
+      if (!DIVISION_LOCATIONS.includes(loc)) continue;
+      linkedTargetAt[loc] = (pid, size) => resolveTarget({ targets, config, products, stock: stockView, network, division }, loc, pid, size);
+    }
+    divisionKeeps = divisionKeepCounts({ division, stockView, products, linkedTargetAt });
   }
   return { categories, groupEntries, destinations, groups, rowLocations: rowLocs, footwearDrift, divisionKeeps };
 }
@@ -996,7 +1032,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // served the list from before it did.
     const key = canonical({ policy: cfg.categoryPolicy ?? null, groups: cfg.policyGroups ?? null,
       cap: cfg.maxIntentsPerRun ?? null, mode: cfg.mode ?? null, routed: policyRouting(cfg, network).added,
-      division: cfg[CONCRETE_DIVISION_KEY] ?? null });
+      division: cfg[CONCRETE_DIVISION_KEY] ?? null, follow: cfg[POLICY_FOLLOW_KEY] ?? null });
     const fresh = !!censusCache && censusCache.key === key && (nowMs - censusCache.at) < CENSUS_TTL_MS;
     const census = fresh && d.refresh !== true
       ? censusCache.payload
@@ -1017,6 +1053,13 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       centralFedClothing: isPlainObject(cfg[CENTRAL_FED_KEY]) ? cfg[CENTRAL_FED_KEY] : null,
       centralFedStores: centralFedCandidates(cfg, network),
       concreteDivision: isPlainObject(cfg[CONCRETE_DIVISION_KEY]) ? cfg[CONCRETE_DIVISION_KEY] : null,
+      // Pine follows Trophy (lib/policy-follow.cjs): the links that are on,
+      // and the only ones there can be.
+      policyFollow: policyFollowMap(cfg),
+      // The value as STORED, unfiltered: the card's drift check sends this, so
+      // an ignored leftover (say "marathon-pe") can still be replaced.
+      policyFollowStored: isPlainObject(cfg[POLICY_FOLLOW_KEY]) ? cfg[POLICY_FOLLOW_KEY] : null,
+      policyFollowAllowed: POLICY_FOLLOW_ALLOWED,
       history: await readHistory(db),
       serverNowMs: nowMs,
     };
@@ -1104,6 +1147,52 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     await historyRef.update({ status: verified ? "applied" : "unverified", verifiedAt: nowMs });
     if (!verified) throw httpsError("internal", "The numbers were written but did not read back as expected.", { historyId: historyRef.key, written: written ?? null });
     return { ok: true, action: "setConcreteDivision", before, after, historyId: historyRef.key, history: await readHistory(db) };
+  }
+
+  // ── PINE FOLLOWS TROPHY — the link (lib/policy-follow.cjs; Junid, 22 Nov 2026)
+  // One value at config/refillEngine/policyFollow/{location}: the location
+  // whose policy it resolves from, or null to switch the link off (the
+  // rollback: the location is back on its own numbers at the next scan). Only
+  // the pair that file allows is ever written. Same discipline as every write
+  // on this card: history first (holding `before`), drift check, write, read
+  // back. The card's Revert sends the history entry's `before`.
+  if (d.action === "setPolicyFollow") {
+    const loc = d.location;
+    if (!("follows" in d)) throw httpsError("invalid-argument", "follows is required — send `follows: null` to switch the link off.");
+    const after = d.follows === null ? null : d.follows;
+    const bad = validatePolicyFollow(loc, after);
+    if (bad) throw httpsError("invalid-argument", bad);
+    const stored = isPlainObject(cfg[POLICY_FOLLOW_KEY]) ? cfg[POLICY_FOLLOW_KEY][loc] : undefined;
+    const before = stored === undefined || stored === null ? null : stored;
+    if (dryRun) return { ok: true, dryRun: true, action: "setPolicyFollow", location: loc, before, after };
+    if (sameValue(before, after)) return { ok: true, action: "setPolicyFollow", noChange: true, location: loc, before, after };
+    if (d.expectedBefore !== undefined && !sameValue(before, d.expectedBefore)) {
+      throw httpsError("failed-precondition", "This changed while it was open. Close and re-open it to see how it stands now.", { drift: true, live: before });
+    }
+    const historyRef = db.ref(HISTORY_PATH).push();
+    await historyRef.set({ kind: "policyFollow", location: loc, at: nowMs, by: callerEmail, byUid: callerUid || null, before, after, status: "pending" });
+    // Drift check and write in ONE transaction, so a second save between a read
+    // and a set can never be overwritten. A value that is not `before` is handed
+    // back unchanged (never `undefined`: the first pass may see a cached null,
+    // and aborting there would refuse a save that was in fact current), and the
+    // committed value then says whether this save landed.
+    let sawDrift = false;
+    const claim = await db.ref(`${POLICY_FOLLOW_PATH}/${loc}`).transaction((current) => {
+      if (sameValue(current ?? null, before)) { sawDrift = false; return after; }
+      sawDrift = true;
+      return current;
+    });
+    const liveNow = claim.snapshot.val();
+    if (!claim.committed || sawDrift || !sameValue(liveNow ?? null, after)) {
+      await historyRef.update({ status: "aborted_on_drift", liveAtAbort: liveNow ?? null });
+      throw httpsError("failed-precondition", "This changed while it was being saved. Nothing was written.", { drift: true, live: liveNow ?? null, historyId: historyRef.key });
+    }
+    invalidateCensusCache();
+    const written = await val(db, `${POLICY_FOLLOW_PATH}/${loc}`);
+    const verified = sameValue(written ?? null, after);
+    await historyRef.update({ status: verified ? "applied" : "unverified", verifiedAt: nowMs });
+    if (!verified) throw httpsError("internal", "The link was written but did not read back as expected.", { historyId: historyRef.key, written: written ?? null });
+    return { ok: true, action: "setPolicyFollow", location: loc, before, after, historyId: historyRef.key, history: await readHistory(db) };
   }
 
   // ── THE EXPLICIT-ROW LIST — "N with their own rows", opened for editing ───
@@ -1681,11 +1770,24 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   // ── A FOOTWEAR CATEGORY HAS NO NUMBERS OF ITS OWN ─────────────────────────
   // See the ONE FOOTWEAR POLICY note above isGenuineRevert. Refused on a dry
   // run too: previewing a copy that cannot be saved is offering a refusal.
-  if (FOOTWEAR_CATEGORY_KEYS.includes(categoryKey) && d.policy !== null && footwearGroupArmed(cfg)
+  // (Kids Shoes is the one exception — FOOTWEAR_OWN_NUMBERS_KEYS, Junid 22 Nov 2026.)
+  if (FOOTWEAR_CATEGORY_KEYS.includes(categoryKey) && !FOOTWEAR_OWN_NUMBERS_KEYS.includes(categoryKey) && d.policy !== null && footwearGroupArmed(cfg)
     && !(await isGenuineRevert(db, d, { kind: "category", key: categoryKey, value: d.policy }))) {
     throw httpsError("failed-precondition",
       `Footwear is set once, on the Footwear policy — "${categoryKey}" cannot have numbers of its own while that policy is armed. Open Footwear to change it.`,
       { footwearOnePolicy: true, groupKey: FOOTWEAR_GROUP_KEY });
+  }
+  // KIDS SHOES' OWN NUMBERS ARM ONLY WHERE A KIDS SHOE IS ALREADY KEPT
+  // (Junid, 22 Nov 2026): every location in its entry must be carried-only, so
+  // the engine keeps sizes at a hub that already holds the product (or that a
+  // Solve has just sent it to) and never spreads it anywhere new.
+  if (FOOTWEAR_OWN_NUMBERS_KEYS.includes(categoryKey) && isPlainObject(d.policy)) {
+    const loose = Object.keys(d.policy).filter((loc) => loc !== "perSize" && isPlainObject(d.policy[loc]) && d.policy[loc].carriedOnly !== true);
+    if (loose.length) {
+      throw httpsError("invalid-argument",
+        `"${categoryKey}" may only be kept where it is already carried — ${loose.join(", ")} must be carried-only.`,
+        { carriedOnlyRequired: true, locations: loose });
+    }
   }
   const before = cfg.categoryPolicy?.[categoryKey] ?? null;
   const gate = gateNewLegsToSeated(before, normalizePolicy(d.policy));

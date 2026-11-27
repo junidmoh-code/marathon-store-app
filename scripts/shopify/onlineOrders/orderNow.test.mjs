@@ -150,15 +150,23 @@ describe("Order it now", () => {
     expect(f.read("stock/hub1/SHX/7/qty")).toBe(1); // nothing deducted: only the Pack does
   });
 
-  it("not there yet: says where it looked and leaves the line grey", async () => {
+  it("not there yet: says where it looked (Central included) and leaves the line grey", async () => {
     const un = shox({ escalation: { chain: "footwear", home: "hub1", round: 1, idx: 0, phase: "unavailable", attempts: [] }, source: { status: "unavailable" } });
-    const f = fakeDb(world({ lines: [un, tee()], stock: { central: { SHX: { 7: { qty: 2 } } } }, requests: { "0_0": tap(0, un) } }));
+    const f = fakeDb(world({ lines: [un, tee()], stock: {}, requests: { "0_0": tap(0, un) } }));
     await tick(f);
     const r = req(f);
     expect(r.state).toBe(ORDER_NOW.NOT_IN_STOCK);
-    expect(r.checked).toEqual({ free: [{ loc: "hub1", free: 0 }, { loc: "hub2", free: 0 }, { loc: "hub3", free: 0 }], central: 2 });
-    expect(describeChecked(r.checked)).toBe("Hub 1: 0 free, Hub 2: 0 free, Hub 3: 0 free · Central has 2 (Central sends by refill, not a pick)");
+    expect(r.checked).toEqual({ free: [{ loc: "hub1", free: 0 }, { loc: "hub2", free: 0 }, { loc: "hub3", free: 0 }, { loc: "central", free: 0 }], central: 0 });
+    expect(describeChecked(r.checked)).toBe("Hub 1: 0 free, Hub 2: 0 free, Hub 3: 0 free, Central: 0 free");
     expect(line0(f)).toMatchObject({ source: { status: "unavailable" }, escalation: { phase: "unavailable" } });
+  });
+
+  it("only Central has it: Central is the last stop now, so the line goes on Central's strip (Junid, 24 Nov 2026)", async () => {
+    const un = shox({ escalation: { chain: "footwear", home: "hub1", round: 1, idx: 0, phase: "unavailable", attempts: [] }, source: { status: "unavailable" } });
+    const f = fakeDb(world({ lines: [un, tee()], stock: { central: { SHX: { 7: { qty: 2 } } } }, requests: { "0_0": tap(0, un) } }));
+    await tick(f);
+    expect(req(f).state).toBe(ORDER_NOW.ORDERED);
+    expect(line0(f).source).toMatchObject({ status: "display", locationId: "central" });
   });
 
   it("units another website order holds do not count", async () => {
@@ -303,13 +311,12 @@ describe("Order it now — after a release", () => {
     expect(f.read(`refill_requests/${REFILL}`)).toMatchObject({ qty: 3, status: "open" });
   });
 
-  it("WhatsApp down → Junid is emailed instead", async () => {
+  it("WhatsApp down → NO email fallback any more (Junid's quiet rule, 26 Nov 2026); the mark comes off for the next try", async () => {
     const mails = [];
     const f = fakeDb(world({ stock: { hub1: { SHX: { 7: { qty: 1 } } } }, refill: { status: "open", qty: 3, createdFrom: { source: "scan" } }, requests: { "0_0": tap(0, shox()) } }));
     await runOrdersPoll({ ...deps(f), send: async (m) => { mails.push(m); }, whatsappJunid: async () => { throw new Error("WhatsApp queue down"); } });
     const ours = mails.filter((m) => /a request needs your eye/.test(m.subject));
-    expect(ours).toHaveLength(1);
-    expect(ours[0].text).toMatch(/could not tell which part/);
+    expect(ours).toHaveLength(0);
   });
 });
 

@@ -82,6 +82,24 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
       cwd: REPO, env: process.env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
     });
     for (const l of `${r.stdout || ""}${r.stderr || ""}`.split("\n")) if (l.trim()) log(`   ${l}`);
+    // SHELF HOLDS (pickableStock.mjs, Junid 24 Nov 2026). The sweep above has
+    // just re-checked every listing against pickable stock (desiredFor leaves
+    // out a shelf that rejected a website pick and has not moved since). This
+    // only tidies: holds whose shelf has moved are removed, and the log says
+    // how many still stand. Never fails the night: it writes no stock.
+    const h = spawnSync(process.execPath, [join(HERE, "onlineOrders", "cell-holds.mjs"), "--prune", "--commit"], {
+      cwd: REPO, env: process.env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60e3,
+    });
+    for (const l of `${h.stdout || ""}${h.stderr || ""}`.split("\n")) if (l.trim()) log(`   holds: ${l}`);
+    if (h.status !== 0) log(`   holds: the tidy-up did not finish (exit ${h.status ?? "none"}${h.error ? `, ${h.error.message}` : ""}); ended holds hide nothing, it runs again tomorrow`);
+    // DAILY SHELF CHECKS (functions/webShelf, Junid 24 Nov 2026): each shop and hub's list is topped up to its
+    // day's number from the lone pieces the sweep has just seen and the shelves held as "wrong by more than one".
+    // Writes only under /shelf_checks. Never fails the night.
+    const c = spawnSync(process.execPath, [join(REPO, "scripts", "online", "shelf-checks.mjs"), "--build", "--commit"], {
+      cwd: REPO, env: process.env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60e3,
+    });
+    for (const l of `${c.stdout || ""}${c.stderr || ""}`.split("\n")) if (l.trim()) log(`   shelf checks: ${l}`);
+    if (c.status !== 0) log(`   shelf checks: the lists were not topped up (exit ${c.status ?? "none"}${c.error ? `, ${c.error.message}` : ""}); yesterday's unchecked items are still there`);
     // Stamped only when the sweep got as far as its REPORT ("rtdb read:" is
     // printed just before it is written): a sweep that refused or could not
     // correct something has said so at /shopify_inventory_health and the

@@ -22,6 +22,8 @@
 // OFF SWITCH: /config/shopifyAutoPublish/enabled. Absent or anything but true
 // = the agent does nothing (the queue keeps filling, nothing is lost).
 
+import { PUBLISH_PATH, SYNC_PATH, storeNode, IS_MARATHON } from "./storeConfig.mjs";
+import { isConcreteProduct } from "../../src/utils/concreteListing.js";
 import { applyProposalMutator, conditionMutator, publishMutator, precheck }
   from "../../src/components/shopify/publishMutators.js";
 import { CONDITIONS } from "../../src/components/shopify/publishShared.js";
@@ -47,7 +49,7 @@ export const RETRY_AFTER_MS = 30 * 60 * 1000;
 /** A button's mutator run as an Admin SDK transaction on /shopify_publish/{pid}. */
 async function decide(db, pid, node, mutator, args, ctx) {
   let refusal = null;
-  const res = await db.ref(`shopify_publish/${pid}`).transaction((cur) => {
+  const res = await db.ref(`${PUBLISH_PATH}/${pid}`).transaction((cur) => {
     const base = cur || node || {};
     // Re-checked INSIDE the transaction, against the server's value: a person
     // may have published (or the reconciler confirmed) this product since it
@@ -106,7 +108,9 @@ export function readiness(product, node) {
  */
 export async function autoPublishOne(db, pid, { now, locNames }) {
   const product = (await db.ref(`products/${pid}`).get()).val();
-  let node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+  // Concrete-only (Junid, 20 Nov 2026): never auto-published on Marathon.
+  if (IS_MARATHON && isConcreteProduct(product)) return { outcome: "done", why: "Concrete-only — not sold on Marathon" };
+  let node = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
   const ready = readiness(product, node);
   if (!ready.ready) return { outcome: ready.outcome, why: ready.why };
 

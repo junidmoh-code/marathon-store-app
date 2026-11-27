@@ -1,0 +1,747 @@
+// ─── CAPS & BEANIES STILL DECLARING A LETTER SIZE → ONE SIZE (Junid, 20 Nov 2026) ─
+// Dry-run by default.
+//
+// Junid: every normal cap, beanie and bucket hat is covered by the existing
+// caps-beanies policy (shop 5 / Hub 2 10 / reorderPoint 2 — unchanged here).
+// That policy speaks for the one-size "_" cell only, so a caps-beanies product
+// that still declares a letter size (legacy "M"/"S" records) resolves the
+// garment size run instead. This runs THE EXISTING one-size collapse over
+// exactly those products — the same core as the headwear and bags runs
+// (scripts/lib/headwearCollapseCore.mjs: Step 1 paired stock movements into
+// "_", Step 2 atomic identity + barcode index, Step 3 retire letter target rows
+// to 0 so "_" resolves through the category policy; no "_" row is created).
+// Same per-product gates (open transfer / order / refill request / engine
+// lock / active Display Check on a letter size, recent till activity, an
+// undeclared-size cell, a broken barcode index): a gated product is SKIPPED and
+// listed, never forced. Same execute-only gate: /receiving_session/active === true.
+//
+// SCOPE (a list built here, printed, and frozen into the rollback snapshot):
+//   categoryKey "caps-beanies", a NORMAL headwear name (utils/headwearCategory.js
+//   normalHeadwearKind — beanie / cap / bucket hat; never visor, fitted or
+//   59FIFTY), sizes not already ["_"], not a merged stub.
+// NAME-AMBIGUOUS caps-beanies records (no headwear word in the name, or a
+// "fitted" name on the caps-beanies key) are LISTED with the evidence for and
+// against, and NOT collapsed. fitted-caps and visors are never read for writes.
+//
+// NO WHOLE-NODE READS. Products are paged (rtdbPaged); stock, targets and
+// barcode records are read by key per product; /barcodes, /transfers, /orders
+// and /refill_requests (no usable index) are read in pages; Display Checks by
+// key prefix per location; the ledger by its ts index over the recent window.
+// The core's own io.read("stock") / io.read("stock_targets") calls are served
+// a by-key view of the product being processed (they only ever look at that
+// product's entries).
+//
+// Usage:  node --import ./scripts/lib/appModuleLoader.mjs scripts/collapse-caps-beanies-sized.mjs [--execute] [--only=pid,pid]
+//         SNAPSHOT_PATH / REPORT_JSON as the headwear run.
+import { createRequire } from "module";
+import { writeFileSync, readFileSync, statSync } from "fs";
+import { hostname, tmpdir, homedir } from "os";
+import { join, resolve as resolvePath } from "path";
+import { setServerTimeOffsetMs, serverNowIso } from "../src/utils/serverTime.js";
+import {
+  applyMovementAdmin, planStep1, planStep2, step2Done, planStep3, verifyProduct,
+  assertDrained, orderBlocks, transferBlocks, movementRecency,
+  isRetiredSize, isRetiredSizeKey,
+} from "./lib/headwearCollapseCore.mjs";
+import { readMapPaged, shallowKeys as shallowKeysOnce } from "./lib/rtdbPaged.mjs";
+// The shallow listing is a REST call; a transient network timeout is retried
+// (it is read-only) rather than crashing a run mid-way.
+async function shallowKeys(appRef, path) {
+  for (let i = 1; ; i++) {
+    try { return await shallowKeysOnce(appRef, path); } catch (e) {
+      if (i >= 5) throw e;
+      await new Promise((r) => setTimeout(r, 2000 * i));
+    }
+  }
+}
+import { normalHeadwearKind } from "../src/utils/headwearCategory.js";
+
+const require = createRequire(new URL("../functions/package.json", import.meta.url));
+const admin = require("firebase-admin");
+const app = admin.initializeApp({
+  credential: admin.credential.applicationDefault(),
+  databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app",
+});
+const db = admin.database();
+
+const EXECUTE = process.argv.includes("--execute");
+// --only: absent = full scope; present = a non-empty list of product ids, or abort
+// (an empty or malformed operand must never widen to everything).
+const ONLY_ARG = process.argv.find((a) => a === "--only" || a.startsWith("--only="));
+const ONLY = ONLY_ARG ? ONLY_ARG.slice(7).split(",").map((x) => x.trim()).filter(Boolean) : [];
+if (ONLY_ARG && (!ONLY.length || ONLY.some((x) => !/^[A-Za-z0-9_-]+$/.test(x)))) {
+  console.error(`ABORT: --only needs a comma-separated list of product ids (got ${JSON.stringify(ONLY_ARG)}). Nothing was started.`);
+  process.exit(1);
+}
+const CAPS = "caps-beanies";
+const isOneSizeP = (p) => Array.isArray(p?.sizes) && p.sizes.length === 1 && String(p.sizes[0]) === "_";
+const keyOf = (p) => (typeof p?.categoryKey === "string" ? p.categoryKey.trim() : "");
+const isInScope = (p) => !!p && !p.mergedInto && keyOf(p) === CAPS && !!normalHeadwearKind(p.name)
+  && Array.isArray(p.sizes) && p.sizes.length > 0 && !isOneSizeP(p);
+const SNAP_RAW = process.env.SNAPSHOT_PATH || join(homedir(), `caps-beanies-collapse-rollback-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+const SNAP = resolvePath(SNAP_RAW);
+if (process.env.REPORT_JSON && resolvePath(process.env.REPORT_JSON) === SNAP) {
+  console.error("ABORT: REPORT_JSON and SNAPSHOT_PATH are the same file — the report would overwrite the rollback. Nothing was started.");
+  process.exit(1);
+}
+
+// The locations under /stock and /stock_targets, listed shallowly once.
+let STOCK_LOCS = [];
+let TARGET_LOCS = [];
+let FOCUS = [];   // the product(s) whose by-key view io.read("stock") serves
+const realRead = (p) => db.ref(p).once("value").then((s) => s.val());
+async function scopedView(root, locs, pids) {
+  // An empty focus would answer "nothing there" — and assertDrained would read
+  // that as drained. Refuse instead of failing open.
+  if (!pids.length) throw new Error(`by-key view of /${root} asked with no product in focus`);
+  const out = {};
+  await Promise.all(locs.flatMap((loc) => pids.map(async (pid) => {
+    const v = await realRead(`${root}/${loc}/${pid}`);
+    if (v) (out[loc] = out[loc] || {})[pid] = v;
+  })));
+  return out;
+}
+const io = {
+  read: (p) => p === "stock" ? scopedView("stock", STOCK_LOCS, FOCUS)
+    : p === "stock_targets" ? scopedView("stock_targets", TARGET_LOCS, FOCUS)
+    : realRead(p),
+  update: (u) => db.ref().update(u),
+};
+// Display Checks are keyed {pid}__{size} under each location: read by key prefix.
+async function dcFor(pids) {
+  const locs = await shallowKeys(app, "displayChecks_active");
+  const out = {};
+  await Promise.all(locs.flatMap((loc) => pids.map(async (pid) => {
+    const v = (await db.ref(`displayChecks_active/${loc}`).orderByKey().startAt(`${pid}__`).endAt(`${pid}__\uf8ff`).once("value")).val();
+    if (v) out[loc] = { ...(out[loc] || {}), ...v };
+  })));
+  return out;
+}
+async function locksFor(pids) {
+  const locs = await shallowKeys(app, "refill_engine/open");
+  const out = {};
+  await Promise.all(locs.flatMap((loc) => pids.map(async (pid) => {
+    const v = await realRead(`refill_engine/open/${loc}/${pid}`);
+    if (v) (out[loc] = out[loc] || {})[pid] = v;
+  })));
+  return out;
+}
+// The ledger over the recent window only, by its ts index (the recency gate's question).
+// Window = the recency gate's own window (at least 2h), so a longer
+// RECENT_ACTIVITY_MINUTES is never asked a question the query cannot answer.
+const recentMovements = (nowMs) => db.ref("stock_movements").orderByChild("ts").startAt(new Date(nowMs - Math.max(2 * 3600e3, RECENT_ACTIVITY_MS)).toISOString()).once("value").then((s) => s.val() || {});
+
+// ── TIMING KNOBS — VALIDATED, NOT COERCED, AND BEFORE THE LOCK ──────────────
+// `Number(process.env.X || default)` turns a typo into silence. On a staleness
+// bound that means "never refresh" (every NaN comparison is false); on the
+// recent-activity gate it means the gate NEVER FIRES, and a hat being rung up
+// at a till is migrated instead of skipped — the one concurrency protection
+// this run has against live tills, disabled by `RECENT_ACTIVITY_MINUTES=15m`.
+//
+// Validated at MODULE scope, which is also why it lives here rather than in the
+// IIFE: an abort after the RTDB run lock is taken leaves the lock held, and
+// every later --execute run then fails on a stale lock until someone clears it
+// by hand. That is exactly the trap the lock's own comment warns about — a gate
+// that punishes the expected mistake with a second, unrelated failure. Refusing
+// a bad value before anything is acquired costs nothing. (Review of PR #345.)
+function positiveSeconds(name, fallbackSeconds) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallbackSeconds * 1000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.error(`ABORT: ${name}=${JSON.stringify(raw)} is not a finite positive number of seconds. Nothing was started.`);
+    process.exit(1);
+  }
+  return n * 1000;
+}
+// A product that moved this recently is in active use at a till — skip it.
+const RECENT_ACTIVITY_MS = positiveSeconds("RECENT_ACTIVITY_MINUTES", 15) * 60;
+const GATE_MAX_AGE_MS = positiveSeconds("GATE_MAX_AGE_SECONDS", 60);
+// /stock_movements is the LARGEST node in the database, and the barcode index
+// is enumerated on the same beat. Both refresh on their own, longer cadence:
+// still vastly fresher than "once at startup" (which turned a sliding 15-minute
+// recency window into a fixed slice of the run's first 15 minutes), at a
+// fraction of the bandwidth.
+const LEDGER_MAX_AGE_MS = positiveSeconds("LEDGER_MAX_AGE_SECONDS", 300);
+
+// Set once the execute-run lock is taken; called on every exit path.
+let releaseLock = null;
+
+// Same credential assertion as the pre-flight probe — fail early and legibly.
+function hasPrivilegedCredential(app) {
+  const c = app && app.options && app.options.credential;
+  return !!c && typeof c.getAccessToken === "function";
+}
+
+
+(async () => {
+  console.log(`\n${"═".repeat(78)}\n  CAPS & BEANIES SIZED → ONE SIZE — mode: ${EXECUTE ? "EXECUTE (REAL WRITES)" : "DRY RUN"}\n${"═".repeat(78)}`);
+
+  if (!hasPrivilegedCredential(admin.app())) {
+    console.error("ABORT: not a privileged Admin SDK credential — Step 2 (rewriting existing");
+    console.error("/barcodes/{code}/size records) is create-only under client auth and would fail.");
+    process.exit(1);
+  }
+  console.log(`  credential: ${admin.app().options.credential.constructor.name} (privileged)`);
+
+  // The repo's server-time anchor: push RTDB's measured offset into the same
+  // module the app itself stamps timestamps with. Device clock stays irrelevant.
+  const offset = (await io.read(".info/serverTimeOffset")) || 0;
+  setServerTimeOffsetMs(offset);
+  const nowIso = serverNowIso();
+  const nowMs0 = Date.parse(nowIso);
+  console.log(`  server time anchor: offset ${offset}ms → ${nowIso}`);
+
+  [STOCK_LOCS, TARGET_LOCS] = await Promise.all([shallowKeys(app, "stock"), shallowKeys(app, "stock_targets")]);
+  const products = await readMapPaged(db, "products", { pageSize: 500 });
+  // Name-ambiguous caps-beanies records: listed with evidence, never collapsed.
+  const ambiguous = Object.entries(products).filter(([, p]) => p && !p.mergedInto && keyOf(p) === CAPS && !normalHeadwearKind(p.name));
+  console.log(`\n  NAME-AMBIGUOUS caps-beanies records (listed, NOT collapsed): ${ambiguous.length}`);
+  for (const [pid, p] of ambiguous) {
+    const forCap = [`categoryKey caps-beanies`, p.subcategory === "Caps & Hats" ? "on the Caps & Hats shelf" : null].filter(Boolean).join("; ");
+    const against = /fitted|59\s*fifty/i.test(p.name || "") ? "the name says fitted — fitted caps are sized and out of scope" : "no beanie / cap / bucket-hat word in the name";
+    console.log(`     ${pid}  ${JSON.stringify(p.name)}  sizes=${JSON.stringify(p.sizes)}  FOR: ${forCap}  AGAINST: ${against}`);
+  }
+  const scopePids = Object.entries(products).filter(([, p]) => isInScope(p)).map(([pid]) => pid);
+  if (!scopePids.length) { console.log("  nothing in scope — every normal caps-beanies product is already one size."); process.exit(0); }
+  FOCUS = scopePids;
+  const [stock, allTargets, barcodesIdx, transfers, orders, refillRequests, openLocks, dcActive, session, movements] = await Promise.all([
+    io.read("stock"), io.read("stock_targets"), readMapPaged(db, "barcodes", { pageSize: 2000 }),
+    readMapPaged(db, "transfers", { pageSize: 1000 }), readMapPaged(db, "orders", { pageSize: 1000 }), readMapPaged(db, "refill_requests", { pageSize: 2000 }),
+    locksFor(scopePids), dcFor(scopePids), io.read("receiving_session"), recentMovements(nowMs0),
+  ]).then((r) => r.map((v) => v || {}));
+  FOCUS = [];
+
+  // productId → most recent movement instant (and a count of unreadable stamps)
+  // for the recent-activity gate — see movementRecency for why the unreadable
+  // case must block rather than read as quiet.
+  const { lastMs: lastMovementMs0, unreadable: unreadableStamp0 } = movementRecency(movements, { nowMs: nowMs0 });
+
+  // ── scope ──────────────────────────────────────────────────────────────────
+  let scope = Object.entries(products)
+    .filter(([, p]) => isInScope(p))
+    .sort((a, b) => (a[1].name || "").localeCompare(b[1].name || ""));
+
+  if (ONLY.length) scope = scope.filter(([pid]) => ONLY.includes(pid));
+  const pidSet = new Set(scope.map(([pid]) => pid));
+  console.log(`  scope: ${scope.length} caps-beanies products still declaring a letter size`
+    + `${ONLY.length ? ` — --only filter from ${ONLY.length} asked` : ""}`);
+
+  // reverse index: code → record, per pid (catches codes the product map forgot)
+  const reverseIdx = {};
+  for (const [code, rec] of Object.entries(barcodesIdx)) {
+    if (rec && pidSet.has(rec.productId)) (reverseIdx[rec.productId] = reverseIdx[rec.productId] || {})[code] = rec;
+  }
+
+  // network totals BEFORE, across scope — the number the end of the run must reproduce
+  const totalsBefore = {};
+  for (const [loc, byPid] of Object.entries(stock)) {
+    for (const pid of pidSet) {
+      for (const cell of Object.values(byPid?.[pid] || {})) {
+        totalsBefore[loc] = (totalsBefore[loc] || 0) + (typeof cell?.qty === "number" ? cell.qty : 0);
+      }
+    }
+  }
+  console.log(`  units before: ${Object.entries(totalsBefore).sort().map(([l, q]) => `${l}=${q}`).join("  ")}  total=${Object.values(totalsBefore).reduce((a, b) => a + b, 0)}`);
+
+  // ── rollback snapshot ON DISK before ANY write (balaclava standard) ────────
+  // RUN ID + the ids this run actually writes. The rollback must be able to
+  // tell THIS run's movements from those of any other run of the same script:
+  // a prefix match on "onesize_" cannot, and a stale snapshot would then roll
+  // back over a later, genuinely-completed migration without a warning (the
+  // multi-pass workflow over gated products produces exactly that situation).
+  // The snapshot file is rewritten at the end of the run with the applied ids.
+  // (Sonnet review of the rollback, PR #343.)
+  const RUN_ID = `${nowIso}__${process.pid}`;
+  const appliedMovementIds = [];
+  const snapshot = { capturedAt: nowIso, runId: RUN_ID, mode: EXECUTE ? "execute" : "dry-run",
+    appliedMovementIds, products: {}, barcodeIndex: {}, stockCells: {}, stockTargets: {} };
+  for (const [pid, p] of scope) {
+    snapshot.products[pid] = { sizes: p.sizes ?? null, barcodes: p.barcodes ?? null };
+    for (const code of new Set([...Object.values(p.barcodes || {}).map(String), ...Object.keys(reverseIdx[pid] || {})])) {
+      snapshot.barcodeIndex[code] = barcodesIdx[code] ?? null;
+    }
+    for (const [loc, byPid] of Object.entries(stock)) if (byPid?.[pid]) (snapshot.stockCells[loc] = snapshot.stockCells[loc] || {})[pid] = byPid[pid];
+    for (const [loc, byPid] of Object.entries(allTargets)) if (byPid?.[pid]) (snapshot.stockTargets[loc] = snapshot.stockTargets[loc] || {})[pid] = byPid[pid];
+  }
+  writeFileSync(SNAP, JSON.stringify(snapshot, null, 2));
+  try {
+    const back = JSON.parse(readFileSync(SNAP, "utf8"));
+    if (!back.products || Object.keys(back.products).length !== scope.length) throw new Error("snapshot incomplete");
+    console.log(`  rollback snapshot: ${SNAP} (${statSync(SNAP).size} bytes, ${Object.keys(back.products).length} products)`);
+  } catch (e) {
+    console.error(`ABORT: rollback snapshot unreadable — ${e.message}. Nothing has been written.`);
+    process.exit(1);
+  }
+
+  // ── EXECUTE-ONLY: THE ENGINE MUST BE PAUSED ───────────────────────────────
+  // Checked BEFORE the run lock is taken. Taking the lock first meant that the
+  // most likely operator mistake — running while the engine is still live —
+  // aborted with the lock held, and every subsequent run then aborted on a
+  // stale lock until it was cleared by hand. A gate that punishes the expected
+  // mistake with a second, unrelated failure is a worse gate. (Kimi review of
+  // the lock delta, PR #343.)
+  if (EXECUTE && session?.active !== true) {
+    console.error(`\nABORT: refill engine is NOT paused (receiving_session.active = ${JSON.stringify(session?.active)}).`);
+    console.error("Set /receiving_session/active = true first — the health scan runs every 15 min");
+    console.error("regardless of shop hours, so a trading-hours freeze alone does not cover this.");
+    console.error("(No run lock was taken, so nothing needs clearing before you retry.)");
+    process.exit(1);
+  }
+  if (!EXECUTE) console.log(`  engine paused: ${session?.active === true ? "yes" : "NO (must be true at execute time)"}`);
+
+  // ── EXECUTE-ONLY: ONE RUN AT A TIME ───────────────────────────────────────
+  // Two overlapping --execute processes are the one way this migration can
+  // double-apply a positive leg: both read the ledger, neither sees the other's
+  // movement yet, and the IN leg into "_" has no negative floor to refuse the
+  // second write — 6 units could land 12, with the single ledger record
+  // overwritten so nothing records that it happened twice. The in-loop
+  // idempotency re-check narrows it; this closes it, because there is never a
+  // second process. (Sonnet re-review, PR #343.)
+  //
+  // The lock lives in RTDB, not on disk: two runs on different machines still
+  // hit the same database. A stale lock (a crashed run) is reported with its
+  // age and can be cleared deliberately — never auto-stolen, because "the other
+  // run looks old" is exactly the reasoning that produces a double-apply.
+  // ACQUIRED BY TRANSACTION, not read-then-write. A read followed by a write is
+  // the very TOCTOU this lock exists to close: two processes could both read it
+  // as free and both write it, last-writer-wins, and both proceed. RTDB's
+  // single-path transaction is a real compare-and-set and is exactly the right
+  // primitive here — Step 2 needs a multi-path update and so cannot use one,
+  // but a lock is one path. (Kimi review of the lock delta, PR #343.)
+  // THE HEADWEAR COLLAPSE'S OWN LOCK, shared: both scripts can select the same
+// caps-beanies product, so they must never run at the same time.
+  const LOCK = "_migrations/headwearOneSizeCollapse/runLock";
+  let lockHeld = false;
+  if (EXECUTE) {
+    const mine = { startedAt: nowIso, pid: process.pid, host: hostname(), releasedAt: null };
+    const { committed, snapshot } = await db.ref(LOCK).transaction((cur) => {
+      if (cur && cur.releasedAt == null) return;         // abort: someone holds it
+      return mine;
+    });
+    if (!committed) {
+      const held = snapshot.val() || {};
+      const started = Date.parse(held.startedAt);
+      const age = Number.isFinite(started) ? `${Math.round((nowMs0 - started) / 60000)} min ago` : "at an unreadable time";
+      console.error(`\nABORT: another --execute run holds the lock (pid ${held.pid} on ${held.host}, started ${held.startedAt}, ${age}).`);
+      console.error("Two concurrent runs can double-apply a positive movement leg. If that run");
+      console.error(`crashed, clear the lock deliberately once you are sure it is dead:\n  firebase database:remove /${LOCK} --project marathon-club`);
+      process.exit(1);
+    }
+    lockHeld = true;
+    const release = async () => {
+      if (!lockHeld) return;
+      lockHeld = false;
+      try { await io.update({ [`${LOCK}/releasedAt`]: new Date().toISOString() }); } catch { /* best effort */ }
+    };
+    process.on("exit", () => { if (lockHeld) console.error(`\n⚠ run lock still held — clear it: firebase database:remove /${LOCK} --project marathon-club`); });
+    for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, async () => { await release(); process.exit(130); });
+    releaseLock = release;
+  }
+
+  // ── BOUNDED-STALENESS GATE DATA ────────────────────────────────────────────
+  // The referential trees (orders, transfers, refill requests, engine locks,
+  // Display Checks) were read once before the loop. A run over ~90 products is
+  // not instantaneous, so an order or request opened after that read but before
+  // its product's turn was invisible to the gate — the same staleness class the
+  // fresh per-product cell read closed for /stock. (Sonnet review, PR #343.)
+  //
+  // Re-reading all of them per product would mean ~134 × (2.4k orders + 12k
+  // requests) of reads for a one-off script; refreshing when the snapshot is
+  // older than a bounded age gets the same guarantee at a sane cost. The
+  // exposure drops from "the whole run" to at most GATE_MAX_AGE_MS, and the
+  // recent-activity gate covers the tail.
+  // (timing knobs are validated at module scope, before the run lock)
+  let ledgerReadAt = Date.now();
+  //
+  // THE LEDGER IS REFRESHED WITH THEM, and the clock with it. The recent-
+  // activity gate asks "is this product being sold RIGHT NOW", and it was the
+  // only input still answering from the startup snapshot against a frozen
+  // `nowMs`. Over a run measured in tens of minutes that turns a sliding
+  // 15-minute window into a fixed slice of the run's first 15 minutes: a
+  // product sold at minute 30 read as quiet when its turn came at minute 90.
+  // The gate designed to stop a race with a till was the stalest thing in the
+  // loop. (Both independent reviews, PR #345.)
+  let gateData = { transfers, orders, refillRequests, openLocks, dcActive,
+    lastMovementMs: lastMovementMs0, unreadableStamp: unreadableStamp0, nowMs: nowMs0 };
+  let gateReadAt = Date.now();
+  let gateRefreshes = 0;
+  const freshGates = async () => {
+    if (Date.now() - gateReadAt < GATE_MAX_AGE_MS) return gateData;
+    const wantLedger = Date.now() - ledgerReadAt >= LEDGER_MAX_AGE_MS;
+    const [t, o, rr, ol, dc, mv, bc] = await Promise.all([
+      readMapPaged(db, "transfers", { pageSize: 1000 }), readMapPaged(db, "orders", { pageSize: 1000 }), readMapPaged(db, "refill_requests", { pageSize: 2000 }),
+      locksFor([...pidSet]), dcFor([...pidSet]),
+      wantLedger ? recentMovements(Date.now() + offset) : Promise.resolve(null),
+      wantLedger ? readMapPaged(db, "barcodes", { pageSize: 2000 }) : Promise.resolve(null),
+    ]).then((r) => r.map((v, i) => (i >= 5 ? v : (v || {}))));
+    const nowMsFresh = Date.now() + offset;
+    let { lastMovementMs: lastMs, unreadableStamp: unreadable } = gateData;
+    // The clock advances because we ASKED, not because the answer was truthy.
+    // Keyed on `mv` alone, an empty ledger left wantLedger permanently true and
+    // re-downloaded the two largest nodes on every gate refresh.
+    if (wantLedger) ledgerReadAt = Date.now();
+    if (mv) ({ lastMs, unreadable } = movementRecency(mv, { nowMs: nowMsFresh }));
+    // THE SET of codes pointing at a product, not just each code's record. A
+    // code created after startup and absent from the product's own map would
+    // otherwise never be enumerated: it would keep its old size while every
+    // sibling collapsed, and verifyProduct — which checks only the codes
+    // planStep2 knew about — would not notice. (CodeRabbit, PR #345.)
+    if (bc) {
+      for (const k of Object.keys(reverseIdx)) delete reverseIdx[k];
+      const discovered = [];
+      for (const [code, rec] of Object.entries(bc)) {
+        if (!rec || !pidSet.has(rec.productId)) continue;
+        (reverseIdx[rec.productId] = reverseIdx[rec.productId] || {})[code] = rec;
+        // ROLLBACK COVERAGE FOR A CODE THAT DID NOT EXIST AT STARTUP. Step 2
+        // force-writes size "_" onto every enumerated code, so a code this
+        // refresh discovers gets written — and without a snapshot entry the
+        // rollback could not undo it, leaving an index record pointing at a
+        // size its product no longer declares. Worse, if that code went on to
+        // win the "_" slot, the rollback would classify the migration's OWN
+        // output as diverged and refuse without --force, which is the false
+        // positive that trains an operator to force past real divergence.
+        // Captured as it reads NOW, i.e. before this migration touches it.
+        if (!(code in snapshot.barcodeIndex)) { snapshot.barcodeIndex[code] = rec; discovered.push(code); }
+      }
+      if (discovered.length) {
+        writeFileSync(SNAP, JSON.stringify(snapshot, null, 2));
+        console.log(`  snapshot extended with ${discovered.length} barcode(s) created since the run started: ${discovered.join(", ")}`);
+      }
+    }
+    gateData = { transfers: t, orders: o, refillRequests: rr, openLocks: ol, dcActive: dc,
+      lastMovementMs: lastMs, unreadableStamp: unreadable, nowMs: nowMsFresh };
+    gateReadAt = Date.now();
+    gateRefreshes++;
+    return gateData;
+  };
+
+  // Run-wide "before" baseline, accumulated from the per-product FRESH reads
+  // (not the startup snapshot) — the denominator of the final network proof.
+  const baselineFresh = {};
+  const baselinePids = new Set();
+
+  // ── per-product ────────────────────────────────────────────────────────────
+  const results = [];
+  for (const [pid, pStart] of scope) {
+    const gates_ = await freshGates();
+    const { transfers: transfersNow, orders: ordersNow, refillRequests: refillRequestsNow,
+      openLocks: openLocksNow, dcActive: dcActiveNow,
+      lastMovementMs, unreadableStamp, nowMs } = gates_;
+    // ── EVERYTHING THIS PRODUCT'S DECISIONS REST ON IS RE-READ HERE ─────────
+    // The startup snapshot is minutes old by the 60th product and over an hour
+    // old by the last, and Step 2 FORCE-WRITES barcodes/{code}/size for every
+    // code the snapshot listed. Two consequences, both found by review of #345:
+    //
+    //   • a code reassigned to another product mid-run (a re-tag, a merge)
+    //     still passes the ownership gate on the stale record, and Step 2 then
+    //     stamps size "_" onto a record that now belongs to SOMEONE ELSE —
+    //     corrupting a product this run was never asked to touch. verifyProduct
+    //     would eventually notice, but only as a cryptic line under THIS
+    //     product's failure, naming neither the victim nor the damage.
+    //   • the undeclared-size gate and the keep-code ranking were computed from
+    //     stale cells while the plan itself used fresh ones, so a cell that
+    //     appeared in an undeclared size after startup was drained without ever
+    //     being gated, and the code that won the "_" slot could differ from the
+    //     one the dry run printed.
+    //
+    // So the product record, its cells and its index records are all re-read
+    // immediately before its own gates and plan. This is the same bounded-
+    // staleness reasoning freshGates applies to the referential trees; it was
+    // simply never extended to the data being WRITTEN.
+    // `|| pStart` would MASK a mid-run deletion: the stale record passes
+    // isInScope and Step 2 then RECREATES products/{pid} holding only `sizes`
+    // and `barcodes` — a record with no inner `id`, which the app hides from
+    // every list. A missing product gates instead. (Review of PR #345.)
+    // Re-list the locations per product: a location that gained a cell for
+    // this product mid-run must be seen by the fresh read, the drain check and
+    // the verify.
+    [STOCK_LOCS, TARGET_LOCS] = await Promise.all([shallowKeys(app, "stock"), shallowKeys(app, "stock_targets")]);
+    const pLive = await io.read(`products/${pid}`);
+    const p = pLive || pStart;
+    const name = p.name || pid;
+    const freshCells = {};
+    for (const loc of STOCK_LOCS) {
+      const bySize = await io.read(`stock/${loc}/${pid}`);
+      if (bySize) freshCells[loc] = bySize;
+    }
+    const indexCodes = {};
+    for (const code of new Set([
+      ...Object.keys(reverseIdx[pid] || {}),
+      ...Object.values(p.barcodes || {}).map(String),
+    ])) {
+      indexCodes[code] = await io.read(`barcodes/${code}`);
+    }
+
+    // gates
+    const gates = [];
+    if (!pLive) gates.push(`products/${pid} no longer exists — deleted or merged since the run started; collapsing it would recreate a partial record with no id`);
+    if (!isInScope(p)) gates.push(`no longer in scope (renamed, re-keyed, merged or already one-size since the run started): ${JSON.stringify(p && p.name)} / ${JSON.stringify(p && p.categoryKey)}`);
+    for (const [code, rec] of Object.entries(indexCodes)) {
+      if (!rec) gates.push(`barcode ${code}: no index record`);
+      else if (rec.productId !== pid) gates.push(`barcode ${code}: index now points at ${rec.productId} — reassigned since this run started; writing it would corrupt that product`);
+    }
+    const cellsByLoc = freshCells;
+    const declared = (p.sizes || []).map(String);
+    // Units per SIZE KEY, summed across every location — the input to the
+    // keep-code rule. It was a LIST of keys when every beanie held one size and
+    // the rule only needed "which size has stock"; caps hold several at once and
+    // the rule now asks "which size has the MOST", so the quantities have to
+    // survive the trip. A list would have made the choice depend on iteration
+    // order across locations.
+    const heldUnits = {};
+    for (const [loc, bySize] of Object.entries(cellsByLoc)) {
+      for (const [sizeKey, cell] of Object.entries(bySize)) {
+        const q = typeof cell?.qty === "number" ? cell.qty : 0;
+        if (q !== 0) {
+          heldUnits[sizeKey] = (heldUnits[sizeKey] || 0) + q;
+          if (isRetiredSizeKey(sizeKey) && !declared.includes(sizeKey)) gates.push(`holds ${q} in undeclared size ${loc}/${sizeKey}`);
+        }
+      }
+    }
+    // Any not-yet-received transfer carrying this product in a real size still
+    // has a receive leg ahead of it that would credit the retired key.
+    for (const [tid, t] of Object.entries(transfersNow)) {
+      const why = transferBlocks(t, pid);
+      if (why) gates.push(`${why} [${tid}]`);
+    }
+    for (const [oid, o] of Object.entries(ordersNow)) {
+      // id LAST: a record carrying its own id must not shadow the node key it
+      // is actually stored under. (Kimi review, PR #343.)
+      const why = orderBlocks(o && { ...o, id: o.id || oid }, pid, nowMs);
+      if (why) gates.push(why);
+    }
+    // RECENT ACTIVITY. The engine is paused at execute time, but the tills are
+    // not — and a sale landing mid-product is the one concurrency case the
+    // version re-check narrows without eliminating. If this product moved in
+    // the last window, it is in active use right now: skip it and say so
+    // rather than race it. (Kimi review, PR #343.)
+    const lastMove = lastMovementMs.get(pid);
+    if (lastMove && nowMs - lastMove < RECENT_ACTIVITY_MS) {
+      gates.push(`moved ${Math.round((nowMs - lastMove) / 60000)} min ago (${new Date(lastMove).toISOString()}) — active at a till; re-run when it is quiet`);
+    }
+    const unreadable = unreadableStamp.get(pid);
+    if (unreadable?.length) {
+      gates.push(`${unreadable.length} recent ledger movement(s) have an unreadable timestamp (${unreadable.slice(0, 3).join(", ")}${unreadable.length > 3 ? ", …" : ""}) — cannot prove this product is quiet, so it is not migrated`);
+    }
+    for (const [rid, r] of Object.entries(refillRequestsNow)) {
+      if (r && r.status === "open" && r.productId === pid && isRetiredSize(r.size)) gates.push(`open refill request ${rid} (size ${r.size})`);
+    }
+    for (const [loc, byPid] of Object.entries(openLocksNow)) {
+      for (const sk of Object.keys(byPid?.[pid] || {})) if (sk !== "_") gates.push(`engine lock ${loc}/${sk}`);
+    }
+    for (const [loc, byKey] of Object.entries(dcActiveNow)) {
+      for (const k of Object.keys(byKey || {})) if (k.startsWith(`${pid}__`) && !k.endsWith("___")) gates.push(`active display check ${loc}/${k}`);
+    }
+    if (gates.length) {
+      results.push({ pid, name, status: "GATED", detail: gates });
+      continue;
+    }
+
+    // PLAN FROM A FRESH READ, NOT THE STARTUP SNAPSHOT. The whole-tree read at
+    // the top is minutes old by the time the 60th product is processed; planning
+    // a movement quantity from it means moving a number that was true then. A
+    // stale OUT that is too large is refused as an overdraw (safe but a failed
+    // product); one that is too small leaves units behind in a size the product
+    // is about to stop declaring. Re-read this product's cells immediately
+    // before planning, and derive the before-totals from the same fresh read so
+    // the verification compares like with like. (Kimi review, PR #343.)
+    const step1 = await planStep1(io, pid, declared, freshCells);
+    const s2 = planStep2(pid, p, indexCodes, heldUnits);
+    if (s2.error) { results.push({ pid, name, status: "GATED", detail: [s2.error] }); continue; }
+    // FRESH, like everything else this product's writes depend on. It was the
+    // last startup-snapshot input still feeding a write: planStep3 could not
+    // retire a row created after startup, while verifyProduct re-reads
+    // stock_targets and fails the product for exactly such a row — after
+    // identity has already been written. (Review of PR #345.)
+    FOCUS = [pid];
+    const targetsNow = (await io.read("stock_targets")) || {};
+    const targetRows = {};
+    for (const [loc, byPid] of Object.entries(targetsNow)) if (byPid?.[pid]) targetRows[loc] = byPid[pid];
+    // Retire letter rows to 0 (headwear Step 3). NO "_" row: "_" resolves the
+    // existing caps-beanies category policy, unchanged.
+    const step3 = planStep3(pid, targetRows, nowIso);
+    const s2Needed = !step2Done(p, indexCodes, s2.keepCode);
+
+    if (!EXECUTE) {
+      // A planned leg whose movement id ALREADY exists will no-op — it moves
+      // nothing. On a first run that never happens; on a resume it means stock
+      // arrived in a size whose pair has already been spent, and the execute
+      // path will refuse to collapse this product. Say so in the plan rather
+      // than printing it like an ordinary pair. (Sonnet review, PR #343.)
+      // planStep1 no longer emits a leg whose id is already spent — such stock
+      // comes back as a `stranded` plan with no legs instead, because planning
+      // it would either no-op (losing it) or half-apply (minting). Both are
+      // printed: the legs that will run, and the stock that will not move.
+      const legLines = [];
+      for (const pl of step1) {
+        if (pl.kind === "stranded") { legLines.push(`⚠ STRANDED — ${pl.note}`); continue; }
+        for (const l of pl.legs) {
+          legLines.push(`${l.id} (${l.movement.from ? "OUT " + l.movement.from : "IN " + l.movement.to} ${l.movement.size} qty ${l.movement.qty}${l.movement.allowNegative ? " allowNegative" : ""})${pl.kind.startsWith("resume") ? "  ↩ RESUME — completing a pair an earlier run left half-applied, at the LEDGER's quantity" : ""}`);
+        }
+      }
+      const strandedDry = step1.filter((pl) => pl.kind === "stranded");
+      results.push({ pid, name,
+        // A stranded cell guarantees a FAILED execute. Reporting it as PLANNED
+        // let the SUMMARY and the exit code read clean while the detail lines
+        // said otherwise — and the runbook's acceptance step is "confirm the
+        // summary". (Review of PR #345.)
+        status: strandedDry.length ? "WILL FAIL (stranded stock)"
+          : (step1.length || s2Needed || Object.keys(step3).length) ? "PLANNED" : "ALREADY DONE",
+        detail: [
+        ...legLines,
+        s2Needed ? `step2 atomic ×${Object.keys(s2.updates).length} paths — "_" slot ← ${s2.keepCode} (${s2.rule})` : "step2: already collapsed",
+        ...(s2.droppedCodes.length ? [`${s2.droppedCodes.length} other code(s) keep resolving to this product at size "_" but lose their map slot: ${s2.droppedCodes.join(", ")}`] : []),
+        ...(Object.keys(step3).length ? [`step3 retire ${Object.keys(step3).length} target rows`] : []),
+      ] });
+      continue;
+    }
+
+    // execute — before-totals from the SAME fresh read the plan was built from,
+    // and accumulated into the run-wide baseline so the final network proof
+    // compares fresh against fresh. The startup snapshot is minutes old by the
+    // last product, and the tills are not paused by receiving_session, so
+    // measuring against it would report a legitimate sale as a migration loss
+    // (and could hide a real one). (CodeRabbit, PR #343.)
+    // ── THE EXPECTED DELTA OF A RESUME ──────────────────────────────────────
+    // A resume leg is a CREDIT with no matching debit in this run: the debit
+    // landed in the interrupted run and is already reflected in the fresh
+    // baseline below. So a correct resume legitimately RAISES a location's
+    // total, and "totals must be unchanged" would report a run that healed the
+    // books as having minted stock — then exit 1, after Step 2 had already
+    // committed, pointing the operator at a rollback that would genuinely
+    // damage data. Expected movement is therefore computed per location and
+    // carried into both the per-product verify and the run-wide check.
+    // (Review of PR #345.)
+    const expectedDelta = {};
+    for (const pl of step1) {
+      if (!String(pl.kind).startsWith("resume")) continue;
+      // resume-in credits "_" with the owed units; resume-neg-in credits the
+      // sized cell with the shortage the mirror's OUT leg already removed.
+      const credit = Math.abs(Number(pl.qty)) || 0;
+      expectedDelta[pl.loc] = (expectedDelta[pl.loc] || 0) + credit;
+    }
+    if (Object.keys(expectedDelta).length) {
+      console.log(`  ${pid} resuming an interrupted pair — totals SHOULD rise by ${Object.entries(expectedDelta).map(([l, n]) => `${l}+${n}`).join(" ")} (the earlier run's debit is already in the baseline)`);
+    }
+    // THE PAUSE, RE-CHECKED AT THE WRITE: the startup check alone would let a
+    // product be collapsed after someone resumed the engine mid-run.
+    if ((await io.read("receiving_session/active")) !== true) {
+      results.push({ pid, name, status: "GATED", detail: ["refill engine no longer paused (receiving_session.active is not true) — stopped before writing"] });
+      break;
+    }
+    const totalsBeforeProduct = {};
+    for (const [loc, bySize] of Object.entries(freshCells)) {
+      const sum = Object.values(bySize).reduce((t, c) => t + (typeof c?.qty === "number" ? c.qty : 0), 0);
+      totalsBeforeProduct[loc] = sum;
+      baselineFresh[loc] = (baselineFresh[loc] || 0) + sum + (expectedDelta[loc] || 0);
+      baselinePids.add(pid);
+    }
+    let failed = null;
+    const strandedPlans = step1.filter((pl) => pl.kind === "stranded");
+    for (const pl of step1) {
+      for (const leg of pl.legs) {
+        const r = await applyMovementAdmin(io, { ...leg.movement, ts: nowIso }, { nowIso });
+        if (!r.ok) { failed = `${leg.id}: ${r.reason}${r.available != null ? ` (available ${r.available}, requested ${r.requested})` : ""}`; break; }
+        // Only ids THIS run actually applied — an idempotent no-op means the id
+        // belongs to an earlier run and must NOT be excluded from that run's
+        // rollback activity check.
+        if (!r.idempotent) {
+          appliedMovementIds.push(r.movementId);
+          // Persisted at once: a crash or an early exit must still leave a
+          // rollback that knows which movements this run applied.
+          writeFileSync(SNAP, JSON.stringify({ ...snapshot, appliedMovementIds }, null, 2));
+        }
+      }
+      if (failed) break;
+    }
+    // STEP 2'S PRECONDITION, ON FRESH READS. Step 1 reporting success is not
+    // proof the cells are empty — an already-landed movement id no-ops without
+    // moving anything, so stock that arrived in a still-declared size between
+    // runs would be stranded the instant identity collapses. Ask the database.
+    // (Sonnet review, PR #343 — reproduced end to end.)
+    // A stranded cell cannot be moved by this run and MUST NOT be collapsed
+    // over. assertDrained would catch it a moment later anyway; naming it here
+    // gives the operator the instruction instead of just the symptom.
+    if (!failed && strandedPlans.length) {
+      failed = strandedPlans.map((pl) => pl.note).join("  |  ");
+    }
+    if (!failed) {
+      FOCUS = [pid];
+      const residue = await assertDrained(io, pid);
+      if (residue.length) {
+        failed = `step1 did not drain: ${residue.join(", ")} — stock arrived in a size about to be retired; identity NOT collapsed. Move it to "_" (or clear it) and re-run.`;
+      }
+    }
+    if (!failed && s2Needed) {
+      try { await io.update(s2.updates); } catch (e) { failed = `step2: ${e.message}`; }
+    }
+    if (!failed && Object.keys(step3).length) {
+      try { await io.update(step3); } catch (e) { failed = `step3: ${e.message}`; }
+    }
+    if (failed) { results.push({ pid, name, status: "FAILED", detail: [failed] }); continue; }
+
+    FOCUS = [pid];
+    const problems = await verifyProduct(io, pid, s2.keepCode, s2.codes, totalsBeforeProduct, expectedDelta);
+    results.push(problems.length
+      ? { pid, name, status: "VERIFY-FAILED", detail: problems }
+      : { pid, name, status: "DONE", detail: [
+        `"_" slot ← ${s2.keepCode} (${s2.rule})${s2.droppedCodes.length ? `; ${s2.droppedCodes.length} other code(s) still resolve here: ${s2.droppedCodes.join(", ")}` : ""}`,
+        `${step1.length} cell merges, ${Object.keys(step3).length} target rows retired`] });
+  }
+
+  // ── report ─────────────────────────────────────────────────────────────────
+  const byStatus = {};
+  for (const r of results) (byStatus[r.status] = byStatus[r.status] || []).push(r);
+  console.log("");
+  for (const r of results) {
+    console.log(`  ${r.status.padEnd(13)} ${r.pid} "${r.name}"`);
+    for (const d of r.detail) console.log(`     ${d}`);
+  }
+  if (gateRefreshes) console.log(`  gate data refreshed ${gateRefreshes}× during the run (max age ${GATE_MAX_AGE_MS / 1000}s)`);
+  console.log(`\n  SUMMARY: ${Object.entries(byStatus).map(([s, l]) => `${s}=${l.length}`).join("  ")}`);
+  // Machine-readable twin of the same run — the operator report and the
+  // clear-first worklist are built from this, not from scraping stdout.
+  const REPORT = process.env.REPORT_JSON || join(homedir(), `caps-beanies-collapse-${EXECUTE ? "execute" : "dryrun"}-${Date.now()}.json`);
+  writeFileSync(REPORT, JSON.stringify({ ranAt: nowIso, mode: EXECUTE ? "execute" : "dry-run", scope: scope.length, totalsBefore, baselineFresh, results }, null, 2));
+  console.log(`  JSON report: ${REPORT}`);
+
+  if (EXECUTE) {
+    // Final proof: network totals must be unchanged for the products this run
+    // actually touched, measured against the fresh per-product baselines.
+    FOCUS = [...baselinePids];
+    const stockAfter = FOCUS.length ? ((await io.read("stock")) || {}) : {};
+    const totalsAfter = {};
+    for (const [loc, byPid] of Object.entries(stockAfter)) {
+      for (const pid of baselinePids) {
+        for (const cell of Object.values(byPid?.[pid] || {})) {
+          totalsAfter[loc] = (totalsAfter[loc] || 0) + (typeof cell?.qty === "number" ? cell.qty : 0);
+        }
+      }
+    }
+    const locs = new Set([...Object.keys(baselineFresh), ...Object.keys(totalsAfter)]);
+    let totalsOk = true;
+    for (const loc of locs) {
+      const b = baselineFresh[loc] || 0, a = totalsAfter[loc] || 0;
+      if (b !== a) { totalsOk = false; console.log(`  TOTALS MISMATCH ${loc}: ${b} → ${a}`); }
+    }
+    console.log(`  network totals for the ${baselinePids.size} products this run touched ${totalsOk ? "UNCHANGED" : "CHANGED — investigate before anything else"}: ${Object.entries(totalsAfter).sort().map(([l, q]) => `${l}=${q}`).join("  ")}`);
+    console.log(`  (measured against the fresh per-product baselines, not the startup snapshot)`);
+    if (!totalsOk) { await releaseLock?.(); process.exit(1); }
+  } else {
+    console.log("  DRY RUN — nothing written except the rollback snapshot above.");
+  }
+  if (EXECUTE) {
+    // Rewrite the snapshot so it carries the ids this run applied. Written last
+    // because the list is only complete now; the ORIGINAL pre-write capture is
+    // untouched — only this field is added to it.
+    writeFileSync(SNAP, JSON.stringify({ ...snapshot, appliedMovementIds, completedAt: new Date().toISOString() }, null, 2));
+    console.log(`  snapshot updated with ${appliedMovementIds.length} applied movement id(s): ${SNAP}`);
+  }
+  await releaseLock?.();
+  // "WILL FAIL (stranded stock)" is deliberately NOT in the clean set — a dry
+  // run that finds stranded stock must exit non-zero, because the execute run
+  // it is rehearsing will fail on exactly those products.
+  const bad = results.filter((r) => r.status !== "DONE" && r.status !== "ALREADY DONE" && r.status !== "PLANNED");
+  process.exit(bad.length ? 1 : 0);
+})().catch(async (e) => { console.error(e); await releaseLock?.(); process.exit(1); });

@@ -27,7 +27,7 @@ const { handleExtract, handleSubmit } = require("../cardRecon/cardRecon.js");
 const { emptyReprintOpensAt } = require("../lib/card-recon.cjs");
 
 const TID = "67365901";
-const POLLER = { uid: "card-recon-email-poller", token: { email: "gunidmoh@gmail.com" } };
+const POLLER = { uid: "card-recon-email-poller", token: { email: "gunidmoh@gmail.com", email_verified: true } }; // super-admin shortcut; the real poller is a flag-granted custom-token uid
 const TERMINALS = { [TID]: { label: "Marathon Till 3", storeId: "pe", tillId: "till-3" } };
 const bucket = () => ({ file() { return { save: async () => {} }; } });
 

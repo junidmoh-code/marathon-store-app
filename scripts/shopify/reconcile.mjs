@@ -43,6 +43,10 @@
 //     wrote itself (plus products it creates and maps in the same breath).
 //   • Nodes still in pre-migration states (none/nominated/draft) are skipped
 //     loudly — run migrate-live-state.mjs first.
+import { PUBLISH_PATH, SYNC_PATH, storeNode, adminProductUrl, STORE, IS_MARATHON } from "./storeConfig.mjs";
+import { needsBrandCheck, isConcreteProduct } from "../../src/utils/concreteListing.js";
+import { enforceConcreteOnlyOnMarathon } from "./concreteOnly.mjs";
+import { readPendingForeign } from "./stockFanoutCore.mjs";
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { encodeSizeKey, stockSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
@@ -89,20 +93,27 @@ import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
 // The storefront search index. Kept in step at the moment the reconciler
 // CONFIRMS a state, so it tracks the storefront within one tick rather than
 // waiting for a rebuild. Best-effort by design — see searchIndexWrite.mjs.
-import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchIndexWrite.mjs";
+import { indexProductLive as indexProductLiveRaw, unindexProduct as unindexProductRaw, sweepSearchIndex as sweepSearchIndexRaw } from "./searchIndexWrite.mjs";
+// The search index is the MARATHON storefront's. The Concrete process
+// (SHOPIFY_STORE=concrete) must never add or remove a document there — turning
+// a product off on Concrete would otherwise un-list it from Marathon's search.
+const indexProductLive = (...a) => (IS_MARATHON ? indexProductLiveRaw(...a) : Promise.resolve("skipped — Concrete store"));
+const unindexProduct = (...a) => (IS_MARATHON ? unindexProductRaw(...a) : Promise.resolve(null));
+const sweepSearchIndex = (...a) => (IS_MARATHON ? sweepSearchIndexRaw(...a) : Promise.resolve({ skipped: false, capped: false, missing: 0, orphans: 0 }));
 // The continuous inventory push. reconcile.mjs writes a product's quantity to
 // Shopify exactly once, when it goes live; this drains the dirty markers the
 // shopifyInventoryDirty trigger writes, so a product that is ALREADY live keeps
 // its storefront quantity in step with the shops. Without it the shop was
 // offering 220 variants it had none of. See inventorySync.mjs.
-import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames, reservedBySize, releasedBySize, onlineHoldAdjustment } from "./inventorySync.mjs";
+import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames, reservedBySize, releasedBySize, onlineHoldAdjustment, withoutForeignHolds } from "./inventorySync.mjs";
+import { pickableTree, readCellHolds, readPickableRules, readPipeline } from "./pickableStock.mjs";
 import { sweepMovements } from "./movementSync.mjs";
 // PRICE. The app owns it; this module is the only place that decides the
 // number Shopify shows (retail, never the trade price), drains the
 // shopifyPriceDirty markers every tick, and runs the price backstop on its own
 // cadence. See priceSync.mjs.
 import {
-  shopifyPriceFor, sweepPriceDirty, sweepPriceBackstop, PRICE_BACKSTOP_INTERVAL_MS,
+  shopifyPriceFor, shopifyCompareAtFor, markPriceDirtyIfRrpMoved, sweepPriceDirty, sweepPriceBackstop, PRICE_BACKSTOP_INTERVAL_MS,
 } from "./priceSync.mjs";
 import { sweepReviewStock, REVIEW_DIRTY_PATH } from "./reviewStock.mjs";
 import { metaReadyFirstPhoto } from "./metaReadyCreate.mjs";
@@ -186,6 +197,45 @@ const stockLocationKeys = makeStockLocationResolver(admin.app(), { meter });
 // One cached read of .info/serverTimeOffset per process; it degrades to
 // Date.now() if that fails, which is exactly today's behaviour.
 const runStartedAt = await serverNowMs(db);
+
+// ── CONCRETE: AN UNMARKED PRODUCT COMES OFF THE CONCRETE STORE ──────────────
+// Unmarking in Product Admin writes desiredState "off" for products the page
+// KNEW were live; this is the backstop for any it did not (its live read
+// refused before the rules were pasted, a script, a console edit). Every
+// Concrete product live and wanted ON whose /products record is no longer
+// listOnConcrete gets its intent set to off; the normal off path below
+// unpublishes it. Marathon never runs this.
+if (!IS_MARATHON && COMMIT) {
+  try {
+    const live = (await db.ref(PUBLISH_PATH).orderByChild("state").equalTo("live").get()).val() || {};
+    for (const [pid, node] of Object.entries(live)) {
+      if (node?.desiredState === "off") continue;
+      const [cp, legacy] = await Promise.all([
+        db.ref(`products/${pid}/concreteProduct`).get(),
+        db.ref(`products/${pid}/listOnConcrete`).get(),
+      ]);
+      if (isConcreteProduct({ concreteProduct: cp.val() ?? undefined, listOnConcrete: legacy.val() })) continue;
+      await db.ref(`${PUBLISH_PATH}/${pid}`).update({ desiredState: "off", updatedAt: await serverNowMs(db), updatedBy: UPDATED_BY });
+      console.log(`  concrete: ${pid} is no longer marked for Concrete — switching its Concrete listing off`);
+    }
+  } catch (e) {
+    console.error(`  ⚠ concrete: unmarked-product check failed (${String(e?.message || e)}) — next tick retries`);
+  }
+}
+// ── MARATHON: A CONCRETE-ONLY PRODUCT COMES OFF MARATHON (Junid, 20 Nov) ────
+// concreteProduct = sold on the Concrete website only. Any such product still
+// live on marathonclub.co.za gets its Marathon intent set to off (with the
+// "concrete_only" off record); the normal off path below unpublishes it in
+// this same tick — the write bumps updatedAt, which the incremental scan reads.
+// Found through the small /settings/concreteOnlyIndex, never a /products scan.
+if (IS_MARATHON && COMMIT) {
+  try {
+    const r = await enforceConcreteOnlyOnMarathon(db, { nowMs: () => serverNowMs(db), actor: UPDATED_BY, commit: true, log: (m) => console.log(m) });
+    for (const s of r.skipped) console.error(`  ⚠ concrete-only: ${s.pid} — ${s.why}`);
+  } catch (e) {
+    console.error(`  ⚠ marathon: concrete-only check failed (${String(e?.message || e)}) — next tick retries`);
+  }
+}
 const scanState = COMMIT ? await readReconcileState(db, { meter }) : null;
 const scan = COMMIT && !ONLY
   ? planScan({ state: scanState, nowMs: runStartedAt, force: FULL })
@@ -193,7 +243,7 @@ const scan = COMMIT && !ONLY
 const retryPids = Object.keys(scanState?.retry || {});
 const readWholeNode = async () => {
   const v = await readAllPublishNodes(db);
-  meter("shopify_publish (whole node)", v);
+  meter(`${PUBLISH_PATH} (whole node)`, v);
   return v;
 };
 let scanMode = scan.mode;
@@ -264,7 +314,7 @@ if (!COMMIT) {
   console.log("\npid              action            collection        title / note");
   for (const { pid, node, want } of worklist) {
     assertSafeSegment(pid, "productId");
-    const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
+    const mapNode = (await db.ref(`${SYNC_PATH}/${pid}`).get()).val();
     // The dry run is a PREVIEW, so it must say REFUSE where the commit run
     // would refuse. Showing "CREATE+PUBLISH" for a product the ON path rejects
     // outright would preview the opposite of what happens.
@@ -302,7 +352,7 @@ if (!COMMIT) {
 // LISTED, not merely on: see isListedOnShopify.
 const listed = async (pid) => {
   assertSafeSegment(pid, "productId");
-  return isListedOnShopify((await db.ref(`shopify_publish/${pid}`).get()).val());
+  return isListedOnShopify((await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val());
 };
 
 // ── THE MOVEMENT LEDGER — every product that moved, every tick ──────────────
@@ -429,7 +479,7 @@ if (worklist.length) {
 // path last touched it. Returns null when the product cannot be indexed (no
 // mapping, gone from the shop) — the caller counts that, it is not a throw.
 const buildSearchDocFor = async (pid) => {
-  const map = (await db.ref(`shopify_sync/${pid}`).get()).val();
+  const map = (await db.ref(`${SYNC_PATH}/${pid}`).get()).val();
   const gid = map?.shopifyProductId;
   if (!gid) return null;
   const rec = (await db.ref(`products/${pid}`).get()).val();
@@ -575,12 +625,12 @@ for (const { pid, want } of capped) {
   try {
     // Re-read at the last moment — the page may have flipped the switch back
     // (or a publish may have been cancelled) since the worklist was read.
-    const fresh = (await db.ref(`shopify_publish/${pid}`).get()).val();
+    const fresh = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
     if (fresh?.desiredState !== want || (want === "on") === confirmedOn(fresh)) {
       results.push({ pid, ok: true, note: "intent changed since the run started — skipped" });
       continue;
     }
-    const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
+    const mapNode = (await db.ref(`${SYNC_PATH}/${pid}`).get()).val();
 
     if (want === "off") {
       // Channel unpublish ONLY. Status, handle, media, ID map all survive.
@@ -744,6 +794,36 @@ for (const { pid, want } of capped) {
     const product = (await db.ref(`products/${pid}`).get()).val();
     if (!product) { await refuse(pid, "no /products record"); continue; }
     if (product.mergedInto) { await refuse(pid, `record merged into ${product.mergedInto} — publish the survivor`); continue; }
+    // CONCRETE: only a product Junid marked listOnConcrete may go on the
+    // Concrete store. Checked here, at apply time, for the same reason as the
+    // price-record refusal below — an intent written any other way must not
+    // reach the storefront.
+    if (!IS_MARATHON && !isConcreteProduct(product)) { await refuse(pid, "not marked Concrete — switch it on in the Concrete Products card"); continue; }
+    // MARATHON: a Concrete-only product never goes on marathonclub.co.za
+    // (Junid, 20 Nov 2026). It publishes through the Concrete tab only.
+    if (IS_MARATHON && isConcreteProduct(product)) { await refuse(pid, "Concrete-only — it sells on the Concrete website only; publish it from the Concrete tab"); continue; }
+    // …and brand-checked. A product marked from the upload form (staff) waits
+    // in Product Admin → Brand Check; until Junid or an admin confirms it, it
+    // cannot go on Concrete (PayFast branded-goods rule — a human looks first).
+    if (!IS_MARATHON && needsBrandCheck(product, pid)) { await refuse(pid, "waiting for a brand check — tap Confirm on its row in the Concrete Products card (Junid/admin), then publish again"); continue; }
+    // CONCRETE HOUSE STYLE: an APPROVED studio photo is the Concrete listing's
+    // primary photo. Approving in the app writes it into this node's media
+    // list when the node already exists; a product approved BEFORE its first
+    // publish has no list yet, so the approved image is put first here, in
+    // memory only, with the record's own photos after it. Never on Marathon.
+    let houseStylePhotos = null;
+    if (!IS_MARATHON && fresh && !fresh.photos && !fresh.media) {
+      try {
+        const hs = (await db.ref(`concrete_house_style/${pid}`).get()).val();
+        if (hs?.status === "approved" && typeof hs.url === "string" && hs.url) {
+          const recordPhotos = [product.photoUrl, ...(Array.isArray(product.gallery) ? product.gallery : [])].filter((u) => typeof u === "string" && u && u !== hs.url);
+          fresh.photos = [hs.url, ...recordPhotos];
+          houseStylePhotos = fresh.photos;
+        }
+      } catch (e) {
+        console.error(`  ⚠ ${pid}: house-style photo unreadable (${String(e?.message || e)}) — publishing the record's photos`);
+      }
+    }
     // NOT MERCHANDISE. This is the enforcement point, not the UI: the page's
     // filter stops a price record being nominated, but an intent written
     // before that filter shipped — or by a script, or by hand in the console —
@@ -955,6 +1035,8 @@ for (const { pid, want } of capped) {
         continue;
       }
       const price = shopifyPriceFor(product);
+      // The struck-through RRP, derived from the same price (priceSync.mjs).
+      const compareAtPrice = shopifyCompareAtFor(product, fresh);
       const created = await graphql(
         `mutation ($input: ProductSetInput!) {
           productSet(synchronous: true, input: $input) {
@@ -976,6 +1058,7 @@ for (const { pid, want } of capped) {
             variants: sizes.map((s) => ({
               optionValues: [{ optionName: "Size", name: displaySizeName(s) }],
               price,
+              compareAtPrice,
               // Tracked + DENY at birth. Without this, productSet leaves
               // `tracked` at its FALSE default and Shopify ignores every
               // quantity setAvailable later writes — the storefront then shows
@@ -1039,16 +1122,17 @@ for (const { pid, want } of capped) {
       // push the CURRENT retailPrice too — a price correction made while the
       // product sat OFF would otherwise go live stale.
       const priceNow = shopifyPriceFor(product);
+      const compareAtNow = shopifyCompareAtFor(product, fresh);
       const priced = await graphql(
         `mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
           productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } }
         }`,
-        { productId: gid, variants: rows.map((r) => ({ id: r.variantId, price: priceNow })) },
+        { productId: gid, variants: rows.map((r) => ({ id: r.variantId, price: priceNow, compareAtPrice: compareAtNow })) },
         { mutation: true }
       );
       const priceErrs = priced.productVariantsBulkUpdate.userErrors;
       if (priceErrs?.length) { const down = await failSafeUnpublish(gid); await refuse(pid, `variant price update userErrors: ${JSON.stringify(priceErrs)}`, { tookDown: down }); continue; }
-      console.log(`  variant prices set to ${priceNow}`);
+      console.log(`  variant prices set to ${priceNow} (RRP ${compareAtNow ?? "none"})`);
     }
     if (bp.media?.pageInfo?.hasNextPage) { const down = await failSafeUnpublish(gid); await refuse(pid, ">250 media unpaginated — cannot verify the photo set", { tookDown: down }); continue; }
     const mediaCount = bp.media?.nodes?.length ?? 0;
@@ -1140,7 +1224,7 @@ for (const { pid, want } of capped) {
         const { count } = await attachMedia(graphql, gid, metaFirst ? [{ ...mediaPlan[0], originalSource: metaFirst }, ...mediaPlan.slice(1)] : mediaPlan);
         // The count rides beside the fingerprint so the media-list path can
         // later prove exactly which set this attached (mediaSync.mjs).
-        await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp, mediaCount: mediaPlan.length });
+        await db.ref(`${SYNC_PATH}/${pid}`).update({ mediaFingerprint: planFp, mediaCount: mediaPlan.length });
         console.log(mediaCount > 0 ? `  media re-synced to the reviewed set: ${count}` : `  media READY: ${count}`);
       } catch (e) {
         const down = await failSafeUnpublish(gid);
@@ -1201,7 +1285,7 @@ for (const { pid, want } of capped) {
 
     // Inventory at the moment it starts mattering to customers — from a FRESH
     // read of this product's cells (a sale mid-run must not be re-listed).
-    const finalMap = (await db.ref(`shopify_sync/${pid}`).get()).val();
+    const finalMap = (await db.ref(`${SYNC_PATH}/${pid}`).get()).val();
     // ── SHOPIFY'S SIDE FIRST, THEN /stock ─────────────────────────────────────
     // This baseline is the compare-and-set value for the write further down, and
     // it is read BEFORE the stock snapshot on purpose: that is what makes the
@@ -1223,10 +1307,21 @@ for (const { pid, want } of capped) {
       const cells = (await db.ref(`stock/${loc}/${pid}`).get()).val();
       if (cells) tree[loc] = { [pid]: cells };
     }
-    const totals = networkTotals(tree, pid, sizes);
     // Website-order holds come off before the push, exactly as on every other
-    // push path (onlineHoldAdjustment, inventorySync.mjs).
+    // push path (onlineHoldAdjustment, inventorySync.mjs). Another store's
+    // holds come off in full (withoutForeignHolds — one stock pool).
     const holdsNode = (await db.ref(`online_reservations/${pid}`).get()).val();
+    // …and units another store has sold that the app has not pulled in yet
+    // (/shopify_pending_sales) — the same subtraction every push path makes.
+    // Unreadable is NOT empty: the publish is refused and retried rather than
+    // pushing a unit another store already sold (CodeRabbit r2, #911).
+    const pendingForeign = await readPendingForeign(async (p) => (await db.ref(p).get()).val(), pid, STORE.key, await serverNowMs(db));
+    // …and pieces at a shelf that rejected a website pick and has not moved
+    // since (pickableStock.mjs) — the same subtraction desiredFor makes.
+    const pickGet = (p) => db.ref(p).get().then((x) => x.val());
+    const pickRules = await readPickableRules(pickGet);
+    const { tree: pickable } = pickableTree(tree, pid, await readCellHolds(pickGet, pid), pickRules, await serverNowMs(db), await readPipeline(pickGet, pid, pickRules));
+    const totals = withoutForeignHolds(networkTotals(pickable, pid, sizes), holdsNode, pendingForeign);
     const heldBySize = reservedBySize(holdsNode);
     const releasedHeld = releasedBySize(holdsNode);
     for (const [sizeKey, v] of Object.entries(finalMap.variants)) {
@@ -1241,7 +1336,7 @@ for (const { pid, want } of capped) {
     // record's title and photos).
     if (relistAsIs && !Object.values(totals).some((q) => q > 0)) {
       await failSafeUnpublish(gid);
-      await db.ref(`shopify_publish/${pid}`).update({ desiredState: "off", relistKeep: null, relistGid: null,
+      await db.ref(`${PUBLISH_PATH}/${pid}`).update({ desiredState: "off", relistKeep: null, relistGid: null,
                                                      updatedAt: await serverNowMs(db), updatedBy: UPDATED_BY });
       results.push({ pid, ok: true, note: "relist withdrawn — no stock left online now; left off" });
       continue;
@@ -1333,7 +1428,11 @@ for (const { pid, want } of capped) {
     // is what goes public — so the intent is re-read right before it. On a
     // cancel, the product stays created-but-unpublished, which IS the "off"
     // the operator asked for.
-    const lastCheck = (await db.ref(`shopify_publish/${pid}`).get()).val();
+    const lastCheck = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
+    // The approved house-style photo was injected into `fresh` in memory; the
+    // re-read node does not carry it, so give it the same list or the photo
+    // check below would see a change that did not happen (CodeRabbit, #911).
+    if (houseStylePhotos && lastCheck && !lastCheck.photos && !lastCheck.media) lastCheck.photos = houseStylePhotos;
     if (lastCheck?.desiredState !== "on") {
       // Fail-safe here too: if drift left this product visible, a cancel
       // confirming "off" without an unpublish would strand it up for good.
@@ -1346,6 +1445,18 @@ for (const { pid, want } of capped) {
       await unindexProduct(db, pid, "cancelled");
       results.push({ pid, ok: true, note: "cancelled mid-run — created/reconciled but NOT published, confirmed off" });
       continue;
+    }
+    // MARATHON, LAST MOMENT: a product marked Concrete-only while this run was
+    // applying it never goes public on Marathon (CodeRabbit, PR #952). The
+    // product is re-read here, before publishablePublish and the collection
+    // join; a refusal takes down anything drift left visible.
+    if (IS_MARATHON) {
+      const lateProduct = (await db.ref(`products/${pid}`).get()).val();
+      if (isConcreteProduct(lateProduct)) {
+        const down = await failSafeUnpublish(gid);
+        await refuse(pid, "Concrete-only — it sells on the Concrete website only; publish it from the Concrete tab", { tookDown: down });
+        continue;
+      }
     }
     // Photos are editable while a publish sits pending — a set saved after
     // this run built its media plan must not go live under the OLD plan.
@@ -1441,6 +1552,15 @@ for (const { pid, want } of capped) {
       continue;
     }
     await confirmLiveState(db, pid, "on", UPDATED_BY, { gid });
+    // An RRP chip tap that landed mid-publish was skipped by shopifyRrpDirty
+    // (not live yet) — catch it now so the next tick pushes the right RRP.
+    try {
+      if (await markPriceDirtyIfRrpMoved(db, pid, fresh, (n) => admin.database.ServerValue.increment(n))) {
+        console.log("  RRP discount changed during the publish — price marked for the next tick");
+      }
+    } catch (e) {
+      console.error(`  ⚠ ${pid}: RRP re-check failed (${String(e?.message || e)}) — the price backstop will correct it`);
+    }
     // Now that it IS live, put it in the storefront search index — through
     // the SAME builder the sweep uses, so the two can never write different
     // documents for the same product.
@@ -1456,7 +1576,7 @@ for (const { pid, want } of capped) {
     const numericId = gid.split("/").pop();
     results.push({
       pid, ok: true,
-      note: `LIVE on the Online Store — "${title}" · https://admin.shopify.com/store/nu3ei8-0p/products/${numericId}`,
+      note: `LIVE on the Online Store — "${title}" · ${adminProductUrl(numericId)}`,
     });
   } catch (e) {
     // DELIBERATELY NOT markBlocked. A throw here is usually transient (a
@@ -1663,7 +1783,7 @@ if (!ONLY) try {
 // /config/shopifyReviewHidden and its own markers: never /shopify_publish, never
 // Shopify. A quiet tick costs one read of an empty node. A failure never fails
 // the tick, because the markers survive and the next tick retries.
-if (!ONLY) try {
+if (!ONLY && IS_MARATHON) try {
   // Every product whose intent this tick applied is re-judged in this same
   // sweep, because a state change is not a stock event:
   //   · taken OFF → it re-enters the review list. With no sellable stock it
@@ -1699,7 +1819,7 @@ if (!ONLY) try {
 // already built its worklist, so they go to Shopify on the NEXT tick, through
 // every check the reconciler applies. Never touches a product that is on.
 // Off switch: /config/shopifyAutoPublish/enabled (absent = off).
-if (!ONLY) try {
+if (!ONLY && IS_MARATHON) try {
   const ap = await drainAutoPublish(db, { now: () => serverNowMs(db), log: (line) => console.error(line) });
   if (ap.queued && ap.enabled) {
     console.log(`\nauto-publish: ${ap.queued} queued · ${ap.published} sent to publish · ${ap.done} closed · ${ap.waiting} waiting` +
@@ -1803,7 +1923,7 @@ if (COMMIT) try {
   for (const pid of candidates) {
     try {
       assertSafeSegment(pid, "productId");
-      const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+      const node = (await db.ref(`${PUBLISH_PATH}/${pid}`).get()).val();
       const pending = !!pendingNow[pid];
       // A product off the shop (or with no list) waits for its next publish,
       // which re-plans everything — nothing is carried for it meanwhile.
@@ -1813,7 +1933,7 @@ if (COMMIT) try {
         }
         continue;
       }
-      const gid = (await db.ref(`shopify_sync/${pid}/shopifyProductId`).get()).val();
+      const gid = (await db.ref(`${SYNC_PATH}/${pid}/shopifyProductId`).get()).val();
       if (!gid) { console.error(`  ⚠ media ${pid}: live but no Shopify mapping — left for the next publish`); continue; }
       const product = (await db.ref(`products/${pid}`).get()).val();
       // The ON path's title rule, exactly: the reviewed name while it is

@@ -154,8 +154,9 @@ const {
 } = require("../lib/eft-manual-approved.cjs");
 const { linkedCopySettleCheck, linkedApprovalRefusal, crossBankNoticeOf } = require("../lib/eft-linked-copies.cjs");
 const { selectReaderByContent } = require("../lib/eft-banks.cjs");
+const { approvalGate, unreadProofKeyOf, unreadProofRecord, LAST_RESORT } = require("../lib/eft-proof-gate.cjs");
 const { parseAccountPolicies, destinationVerdict, EFT_ACCOUNTS_ENV_VAR } = require("../lib/eft-destination.cjs");
-const { maskAccountValue } = require("../lib/eft-text.cjs");
+const { maskAccountValue, redactAccountDigits } = require("../lib/eft-text.cjs");
 const { pdfToLines } = require("../cardRecon/pdfText.js");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { createHash } = require("node:crypto");
@@ -174,15 +175,15 @@ if (!admin.apps.length) {
   });
 }
 
-// Same constant as the POS app's PermissionsContext and posUsers.js.
-const ADMIN_EMAIL = "gunidmoh@gmail.com";
+// Same super-admin list as the POS app (Junid and Jafer) — lib/super-admins.cjs.
+const { isSuperAdminToken, superAdminName } = require("../lib/super-admins.cjs");
 
 // Owner = the admin email AND a VERIFIED one. The owner signs in with Google
 // (always verified); requiring the flag closes the theoretical seam where an
 // unverified credential claiming the address would inherit owner rights on
 // pool projections and reversals. (CodeRabbit, this PR.)
 function isOwner(request) {
-  return request.auth?.token?.email === ADMIN_EMAIL && request.auth?.token?.email_verified === true;
+  return isSuperAdminToken(request.auth?.token);
 }
 
 const RUNTIME = { region: "europe-west1", memory: "256MiB", timeoutSeconds: 30 };
@@ -586,6 +587,7 @@ const searchTail = createPoolTailCache({
     .once("value")).val(),
 });
 /** Tests only: forget the held tail, so one test's pool is never another's. */
+exports._isOwner = isOwner;
 exports._resetSearchTail = () => searchTail.clear();
 
 exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
@@ -876,7 +878,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       throw new HttpsError("permission-denied", "Only the owner can release a held payment.");
     }
     const reason = String(data.reason ?? "").trim().slice(0, 300);
-    decision = await runPoolTransaction(key, (current) => releaseHoldDecision(current, { at: now, by: ADMIN_EMAIL, reason }));
+    decision = await runPoolTransaction(key, (current) => releaseHoldDecision(current, { at: now, by: request.auth.token.email, reason }));
     if (!decision.ok) throw refusalToError(decision);
     console.log(`eftPoolSettle: releaseHold ${key} by owner — ${reason}`);
     return { ok: true };
@@ -933,8 +935,8 @@ exports.eftEnforcementStatus = onCall(RUNTIME, async (request) => {
   const data = request.data ?? {};
   const db = admin.database();
   if (data.action === "set") {
-    if (!isOwner(request)) throw new HttpsError("permission-denied", "Only Junid can change which stores enforce EFT matching.");
-    const update = enforcementUpdateOf(data, { at: Date.now(), by: ADMIN_EMAIL });
+    if (!isOwner(request)) throw new HttpsError("permission-denied", "Only Junid or Jafer can change which stores enforce EFT matching.");
+    const update = enforcementUpdateOf(data, { at: Date.now(), by: request.auth.token.email });
     if (!update.ok) throw new HttpsError("invalid-argument", update.message, { code: update.code });
     // MERGE, never replace: switching Pine on must not silently switch Trophy
     // off. A node that does not exist yet starts from the DEFAULT set, so the
@@ -950,7 +952,7 @@ exports.eftEnforcementStatus = onCall(RUNTIME, async (request) => {
   if (data.action === "listBreaches") {
     // JUNID'S VIEW OF THE SCAN'S FINDINGS — the newest breach records by key
     // order (sale ids are push keys: chronological), one bounded page.
-    if (!isOwner(request)) throw new HttpsError("permission-denied", "Only Junid can list enforcement breaches.");
+    if (!isOwner(request)) throw new HttpsError("permission-denied", "Only Junid or Jafer can list enforcement breaches.");
     const snap = await db.ref(EFT_BREACH_PATH).orderByKey().limitToLast(50).once("value");
     const breaches = Object.entries(snap.val() ?? {}).map(([saleId, b]) => ({ saleId, ...b })).sort((a, b) => (b.flaggedAt ?? 0) - (a.flaggedAt ?? 0));
     return { ok: true, breaches, limit: 50 };
@@ -968,12 +970,12 @@ exports.eftEnforcementStatus = onCall(RUNTIME, async (request) => {
 // eftPoolSettle's ordinary settle (customer confirmed, consume-once).
 exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
   if (!isOwner(request)) {
-    throw new HttpsError("permission-denied", "Only Junid can enter an EFT payment by hand.", { code: "owner-only" });
+    throw new HttpsError("permission-denied", "Only Junid or Jafer can enter an EFT payment by hand.", { code: "owner-only" });
   }
   const data = request.data ?? {};
   const db = admin.database();
   const now = Date.now();
-  const actor = { uid: request.auth.uid, email: request.auth.token.email, name: MANUAL_ENTRY_BY };
+  const actor = { uid: request.auth.uid, email: request.auth.token.email, name: superAdminName(request.auth.token.email) || MANUAL_ENTRY_BY };
 
   // THE REVIEW LIST: the newest entries and what became of each — by key
   // order (no index needed), one bounded page, never the node.
@@ -994,7 +996,7 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
     if (isManualEntry(existing) && existing.manualEntry.entryId === input.entryId) {
       await db.ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(existing.manualEntry.at, key)}`)
         .transaction((cur) => (cur === null ? manualLogRecord(existing, key) : undefined));
-      return { ok: true, already: true, key, reference: existing.reference, amountCents: existing.amountCents, at: existing.manualEntry.at, by: MANUAL_ENTRY_BY, status: existing.status };
+      return { ok: true, already: true, key, reference: existing.reference, amountCents: existing.amountCents, at: existing.manualEntry.at, by: existing.manualEntry.by ?? MANUAL_ENTRY_BY, status: existing.status };
     }
     throw new HttpsError("already-exists", "That entry id is taken by another record — reload and try again.", { code: "key-taken" });
   }
@@ -1031,13 +1033,13 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
     }
     if (isManualEntry(first)) {
       console.log(`EFT_MANUAL_ENTRY_DOUBLE_SUBMIT: ${input.entryId} answered with ${lock.holder} (submit lock)`);
-      return { ok: true, already: true, doubleSubmit: true, key: lock.holder, reference: first.reference, amountCents: first.amountCents, at: first.manualEntry.at, by: MANUAL_ENTRY_BY, status: first.status };
+      return { ok: true, already: true, doubleSubmit: true, key: lock.holder, reference: first.reference, amountCents: first.amountCents, at: first.manualEntry.at, by: first.manualEntry.by ?? MANUAL_ENTRY_BY, status: first.status };
     }
   }
   if (doubleTap) {
     const first = doubleTap.record;
     console.log(`EFT_MANUAL_ENTRY_DOUBLE_SUBMIT: ${input.entryId} answered with ${doubleTap.key} (the same entry ${now - first.manualEntry.at}ms earlier)`);
-    return { ok: true, already: true, doubleSubmit: true, key: doubleTap.key, reference: first.reference, amountCents: first.amountCents, at: first.manualEntry.at, by: MANUAL_ENTRY_BY, status: first.status };
+    return { ok: true, already: true, doubleSubmit: true, key: doubleTap.key, reference: first.reference, amountCents: first.amountCents, at: first.manualEntry.at, by: first.manualEntry.by ?? MANUAL_ENTRY_BY, status: first.status };
   }
   const similar = manualDuplicateOf({ ...input, at: now }, Object.entries(tail));
   const warning = similar ? {
@@ -1071,8 +1073,8 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
     const winner = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
     if (winner?.manualEntry?.at !== now) await db.ref(`${MANUAL_LOG_PATH}/${manualLogKeyOf(now, key)}`).remove();
   }
-  console.log(`EFT_MANUAL_ENTRY: ${key} ${input.reference} ${input.amountCents}c by ${MANUAL_ENTRY_BY} (${actor.uid})${input.note ? ` — ${input.note}` : ""}${already ? " [already]" : ""}${warning ? ` [similar to ${warning.key}]` : ""}`);
-  return { ok: true, already, key, reference: input.reference, amountCents: input.amountCents, at: now, by: MANUAL_ENTRY_BY, status: "unmatched", ...(warning && !already ? { warning } : {}) };
+  console.log(`EFT_MANUAL_ENTRY: ${key} ${input.reference} ${input.amountCents}c by ${actor.name} (${actor.uid})${input.note ? ` — ${input.note}` : ""}${already ? " [already]" : ""}${warning ? ` [similar to ${warning.key}]` : ""}`);
+  return { ok: true, already, key, reference: input.reference, amountCents: input.amountCents, at: now, by: actor.name, status: "unmatched", ...(warning && !already ? { warning } : {}) };
 });
 
 // ─── MANUAL APPROVAL FROM A PROOF OF PAYMENT — Junid alone ──────────────────
@@ -1101,12 +1103,12 @@ exports.eftPoolManualEntry = onCall(RUNTIME, async (request) => {
 const APPROVE_RUNTIME = { ...RUNTIME, memory: "512MiB", timeoutSeconds: 60, secrets: [eftAllowedAccounts] };
 exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   if (!isOwner(request)) {
-    throw new HttpsError("permission-denied", "Only Junid can approve an EFT payment from its proof.", { code: "owner-only" });
+    throw new HttpsError("permission-denied", "Only Junid or Jafer can approve an EFT payment from its proof.", { code: "owner-only" });
   }
   const data = request.data ?? {};
   const db = admin.database();
   const now = Date.now();
-  const actor = { uid: request.auth.uid, email: request.auth.token.email, name: MANUAL_APPROVED_BY };
+  const actor = { uid: request.auth.uid, email: request.auth.token.email, name: superAdminName(request.auth.token.email) || MANUAL_APPROVED_BY };
 
   if (data.action === "list") {
     const snap = await db.ref(MANUAL_APPROVED_LOG_PATH).orderByKey().limitToLast(MANUAL_APPROVED_LIST_LIMIT).once("value");
@@ -1117,7 +1119,7 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   if (!input.ok) throw new HttpsError("invalid-argument", input.message, { code: input.code });
 
   const configured = String(eftAllowedAccounts.value() ?? "").trim();
-  let reader, parse, lines, alsoSyntheticRef = null;
+  let reader, parse, lines, alsoSyntheticRef = null, gate = null;
   if (input.kind === "image") {
     // A PHOTO: nothing to parse, and no OCR. Junid typed the identity from
     // it; keyedIdentityCheck shapes those fields as the bank's reader would
@@ -1134,7 +1136,7 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
         : `No account allowlist is configured for Cloud Functions — set the ${EFT_ACCOUNTS_ENV_VAR} secret (firebase functions:secrets:set). Until then every proof refuses here, deliberately.`;
       throw new HttpsError("failed-precondition", reason, { code: "wrong-destination" });
     }
-    const keyed = keyedIdentityCheck(data, { allowedAccounts, now });
+    const keyed = keyedIdentityCheck(data, { allowedAccounts, now, by: actor.name });
     if (!keyed.ok) throw new HttpsError("invalid-argument", keyed.message, { code: keyed.code });
     reader = { id: keyed.readerId };
     parse = keyed.parse;
@@ -1143,22 +1145,49 @@ exports.eftPoolManualApprove = onCall(APPROVE_RUNTIME, async (request) => {
   } else {
     // THE DOCUMENT → LINES → READER → PARSE, exactly the poller's path.
     const extracted = await pdfToLines(input.pdf, { grouping: "bucket" });
-    if (!extracted.ok) throw new HttpsError("invalid-argument", extracted.reason, { code: "unreadable-proof" });
-    reader = selectReaderByContent(extracted.lines);
-    if (!reader) {
-      throw new HttpsError("invalid-argument", "That PDF is not a payment notification this pool has a reader for (Standard Bank, FNB, Capitec, Absa, Nedbank). Float the payment by hand instead.", { code: "no-reader" });
+    lines = extracted.ok ? extracted.lines : [];
+    reader = extracted.ok ? selectReaderByContent(lines) : null;
+    parse = reader ? reader.parse(lines) : null;
+    // THE REQUIRED-FIELDS GATE (25 Nov 2026, lib/eft-proof-gate.cjs): the same
+    // fields required as before — a reader, its exact parse (amount and
+    // destination account), the payment's identity — but a refusal names the
+    // field that could not be read instead of "no reader".
+    gate = approvalGate({ lines, reader, parse });
+    if (!gate.ok) {
+      // UNREAD → JUNID'S QUARANTINE (the owner-only /eft_pool, outcome
+      // refused-parse), create-only under the file's own hash, BEFORE the
+      // refusal. A failed write never hides the refusal itself.
+      const pdfSha256 = createHash("sha256").update(input.pdf).digest("hex");
+      const unreadKey = unreadProofKeyOf(pdfSha256);
+      const unread = unreadProofRecord({
+        gate, lines, readerId: reader?.id ?? null, at: now, actor, entryId: input.entryId, filename: input.filename,
+        pdfSha256, bytes: input.pdf.length, extractionReason: extracted.ok ? null : extracted.reason,
+      });
+      let saved = false;
+      try {
+        await db.ref(`${EFT_POOL_PATH}/${unreadKey}`).transaction((cur) => (cur ? undefined : unread));
+        saved = true;
+        console.warn(`EFT_PROOF_UNREAD: ${unreadKey} (${gate.code}, bank ${gate.detectedBank ?? "unknown"}, missing ${gate.missing.join("/") || "-"}) by ${actor.name}`);
+      } catch (err) {
+        console.error(`EFT_PROOF_UNREAD: could not file ${unreadKey} for review: ${err?.message ?? err}`);
+      }
+      const httpsCode = gate.code === "no-identity" || (gate.code === "unreadable-proof" && reader) ? "failed-precondition" : "invalid-argument";
+      let message = extracted.ok ? gate.message : `${extracted.reason} ${LAST_RESORT}`;
+      if (!saved) message = message.replace(/it is saved for Junid on the EFT payments tab\./, "it could not be saved for review — send the PDF to Junid.");
+      throw new HttpsError(httpsCode, message, { code: gate.code, reader: reader?.id ?? null, detectedBank: gate.detectedBank, missing: gate.missing, unreadKey: saved ? unreadKey : null });
     }
-    parse = reader.parse(extracted.lines);
-    lines = extracted.lines;
   }
   const identity = proofIdentityOf(parse, reader.id);
   if (!identity.ok) throw new HttpsError("failed-precondition", identity.message, { code: identity.code, reader: reader.id });
 
   // PAID INTO THE SHOP'S OWN ACCOUNT — the poller's own check, same code.
   const account = destinationVerdict({
-    accountMask: parse.accountMask, destBankName: parse.destBankName,
+    accountMask: parse.accountMask, destBankName: parse.destBankName, destBranchCode: parse.destBranchCode ?? null,
     allowedAccounts: parseAccountPolicies(configured), configured: !!configured,
   });
+  if (account.ok && account.unrecognisedBankName) {
+    console.warn(`EFT_UNRECOGNISED_BANK_NAME: "${redactAccountDigits(account.unrecognisedBankName)}" (proof upload, reader ${reader.id}, account …${account.tail}) — admitted on the full account number; add it to functions/lib/eft-bank-alias.cjs`);
+  }
   if (!account.ok) {
     // The shared verdict names the mini's .env; here the value is the Secret
     // Manager secret of the same name.
@@ -1308,7 +1337,7 @@ exports.eftPoolReverse = onCall(RUNTIME, async (request) => {
   const at = Date.now();
   const decision = await runPoolTransaction(key, (current) => reverseDecision(current, {
     at,
-    by: ADMIN_EMAIL,
+    by: request.auth.token.email,
     reason,
   }));
   if (!decision.ok) throw refusalToError(decision);

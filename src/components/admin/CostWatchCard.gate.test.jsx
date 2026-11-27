@@ -61,6 +61,11 @@ async function render(authUser) {
 describe("CostWatchCard gate", () => {
   beforeEach(() => { getMock.mockClear(); onValueMock.mockClear(); });
 
+  it("admits Jafer as well as Junid (one super-admin list); staff stays out", async () => {
+    await render({ uid: "jafer-uid", email: "jafermohammed340@gmail.com" });
+    expect(getMock).toHaveBeenCalled();
+  });
+
   it("reads nothing at all for a viewer who is not the owner", async () => {
     await render(STAFF);
     expect(getMock).not.toHaveBeenCalled();
@@ -73,21 +78,18 @@ describe("CostWatchCard gate", () => {
   });
 
   it("is not fooled by an address that merely contains the owner's", async () => {
-    for (const email of ["gunidmoh@gmail.com.evil.com", "gunidmoh@gmail.co", " gunidmoh@gmail.com", "x-gunidmoh@gmail.com"]) {
+    for (const email of ["gunidmoh@gmail.com.evil.com", "gunidmoh@gmail.co", "x-gunidmoh@gmail.com"]) {
       getMock.mockClear();
       await render({ uid: "u", email });
       expect(getMock, `"${email}" must not be admitted`).not.toHaveBeenCalled();
     }
   });
 
-  it("compares the address strictly, like every other gate and like the rule", async () => {
-    // Deliberately NOT case-insensitive. Every other ADMIN_EMAIL gate in this
-    // app compares strictly, and so does the RTDB rule that actually enforces
-    // the read. A card that admitted "GUNIDMOH@Gmail.com" would then be
-    // refused by the database, turning a clean "not for you" into a
-    // PERMISSION_DENIED nobody can explain.
-    await render({ uid: "admin-uid", email: "GUNIDMOH@Gmail.com" });
-    expect(getMock).not.toHaveBeenCalled();
+  it("compares the address lowercased and trimmed, like every super-admin gate (isSuperAdmin)", async () => {
+    // 2026-11: one SUPER_ADMIN_EMAILS list (Junid + Jafer) compared normalised.
+    // Google Auth emails arrive lowercase, so this changes nothing in practice.
+    await render({ uid: "admin-uid", email: " GUNIDMOH@Gmail.com " });
+    expect(getMock).toHaveBeenCalled();
     getMock.mockClear();
     await render(ADMIN);
     expect(getMock).toHaveBeenCalled();

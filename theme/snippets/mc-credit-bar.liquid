@@ -1,0 +1,68 @@
+{%- comment -%}
+  STORE CREDIT BAR (26 Nov 2026). A signed-in customer with store credit sees "Your Marathon balance: R 350 — ready
+  to spend" above the header on every page that uses layout/theme.liquid. Shop money format is "R {{amount}}", so
+  money_without_trailing_zeros prints "R 350".
+
+  Renders NOTHING for guests, for a customer with no store credit account in the browsing currency
+  (`customer.store_credit_account` is nil then, per the Liquid docs), or for a zero balance.
+
+  The line links to /account. The shop uses NEW customer accounts, so that is Shopify's hosted account page, which
+  shows the balance itself and is not part of the theme. Credit is spent at checkout ("Apply store credit" under
+  Payment) only when the customer is signed in there.
+
+  Customer copy rule: no emojis, no staff names.
+{%- endcomment -%}
+{%- if customer and customer.store_credit_account and customer.store_credit_account.balance > 0 -%}
+  {%- assign mc_credit = customer.store_credit_account.balance | money_without_trailing_zeros -%}
+  <aside class="mc-credit-bar" aria-label="Store credit">
+    <a class="mc-credit-bar__link" href="{{ routes.account_url }}">
+      <span class="mc-credit-bar__label">Your Marathon balance:</span>
+      <span class="mc-credit-bar__amount">{{ mc_credit }}</span>
+      <span class="mc-credit-bar__note"><span aria-hidden="true">&mdash;</span> ready to spend</span>
+    </a>
+  </aside>
+  <style>
+    .mc-credit-bar {
+      background: rgb(13 12 11);
+      border-bottom: 1px solid rgb(255 255 255 / 0.08);
+      font-family: var(--font-body-family);
+      font-style: normal;
+    }
+    .mc-credit-bar__link {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: center;
+      gap: 0 0.6rem;
+      max-width: var(--page-width, 120rem);
+      margin: 0 auto;
+      padding: 0.9rem 1.6rem;
+      color: rgb(247 248 250 / 0.75);
+      font-size: 1.3rem;
+      line-height: 1.5;
+      letter-spacing: 0.02rem;
+      text-align: center;
+      text-decoration: none;
+    }
+    .mc-credit-bar__link { font-style: normal; }
+    .mc-credit-bar__note { white-space: nowrap; }
+    .mc-credit-bar__amount {
+      color: rgb(247 248 250);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.03rem;
+    }
+    .mc-credit-bar__link:hover .mc-credit-bar__note,
+    .mc-credit-bar__link:focus-visible .mc-credit-bar__note {
+      text-decoration: underline;
+      text-underline-offset: 0.3rem;
+    }
+    .mc-credit-bar__link:focus-visible {
+      outline: 2px solid rgb(247 248 250 / 0.6);
+      outline-offset: -4px;
+    }
+    @media screen and (min-width: 750px) {
+      .mc-credit-bar__link { padding: 1rem 5rem; font-size: 1.35rem; }
+    }
+  </style>
+{%- endif -%}

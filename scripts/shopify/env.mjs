@@ -5,6 +5,7 @@
 // missing variable only.
 import { readFileSync, existsSync } from "fs";
 import { fileURLToPath } from "url";
+import { STORE, credentialVars } from "./storeConfig.mjs";
 
 const ENV_FILE = fileURLToPath(new URL("../../.env", import.meta.url));
 
@@ -80,17 +81,24 @@ export const SHOPIFY_CREDENTIAL_VARS = Object.freeze([
  * this is the shape a caller needs when "not configured here" is a legitimate
  * state to carry on through rather than an error.
  */
-export function missingShopifyCredentials(env = process.env) {
-  return SHOPIFY_CREDENTIAL_VARS.filter((name) => !env[name]);
+export function missingShopifyCredentials(env = process.env, store = STORE) {
+  // Marathon: exactly the three names above, as always. Concrete:
+  // CONCRETE_SHOPIFY_CLIENT_ID / CONCRETE_SHOPIFY_CLIENT_SECRET (storeConfig.mjs).
+  const names = store.key === "marathon" ? SHOPIFY_CREDENTIAL_VARS : credentialVars(store);
+  return names.filter((name) => !env[name]);
 }
 
 // The ONE store this program talks to. SHOPIFY_SHOP is pinned to it: the token
 // grant posts CLIENT_SECRET to https://{shop}/… and the GraphQL client sends
 // the access token there — an unnoticed .env edit pointing at another host
 // would hand both to that host. Everything URL-building goes through here.
+// Marathon's host is still read from SHOPIFY_SHOP and pinned, exactly as
+// before. Concrete's host is FIXED in storeConfig.mjs and never read from the
+// environment at all — there is no variable to point it elsewhere.
 const EXPECTED_SHOP = "nu3ei8-0p.myshopify.com";
 
 export function requireShop() {
+  if (STORE.key !== "marathon") return STORE.shop;
   const shop = requireEnv("SHOPIFY_SHOP");
   if (shop !== EXPECTED_SHOP) {
     // Throws rather than exits for the same reason as requireEnv above. The

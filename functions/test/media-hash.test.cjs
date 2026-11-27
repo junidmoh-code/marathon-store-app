@@ -33,7 +33,7 @@ function fakeDb(store) {
     }),
   };
 }
-const req = (data, token = { email: "gunidmoh@gmail.com", firebase: { sign_in_provider: "password" } }) =>
+const req = (data, token = { email: "gunidmoh@gmail.com", email_verified: true, firebase: { sign_in_provider: "google.com" } }) =>
   ({ auth: { uid: "u1", token }, data });
 
 test("EMPTY-PID GUARD: an empty or malformed product id is refused before any read", async () => {

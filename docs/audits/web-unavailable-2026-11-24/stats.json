@@ -1,0 +1,3093 @@
+{
+ "generatedAt": "2026-11-24T09:32:14.488Z",
+ "firstOrder": 1768,
+ "ordersInScope": 638,
+ "linesInScope": 1285,
+ "failedLines": 231,
+ "failedLinePct": 18,
+ "episodes": 261,
+ "ordersWithAFailedLine": 191,
+ "pickAttempts": {
+  "total": 1478,
+  "rejected": 219
+ },
+ "customerDidNotGetWhatTheyOrdered": 228,
+ "marginTable": [
+  {
+   "shownFree": "all · 1 (last piece)",
+   "picked": 310,
+   "rejected": 109,
+   "ratePct": 26
+  },
+  {
+   "shownFree": "all · 2",
+   "picked": 409,
+   "rejected": 42,
+   "ratePct": 9.3
+  },
+  {
+   "shownFree": "all · 3-4",
+   "picked": 217,
+   "rejected": 23,
+   "ratePct": 9.6
+  },
+  {
+   "shownFree": "all · 5+",
+   "picked": 104,
+   "rejected": 7,
+   "ratePct": 6.3
+  },
+  {
+   "shownFree": "hubs · 1 (last piece)",
+   "picked": 164,
+   "rejected": 51,
+   "ratePct": 23.7
+  },
+  {
+   "shownFree": "hubs · 2",
+   "picked": 236,
+   "rejected": 32,
+   "ratePct": 11.9
+  },
+  {
+   "shownFree": "hubs · 3-4",
+   "picked": 148,
+   "rejected": 13,
+   "ratePct": 8.1
+  },
+  {
+   "shownFree": "hubs · 5+",
+   "picked": 47,
+   "rejected": 2,
+   "ratePct": 4.1
+  },
+  {
+   "shownFree": "shops · 1 (last piece)",
+   "picked": 146,
+   "rejected": 58,
+   "ratePct": 28.4
+  },
+  {
+   "shownFree": "shops · 2",
+   "picked": 173,
+   "rejected": 10,
+   "ratePct": 5.5
+  },
+  {
+   "shownFree": "shops · 3-4",
+   "picked": 69,
+   "rejected": 10,
+   "ratePct": 12.7
+  },
+  {
+   "shownFree": "shops · 5+",
+   "picked": 57,
+   "rejected": 5,
+   "ratePct": 8.1
+  }
+ ],
+ "staleSingles": [
+  {
+   "group": "a) moved in the last 3 days",
+   "picked": 68,
+   "rejected": 2,
+   "ratePct": 2.9
+  },
+  {
+   "group": "b) 3-7 days",
+   "picked": 58,
+   "rejected": 13,
+   "ratePct": 18.3
+  },
+  {
+   "group": "c) 7-14 days",
+   "picked": 84,
+   "rejected": 21,
+   "ratePct": 20
+  },
+  {
+   "group": "d) untouched over 14 days",
+   "picked": 100,
+   "rejected": 73,
+   "ratePct": 42.2
+  }
+ ],
+ "networkTable": [
+  {
+   "group": "1 on the whole route",
+   "picked": 201,
+   "rejected": 89,
+   "ratePct": 30.7
+  },
+  {
+   "group": "2 on the whole route",
+   "picked": 248,
+   "rejected": 40,
+   "ratePct": 13.9
+  },
+  {
+   "group": "3+ on the whole route",
+   "picked": 591,
+   "rejected": 52,
+   "ratePct": 8.1
+  }
+ ],
+ "classTable": [
+  {
+   "group": "Concrete · last piece · moved within 14 days",
+   "picked": 9,
+   "rejected": 1,
+   "pickedRand": 4150,
+   "rejectedRand": 200,
+   "ratePct": 10
+  },
+  {
+   "group": "Concrete · last piece · untouched over 14 days",
+   "picked": 6,
+   "rejected": 0,
+   "pickedRand": 1920,
+   "rejectedRand": 0,
+   "ratePct": 0
+  },
+  {
+   "group": "Hub 1 · last piece · moved within 14 days",
+   "picked": 48,
+   "rejected": 8,
+   "pickedRand": 30600,
+   "rejectedRand": 4400,
+   "ratePct": 14.3
+  },
+  {
+   "group": "Hub 1 · last piece · untouched over 14 days",
+   "picked": 32,
+   "rejected": 23,
+   "pickedRand": 21350,
+   "rejectedRand": 15050,
+   "ratePct": 41.8
+  },
+  {
+   "group": "Hub 2 · last piece · moved within 14 days",
+   "picked": 32,
+   "rejected": 6,
+   "pickedRand": 26247,
+   "rejectedRand": 4499,
+   "ratePct": 15.8
+  },
+  {
+   "group": "Hub 2 · last piece · untouched over 14 days",
+   "picked": 21,
+   "rejected": 11,
+   "pickedRand": 16098,
+   "rejectedRand": 8750,
+   "ratePct": 34.4
+  },
+  {
+   "group": "Hub 3 · last piece · moved within 14 days",
+   "picked": 25,
+   "rejected": 2,
+   "pickedRand": 17550,
+   "rejectedRand": 1450,
+   "ratePct": 7.4
+  },
+  {
+   "group": "Hub 3 · last piece · untouched over 14 days",
+   "picked": 6,
+   "rejected": 1,
+   "pickedRand": 3750,
+   "rejectedRand": 750,
+   "ratePct": 14.3
+  },
+  {
+   "group": "Marathon PE · last piece · moved within 14 days",
+   "picked": 78,
+   "rejected": 17,
+   "pickedRand": 25980,
+   "rejectedRand": 5340,
+   "ratePct": 17.9
+  },
+  {
+   "group": "Marathon PE · last piece · untouched over 14 days",
+   "picked": 23,
+   "rejected": 31,
+   "pickedRand": 7570,
+   "rejectedRand": 9880,
+   "ratePct": 57.4
+  },
+  {
+   "group": "Pine · last piece · moved within 14 days",
+   "picked": 3,
+   "rejected": 0,
+   "pickedRand": 1650,
+   "rejectedRand": 0,
+   "ratePct": 0
+  },
+  {
+   "group": "Trophy · last piece · moved within 14 days",
+   "picked": 15,
+   "rejected": 2,
+   "pickedRand": 7920,
+   "rejectedRand": 1400,
+   "ratePct": 11.8
+  },
+  {
+   "group": "Trophy · last piece · untouched over 14 days",
+   "picked": 12,
+   "rejected": 7,
+   "pickedRand": 5560,
+   "rejectedRand": 3200,
+   "ratePct": 36.8
+  },
+  {
+   "group": "hubs · last piece · moved within 14 days",
+   "picked": 105,
+   "rejected": 16,
+   "pickedRand": 74397,
+   "rejectedRand": 10349,
+   "ratePct": 13.2
+  },
+  {
+   "group": "hubs · last piece · untouched over 14 days",
+   "picked": 59,
+   "rejected": 35,
+   "pickedRand": 41198,
+   "rejectedRand": 24550,
+   "ratePct": 37.2
+  },
+  {
+   "group": "last piece moved within 14 days · and the only one on the route",
+   "picked": 130,
+   "rejected": 26,
+   "pickedRand": 73882,
+   "rejectedRand": 13279,
+   "ratePct": 16.7
+  },
+  {
+   "group": "last piece moved within 14 days · more elsewhere on the route",
+   "picked": 80,
+   "rejected": 10,
+   "pickedRand": 40215,
+   "rejectedRand": 4010,
+   "ratePct": 11.1
+  },
+  {
+   "group": "last piece untouched over 14 days · and the only one on the route",
+   "picked": 71,
+   "rejected": 63,
+   "pickedRand": 41868,
+   "rejectedRand": 32530,
+   "ratePct": 47
+  },
+  {
+   "group": "last piece untouched over 14 days · more elsewhere on the route",
+   "picked": 29,
+   "rejected": 10,
+   "pickedRand": 14380,
+   "rejectedRand": 5100,
+   "ratePct": 25.6
+  },
+  {
+   "group": "shops · last piece · moved within 14 days",
+   "picked": 105,
+   "rejected": 20,
+   "pickedRand": 39700,
+   "rejectedRand": 6940,
+   "ratePct": 16
+  },
+  {
+   "group": "shops · last piece · untouched over 14 days",
+   "picked": 41,
+   "rejected": 38,
+   "pickedRand": 15050,
+   "rejectedRand": 13080,
+   "ratePct": 48.1
+  }
+ ],
+ "repeatOfKnownBadCell": {
+  "n": 46,
+  "pct": 17.6
+ },
+ "rejectedWhereSystemShowed2Plus": {
+  "n": 90,
+  "pct": 34.5,
+  "provenFalse": 11
+ },
+ "stillShownTodayAtTheRejectingPlace": {
+  "n": 136,
+  "pct": 52.1
+ },
+ "reasonKinds": {
+  "hub_out_of_stock": 107,
+  "packer_not_here": 7,
+  "shop_not_found": 104,
+  "routed_nowhere": 7,
+  "packer_damaged": 9,
+  "walkin_sale_over_hold": 7
+ },
+ "outcome": [
+  {
+   "outcome": "alternative_accepted",
+   "n": 185,
+   "pct": 70.9
+  },
+  {
+   "outcome": "found_later",
+   "n": 28,
+   "pct": 10.7
+  },
+  {
+   "outcome": "open",
+   "n": 15,
+   "pct": 5.7
+  },
+  {
+   "outcome": "store_credit",
+   "n": 10,
+   "pct": 3.8
+  },
+  {
+   "outcome": "cancelled",
+   "n": 8,
+   "pct": 3.1
+  },
+  {
+   "outcome": "open_being_picked",
+   "n": 5,
+   "pct": 1.9
+  },
+  {
+   "outcome": "refund",
+   "n": 5,
+   "pct": 1.9
+  },
+  {
+   "outcome": "open_waiting_for_customer",
+   "n": 4,
+   "pct": 1.5
+  },
+  {
+   "outcome": "refund_requested",
+   "n": 1,
+   "pct": 0.4
+  }
+ ],
+ "verdict": [
+  {
+   "verdict": "unproven",
+   "n": 130,
+   "pct": 49.8
+  },
+  {
+   "verdict": "genuine: counted or written off as not there",
+   "n": 43,
+   "pct": 16.5
+  },
+  {
+   "verdict": "stock shown at another pickable place when rejected",
+   "n": 28,
+   "pct": 10.7
+  },
+  {
+   "verdict": "false: left the same place afterwards",
+   "n": 21,
+   "pct": 8
+  },
+  {
+   "verdict": "found elsewhere later",
+   "n": 19,
+   "pct": 7.3
+  },
+  {
+   "verdict": "damaged",
+   "n": 9,
+   "pct": 3.4
+  },
+  {
+   "verdict": "false: found later at the same place",
+   "n": 5,
+   "pct": 1.9
+  },
+  {
+   "verdict": "routed nowhere",
+   "n": 5,
+   "pct": 1.9
+  },
+  {
+   "verdict": "central only: never routable",
+   "n": 1,
+   "pct": 0.4
+  }
+ ],
+ "routedTo": [
+  {
+   "routedTo": "Marathon PE",
+   "n": 102,
+   "pct": 39.1
+  },
+  {
+   "routedTo": "Hub 1",
+   "n": 68,
+   "pct": 26.1
+  },
+  {
+   "routedTo": "Hub 2",
+   "n": 46,
+   "pct": 17.6
+  },
+  {
+   "routedTo": "nowhere (no stock on the route)",
+   "n": 22,
+   "pct": 8.4
+  },
+  {
+   "routedTo": "Trophy",
+   "n": 13,
+   "pct": 5
+  },
+  {
+   "routedTo": "Hub 3",
+   "n": 9,
+   "pct": 3.4
+  },
+  {
+   "routedTo": "Concrete",
+   "n": 1,
+   "pct": 0.4
+  }
+ ],
+ "locationTable": [
+  {
+   "location": "Hub 1",
+   "rejected": 63,
+   "failedAfterHandover": 4,
+   "picked": 363,
+   "ratePct": 15.7
+  },
+  {
+   "location": "Hub 2",
+   "rejected": 42,
+   "failedAfterHandover": 4,
+   "picked": 272,
+   "ratePct": 14.6
+  },
+  {
+   "location": "Hub 3",
+   "rejected": 9,
+   "failedAfterHandover": 2,
+   "picked": 84,
+   "ratePct": 11.8
+  },
+  {
+   "location": "Marathon PE",
+   "rejected": 94,
+   "failedAfterHandover": 4,
+   "picked": 402,
+   "ratePct": 19.8
+  },
+  {
+   "location": "Trophy",
+   "rejected": 10,
+   "failedAfterHandover": 2,
+   "picked": 72,
+   "ratePct": 14.6
+  },
+  {
+   "location": "Concrete",
+   "rejected": 1,
+   "failedAfterHandover": 0,
+   "picked": 61,
+   "ratePct": 1.6
+  },
+  {
+   "location": "Pine",
+   "rejected": 0,
+   "failedAfterHandover": 0,
+   "picked": 5,
+   "ratePct": 0
+  }
+ ],
+ "staffTable": [
+  {
+   "who": "Marathon PE · Zee",
+   "picked": 394,
+   "rejected": 81,
+   "ratePct": 17.1
+  },
+  {
+   "who": "Hub 1 · Alli ibro",
+   "picked": 328,
+   "rejected": 59,
+   "ratePct": 15.2
+  },
+  {
+   "who": "Hub 2 · Mike",
+   "picked": 181,
+   "rejected": 23,
+   "ratePct": 11.3
+  },
+  {
+   "who": "Marathon PE · 2POS",
+   "picked": 8,
+   "rejected": 13,
+   "ratePct": 61.9
+  },
+  {
+   "who": "Hub 2 · Ayob",
+   "picked": 49,
+   "rejected": 11,
+   "ratePct": 18.3
+  },
+  {
+   "who": "Trophy · Sphe",
+   "picked": 71,
+   "rejected": 10,
+   "ratePct": 12.3
+  },
+  {
+   "who": "Hub 2 · Ahmed",
+   "picked": 35,
+   "rejected": 6,
+   "ratePct": 14.6
+  },
+  {
+   "who": "Hub 3 · Mike",
+   "picked": 78,
+   "rejected": 6,
+   "ratePct": 7.1
+  },
+  {
+   "who": "Hub 1 · Mike",
+   "picked": 32,
+   "rejected": 3,
+   "ratePct": 8.6
+  },
+  {
+   "who": "Concrete · Ayanda",
+   "picked": 59,
+   "rejected": 1,
+   "ratePct": 1.7
+  },
+  {
+   "who": "Pine · Zama pine",
+   "picked": 5,
+   "rejected": 0,
+   "ratePct": 0
+  }
+ ],
+ "categoryRate": [
+  {
+   "category": "Footwear",
+   "lines": 699,
+   "failed": 122,
+   "ratePct": 17.5
+  },
+  {
+   "category": "Clothing",
+   "lines": 483,
+   "failed": 98,
+   "ratePct": 20.3
+  },
+  {
+   "category": "Accessories",
+   "lines": 41,
+   "failed": 6,
+   "ratePct": 14.6
+  },
+  {
+   "category": "Perfume",
+   "lines": 62,
+   "failed": 5,
+   "ratePct": 8.1
+  }
+ ],
+ "brand": [
+  {
+   "brand": "Lacoste",
+   "n": 66,
+   "pct": 25.3
+  },
+  {
+   "brand": "Nike",
+   "n": 54,
+   "pct": 20.7
+  },
+  {
+   "brand": "Adidas",
+   "n": 16,
+   "pct": 6.1
+  },
+  {
+   "brand": "Jordan",
+   "n": 14,
+   "pct": 5.4
+  },
+  {
+   "brand": "T-shirt",
+   "n": 13,
+   "pct": 5
+  },
+  {
+   "brand": "Boss",
+   "n": 10,
+   "pct": 3.8
+  },
+  {
+   "brand": "Diesel",
+   "n": 9,
+   "pct": 3.4
+  },
+  {
+   "brand": "Dolce & Gabbana",
+   "n": 7,
+   "pct": 2.7
+  },
+  {
+   "brand": "Sox",
+   "n": 5,
+   "pct": 1.9
+  },
+  {
+   "brand": "Barcelona",
+   "n": 5,
+   "pct": 1.9
+  },
+  {
+   "brand": "Converse",
+   "n": 5,
+   "pct": 1.9
+  },
+  {
+   "brand": "FC",
+   "n": 4,
+   "pct": 1.5
+  },
+  {
+   "brand": "(none)",
+   "n": 3,
+   "pct": 1.1
+  },
+  {
+   "brand": "New Balance",
+   "n": 3,
+   "pct": 1.1
+  },
+  {
+   "brand": "Hydraulic",
+   "n": 3,
+   "pct": 1.1
+  },
+  {
+   "brand": "Replay",
+   "n": 3,
+   "pct": 1.1
+  }
+ ],
+ "subcategory": [
+  {
+   "subcategory": "Sneakers",
+   "n": 125,
+   "pct": 47.9
+  },
+  {
+   "subcategory": "T-Shirts",
+   "n": 39,
+   "pct": 14.9
+  },
+  {
+   "subcategory": "Caps & Hats",
+   "n": 36,
+   "pct": 13.8
+  },
+  {
+   "subcategory": "Jerseys",
+   "n": 15,
+   "pct": 5.7
+  },
+  {
+   "subcategory": "Polos",
+   "n": 10,
+   "pct": 3.8
+  },
+  {
+   "subcategory": "Tracksuits & Sets",
+   "n": 7,
+   "pct": 2.7
+  },
+  {
+   "subcategory": "Perfume",
+   "n": 5,
+   "pct": 1.9
+  },
+  {
+   "subcategory": "Bags",
+   "n": 5,
+   "pct": 1.9
+  },
+  {
+   "subcategory": "Jeans & Denim",
+   "n": 3,
+   "pct": 1.1
+  },
+  {
+   "subcategory": "Hoodies & Sweatshirts",
+   "n": 3,
+   "pct": 1.1
+  },
+  {
+   "subcategory": "Shorts & Vests",
+   "n": 3,
+   "pct": 1.1
+  },
+  {
+   "subcategory": "Cargos & Pants",
+   "n": 3,
+   "pct": 1.1
+  }
+ ],
+ "hoursOrderToRejection": {
+  "median": 10.4,
+  "p90": 78.5
+ },
+ "factors": {
+  "lastSinglePiece": {
+   "n": 144,
+   "pct": 55.2
+  },
+  "centralOnlyAtOrder": {
+   "n": 11,
+   "pct": 4.2
+  },
+  "websitePoolZeroAtOrder": {
+   "n": 0,
+   "pct": 0
+  },
+  "routedPlaceShowedZeroAtOrder": {
+   "n": 5,
+   "pct": 1.9
+  },
+  "takenBetweenOrderAndRejection": {
+   "n": 7,
+   "pct": 2.7
+  },
+  "rejectedAfterHandover": {
+   "n": 16,
+   "pct": 6.1
+  },
+  "damaged": {
+   "n": 9,
+   "pct": 3.4
+  },
+  "twinNames": {
+   "n": 103,
+   "pct": 39.5
+  },
+  "displayPieceRegistered": {
+   "n": 1,
+   "pct": 0.4
+  },
+  "cellNotMoved14Days": {
+   "n": 101,
+   "pct": 38.7
+  },
+  "cellNotMoved30Days": {
+   "n": 67,
+   "pct": 25.7
+  },
+  "neverCountedInWindow": {
+   "n": 242,
+   "pct": 92.7
+  },
+  "falseUnavailable": {
+   "n": 26,
+   "pct": 10
+  },
+  "stockShownElsewhere": {
+   "n": 28,
+   "pct": 10.7
+  },
+  "rejectedTwiceOrMore": {
+   "n": 8,
+   "pct": 3.1
+  }
+ },
+ "repeats": [
+  {
+   "pid": "p1789485230993",
+   "product": "Lacoste cap green 2",
+   "size": "one size",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "orders": [
+    "#1977",
+    "#2079",
+    "#2164",
+    "#2182",
+    "#2216",
+    "#2252",
+    "#2294",
+    "#2302"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted",
+    "store_credit",
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 8,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1782460905069",
+   "product": "Barcelona Soccer Jersey Black",
+   "size": "L",
+   "brand": "Barcelona",
+   "category": "Clothing",
+   "orders": [
+    "#1899",
+    "#1965",
+    "#1988",
+    "#2084",
+    "#2160"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 5,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1789484539633",
+   "product": "Lacoste cap",
+   "size": "one size",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "orders": [
+    "#1977",
+    "#2073",
+    "#2079",
+    "#2294",
+    "#2302"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted",
+    "found_later",
+    "found_later"
+   ],
+   "timesFailed": 5,
+   "fulfilledSince": true
+  },
+  {
+   "pid": "p1778915466053",
+   "product": "Lacoste Powercourt White/Green",
+   "size": "7",
+   "brand": "Lacoste",
+   "category": "Footwear",
+   "orders": [
+    "#1798",
+    "#1968",
+    "#2036",
+    "#2362"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted",
+    "found_later"
+   ],
+   "timesFailed": 4,
+   "fulfilledSince": true
+  },
+  {
+   "pid": "p1783758362530",
+   "product": "Nike blazer",
+   "size": "9",
+   "brand": "Nike",
+   "category": "Footwear",
+   "orders": [
+    "#1818",
+    "#1896",
+    "#2388"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted",
+    "found_later"
+   ],
+   "timesFailed": 3,
+   "fulfilledSince": true
+  },
+  {
+   "pid": "p1778144748126",
+   "product": "Diesel Green Black White Orange",
+   "size": "9",
+   "brand": "Diesel",
+   "category": "Footwear",
+   "orders": [
+    "#1829",
+    "#1850",
+    "#1891"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 3,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1789550398230",
+   "product": "Sox cap  black",
+   "size": "one size",
+   "brand": "Sox",
+   "category": "Clothing",
+   "orders": [
+    "#1842",
+    "#2073",
+    "#2182"
+   ],
+   "outcomes": [
+    "cancelled",
+    "found_later",
+    "open_being_picked"
+   ],
+   "timesFailed": 3,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1780389228311",
+   "product": "Lacoste Polo Brown",
+   "size": "L",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "orders": [
+    "#1856",
+    "#1984",
+    "#2097"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 3,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1789484453385",
+   "product": "Lacoste cap",
+   "size": "one size",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "orders": [
+    "#1886",
+    "#2073",
+    "#2079"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 3,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1787652187432",
+   "product": "Hydraulic short black WHERE THE BIG DOGS PLAY 2025#",
+   "size": "L",
+   "brand": "Hydraulic",
+   "category": "Clothing",
+   "orders": [
+    "#2027",
+    "#2041",
+    "#2116"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 3,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1789483781729",
+   "product": "Lacoste cap  blue",
+   "size": "one size",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "orders": [
+    "#2079",
+    "#2216",
+    "#2252"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted",
+    "store_credit"
+   ],
+   "timesFailed": 3,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1779610187496",
+   "product": "Lacoste T-Clip Winter Outdoor Green Black",
+   "size": "7",
+   "brand": "Lacoste",
+   "category": "Footwear",
+   "orders": [
+    "#2248",
+    "#2266",
+    "#2268"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "found_later",
+    "open"
+   ],
+   "timesFailed": 3,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1778915466053",
+   "product": "Lacoste Powercourt White/Green",
+   "size": "6",
+   "brand": "Lacoste",
+   "category": "Footwear",
+   "orders": [
+    "#1798",
+    "#2320"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "found_later"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": true
+  },
+  {
+   "pid": "p1785156366812",
+   "product": "Adidas sambarose cloud white ",
+   "size": "5.5",
+   "brand": "Adidas",
+   "category": "Footwear",
+   "orders": [
+    "#1864",
+    "#1989"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1787654054669",
+   "product": "T-shirt black KARL LAGERFELD PARIS W698#",
+   "size": "M",
+   "brand": "T-shirt",
+   "category": "Clothing",
+   "orders": [
+    "#1882",
+    "#2310"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1783857023586",
+   "product": "Boss golf t shirt black: Bs-44337",
+   "size": "L",
+   "brand": "Boss",
+   "category": "Clothing",
+   "orders": [
+    "#1905",
+    "#2097"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "open"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1777979256775",
+   "product": "Nike Air Force 1 '07 Essential Summit White",
+   "size": "5.5",
+   "brand": "Nike",
+   "category": "Footwear",
+   "orders": [
+    "#1934",
+    "#2228"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1779610355274",
+   "product": "Lacoste Powercourt White Black",
+   "size": "7",
+   "brand": "Lacoste",
+   "category": "Footwear",
+   "orders": [
+    "#1944",
+    "#2242"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1786370267763",
+   "product": "Hugo boss adjustable cap navy #1",
+   "size": "one size",
+   "brand": "Boss",
+   "category": "Clothing",
+   "orders": [
+    "#1974",
+    "#2073"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1778841350998",
+   "product": "Nike Portal Royal Blue",
+   "size": "4",
+   "brand": "Nike",
+   "category": "Footwear",
+   "orders": [
+    "#1981",
+    "#2361"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "found_later"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": true
+  },
+  {
+   "pid": "p1780388511373",
+   "product": "Lacoste Polo Shirt Grey",
+   "size": "L",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "orders": [
+    "#1984",
+    "#2138"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1778147881161",
+   "product": "Converse Chuck Taylor All Star Black",
+   "size": "5",
+   "brand": "Converse",
+   "category": "Footwear",
+   "orders": [
+    "#1992",
+    "#2348"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": true
+  },
+  {
+   "pid": "p1786452575638",
+   "product": "Sweatshirt lacoste nevy blue",
+   "size": "M",
+   "brand": "Sweatshirt",
+   "category": "Clothing",
+   "orders": [
+    "#2003",
+    "#2063"
+   ],
+   "outcomes": [
+    "refund",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1783927528486",
+   "product": "Lacoste golf t shirt white: LCE-3431",
+   "size": "M",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "orders": [
+    "#2010",
+    "#2138"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1790163727274",
+   "product": "Nike Air Force 1 Low Metalwork Medium Ash Anthracite",
+   "size": "7",
+   "brand": "Nike",
+   "category": "Footwear",
+   "orders": [
+    "#2011",
+    "#2094"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1784455660236",
+   "product": "FC Bayern black soccer jerseys ",
+   "size": "XXL",
+   "brand": "FC",
+   "category": "Clothing",
+   "orders": [
+    "#2028",
+    "#2221"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1792839992757",
+   "product": "Nike t shirt black w683#",
+   "size": "M",
+   "brand": "Nike",
+   "category": "Clothing",
+   "orders": [
+    "#2032",
+    "#2038"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1785937936741",
+   "product": "Nike airforce cream white",
+   "size": "6",
+   "brand": "Nike",
+   "category": "Footwear",
+   "orders": [
+    "#2035",
+    "#2139"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1782460986438",
+   "product": "FC Barcelona Away Jersey Mint",
+   "size": "M",
+   "brand": "FC",
+   "category": "Clothing",
+   "orders": [
+    "#2058",
+    "#2262"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1786448097220",
+   "product": "Nike dri- fit cap khaki",
+   "size": "one size",
+   "brand": "Nike",
+   "category": "Clothing",
+   "orders": [
+    "#2133",
+    "#2327"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "cancelled"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1778142930182",
+   "product": "Air Jordan 1 High OG Lost And Found",
+   "size": "9",
+   "brand": "Jordan",
+   "category": "Footwear",
+   "orders": [
+    "#2156",
+    "#2279"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "cancelled"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1787654226981",
+   "product": "T-shirt cream white Karl Lagerfeld W699#",
+   "size": "M",
+   "brand": "T-shirt",
+   "category": "Clothing",
+   "orders": [
+    "#2204",
+    "#2288"
+   ],
+   "outcomes": [
+    "refund",
+    "found_later"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1778236195045",
+   "product": "Replay Field Speed Brown",
+   "size": "10",
+   "brand": "Replay",
+   "category": "Footwear",
+   "orders": [
+    "#2239",
+    "#2239"
+   ],
+   "outcomes": [
+    "alternative_accepted",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  },
+  {
+   "pid": "p1778143563693",
+   "product": "Adidas Samba White Pink Red",
+   "size": "5",
+   "brand": "Adidas",
+   "category": "Footwear",
+   "orders": [
+    "#2264",
+    "#2276"
+   ],
+   "outcomes": [
+    "cancelled",
+    "alternative_accepted"
+   ],
+   "timesFailed": 2,
+   "fulfilledSince": false
+  }
+ ],
+ "repeatProducts": [
+  {
+   "pid": "p1789485230993",
+   "product": "Lacoste cap green 2",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "sizes": [
+    "one size"
+   ],
+   "orders": [
+    "#1977",
+    "#2079",
+    "#2164",
+    "#2182",
+    "#2216",
+    "#2252",
+    "#2294",
+    "#2302"
+   ],
+   "n": 8
+  },
+  {
+   "pid": "p1778915466053",
+   "product": "Lacoste Powercourt White/Green",
+   "brand": "Lacoste",
+   "category": "Footwear",
+   "sizes": [
+    "6",
+    "7"
+   ],
+   "orders": [
+    "#1798",
+    "#1968",
+    "#2036",
+    "#2320",
+    "#2362"
+   ],
+   "n": 6
+  },
+  {
+   "pid": "p1778144748126",
+   "product": "Diesel Green Black White Orange",
+   "brand": "Diesel",
+   "category": "Footwear",
+   "sizes": [
+    "9",
+    "10",
+    "7",
+    "8"
+   ],
+   "orders": [
+    "#1829",
+    "#1850",
+    "#1891",
+    "#1894",
+    "#1931",
+    "#2092"
+   ],
+   "n": 6
+  },
+  {
+   "pid": "p1783758362530",
+   "product": "Nike blazer",
+   "brand": "Nike",
+   "category": "Footwear",
+   "sizes": [
+    "9",
+    "10",
+    "6"
+   ],
+   "orders": [
+    "#1818",
+    "#1896",
+    "#2344",
+    "#2388",
+    "#2392"
+   ],
+   "n": 5
+  },
+  {
+   "pid": "p1782460905069",
+   "product": "Barcelona Soccer Jersey Black",
+   "brand": "Barcelona",
+   "category": "Clothing",
+   "sizes": [
+    "L"
+   ],
+   "orders": [
+    "#1899",
+    "#1965",
+    "#1988",
+    "#2084",
+    "#2160"
+   ],
+   "n": 5
+  },
+  {
+   "pid": "p1789484539633",
+   "product": "Lacoste cap",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "sizes": [
+    "one size"
+   ],
+   "orders": [
+    "#1977",
+    "#2073",
+    "#2079",
+    "#2294",
+    "#2302"
+   ],
+   "n": 5
+  },
+  {
+   "pid": "p1789550398230",
+   "product": "Sox cap  black",
+   "brand": "Sox",
+   "category": "Clothing",
+   "sizes": [
+    "one size"
+   ],
+   "orders": [
+    "#1842",
+    "#2073",
+    "#2182"
+   ],
+   "n": 3
+  },
+  {
+   "pid": "p1780389228311",
+   "product": "Lacoste Polo Brown",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "sizes": [
+    "L"
+   ],
+   "orders": [
+    "#1856",
+    "#1984",
+    "#2097"
+   ],
+   "n": 3
+  },
+  {
+   "pid": "p1789484453385",
+   "product": "Lacoste cap",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "sizes": [
+    "one size"
+   ],
+   "orders": [
+    "#1886",
+    "#2073",
+    "#2079"
+   ],
+   "n": 3
+  },
+  {
+   "pid": "p1781945994281",
+   "product": "Nike Air Max Plus Cream Brown Blue",
+   "brand": "Nike",
+   "category": "Footwear",
+   "sizes": [
+    "3",
+    "7",
+    "6"
+   ],
+   "orders": [
+    "#1932",
+    "#2308"
+   ],
+   "n": 3
+  },
+  {
+   "pid": "p1792839992757",
+   "product": "Nike t shirt black w683#",
+   "brand": "Nike",
+   "category": "Clothing",
+   "sizes": [
+    "S",
+    "M"
+   ],
+   "orders": [
+    "#2008",
+    "#2032",
+    "#2038"
+   ],
+   "n": 3
+  },
+  {
+   "pid": "p1787652187432",
+   "product": "Hydraulic short black WHERE THE BIG DOGS PLAY 2025#",
+   "brand": "Hydraulic",
+   "category": "Clothing",
+   "sizes": [
+    "L"
+   ],
+   "orders": [
+    "#2027",
+    "#2041",
+    "#2116"
+   ],
+   "n": 3
+  },
+  {
+   "pid": "p1789483781729",
+   "product": "Lacoste cap  blue",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "sizes": [
+    "one size"
+   ],
+   "orders": [
+    "#2079",
+    "#2216",
+    "#2252"
+   ],
+   "n": 3
+  },
+  {
+   "pid": "p1778142930182",
+   "product": "Air Jordan 1 High OG Lost And Found",
+   "brand": "Jordan",
+   "category": "Footwear",
+   "sizes": [
+    "9",
+    "8"
+   ],
+   "orders": [
+    "#2156",
+    "#2279",
+    "#2300"
+   ],
+   "n": 3
+  },
+  {
+   "pid": "p1784818933061",
+   "product": "Adidas Real Madrid Tiro black tracksuit ",
+   "brand": "Adidas",
+   "category": "Clothing",
+   "sizes": [
+    "M",
+    "S",
+    "XXL"
+   ],
+   "orders": [
+    "#2209",
+    "#2290",
+    "#2374"
+   ],
+   "n": 3
+  },
+  {
+   "pid": "p1779610187496",
+   "product": "Lacoste T-Clip Winter Outdoor Green Black",
+   "brand": "Lacoste",
+   "category": "Footwear",
+   "sizes": [
+    "7"
+   ],
+   "orders": [
+    "#2248",
+    "#2266",
+    "#2268"
+   ],
+   "n": 3
+  },
+  {
+   "pid": "p1780749389578",
+   "product": "Air Jordan 4 Retro University Blue",
+   "brand": "Jordan",
+   "category": "Footwear",
+   "sizes": [
+    "9",
+    "5"
+   ],
+   "orders": [
+    "#1773",
+    "#2281"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1785156366812",
+   "product": "Adidas sambarose cloud white ",
+   "brand": "Adidas",
+   "category": "Footwear",
+   "sizes": [
+    "5.5"
+   ],
+   "orders": [
+    "#1864",
+    "#1989"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1778917330378",
+   "product": "Lacoste Gripshot Mid Light Green",
+   "brand": "Lacoste",
+   "category": "Footwear",
+   "sizes": [
+    "7",
+    "6"
+   ],
+   "orders": [
+    "#1877",
+    "#2053"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1787654054669",
+   "product": "T-shirt black KARL LAGERFELD PARIS W698#",
+   "brand": "T-shirt",
+   "category": "Clothing",
+   "sizes": [
+    "M"
+   ],
+   "orders": [
+    "#1882",
+    "#2310"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1788857698009",
+   "product": "Boss golf t shirt black BSS12#",
+   "brand": "Boss",
+   "category": "Clothing",
+   "sizes": [
+    "L",
+    "XL"
+   ],
+   "orders": [
+    "#1905",
+    "#2187"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1783857023586",
+   "product": "Boss golf t shirt black: Bs-44337",
+   "brand": "Boss",
+   "category": "Clothing",
+   "sizes": [
+    "L"
+   ],
+   "orders": [
+    "#1905",
+    "#2097"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1778241262109",
+   "product": "Dolce & Gabbana Portofino White Beige",
+   "brand": "Dolce & Gabbana",
+   "category": "Footwear",
+   "sizes": [
+    "3",
+    "6"
+   ],
+   "orders": [
+    "#1914",
+    "#2161"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1782383013207",
+   "product": "Raw Graphic Tee Grey",
+   "brand": "Raw",
+   "category": "Clothing",
+   "sizes": [
+    "L",
+    "XL"
+   ],
+   "orders": [
+    "#1927"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1778841498271",
+   "product": "Nike Air Max Motum White Obsidian",
+   "brand": "Nike",
+   "category": "Footwear",
+   "sizes": [
+    "8",
+    "6"
+   ],
+   "orders": [
+    "#1931",
+    "#2169"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1777979256775",
+   "product": "Nike Air Force 1 '07 Essential Summit White",
+   "brand": "Nike",
+   "category": "Footwear",
+   "sizes": [
+    "5.5"
+   ],
+   "orders": [
+    "#1934",
+    "#2228"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1779610355274",
+   "product": "Lacoste Powercourt White Black",
+   "brand": "Lacoste",
+   "category": "Footwear",
+   "sizes": [
+    "7"
+   ],
+   "orders": [
+    "#1944",
+    "#2242"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1778155802169",
+   "product": "Converse Cold Wall Blue",
+   "brand": "Converse",
+   "category": "Footwear",
+   "sizes": [
+    "4",
+    "8"
+   ],
+   "orders": [
+    "#1960"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1778916998372",
+   "product": "New Balance 1000 Black",
+   "brand": "New Balance",
+   "category": "Footwear",
+   "sizes": [
+    "7",
+    "6"
+   ],
+   "orders": [
+    "#1970",
+    "#2043"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1786370267763",
+   "product": "Hugo boss adjustable cap navy #1",
+   "brand": "Boss",
+   "category": "Clothing",
+   "sizes": [
+    "one size"
+   ],
+   "orders": [
+    "#1974",
+    "#2073"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1777981957810",
+   "product": "Lacoste Powercourt White",
+   "brand": "Lacoste",
+   "category": "Footwear",
+   "sizes": [
+    "8",
+    "10"
+   ],
+   "orders": [
+    "#1977",
+    "#2396"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1778841350998",
+   "product": "Nike Portal Royal Blue",
+   "brand": "Nike",
+   "category": "Footwear",
+   "sizes": [
+    "4"
+   ],
+   "orders": [
+    "#1981",
+    "#2361"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1780388511373",
+   "product": "Lacoste Polo Shirt Grey",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "sizes": [
+    "L"
+   ],
+   "orders": [
+    "#1984",
+    "#2138"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1778147881161",
+   "product": "Converse Chuck Taylor All Star Black",
+   "brand": "Converse",
+   "category": "Footwear",
+   "sizes": [
+    "5"
+   ],
+   "orders": [
+    "#1992",
+    "#2348"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1786452575638",
+   "product": "Sweatshirt lacoste nevy blue",
+   "brand": "Sweatshirt",
+   "category": "Clothing",
+   "sizes": [
+    "M"
+   ],
+   "orders": [
+    "#2003",
+    "#2063"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1783927528486",
+   "product": "Lacoste golf t shirt white: LCE-3431",
+   "brand": "Lacoste",
+   "category": "Clothing",
+   "sizes": [
+    "M"
+   ],
+   "orders": [
+    "#2010",
+    "#2138"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1790163727274",
+   "product": "Nike Air Force 1 Low Metalwork Medium Ash Anthracite",
+   "brand": "Nike",
+   "category": "Footwear",
+   "sizes": [
+    "7"
+   ],
+   "orders": [
+    "#2011",
+    "#2094"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1784455660236",
+   "product": "FC Bayern black soccer jerseys ",
+   "brand": "FC",
+   "category": "Clothing",
+   "sizes": [
+    "XXL"
+   ],
+   "orders": [
+    "#2028",
+    "#2221"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1785937936741",
+   "product": "Nike airforce cream white",
+   "brand": "Nike",
+   "category": "Footwear",
+   "sizes": [
+    "6"
+   ],
+   "orders": [
+    "#2035",
+    "#2139"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1782460986438",
+   "product": "FC Barcelona Away Jersey Mint",
+   "brand": "FC",
+   "category": "Clothing",
+   "sizes": [
+    "M"
+   ],
+   "orders": [
+    "#2058",
+    "#2262"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1786448097220",
+   "product": "Nike dri- fit cap khaki",
+   "brand": "Nike",
+   "category": "Clothing",
+   "sizes": [
+    "one size"
+   ],
+   "orders": [
+    "#2133",
+    "#2327"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1787654226981",
+   "product": "T-shirt cream white Karl Lagerfeld W699#",
+   "brand": "T-shirt",
+   "category": "Clothing",
+   "sizes": [
+    "M"
+   ],
+   "orders": [
+    "#2204",
+    "#2288"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1778141599422",
+   "product": "Air Jordan 1 Retro High OG Gore-Tex Olive",
+   "brand": "Jordan",
+   "category": "Footwear",
+   "sizes": [
+    "6",
+    "7"
+   ],
+   "orders": [
+    "#2218",
+    "#2337"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1778236195045",
+   "product": "Replay Field Speed Brown",
+   "brand": "Replay",
+   "category": "Footwear",
+   "sizes": [
+    "10"
+   ],
+   "orders": [
+    "#2239"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1778143563693",
+   "product": "Adidas Samba White Pink Red",
+   "brand": "Adidas",
+   "category": "Footwear",
+   "sizes": [
+    "5"
+   ],
+   "orders": [
+    "#2264",
+    "#2276"
+   ],
+   "n": 2
+  },
+  {
+   "pid": "p1795086634493",
+   "product": "Lacoste full black",
+   "brand": "Lacoste",
+   "category": "Footwear",
+   "sizes": [
+    "6",
+    "8"
+   ],
+   "orders": [
+    "#2379",
+    "#2399"
+   ],
+   "n": 2
+  }
+ ],
+ "windowStart": "2026-10-18 09:27",
+ "jamie": {
+  "offersInFile": 242,
+  "results": {
+   "other": 1,
+   "accepted": 184,
+   "item_found": 8,
+   "declined": 26,
+   "withdrawn": 2,
+   "no_reply": 10,
+   "pending": 11
+  },
+  "decided": {
+   "offers": 220,
+   "accepted": 184,
+   "declined": 26,
+   "noReply": 10,
+   "acceptedPct": 83.6
+  },
+  "groups": {
+   "accepted": {
+    "n": 184,
+    "medianHoursRejectionToOffer": 0.2,
+    "offeredWithin1hPct": 67.4,
+    "whatsappPct": 82.6,
+    "emailPct": 15.2,
+    "meanOptions": 2.8,
+    "anySameBrandPct": 73.6,
+    "allSamePricePct": 46.7,
+    "anyDearerPct": 37,
+    "whatsappWithPhotosPct": 51.3,
+    "whatsappReadPct": 0,
+    "meanRounds": 1.7,
+    "medianHoursOfferToFirstReply": 0.2
+   },
+   "declined": {
+    "n": 26,
+    "medianHoursRejectionToOffer": 0.3,
+    "offeredWithin1hPct": 65,
+    "whatsappPct": 69.2,
+    "emailPct": 30.8,
+    "meanOptions": 2.4,
+    "anySameBrandPct": 60,
+    "allSamePricePct": 32,
+    "anyDearerPct": 38.5,
+    "whatsappWithPhotosPct": 61.1,
+    "whatsappReadPct": 0,
+    "meanRounds": 2.5,
+    "medianHoursOfferToFirstReply": 0.6
+   },
+   "no_reply": {
+    "n": 10,
+    "medianHoursRejectionToOffer": 0.1,
+    "offeredWithin1hPct": 71.4,
+    "whatsappPct": 50,
+    "emailPct": 50,
+    "meanOptions": 2.3,
+    "anySameBrandPct": 100,
+    "allSamePricePct": 33.3,
+    "anyDearerPct": 40,
+    "whatsappWithPhotosPct": 40,
+    "whatsappReadPct": 0,
+    "meanRounds": 1.6,
+    "medianHoursOfferToFirstReply": null
+   }
+  },
+  "byDelay": {
+   "a) within 1 h": {
+    "offers": 113,
+    "accepted": 95,
+    "declined": 13,
+    "noReply": 5,
+    "acceptedPct": 84.1
+   },
+   "b) 1-6 h": {
+    "offers": 29,
+    "accepted": 23,
+    "declined": 6,
+    "noReply": 0,
+    "acceptedPct": 79.3
+   },
+   "c) 6-24 h": {
+    "offers": 18,
+    "accepted": 15,
+    "declined": 1,
+    "noReply": 2,
+    "acceptedPct": 83.3
+   },
+   "d) 1-3 days": {
+    "offers": 5,
+    "accepted": 5,
+    "declined": 0,
+    "noReply": 0,
+    "acceptedPct": 100
+   },
+   "e) over 3 days": {
+    "offers": 3,
+    "accepted": 3,
+    "declined": 0,
+    "noReply": 0,
+    "acceptedPct": 100
+   }
+  },
+  "byChannel": {
+   "(none)": {
+    "offers": 4,
+    "accepted": 4,
+    "declined": 0,
+    "noReply": 0,
+    "acceptedPct": 100
+   },
+   "email": {
+    "offers": 41,
+    "accepted": 28,
+    "declined": 8,
+    "noReply": 5,
+    "acceptedPct": 68.3
+   },
+   "whatsapp": {
+    "offers": 175,
+    "accepted": 152,
+    "declined": 18,
+    "noReply": 5,
+    "acceptedPct": 86.9
+   }
+  },
+  "byOptions": {
+   "0 option(s)": {
+    "offers": 4,
+    "accepted": 2,
+    "declined": 1,
+    "noReply": 1,
+    "acceptedPct": 50
+   },
+   "1 option(s)": {
+    "offers": 5,
+    "accepted": 3,
+    "declined": 2,
+    "noReply": 0,
+    "acceptedPct": 60
+   },
+   "2 option(s)": {
+    "offers": 45,
+    "accepted": 33,
+    "declined": 8,
+    "noReply": 4,
+    "acceptedPct": 73.3
+   },
+   "3 option(s)": {
+    "offers": 159,
+    "accepted": 139,
+    "declined": 15,
+    "noReply": 5,
+    "acceptedPct": 87.4
+   },
+   "4 option(s)": {
+    "offers": 5,
+    "accepted": 5,
+    "declined": 0,
+    "noReply": 0,
+    "acceptedPct": 100
+   },
+   "6 option(s)": {
+    "offers": 1,
+    "accepted": 1,
+    "declined": 0,
+    "noReply": 0,
+    "acceptedPct": 100
+   },
+   "9 option(s)": {
+    "offers": 1,
+    "accepted": 1,
+    "declined": 0,
+    "noReply": 0,
+    "acceptedPct": 100
+   }
+  },
+  "byRounds": {
+   "1 round(s)": {
+    "offers": 128,
+    "accepted": 116,
+    "declined": 7,
+    "noReply": 5,
+    "acceptedPct": 90.6
+   },
+   "2 round(s)": {
+    "offers": 46,
+    "accepted": 32,
+    "declined": 10,
+    "noReply": 4,
+    "acceptedPct": 69.6
+   },
+   "3+ rounds": {
+    "offers": 46,
+    "accepted": 36,
+    "declined": 9,
+    "noReply": 1,
+    "acceptedPct": 78.3
+   }
+  },
+  "bySameBrand": {
+   "all same brand": {
+    "offers": 90,
+    "accepted": 76,
+    "declined": 9,
+    "noReply": 5,
+    "acceptedPct": 84.4
+   },
+   "no same-brand option": {
+    "offers": 58,
+    "accepted": 48,
+    "declined": 10,
+    "noReply": 0,
+    "acceptedPct": 82.8
+   },
+   "some same brand": {
+    "offers": 68,
+    "accepted": 58,
+    "declined": 6,
+    "noReply": 4,
+    "acceptedPct": 85.3
+   }
+  },
+  "byPrice": {
+   "all the same price": {
+    "offers": 96,
+    "accepted": 85,
+    "declined": 8,
+    "noReply": 3,
+    "acceptedPct": 88.5
+   },
+   "dearer options only": {
+    "offers": 70,
+    "accepted": 59,
+    "declined": 8,
+    "noReply": 3,
+    "acceptedPct": 84.3
+   },
+   "mixed dearer and cheaper": {
+    "offers": 12,
+    "accepted": 9,
+    "declined": 2,
+    "noReply": 1,
+    "acceptedPct": 75
+   },
+   "same or cheaper": {
+    "offers": 38,
+    "accepted": 29,
+    "declined": 7,
+    "noReply": 2,
+    "acceptedPct": 76.3
+   }
+  },
+  "byPhotos": {
+   "WhatsApp, no photos logged": {
+    "offers": 84,
+    "accepted": 74,
+    "declined": 7,
+    "noReply": 3,
+    "acceptedPct": 88.1
+   },
+   "WhatsApp, photos sent": {
+    "offers": 91,
+    "accepted": 78,
+    "declined": 11,
+    "noReply": 2,
+    "acceptedPct": 85.7
+   },
+   "email, no photos": {
+    "offers": 8,
+    "accepted": 7,
+    "declined": 1,
+    "noReply": 0,
+    "acceptedPct": 87.5
+   },
+   "email, photos attached": {
+    "offers": 33,
+    "accepted": 21,
+    "declined": 7,
+    "noReply": 5,
+    "acceptedPct": 63.6
+   }
+  },
+  "byModel": {
+   "(not recorded)": {
+    "offers": 30,
+    "accepted": 24,
+    "declined": 4,
+    "noReply": 2,
+    "acceptedPct": 80
+   },
+   "claude-opus-5-5": {
+    "offers": 7,
+    "accepted": 7,
+    "declined": 0,
+    "noReply": 0,
+    "acceptedPct": 100
+   },
+   "claude-sonnet-5-5": {
+    "offers": 120,
+    "accepted": 98,
+    "declined": 15,
+    "noReply": 7,
+    "acceptedPct": 81.7
+   },
+   "draft": {
+    "offers": 11,
+    "accepted": 10,
+    "declined": 1,
+    "noReply": 0,
+    "acceptedPct": 90.9
+   },
+   "template after claude-sonnet-5-5": {
+    "offers": 10,
+    "accepted": 10,
+    "declined": 0,
+    "noReply": 0,
+    "acceptedPct": 100
+   },
+   "template after xiaomi/mimo-v2.6-pro": {
+    "offers": 3,
+    "accepted": 2,
+    "declined": 1,
+    "noReply": 0,
+    "acceptedPct": 66.7
+   },
+   "template": {
+    "offers": 4,
+    "accepted": 4,
+    "declined": 0,
+    "noReply": 0,
+    "acceptedPct": 100
+   },
+   "xiaomi/mimo-v2.6-pro": {
+    "offers": 35,
+    "accepted": 29,
+    "declined": 5,
+    "noReply": 1,
+    "acceptedPct": 82.9
+   }
+  },
+  "byHour": {
+   "a) before 09:00": {
+    "offers": 13,
+    "accepted": 11,
+    "declined": 2,
+    "noReply": 0,
+    "acceptedPct": 84.6
+   },
+   "b) 09-12": {
+    "offers": 99,
+    "accepted": 87,
+    "declined": 9,
+    "noReply": 3,
+    "acceptedPct": 87.9
+   },
+   "c) 12-15": {
+    "offers": 54,
+    "accepted": 46,
+    "declined": 5,
+    "noReply": 3,
+    "acceptedPct": 85.2
+   },
+   "d) 15-18": {
+    "offers": 46,
+    "accepted": 35,
+    "declined": 10,
+    "noReply": 1,
+    "acceptedPct": 76.1
+   },
+   "e) 18:00 on": {
+    "offers": 4,
+    "accepted": 3,
+    "declined": 0,
+    "noReply": 1,
+    "acceptedPct": 75
+   }
+  },
+  "byWeekday": {
+   "Fri": {
+    "offers": 39,
+    "accepted": 29,
+    "declined": 6,
+    "noReply": 4,
+    "acceptedPct": 74.4
+   },
+   "Mon": {
+    "offers": 31,
+    "accepted": 28,
+    "declined": 3,
+    "noReply": 0,
+    "acceptedPct": 90.3
+   },
+   "Sat": {
+    "offers": 25,
+    "accepted": 19,
+    "declined": 5,
+    "noReply": 1,
+    "acceptedPct": 76
+   },
+   "Sun": {
+    "offers": 27,
+    "accepted": 26,
+    "declined": 1,
+    "noReply": 0,
+    "acceptedPct": 96.3
+   },
+   "Thu": {
+    "offers": 38,
+    "accepted": 29,
+    "declined": 6,
+    "noReply": 3,
+    "acceptedPct": 76.3
+   },
+   "Tue": {
+    "offers": 38,
+    "accepted": 35,
+    "declined": 3,
+    "noReply": 0,
+    "acceptedPct": 92.1
+   },
+   "Wed": {
+    "offers": 18,
+    "accepted": 16,
+    "declined": 2,
+    "noReply": 0,
+    "acceptedPct": 88.9
+   }
+  },
+  "byCategory": {
+   "Accessories": {
+    "offers": 5,
+    "accepted": 4,
+    "declined": 1,
+    "noReply": 0,
+    "acceptedPct": 80
+   },
+   "Clothing": {
+    "offers": 99,
+    "accepted": 84,
+    "declined": 9,
+    "noReply": 6,
+    "acceptedPct": 84.8
+   },
+   "Footwear": {
+    "offers": 100,
+    "accepted": 86,
+    "declined": 11,
+    "noReply": 3,
+    "acceptedPct": 86
+   },
+   "Perfume": {
+    "offers": 2,
+    "accepted": 1,
+    "declined": 0,
+    "noReply": 1,
+    "acceptedPct": 50
+   }
+  },
+  "byKind": {
+   "boss": {
+    "offers": 14,
+    "accepted": 13,
+    "declined": 1,
+    "noReply": 0,
+    "acceptedPct": 92.9
+   },
+   "gone": {
+    "offers": 185,
+    "accepted": 155,
+    "declined": 22,
+    "noReply": 8,
+    "acceptedPct": 83.8
+   },
+   "hub": {
+    "offers": 18,
+    "accepted": 14,
+    "declined": 2,
+    "noReply": 2,
+    "acceptedPct": 77.8
+   },
+   "late": {
+    "offers": 3,
+    "accepted": 2,
+    "declined": 1,
+    "noReply": 0,
+    "acceptedPct": 66.7
+   }
+  },
+  "byRead": {
+   "WhatsApp not read": {
+    "offers": 116,
+    "accepted": 99,
+    "declined": 14,
+    "noReply": 3,
+    "acceptedPct": 85.3
+   }
+  },
+  "pickedSameBrandPct": 62.5,
+  "pickedPrice": {
+   "same price": 95,
+   "cheaper": 13,
+   "dearer": 20
+  },
+  "pickedNumber": {
+   "option 1": 48,
+   "option 3": 28,
+   "option 4+ (a later round)": 30,
+   "option 2": 23
+  },
+  "declinedWords": [
+   {
+    "order": "#1802",
+    "item": "Nike Air Force 1 Low Drake NOCTA Certified Lover Boy Palest Purple",
+    "channel": "email",
+    "outcome": "open",
+    "said": [
+     "Picture",
+     "[audio]",
+     "Can u please show me another one you have , because its girl",
+     "Yes"
+    ]
+   },
+   {
+    "order": "#1842",
+    "item": "Sox cap black",
+    "channel": "whatsapp",
+    "outcome": "cancelled",
+    "said": [
+     "Then why not revert the money",
+     "How can I buy with the money y’all took",
+     "Okay because I want to make an Order today…",
+     "[image]"
+    ]
+   },
+   {
+    "order": "#1842",
+    "item": "Chelsea white jersey",
+    "channel": "whatsapp",
+    "outcome": "cancelled",
+    "said": [
+     "Then why not revert the money",
+     "How can I buy with the money y’all took",
+     "Okay because I want to make an Order today…",
+     "[image]"
+    ]
+   },
+   {
+    "order": "#2003",
+    "item": "Lacoste sweatshirt green",
+    "channel": "whatsapp",
+    "outcome": "refund",
+    "said": [
+     "Please refund me",
+     "Please refund me",
+     "Please refund me",
+     "Please refund me"
+    ]
+   },
+   {
+    "order": "#2003",
+    "item": "Sweatshirt lacoste nevy blue",
+    "channel": "whatsapp",
+    "outcome": "refund",
+    "said": [
+     "Please refund me",
+     "Please refund me",
+     "Why both?"
+    ]
+   },
+   {
+    "order": "#1955",
+    "item": "Lacoste CORDE 317 1 CAM",
+    "channel": "whatsapp",
+    "outcome": "refund",
+    "said": [
+     "Good day Can I get a refund person what’s the exact shoes I ordered",
+     "Don't want those money back",
+     "He does wants any of the below but a refund",
+     "Kindly check on the refund and revert back"
+    ]
+   },
+   {
+    "order": "#2056",
+    "item": "130",
+    "channel": "whatsapp",
+    "outcome": "",
+    "said": [
+     "And if I don’t like any of these?",
+     "I unfortunately do not find any of these to be what I want.",
+     "I can just take the shoes alone.",
+     "Yes, I want something in a dark colour with just one small branded logo or artwork."
+    ]
+   },
+   {
+    "order": "#2133",
+    "item": "Diesel t shirt black 10#",
+    "channel": "whatsapp",
+    "outcome": "",
+    "said": [
+     "I'll wait",
+     "Can you send me the item that are not available",
+     "I can only pick 2 the rest I already have so maybe a refund will do",
+     "I can only pick 2 the rest I already have so maybe a refund will do"
+    ]
+   },
+   {
+    "order": "#2058",
+    "item": "Nike x NOCTA Northstar Nylon Tracksuit, cargo khaki brown colorway",
+    "channel": "whatsapp",
+    "outcome": "cancelled",
+    "said": [
+     "Good day, sorry for the delayed response. I have been travelling. That's bad news🥲. Will you be charging shipping fee for the jersey? If yes, cancel the jersey also. I If no, ship the jersey. Thank you.",
+     "Good day, sorry for the delayed response. I have been travelling. That's bad news🥲. Will you be charging shipping fee for the jersey? If yes, cancel the jersey also. I If no, ship the jersey. Thank you.",
+     "Hi there, I prefer this one. Also respond to shipping? As a token for the inconvenience, free shipping will be accepted!😅",
+     "Also respond to shipping?"
+    ]
+   },
+   {
+    "order": "#2215",
+    "item": "Nike Mind 002 Black",
+    "channel": "whatsapp",
+    "outcome": "cancelled",
+    "said": [
+     "[audio]",
+     "I'll come to the shop rather",
+     "I have been till the shop and swapped before so what's the problem? It's your guy's fault you don't update your stock. I'm coming to the shop... end of story",
+     "Hi there. I'm sorted. I was at the shop today. All sorted, thanks."
+    ]
+   },
+   {
+    "order": "#2204",
+    "item": "T-shirt cream white Karl Lagerfeld W699#",
+    "channel": "whatsapp",
+    "outcome": "refund",
+    "said": [
+     "This is fine",
+     "Yes",
+     "Morning Will I be able to pick up in store need it for tomorrow",
+     "I received only the shoe from my Order and not the t shirt"
+    ]
+   },
+   {
+    "order": "#2276",
+    "item": "Balmain cream white t shirt w196#",
+    "channel": "email",
+    "outcome": "refund_requested",
+    "said": [
+     "No it looks like everything on display is not available, I won't be taking any t-shirt",
+     "I will not be taking any t-shirt"
+    ]
+   },
+   {
+    "order": "#2161",
+    "item": "Dolce & Gabbana Portofino White Beige",
+    "channel": "email",
+    "outcome": "store_credit",
+    "said": [
+     "Oky",
+     "Size 7",
+     "Size 6",
+     "Size 6"
+    ]
+   },
+   {
+    "order": "#2161",
+    "item": "Dolce & Gabbana Portofino White Pink Metallic",
+    "channel": "email",
+    "outcome": "store_credit",
+    "said": [
+     "Oky",
+     "Size 7",
+     "Size 6",
+     "Size 6"
+    ]
+   },
+   {
+    "order": "#2269",
+    "item": "Comme des Garçons Play Converse Chuck Taylor All Star High Black Red",
+    "channel": "email",
+    "outcome": "store_credit",
+    "said": [
+     "Hi Jimmy, please send me live updates for order #2269",
+     "I never order samba",
+     "[audio]",
+     "Can you delete what I choose for the one you gave the link is very nice"
+    ]
+   },
+   {
+    "order": "#2181",
+    "item": "Lacoste Carnaby White Navy",
+    "channel": "email",
+    "outcome": "store_credit",
+    "said": [
+     "Thanx for alerting me"
+    ]
+   },
+   {
+    "order": "#2327",
+    "item": "Emporio Armani White and black",
+    "channel": "whatsapp",
+    "outcome": "cancelled",
+    "said": [
+     "Sorry, nothing seems, I would rather option for a full refund then if you do not have what I order.",
+     "Sorry, I am not changing my mind.",
+     "No, want a refund",
+     "No, want a refund"
+    ]
+   },
+   {
+    "order": "#2213",
+    "item": "Adidas tracksuit",
+    "channel": "whatsapp",
+    "outcome": "open",
+    "said": [
+     "Hi I never order those",
+     "I ordered something else instead",
+     "No it doesn't",
+     "This was order"
+    ]
+   },
+   {
+    "order": "#1869",
+    "item": "Adidas tracksuit",
+    "channel": "whatsapp",
+    "outcome": "",
+    "said": [
+     "Unfortunately the one that I ordered was the only remaining item that I liked in terms of color.",
+     "Black",
+     "Same type.",
+     "I dont have money to add so I need something of the same amount."
+    ]
+   },
+   {
+    "order": "#2279",
+    "item": "Air Jordan 1 High OG Lost And Found",
+    "channel": "whatsapp",
+    "outcome": "cancelled",
+    "said": [
+     "I dont have R200 so please refund me",
+     "I dont have the money to add so kindly refund me",
+     "Thank you",
+     "Yes please"
+    ]
+   },
+   {
+    "order": "#2264",
+    "item": "Adidas Samba White Pink Red",
+    "channel": "whatsapp",
+    "outcome": "cancelled",
+    "said": [
+     "I want that pink one …. I ordered not these one 🙈🙈🙈",
+     "Not interested",
+     "Dat pink how long does it take to be shipped?",
+     "Dat pink how long does it take to be shipped?"
+    ]
+   },
+   {
+    "order": "#2161",
+    "item": "DOLCE GABBANA WHITE END GOLD",
+    "channel": "email",
+    "outcome": "open",
+    "said": [
+     "Oky",
+     "Size 7",
+     "Size 6",
+     "Size 6"
+    ]
+   },
+   {
+    "order": "#2327",
+    "item": "Nike dri- fit cap khaki",
+    "channel": "whatsapp",
+    "outcome": "cancelled",
+    "said": [
+     "What about this one below?",
+     "[image]",
+     "Sorry, nothing seems, I would rather option for a full refund then if you do not have what I order.",
+     "Sorry, I am not changing my mind."
+    ]
+   },
+   {
+    "order": "#1996",
+    "item": "Adidas Campus Black White",
+    "channel": "whatsapp",
+    "outcome": "",
+    "said": [
+     "I want this one",
+     "I want this one",
+     "You better bring it 😂😂because people are asking me did I receive my order the prices are true,if you can see my inbox they don’t trust you",
+     "[album]"
+    ]
+   },
+   {
+    "order": "#2360",
+    "item": "Lacoste bag black",
+    "channel": "whatsapp",
+    "outcome": "store_credit",
+    "said": [
+     "[image]",
+     "I need this one",
+     "Hellow",
+     "I need this one"
+    ]
+   },
+   {
+    "order": "#1793",
+    "item": "Diesel Green Black White Orange",
+    "channel": "email",
+    "outcome": "",
+    "said": [
+     "I dont understand you guys",
+     "I will have to check another thing then i will send u pictures",
+     "I dnt like that lacoste i will check another thing a T shirt or something else",
+     "[album]"
+    ]
+   }
+  ],
+  "noReply": [
+   {
+    "order": "#2252",
+    "item": "Lacoste cap blue",
+    "channel": "whatsapp",
+    "delivered": true,
+    "read": false,
+    "rounds": 1,
+    "followUps": 0
+   },
+   {
+    "order": "#2252",
+    "item": "Lacoste cap green 2",
+    "channel": "whatsapp",
+    "delivered": true,
+    "read": false,
+    "rounds": 1,
+    "followUps": 0
+   },
+   {
+    "order": "#2017",
+    "item": "Nike Air Vapormax Full Black",
+    "channel": "whatsapp",
+    "delivered": true,
+    "read": false,
+    "rounds": 3,
+    "followUps": 0
+   },
+   {
+    "order": "#2324",
+    "item": "Lacoste bucket hat navy blue",
+    "channel": "whatsapp",
+    "delivered": null,
+    "read": null,
+    "rounds": 1,
+    "followUps": 0
+   },
+   {
+    "order": "#2272",
+    "item": "Nike x Drake NOCTA Northstar Nylon Tracksuit green",
+    "channel": "email",
+    "delivered": null,
+    "read": null,
+    "rounds": 2,
+    "followUps": 0
+   },
+   {
+    "order": "#2297",
+    "item": "Madam Moiselle",
+    "channel": "email",
+    "delivered": null,
+    "read": null,
+    "rounds": 1,
+    "followUps": 0
+   },
+   {
+    "order": "#2308",
+    "item": "Nike Air Max Plus Cream Brown Blue",
+    "channel": "email",
+    "delivered": null,
+    "read": null,
+    "rounds": 2,
+    "followUps": 0
+   },
+   {
+    "order": "#2308",
+    "item": "Nike Air Max Plus Cream Brown Blue",
+    "channel": "email",
+    "delivered": null,
+    "read": null,
+    "rounds": 2,
+    "followUps": 0
+   },
+   {
+    "order": "#2353",
+    "item": "T-shirt F7123# EXTREME CAUSE BLACK",
+    "channel": "whatsapp",
+    "delivered": null,
+    "read": null,
+    "rounds": 1,
+    "followUps": 0
+   },
+   {
+    "order": "#2331",
+    "item": "Adidas Real Madrid Tiro 25 Competition tracksuit",
+    "channel": "email",
+    "delivered": null,
+    "read": null,
+    "rounds": 2,
+    "followUps": 0
+   }
+  ]
+ },
+ "shopify": {
+  "ordersRead": 191,
+  "cancelled": 6,
+  "withARefundRecord": 9,
+  "withANote": 128,
+  "failedLinesWithAShopifyRefund": 13
+ },
+ "centralOnlyLines": {
+  "lines": 9,
+  "failed": 4,
+  "medianHoursOrderToHanded": 41
+ },
+ "byWeek": [
+  {
+   "week": "21-31 Oct",
+   "lines": 277,
+   "failed": 42,
+   "ratePct": 15.2,
+   "repeatsOfAKnownBadShelf": 2
+  },
+  {
+   "week": "8-14 Nov",
+   "lines": 259,
+   "failed": 55,
+   "ratePct": 21.2,
+   "repeatsOfAKnownBadShelf": 13
+  },
+  {
+   "week": "1-7 Nov",
+   "lines": 219,
+   "failed": 58,
+   "ratePct": 26.5,
+   "repeatsOfAKnownBadShelf": 7
+  },
+  {
+   "week": "15-21 Nov",
+   "lines": 376,
+   "failed": 80,
+   "ratePct": 21.3,
+   "repeatsOfAKnownBadShelf": 21
+  },
+  {
+   "week": "22-24 Nov",
+   "lines": 154,
+   "failed": 26,
+   "ratePct": 16.9,
+   "repeatsOfAKnownBadShelf": 3
+  }
+ ]
+}

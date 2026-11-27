@@ -1,5 +1,18 @@
 rules_version = '2';
 service firebase.storage {
+  // A real staff member: the syncStaffClaim function mirrors "has a /users
+  // record" into the token claim staff == true (Storage rules cannot read the
+  // Realtime Database). Client sign-up is open, so "signed in and not
+  // anonymous" no longer means staff — anyone can create an account. The two
+  // owners are recognised by verified email as well, so they are never locked
+  // out by a lagging token. Added Nov 2026 security audit.
+  function isStaff() {
+    return request.auth != null
+      && (request.auth.token.staff == true
+          || ((request.auth.token.email == "gunidmoh@gmail.com" || request.auth.token.email == "jafermohammed340@gmail.com")
+              && request.auth.token.email_verified == true));
+  }
+
   match /b/{bucket}/o {
     // Product images. Public read: photos are shown in-app and on the
     // anonymous TV board, and are non-sensitive. Writes/deletes require an
@@ -11,10 +24,23 @@ service firebase.storage {
     // overwrite or delete the entire product catalog with no auth.
     match /products/{allPaths=**} {
       allow read: if true;
-      allow write: if request.auth != null
-                   && request.auth.token.firebase.sign_in_provider != 'anonymous';
+      allow write: if isStaff();
     }
-
+    // TV ad creative (tv_ads/current.jpg, or a video). Public read is
+    // REQUIRED, not merely convenient: the in-store TV board runs as an
+    // anonymous session, so if read were gated the overlay would silently
+    // never render. The file is a shop advert — it is meant to be seen by
+    // the street. Write mirrors the /products block: any authenticated,
+    // non-anonymous staff account may replace the creative, deliberately
+    // NOT restricted to the super-admin, so any admin can swap the ad
+    // without waiting on the owner. Storage rules cannot read the RTDB, so
+    // a stockRole == 'admin' check is not expressible here; if this ever
+    // needs to be admin-only it has to move behind a callable that writes
+    // with the Admin SDK, the way cardRecon does.
+    match /tv_ads/{allPaths=**} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
     // AI Studio Style Kit reference images (aiStudio/styleKit/{template}/…).
     // Public read (non-sensitive scene photos; the generate function fetches
     // them by URL). Writes restricted to the super-admin — these refs drive
@@ -25,9 +51,8 @@ service firebase.storage {
     match /aiStudio/{allPaths=**} {
       allow read: if true;
       allow write: if request.auth != null
-                   && request.auth.token.email == "gunidmoh@gmail.com";
+                   && ((request.auth.token.email == "gunidmoh@gmail.com" || request.auth.token.email == "jafermohammed340@gmail.com") && request.auth.token.email_verified == true);
     }
-
     // Card-recon slip photos: cardRecon/{draftId}/photo-{i}.jpg — the
     // photographed FNB batch report. Its detail roll carries a masked PAN, an
     // auth code and an RRN for EVERY transaction in a batch, alongside the
@@ -58,20 +83,20 @@ service firebase.storage {
     match /cardRecon/{allPaths=**} {
       allow read: if request.auth != null
                   && (request.auth.token.card_recon == true
-                      || request.auth.token.email == "gunidmoh@gmail.com");
+                      || ((request.auth.token.email == "gunidmoh@gmail.com" || request.auth.token.email == "jafermohammed340@gmail.com") && request.auth.token.email_verified == true));
       allow write: if false;
     }
-
-    // A REFUSED emailed batch report, kept as evidence:
     // card_recon_refused/{intakeId}.pdf — the original PDF the mailbox poller
     // could not record, so Junid can see what the file said without digging
     // through the mailbox. OWNER ONLY: a refused report carries the same masked
     // PANs, auth codes and RRNs as the slips above, and managers see nothing of
     // a refusal but its redacted sentence. Written by the poller with the Admin
-    // SDK; no client ever writes here.
+    // SDK; no client ever writes here. (In the repo since the intake-evidence
+    // work but never published; published with the Nov 2026 audit.)
     match /card_recon_refused/{allPaths=**} {
       allow read: if request.auth != null
-                  && request.auth.token.email == "gunidmoh@gmail.com";
+                  && request.auth.token.email == "gunidmoh@gmail.com"
+                  && request.auth.token.email_verified == true;
       allow write: if false;
     }
 
@@ -81,7 +106,51 @@ service firebase.storage {
     match /broadcast-media/{allPaths=**} {
       allow read: if true;
       allow write: if request.auth != null
-                   && request.auth.token.email == "gunidmoh@gmail.com";
+                   && ((request.auth.token.email == "gunidmoh@gmail.com" || request.auth.token.email == "jafermohammed340@gmail.com") && request.auth.token.email_verified == true);
+    }
+    // ─── RECYCLER RAW SERVICE LOGS ──────────────────────────────────────────
+    // logs/recycler/{terminalId}/{YYYY-MM-DD}/{stamp}-{window}.jsonl.gz, written
+    // by the kiosk (src/recycler/logShipper.js) and read by the two agents on
+    // the Mac mini — the evening review and the incident watcher — which use a
+    // service account and so bypass these rules entirely.
+    //
+    // ADDED 2026-09-20, and the reason is the whole point of the node. There
+    // was no block here at all. Storage rules default-deny, so EVERY upload
+    // since PR #375 went live was refused — and logShipper is written to treat
+    // a failed upload as "later", silently, for ever. The bucket's logs/ prefix
+    // was still empty on the morning two money incidents needed it, and the
+    // only copy of the evidence was a browser window on the kiosk.
+    //
+    // CREATE ONLY. A kiosk may write a chunk that does not yet exist and may
+    // never overwrite or delete one: evidence that can be replaced is not
+    // evidence, and a till is the least trusted writer in the building.
+    // Read is any signed-in, non-anonymous staff member — it carries no card
+    // and no customer data, only machine detail — so the hardware page can show
+    // a day back to whoever is standing at the machine.
+    match /logs/{allPaths=**} {
+      allow read: if isStaff();
+      allow create: if isStaff();
+      allow update, delete: if false;
+    }
+    // ─── RETURN CONDITION PHOTOS ───────────────────────────────────────────
+    // returnChecks/{exchangeKey}/{at}-{n}.jpg — the photos Yusuf takes on the
+    // POS's Incoming exchanges card when a returned item is NOT in original
+    // condition (Junid, 26 Nov 2026; marathon-pos-app incomingExchanges.js
+    // recordNotOriginal). Their download URLs go on online_orders/<key>/
+    // incoming/check.photos; the marathon-dm-agent sends them to Junid with the
+    // urgent case (it reads with a service account, bypassing these rules).
+    //
+    // CREATE ONLY, images only, at most 10 MB each: evidence of a return's
+    // condition must not be replaceable from a till. Read is staff (the card
+    // shows them); the download URL's own token lets Junid open one from the
+    // case without signing in.
+    match /returnChecks/{allPaths=**} {
+      allow read: if isStaff();
+      allow create: if isStaff()
+                    && request.resource.size < 10 * 1024 * 1024
+                    && request.resource.contentType.matches('image/.*');
+      allow update, delete: if false;
     }
   }
 }
+

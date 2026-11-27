@@ -39,6 +39,14 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
   // purpose — this repo is public — and a live booking refuses until Junid
   // fills it in on the Shipping card. A dry run shows the gap.
   collectionContact: { name: "The Marathon", mobile_number: "", email: "" },
+  // Who TCG contacts on an INCOMING parcel: the return leg of an exchange or a
+  // customer return (scripts/shipping/bookReturn.mjs, delivery_contact). Junid,
+  // 20 Nov 2026: every incoming exchange uses Yusuf, so the OTPs and courier
+  // calls go to him, never to Junid or Yasmin. Outbound parcels keep
+  // collectionContact. Never falls back to collectionContact: the mobile lives
+  // in the live node (/config/shipping/returnContact; this repo is public) and
+  // a return booking refuses without it.
+  returnContact: { name: "Yusuf", mobile_number: "", email: "" },
 
   // TCG's doc states no divisor. Measured 21 Oct with /rates (ECO + every
   // locker service ÷4000; PRI, SDX and the local LPx/LSx ÷5000) and CONFIRMED
@@ -176,6 +184,51 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
     ],
   },
 
+  // ── DOOR-TO-LOCKER (Junid, 20 Nov 2026: "every Courier Guy booking is
+  // door-to-locker") ───────────────────────────────────────────────────────
+  // "locker": collected from our door, delivered to the Courier Guy locker
+  // nearest the customer's address (scripts/shipping/lockerDelivery.mjs).
+  // "door": the old door-to-door booking, exactly as before. Changed at
+  // /config/shipping/deliveryMode, no deploy needed; anything but "door" is
+  // "locker".
+  deliveryMode: "locker",
+  locker: {
+    // The M box is declared as this one shoe; the box itself is chosen from
+    // the order's lines (lockerDelivery.mjs lockerSizeFor, Junid 21 Nov 2026:
+    // the smallest real locker box the parcel fits, priced right up front).
+    // Courier Guy still measures at collection; any difference lands on the
+    // order at shipping/adjustment (scripts/shipping/reconcile.mjs).
+    parcel: { lengthCm: 34, widthCm: 23, heightCm: 13, kg: 1.5 },
+    // The nearest locker must be near enough to be "the customer's locker":
+    // further than this from the address, the order goes door-to-door instead
+    // (locker.doorFallback below; Junid, 24 Nov 2026). maxTownKm applies when the street was
+    // not found on the map, so "nearest" is measured from the postal code's
+    // point (or, failing that, the town centre).
+    maxKm: 30,
+    maxTownKm: 20,
+    // The nearest lockers tried, in order, until one prices.
+    tryLockers: 3,
+    // One order is ONE parcel on one waybill (Junid, 20 Nov 2026). Only a
+    // person splits an order (shipping/lockerParcels); above this many
+    // shipments a person books it.
+    maxParcels: 10,
+    // Also ask the door-to-door price (one more /rates call, books nothing)
+    // and keep it on the booking as shipping.doorQuote.
+    doorQuote: true,
+    // NO LOCKER → DOOR-TO-DOOR (Junid, 24 Nov 2026, standing rule: "if no
+    // Courier Guy locker is near the customer … book DOOR-TO-DOOR delivery to
+    // their address automatically instead of failing"). false = the 20 Nov
+    // refusal again ("Packed, courier not booked"), no deploy needed.
+    doorFallback: true,
+  },
+
+  // AN EXCHANGE RETURN WITH NO LOCKER NEAR THE CUSTOMER (Junid, 24 Nov 2026:
+  // "Apply it to exchange returns too"): true = a courier collects it from the
+  // customer's door (scripts/shipping/bookReturn.mjs). OFF until Jimmy reads
+  // returnShipping.mode "door_collection" and tells the customer a courier
+  // will collect — today he tells every customer to drop it at a locker.
+  returnDoorCollection: false,
+
   // The service the estimator NAMES for a door collection. bookShipment
   // books the cheapest door service actually quoted, excluding these.
   doorServiceCode: "ECO",
@@ -184,8 +237,8 @@ export const DEFAULT_SHIPPING_CONFIG = Object.freeze({
   // A live booking refuses any order whose chosen quote is above this (rand,
   // incl. VAT); Junid gets ONE WhatsApp line with the cheaper option and a
   // person books it in the portal (Junid, 6 Nov 2026: "the R300-per-booking
-  // ceiling stays"). 0 switches the ceiling off.
-  maxChargeRand: 300,
+  // ceiling stays"). 0 switches the ceiling off. Raised to R500 by Junid, 20 Nov 2026 (urgent, no PR).
+  maxChargeRand: 500,
 });
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);

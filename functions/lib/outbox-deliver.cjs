@@ -102,6 +102,10 @@ async function deliverOutboxDoc({
   const to             = claimed.to;
   const templateName   = claimed.templateName;
   const templateParams = claimed.variables || claimed.templateParams || [];
+  // A template with a dynamic URL button (store_credit_issued's "Show
+  // barcode") carries its suffix here. Passed ONLY when present, so every
+  // other doc reaches the sender with exactly the arguments it always had.
+  const buttonUrlParam = typeof claimed.buttonUrlParam === "string" && claimed.buttonUrlParam ? claimed.buttonUrlParam : null;
 
   // Guarded so a rejecting sender can't break the no-throw contract: a
   // rejection becomes the same failure value the ladder below already
@@ -109,7 +113,9 @@ async function deliverOutboxDoc({
   // injected/future senders.)
   let result;
   try {
-    result = await sendTemplate(to, templateName, templateParams);
+    result = buttonUrlParam
+      ? await sendTemplate(to, templateName, templateParams, { buttonUrlParam })
+      : await sendTemplate(to, templateName, templateParams);
   } catch (err) {
     // err?.message so a bare Promise.reject() / thrown non-object can't make
     // the catch block itself throw — that rejection would escape, strand the

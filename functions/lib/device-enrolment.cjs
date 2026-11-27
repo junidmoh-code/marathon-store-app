@@ -46,7 +46,6 @@ const PATHS = {
   audit: `${ROOT}/audit`,
 };
 
-const OWNER_EMAIL = "gunidmoh@gmail.com";
 // A person's code enrols at most this many devices at once; a shared shop
 // device's code exactly one.
 const PERSON_MAX_DEVICES = 2;
@@ -376,7 +375,7 @@ function ipKey(ip, sha256Hex) {
 }
 
 module.exports = {
-  ROOT, PATHS, OWNER_EMAIL, LIMITS, PERSON_MAX_DEVICES, SHARED_MAX_DEVICES,
+  ROOT, PATHS, LIMITS, PERSON_MAX_DEVICES, SHARED_MAX_DEVICES,
   readCode, readDeviceId, readSection, cleanText, nameKey, isWeakCode, pickCode,
   lockVerdict, afterFailure, attemptsLeft,
   activeDeviceIds, maxDevicesFor, planEnrol, buildClaims, describeDevice, ipKey,

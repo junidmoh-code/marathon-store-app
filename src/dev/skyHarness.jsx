@@ -19,6 +19,7 @@ import SkyHome from "../components/sky/SkyHome.jsx";
 import AssistantPhone from "../components/sky/AssistantPhone.jsx";
 import { SkySheet, SkySheetHead, SkyStepperRow } from "../components/sky/SkySheet.jsx";
 import ShopSwitchConfirm from "../components/sky/ShopSwitchConfirm.jsx";
+import { SUPER_ADMIN_EMAILS } from "../config/superAdmins";
 import { brandOptions, filterByBrand, reconcileBrand } from "../components/assistant/brandFilter.js";
 
 installZoomLock();
@@ -205,7 +206,7 @@ function Desktop({ products, AssistantDesktop }) {
       search={search} setSearch={setSearch} onLabelFind={() => {}}
       cart={cart} onQuickAdd={(p, s, n) => { setCart((c) => [...c, ...Array.from({ length: n }, () => ({ product: p, size: s, productType: "sneaker", customerName: "x" }))]); return n; }}
       onRemoveOne={() => {}} onAddDisplayPartner={() => {}} onViewPhoto={() => {}} onSwitchView={() => {}}
-      userEmail="gunidmoh@gmail.com" mode={mode} setMode={setMode}
+      userEmail={SUPER_ADMIN_EMAILS[0]} mode={mode} setMode={setMode}
       customerName="" setCustomerName={() => {}} customerPhone="" setCustomerPhone={() => {}}
       marketingOptIn setMarketingOptIn={() => {}} submitting={false} onPlaceOrder={() => {}}
       customerIndex={[]} onPickCustomer={() => {}} onAddClothing={() => {}} onPlaceRefill={() => {}}
