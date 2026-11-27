@@ -39,9 +39,9 @@ const NOTE_PREFIX = "NOTE (not a rejection — Junid's total rule):";
 
 const note = (text) => `${NOTE_PREFIX} ${String(text || "").trim()}`;
 
-/** The one question that may refuse a slip: was a bottom total found? */
+/** The one question that may refuse a slip: was a bottom total found? (A refund-only day's negative total counts.) */
 function hasTotal(ex) {
-  return !!ex && Number.isInteger(ex.totalCents) && ex.totalCents >= 0;
+  return !!ex && Number.isInteger(ex.totalCents);
 }
 
 /**
@@ -80,7 +80,8 @@ function repairForTotalRule(ex, { picked, dayYmd = null, dayCloseMs = null, onFi
   // a day whose report never came would otherwise be counted again here.
   const opened = Number(out.openedAt);
   const closed = Number(out.closedAt);
-  const closedOk = Number.isInteger(closed) && closed > 0;
+  // A Closed time in the FUTURE is a misread date, not a window (reviews, #1022).
+  const closedOk = Number.isInteger(closed) && closed > 0 && !(Number.isFinite(dayCloseMs) && closed > dayCloseMs + 2 * DAY_MS);
   const openedOk = Number.isInteger(opened) && opened > 0 && closedOk && opened < closed && closed - opened <= MAX_OPEN_SPAN_MS;
   if (!closedOk || !openedOk) {
     const closeAt = closedOk ? closed : (Number.isFinite(dayCloseMs) ? dayCloseMs : null);
@@ -147,8 +148,13 @@ function isDisagreeingDuplicate(reason) {
 const AMOUNT_AT_END = /(?:ZAR|R)?\s*(-?\(?\s*[0-9]{1,3}(?:[ ,][0-9]{3})*(?:\.[0-9]{2})|-?\(?\s*[0-9]+\.[0-9]{2})\)?\s*$/i;
 function bottomTotalCents(rows) {
   const list = (Array.isArray(rows) ? rows : []).map((r) => String(r || "").replace(/\s+/g, " ").trim()).filter(Boolean);
+  // ONLY THE BATCH TOTALS (reviews, #1022): after the report's TOTALS heading
+  // when it prints one; otherwise only a row that STARTS with TOTAL — a
+  // transaction's own "Total: ZAR 900.00" line is never the batch total.
+  const heading = list.reduce((at, r, i) => (/^(CARD\s+)?TOTALS(\s+SUMMARY)?$/i.test(r) ? (at === -1 ? i : at) : at), -1);
   for (let i = list.length - 1; i >= 0; i--) {
     const row = list[i];
+    if (heading >= 0 ? i <= heading : !/^TOTAL\b(?!\s*:)/i.test(row)) continue;
     if (!/(^|[^A-Z])TOTAL(?![A-Z])/i.test(row) || /SUB\s*-?TOTAL/i.test(row)) continue;
     if (/TOTAL\s+(TRANSACTIONS?|TXNS?|COUNT|ITEMS?)\b/i.test(row)) continue;
     const m = row.match(AMOUNT_AT_END);

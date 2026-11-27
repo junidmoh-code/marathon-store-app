@@ -67,27 +67,36 @@ function assessWatchdog({ nowMs, terminals, events, perTid = {}, errors = {} }) 
     const p = perTid[tid] || {};
     const slips = Object.values(p.staffSlips || {}).filter((x) => x && typeof x === "object");
     const records = Object.values(p.records || {}).filter((r) => r && typeof r === "object" && !r.displacedBy);
+    // TODAY'S FIGURE = a record whose batch CLOSED today (a report read, a
+    // typed total standing, Junid's entry), or a typed total on today's slip.
+    // When it was submitted proves nothing: yesterday's report sent today is
+    // not today's figure (CodeRabbit, #1022).
     const recordToday = records.some((r) => {
       const closed = Number(r.slip && r.slip.closedAt);
-      const submitted = Number(r.submittedAt);
-      return (Number.isFinite(closed) && closed >= start && closed < end) || (Number.isFinite(submitted) && submitted >= start && submitted < end);
+      return Number.isFinite(closed) && closed >= start && closed < end;
     });
+    const anyTyped = slips.some((s) => Number.isInteger(s.cents));
     const arrived = slips.length > 0 || Number(p.jobsToday) > 0 || recordToday;
     if (!arrived) {
       lines.push(`${label}: ${formatCents(cents)} of card sales today, but no slip or report has arrived.`);
-      continue;
+    } else if (!recordToday && !anyTyped) {
+      const unreadOpen = p.unread && p.unread.status === "unread";
+      const stillReading = slips.some((s) => !s.read) || (slips.length === 0 && Number(p.jobsToday) > 0);
+      lines.push(unreadOpen
+        ? `${label}: today's slip arrived but no total could be read, and no card total was typed — enter the figure from the photo.`
+        : stillReading
+          ? `${label}: today's slip arrived but has still not been read, and no card total was typed — check the reader, or enter the figure from the photo.`
+          : `${label}: a slip arrived but no total for today was read and no card total was typed — enter the figure from the photo.`);
     }
-    // Arrived: is there a figure? A record today, a read that recorded, or a
-    // typed total all count. An open unread marker, or slips none of which
-    // read and none of which carry a typed total, do not.
-    const unreadOpen = p.unread && p.unread.status === "unread";
-    const anyRead = slips.some((s) => s.read && (s.read.outcome === "recorded" || s.read.outcome === "duplicate"));
-    const anyTyped = slips.some((s) => Number.isInteger(s.cents));
-    const stillReading = slips.some((s) => !s.read);
-    if (!recordToday && !anyRead && !anyTyped && (unreadOpen || (slips.length > 0 && !stillReading))) {
-      lines.push(`${label}: a slip arrived today but no total was read and no card total was typed — enter the figure from the photo.`);
-    } else if (unreadOpen && !recordToday && !anyTyped) {
-      lines.push(`${label}: today's slip is marked unreadable and no card total was typed — enter the figure from the photo.`);
+    // FILED UNDER THIS TILL, PRINTED BY ANOTHER MACHINE (Junid's total rule
+    // files a slip under the till it was sent for): said at 19:00, never only
+    // in a note nobody opens (architect review, #1022).
+    for (const r of records) {
+      const printed = r.totalRule && r.totalRule.printedTid;
+      const closed = Number(r.slip && r.slip.closedAt);
+      if (printed && printed !== tid && terminals[printed] && Number.isFinite(closed) && closed >= start - DAY_MS && closed < end) {
+        lines.push(`${label}: a slip filed under this till prints ${terminals[printed].label || printed}'s terminal ID — check it is this till's report.`);
+      }
     }
   }
   // Ingestion errors / rejected uploads in the last 24 h, one line per till (or "card recon").
@@ -135,7 +144,8 @@ async function readWatchdogInputs(db, { nowMs }) {
     ]);
     perTid[tid] = { staffSlips, jobsToday, unread, records };
   }
-  const errors = (await db.ref(ERRORS_PATH).orderByKey().startAt(errorKeyFrom(nowMs - DAY_MS)).limitToFirst(500).once("value")).val() || {};
+  // The LATEST 500 of the last 24 h (a flood can only hide older errors).
+  const errors = (await db.ref(ERRORS_PATH).orderByKey().startAt(errorKeyFrom(nowMs - DAY_MS)).limitToLast(500).once("value")).val() || {};
   return { terminals, events, perTid, errors };
 }
 

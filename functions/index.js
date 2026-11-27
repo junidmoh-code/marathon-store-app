@@ -4472,7 +4472,10 @@ exports.cardReconWatchdog = onSchedule(
       const verdict = watchdog.assessWatchdog({ nowMs, ...(await watchdog.readWatchdogInputs(db, { nowMs })) });
       const notice = watchdog.watchdogNotice(verdict, nowMs);
       if (notice) {
-        await db.ref(`${NOTICES_PATH}/watchdog~${verdict.dayYmd}`).set(notice);
+        // Once per day: a re-run never sends the day's email twice.
+        await db.ref(`card_recon_watchdog_sent/${verdict.dayYmd}`).transaction((cur) => (cur ? undefined : nowMs)).then(async (t) => {
+          if (t.committed) await db.ref(`${NOTICES_PATH}/watchdog~${verdict.dayYmd}`).set(notice);
+        });
         console.warn(`CARD_RECON_WATCHDOG ${verdict.dayYmd}: ${verdict.lines.length} problem(s) — emailed: ${verdict.lines.join(" | ")}`);
       } else {
         console.log(`cardReconWatchdog ${verdict.dayYmd}: every till that took card money has its figure — no email.`);

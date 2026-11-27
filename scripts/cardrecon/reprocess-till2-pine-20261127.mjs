@@ -50,7 +50,10 @@ if (!REPORT_ONLY) {
   const jobs = (await db.ref(JOBS_PATH).orderByKey().startAt(pushPrefix(fromMs)).once("value")).val() || {};
   const tids = new Set(TILLS.map((t) => t.tid));
   const todo = Object.entries(jobs)
-    .filter(([, j]) => j && tids.has(j.pickedTid) && j.status === "unread" && j.mode !== "check")
+    // Unread — or already moved by an earlier run of THIS script (so a run that
+    // died before writing the queue entry is finished by the next one).
+    .filter(([, j]) => j && tids.has(j.pickedTid) && j.mode !== "check"
+      && (j.status === "unread" || (j.status === "retry" && j.rereadFor === "total-rule-20261127")))
     .sort((a, b) => Number(a[1].receivedAt) - Number(b[1].receivedAt));
   console.log(`${Object.keys(jobs).length} job(s) since ${FROM}; ${todo.length} Unread on these tills.`);
   for (const [i, [id, j]] of todo.entries()) {
@@ -58,24 +61,31 @@ if (!REPORT_ONLY) {
     if (!EXECUTE) continue;
     const due = nowMs + i * 90 * 1000;
     const key = dueKey(due, id);
-    await db.ref(`${DUE_PATH}/${key}`).set(id);
+    // The JOB first, then its queue entry (CodeRabbit, #1022): the sweep drops
+    // an entry whose job is still Unread, so an entry written first could be
+    // lost. A run that dies between the two is finished by the next run (the
+    // filter above takes this script's own "retry" jobs too).
     const txn = await db.ref(`${JOBS_PATH}/${id}`).transaction((cur) => {
       if (cur === null) return null;
+      if (cur.status === "retry" && cur.rereadFor === "total-rule-20261127") return { ...cur, dueAt: due, dueKey: key };
       if (cur.status !== "unread") return undefined;
       return { ...cur, status: "retry", attempts: 0, refusedReads: 0, dueAt: due, dueKey: key, rereadAt: nowMs, rereadFor: "total-rule-20261127" };
     });
     const after = txn.snapshot && txn.snapshot.val();
     if (!txn.committed || !after || after.dueKey !== key) {
-      await db.ref(`${DUE_PATH}/${key}`).remove();
       console.log("    ✗ changed under us — left alone");
       continue;
     }
+    await db.ref(`${DUE_PATH}/${key}`).set(id);
     console.log(`    ✓ queued for ${new Date(due).toISOString()} — the cardBatchReadRetry sweep reads it.`);
   }
   if (!EXECUTE) console.log("Dry run — nothing queued. Re-run with --execute.");
 }
 
 // ── THE REPORT: per till and day, the total read, the POS total, the verdict ──
+// Right after --execute the re-queued reads have not run yet (90 s apart):
+// run again with --report once the sweep has read them.
+if (EXECUTE) console.log("\n(The reads just queued have not run yet — re-run with --report in ~10 minutes for their verdicts.)");
 const events = (await db.ref("pos/paymentEvents").orderByChild("at").startAt(fromMs).once("value")).val() || {};
 const posDay = new Map();
 for (const e of Object.values(events)) {

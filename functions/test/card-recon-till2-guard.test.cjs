@@ -253,7 +253,7 @@ const AT_19 = SAST("2026-11-26T19:00:00");
 const EV = { a: leg("2026-11-26T10:00:00", 100000), b: leg("2026-11-26T11:00:00", 50000, "pine", "till-1") };
 test("watchdog: everything answered → no email at all", () => {
   const v = assessWatchdog({ nowMs: AT_19, terminals: TERMINALS, events: EV, perTid: {
-    [HP1X]: { staffSlips: { j: { at: 1, read: { outcome: "recorded" } } } },
+    [HP1X]: { staffSlips: { j: { at: 1, cents: 6744000, read: { outcome: "recorded" } } } },
     [PINE_T]: { records: { 156: { slip: { closedAt: SAST("2026-11-26T17:20:00") } } } },
   } });
   assert.deepEqual(v.lines, []);
@@ -264,7 +264,7 @@ test("watchdog: card sales and no slip; a slip with no total and no typed total;
     [HP1X]: { staffSlips: { j: { at: 1, read: { outcome: "unread" } } }, unread: { status: "unread" } },
   }, errors: { [errorKey(AT_19 - 3600e3)]: { at: AT_19 - 3600e3, kind: "slip-upload-refused", tid: Z4M6, message: "x" } } });
   assert.equal(v.lines.length, 3, v.lines.join("\n"));
-  assert.match(v.lines.join("\n"), /Marathon Till 2: a slip arrived today but no total was read/);
+  assert.match(v.lines.join("\n"), /Marathon Till 2: today's slip arrived but no total could be read/);
   assert.match(v.lines.join("\n"), /Pine Till 1: R ?500\.00 of card sales today, but no slip or report has arrived/);
   assert.match(v.lines.join("\n"), /Trophy Till 2: 1 upload\/ingest error/);
   const n = watchdogNotice(v, AT_19);
@@ -282,4 +282,87 @@ test("watchdog: a typed total counts as the day's figure; a till with no card sa
 test("watchdog: the error window is read by KEY — 13-digit time first, no index, never the whole node", () => {
   assert.equal(errorKeyFrom(AT_19).length, 13);
   assert.ok(errorKey(AT_19) > errorKeyFrom(AT_19 - 1) && errorKey(AT_19 - 86400e3 - 1) < errorKeyFrom(AT_19 - 86400e3));
+});
+
+// ── REVIEW FIXES (#1022: Sonnet architect + CodeRabbit) ──────────────────────
+const NO_HEADER = { ...READ_26NOV, batchNo: "", opened: "", closed: "" };
+test("review · the SAME unreadable-header slip sent twice is ONE record (the second is a duplicate), never the day counted twice", async () => {
+  const db = world();
+  await send(db, HP1X);
+  const [first] = await jobs(db);
+  assert.equal((await runToEnd(db, first.jobId, { ocr: reads(NO_HEADER) })).final, "recorded");
+  await send(db, HP1X, undefined, NOW + 600000);
+  const second = (await jobs(db)).find((j) => j.jobId !== first.jobId);
+  assert.equal((await runToEnd(db, second.jobId, { ocr: reads(NO_HEADER) }, NOW + 700000)).final, "duplicate");
+  assert.equal(live(await node(db, `card_batches/pe/${HP1X}`)).length, 1);
+});
+
+test("review · a different total for the same day's filing record replaces it as a correction — still one figure for the day", async () => {
+  const db = world();
+  await send(db, HP1X);
+  const [first] = await jobs(db);
+  await runToEnd(db, first.jobId, { ocr: reads(NO_HEADER) });
+  await send(db, HP1X, undefined, NOW + 600000);
+  const second = (await jobs(db)).find((j) => j.jobId !== first.jobId);
+  assert.equal((await runToEnd(db, second.jobId, { ocr: reads({ ...NO_HEADER, total: "R67,450.00", purchases: "R67,450.00" }) }, NOW + 700000)).final, "recorded");
+  const recs = Object.values(await node(db, `card_batches/pe/${HP1X}`));
+  const inForce = recs.filter((r) => !recs.some((o) => o.supersedes === r.batchKey));
+  assert.equal(inForce.length, 1, recs.map((r) => r.batchKey).join(","));
+  assert.equal(inForce[0].slip.totalCents, 6745000);
+});
+
+test("review · a real report whose printed number is a filing number on file gets a fresh number — never takes over another day", async () => {
+  const filing = { batchKey: "582", batchNo: 582, revision: 1, capturedVia: "photo", tid: HP1X, storeId: "pe", tillId: "till-2", totalRule: { batchFrom: "filing" },
+    slip: { openedAt: SAST("2026-11-24T18:50:00"), closedAt: SAST("2026-11-25T18:50:00"), totalCents: 5819000, windowSource: "total-rule" } };
+  const db = world({ batches: { pe: { [HP1X]: { 582: filing } } } });
+  await send(db, HP1X);
+  const [job] = await jobs(db);
+  const real582 = { ...READ_26NOV, tid: HP1X, batchNo: "582", opened: "2026/11/25 18:50:00", closed: "2026/11/26 17:40:00", confidence: { ...READ_26NOV.confidence, tid: 0.99, opened: 0.99, closed: 0.99, total: 0.99 } };
+  assert.equal((await runToEnd(db, job.jobId, { ocr: reads(real582) })).final, "recorded");
+  const recs = await node(db, `card_batches/pe/${HP1X}`);
+  assert.equal(recs["582"].slip.totalCents, 5819000, "25 Nov's filing record untouched");
+  assert.equal(recs["582-r2"], undefined);
+  assert.equal(recs["583"].slip.totalCents, 6744000);
+  assert.equal(recs["583"].printedBatchNo, 582);
+});
+
+test("review · a refund-only day's NEGATIVE total is a total — recorded, not 'no total'", async () => {
+  assert.equal(hasTotal({ totalCents: -10000 }), true);
+  assert.equal(hasTotal({ totalCents: 0 }), true);
+  assert.equal(hasTotal({ totalCents: null }), false);
+});
+
+test("review · a Closed time in the future is a misread — the day's window is used instead", () => {
+  const { extraction, notes } = repairForTotalRule({ tid: HP1X, batchNo: "584", openedAt: SAST("2027-01-25T18:50:00"), closedAt: SAST("2027-01-26T18:50:00"), totalCents: 1 }, {
+    picked: HP1X, dayYmd: "2026-11-26", dayCloseMs: SAST("2026-11-26T18:50:00"), onFile: { batchNo: 583 } });
+  assert.equal(extraction.closedAt, SAST("2026-11-26T18:50:00"));
+  assert.equal(notes.length, 1);
+});
+
+test("review · a transaction's own 'Total:' line is never the batch total; only a TOTAL after the totals heading (or a TOTAL row) is", () => {
+  assert.equal(bottomTotalCents(["24-11-2026 14:06:39", "Purchase", "Total: ZAR 900.00", "24-11-2026 15:00:00", "Total: ZAR 1000.00"]), null);
+  assert.equal(bottomTotalCents(["Total: ZAR 900.00", "TOTALS SUMMARY", "Purchase ZAR 1900.00", "Total ZAR 1900.00"]), 190000);
+  assert.equal(bottomTotalCents(["Purchases R67,440.00", "TOTAL R67,440.00"]), 6744000);
+});
+
+test("review · a caller with no sign-in never writes an error record (nobody can flood the watchdog)", async () => {
+  const { cardBatchCapture } = require("../cardRecon/cardRecon.js");
+  assert.ok(cardBatchCapture, "the callable is exported");
+  const src = fs.readFileSync(path.join(__dirname, "../cardRecon/cardRecon.js"), "utf8");
+  assert.match(src, /const uploadFailed = \(kind, message, err = null\) => \(!request\.auth\?\.uid \|\|/);
+});
+
+test("review · watchdog: yesterday's report read today is NOT today's figure; a stuck read is named; another machine's TID is named", () => {
+  const v = assessWatchdog({ nowMs: AT_19, terminals: TERMINALS, events: { a: EV.a }, perTid: {
+    [HP1X]: { staffSlips: { j: { at: 1, read: { outcome: "recorded" } } }, records: {
+      581: { slip: { closedAt: SAST("2026-11-25T18:50:00") }, submittedAt: AT_19 - 3600e3 },
+      590: { slip: { closedAt: SAST("2026-11-26T18:50:00") }, totalRule: { printedTid: Z4M6 } },
+    } },
+  } });
+  assert.match(v.lines.join("\n"), /prints Trophy Till 2's terminal ID/);
+  const stuck = assessWatchdog({ nowMs: AT_19, terminals: TERMINALS, events: { a: EV.a }, perTid: { [HP1X]: { staffSlips: { j: { at: 1 } } } } });
+  assert.match(stuck.lines.join("\n"), /has still not been read/);
+  const yesterdayOnly = assessWatchdog({ nowMs: AT_19, terminals: TERMINALS, events: { a: EV.a }, perTid: { [HP1X]: {
+    staffSlips: { j: { at: 1, read: { outcome: "recorded" } } }, records: { 581: { slip: { closedAt: SAST("2026-11-25T18:50:00") }, submittedAt: AT_19 - 3600e3 } } } } });
+  assert.match(yesterdayOnly.lines.join("\n"), /no total for today was read/);
 });

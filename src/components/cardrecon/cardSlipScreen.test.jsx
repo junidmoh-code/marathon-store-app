@@ -268,19 +268,19 @@ describe("Amanda's screen: Trophy Till 2 is a typed-total till — photo AND num
     expect(everyString(t)).toMatch(/Card total on the slip \(R\)/);
   });
 
-  it("Submit waits for BOTH the photo and the number, and says which", async () => {
+  // Junid's rule – do not weaken or delete without his written instruction.
+  it("the photo alone can be sent (27 Nov 2026); without a photo Submit waits, and says so", async () => {
     const t = render();
-    expect(everyString(t)).toMatch(/Add the slip photo and type the card total/);
     type(t, "1,250.00");
     expect(submitBtn(t).props.disabled).toBe(true);
-    expect(everyString(t)).toMatch(/Add the slip photo \(step 1\)/);
+    expect(everyString(t)).toMatch(/Add the slip photo/);
     type(t, "");
     await pick(fileInputs(t)[0]);
-    expect(submitBtn(t).props.disabled).toBe(true);
-    expect(everyString(t)).toMatch(/Type the card total \(step 2\)/);
+    expect(submitBtn(t).props.disabled).toBe(false);
     type(t, "1,250.00");
     expect(submitBtn(t).props.disabled).toBe(false);
   });
+
 
   it("0 is a number: a no-sales evening sends R0 with its photo", async () => {
     const t = render();

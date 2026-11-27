@@ -236,10 +236,10 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
   // THE PHOTO IS ALWAYS ACCEPTED (Junid, 27 Nov 2026 — "Till 2 must never
   // break again"): a Standard Bank photo till ASKS for today's card total (it
   // is the day's figure until the report is read, and the fallback when the
-  // photo cannot be read) but never blocks the photo on it. Only a typed-total
-  // till (no photo reader at all) still needs the figure to send.
-  const needsFigure = till.typed === true && !photoFirst && !portal;
-  const offersFigure = needsFigure || photoFirst || portal;
+  // photo cannot be read) but never blocks the photo on it — on a typed-total
+  // till too (CodeRabbit, #1022): the server keeps and reads a photo alone.
+  const needsFigure = false;
+  const offersFigure = till.typed === true || photoFirst || portal;
   const canSend = !!photo && (!needsFigure || figure !== "") && !busy && live;
 
   const submit = async () => {
@@ -249,7 +249,7 @@ function TillSlip({ till, live = true, sent, onSent = () => {} }) {
     try {
       const { data } = await cardBatchCaptureFn({
         action: "slip", pickedTid: till.tid, photos: photos.map((p) => ({ base64: p.base64 })),
-        ...(needsFigure || ((photoFirst || portal) && figure !== "") ? { declaredTotal: figure } : {}),
+        ...(offersFigure && figure !== "" ? { declaredTotal: figure } : {}),
       });
       const kept = receiptOf(data);
       if (!kept) {
