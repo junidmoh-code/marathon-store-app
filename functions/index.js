@@ -4450,6 +4450,41 @@ exports.cardReconHealthScan = onSchedule(
   },
 );
 
+// ─── CARD RECON — cardReconWatchdog (Junid, 27 Nov 2026: "Till 2 must never break again") ─
+// 19:00 SAST, every day, on Google's scheduler. For each active till that took
+// POS card money today, ONE email to gunidmoh@gmail.com — ONLY when something
+// is wrong — one line per till: no slip/report arrived; a slip arrived but no
+// total was read and none was typed; or an upload/ingest error in the last
+// 24 h (lib/card-recon-errors.cjs). Delivered by the Mac mini's mailbox poller
+// as a notice of kind "watchdog" (scripts/cardrecon/email-poller.mjs). Never
+// WhatsApp. Bounded reads only (lib/card-recon-watchdog.cjs). A run that fails
+// writes its own error record, which tomorrow's run reports.
+//   firebase deploy --only functions:cardReconWatchdog
+exports.cardReconWatchdog = onSchedule(
+  { schedule: "0 19 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 120 },
+  async () => {
+    const db = admin.database();
+    const nowMs = Date.now(); // the server's own clock
+    const watchdog = require("./lib/card-recon-watchdog.cjs");
+    const { NOTICES_PATH } = require("./lib/card-unread.cjs");
+    const { recordCardReconError } = require("./lib/card-recon-errors.cjs");
+    try {
+      const verdict = watchdog.assessWatchdog({ nowMs, ...(await watchdog.readWatchdogInputs(db, { nowMs })) });
+      const notice = watchdog.watchdogNotice(verdict, nowMs);
+      if (notice) {
+        await db.ref(`${NOTICES_PATH}/watchdog~${verdict.dayYmd}`).set(notice);
+        console.warn(`CARD_RECON_WATCHDOG ${verdict.dayYmd}: ${verdict.lines.length} problem(s) — emailed: ${verdict.lines.join(" | ")}`);
+      } else {
+        console.log(`cardReconWatchdog ${verdict.dayYmd}: every till that took card money has its figure — no email.`);
+      }
+      await db.ref("card_recon_watchdog").set({ checkedAt: nowMs, dayYmd: verdict.dayYmd, problems: verdict.lines.length ? verdict.lines : null });
+    } catch (err) {
+      console.error(`CARD_RECON_WATCHDOG_FAILED: ${err && err.stack || err}`);
+      await recordCardReconError(db, { kind: "watchdog-failed", message: err && err.message }, nowMs);
+    }
+  },
+);
+
 // ─── CARD RECON — cardTillSilenceScan (a till that took card money, no batch) ─
 // Junid, 25 Oct 2026: "Two consecutive silent days on a till that took card
 // money should never again be something Junid discovers himself."
