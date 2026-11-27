@@ -126,6 +126,7 @@ describe("resume copies live in the mirror's own database", () => {
     const c = createResumeCopies({ getDb: async () => flaky, now: r.now, warn: () => {} });
     c.forget("u1", "k"); await r.settle();
     expect(await c.load("u1", "k")).toBe(null);           // still on disk, never offered
+    expect(await r.copies().load("u1", "k")).toBe(null);  // …not after a reload either (tombstone)
     fail = false;
     c.save("u1", "k", { live: true });
     expect((await c.load("u1", "k")).value).toEqual({ live: true });

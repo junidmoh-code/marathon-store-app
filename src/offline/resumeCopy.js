@@ -55,11 +55,14 @@ export function createResumeCopies({
 
   const fullKey = (uid, key) => `${RESUME_PREFIX}${uid}|${key}`;
 
+  const saves = new Map();      // full key -> bumped by save(): a late failed delete must not re-block it
   const write = (fk, rec, myEpoch) => {
     lastWrite.set(fk, now());
-    Promise.resolve().then(getDb).then((db) => {
-      if (myEpoch !== epoch) return undefined;
-      return db.setMeta(fk, rec);
+    Promise.resolve().then(getDb).then(async (db) => {
+      if (myEpoch !== epoch) return;
+      await db.setMeta(fk, rec);
+      // Only once the live answer is ON DISK may a blocked copy be offered again.
+      blocked.delete(fk);
     }).catch((err) => warn("resume copy: could not save —", err?.message ?? err));
   };
 
@@ -69,8 +72,17 @@ export function createResumeCopies({
     gens.set(fk, (gens.get(fk) ?? 0) + 1);
     mem.delete(fk);
     if (trailing.has(fk)) { clearTimer(trailing.get(fk)); trailing.delete(fk); }
-    const done = Promise.resolve().then(getDb).then((db) => db.deleteMetaMany([fk]))
-      .then(() => { blocked.delete(fk); }, () => { blocked.add(fk); })
+    const myEpoch = epoch;
+    const mySave = saves.get(fk) ?? 0;
+    const done = Promise.resolve().then(getDb).then((db) => db.deleteMetaMany([fk]).catch(async (err) => {
+      // The delete failed: overwrite the record with a tombstone (no value,
+      // so load() refuses it) so a reload cannot offer it either (Sonnet, #1019).
+      await db.setMeta(fk, { uid, at: 0, tombstone: true }).catch(() => {});
+      throw err;
+    }))
+      .then(() => { blocked.delete(fk); }, () => {
+        if (myEpoch === epoch && mySave === (saves.get(fk) ?? 0)) blocked.add(fk);
+      })
       .finally(() => { if (deleting.get(fk) === done) deleting.delete(fk); });
     deleting.set(fk, done);
   }
@@ -86,7 +98,7 @@ export function createResumeCopies({
       const myGen = gens.get(fk) ?? 0;
       try {
         if (deleting.has(fk)) await deleting.get(fk);
-        if (blocked.has(fk)) { forgetKey(uid, key); return null; }   // retry the delete; offer nothing
+        if (blocked.has(fk)) { if (!deleting.has(fk)) forgetKey(uid, key); return null; }   // retry the delete (once at a time); offer nothing
         const db = await getDb();
         const rec = await db.getMeta(fk);
         if (myEpoch !== epoch || myGen !== (gens.get(fk) ?? 0)) return null;
@@ -111,7 +123,7 @@ export function createResumeCopies({
       try { json = JSON.stringify(value); } catch { return false; }
       if (typeof json !== "string" || json.length > maxBytes) return false;
       const fk = fullKey(uid, key);
-      blocked.delete(fk);           // a live answer replaces a copy that could not be deleted
+      saves.set(fk, (saves.get(fk) ?? 0) + 1);   // a newer live answer than any delete in flight
       const rec = { uid, at: now(), value };
       mem.set(fk, rec);
       const myEpoch = epoch;
