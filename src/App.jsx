@@ -4065,10 +4065,15 @@ function parseProductHash() {
 // admin approves a row here; nothing auto-applies. Approve writes the (optionally
 // edited) suggested name to /products/{id}.name and marks the proposal approved;
 // Reject marks it rejected; both decisions stop the row reappearing on a re-run.
-function useNameProposals() {
+export function useNameProposals() {
   const [proposals, setProposals] = useState({});
+  // Shared and held (utils/sharedLiveRead.js): AI Studio opened this list once
+  // per mount — and the photo list twice, from two tabs — and a trip to
+  // another app cost it again. Measured 27 Nov 2026: names 873,650 B, photos
+  // 592,901 B. One listener now, kept through a short hide.
   useEffect(() => {
-    const unsub = onValue(ref(database, "aiAssistant/nameProposals"), snap => setProposals(snap.val() || {}));
+    const unsub = subscribeLivePath("aiAssistant/nameProposals", snap => setProposals(snap.val() || {}),
+      (err) => console.warn("/aiAssistant/nameProposals read failed:", err?.message ?? err));
     return () => unsub();
   }, []);
   return proposals;
@@ -4080,10 +4085,15 @@ function useNameProposals() {
 // product's photoUrl to the white-bg version but KEEPS the original (stored in
 // photoUrlOriginal; the original file at products/{id}/photo.jpg is never touched).
 // Reject discards. Nothing auto-applies.
-function usePhotoProposals() {
+export function usePhotoProposals() {
   const [proposals, setProposals] = useState({});
+  // Shared and held (utils/sharedLiveRead.js): AI Studio opened this list once
+  // per mount — and the photo list twice, from two tabs — and a trip to
+  // another app cost it again. Measured 27 Nov 2026: names 873,650 B, photos
+  // 592,901 B. One listener now, kept through a short hide.
   useEffect(() => {
-    const unsub = onValue(ref(database, "aiAssistant/photoProposals"), snap => setProposals(snap.val() || {}));
+    const unsub = subscribeLivePath("aiAssistant/photoProposals", snap => setProposals(snap.val() || {}),
+      (err) => console.warn("/aiAssistant/photoProposals read failed:", err?.message ?? err));
     return () => unsub();
   }, []);
   return proposals;

@@ -38,6 +38,9 @@ const LONG = [
   ["settings/displaySlots", 0.4 * MB, null],
   ["stock_targets", 3 * MB, 0.5 * MB],
   ["stock", 7 * MB, 1.5 * MB],
+  // AI Studio's two review lists (measured 27 Nov 2026), slow-changing.
+  ["aiAssistant/nameProposals", 0.9 * MB, null],
+  ["aiAssistant/photoProposals", 0.6 * MB, null],
 ];
 const SMALL_BYTES = 0.25 * MB;
 // A PLACEHOLDER is a path a hook is handed when it has nothing to read
