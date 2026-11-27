@@ -190,7 +190,7 @@ test("no attempt starts that could not finish inside the callable's timeout", as
 test("an Email-only terminal is refused BEFORE any OCR is paid for", () => {
   const src = require("node:fs").readFileSync(path.join(__dirname, "../cardRecon/cardRecon.js"), "utf8");
   const body = src.slice(src.indexOf("async function handleExtract("), src.indexOf("async function handleExtractPdf("));
-  const gate = body.indexOf("if (!takesPhoto(terminal))");
+  const gate = body.indexOf("if (!takesPhoto(terminal) && !opts.storedPhotoPaths)");
   assert.ok(gate > 0, "the capture-mode gate is in the photo path");
   assert.ok(gate < body.indexOf("liveOcr("), "…and comes before the paid call");
 });

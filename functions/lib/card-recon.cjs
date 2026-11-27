@@ -557,7 +557,13 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
     // A STANDARD BANK TID PROVEN BY THE TILL'S OWN BATCH CHAIN (7 Nov 2026,
     // lib/card-sb-photo.cjs sequenceTidProof): the TID line printed too faintly
     // to read, so there is no reading to be confident in; the chain is the proof.
-    .filter((f) => !(f === "tid" && (ex.tidProven === "sb-canonical" || ex.tidProven === "sb-sequence")));
+    .filter((f) => !(f === "tid" && (ex.tidProven === "sb-canonical" || ex.tidProven === "sb-sequence")))
+    // JUNID'S TOTAL RULE (27 Nov 2026, lib/card-total-rule.cjs): a field the
+    // server filled in from the submission (the till it was sent for, a filing
+    // number, the day's window) was never read, so OCR's doubt about it is moot.
+    .filter((f) => !(f === "tid" && ex.tidFrom === "submission"))
+    .filter((f) => !(f === "batchNo" && ex.batchFrom === "filing"))
+    .filter((f) => !((f === "openedAt" || f === "closedAt") && ex.windowSource === "total-rule"));
   // A MANUAL ENTRY (Junid, from the POS report — lib/card-manual-entry.cjs)
   // has no reading at all, exactly like a typed capture.
   if (source !== "pdf" && source !== "typed" && source !== "manual") {

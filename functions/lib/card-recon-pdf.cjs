@@ -1628,7 +1628,14 @@ function readSlipPdfLines(lines) {
   const extraction = parsed.extraction;
   // A terminal that prints a line twice must not be averaged away.
   const dedup = dedupeLines(extraction.lines);
-  if (!dedup.ok) return extraction.format === "emailed" ? totalsOnlyOr(rows, dedup.reason) : { ok: false, reason: dedup.reason };
+  if (!dedup.ok) {
+    if (extraction.format === "emailed") {
+      const fb = totalsOnlyOr(rows, dedup.reason);
+      if (fb.ok) return fb;
+    }
+    // JUNID'S TOTAL RULE (27 Nov 2026): the total is the figure — the lines go.
+    return totalRuleRead(extraction, dedup.reason);
+  }
   extraction.lines = dedup.lines;
   // Every refusal unchanged — only the confidence gate is skipped, because
   // exact text has nothing to be confident about.
@@ -1640,9 +1647,24 @@ function readSlipPdfLines(lines) {
   // the total) and keeps every other one. If that passes, only the list failed.
   if (extraction.format === "emailed" && !extraction.emptyBatch
       && validateExtraction(extraction, { summaryOnly: true, source: "pdf" }).ok) {
-    return totalsOnlyOr(rows, verdict.reason);
+    const fb = totalsOnlyOr(rows, verdict.reason);
+    if (fb.ok) return fb;
   }
-  return { ok: false, reason: verdict.reason };
+  return totalRuleRead(extraction, verdict.reason);
+}
+
+/**
+ * JUNID'S TOTAL RULE (27 Nov 2026, lib/card-total-rule.cjs): a report whose
+ * bottom total was read is READ. Whatever else failed is a note on the record
+ * and the record is summary-only; only a missing total refuses.
+ */
+function totalRuleRead(extraction, reason) {
+  const { totalRuleVerdict, note } = require("./card-total-rule.cjs");
+  extraction.lines = [];
+  const v = totalRuleVerdict(extraction, validateExtraction, { summaryOnly: true, source: "pdf" });
+  if (!v.ok) return { ok: false, reason: v.reason, noTotal: true };
+  const warnings = [note(reason), ...(v.warnings || []).filter((w) => w !== note(reason) && !/^Summary only/.test(w))];
+  return { ok: true, extraction, warnings, summaryOnly: true, totalRule: true };
 }
 
 /** Fall back to a totals-only record, or refuse with the ORIGINAL reason. */

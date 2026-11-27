@@ -106,8 +106,10 @@ test("Concrete Till 1: photos are kept at once and read — the READ figure is t
   assert.equal(job.bank, "standard-bank");
   assert.equal(job.photoPaths.length, 3, "a long roll in pieces");
   let asked = null;
-  const out = await run(db, job.jobId, { ocr: reads((o) => { asked = o; return report(); }) });
-  assert.equal(out.final, "recorded");
+  // As many photos as the job stored: one short and the read would store them
+  // again through the REAL Storage bucket (it did, until 27 Nov 2026).
+  const out = await run(db, job.jobId, { loadPhotos: async () => [PHOTO, PHOTO, PHOTO], ocr: reads((o) => { asked = o; return report(); }) });
+  assert.equal(out.final, "recorded", JSON.stringify((await node(db, `card_batch_jobs/${job.jobId}`)).history));
   assert.deepEqual(asked, { bank: "standard-bank" });
   const rec = await node(db, `card_batches/concrete/${C1}/12`);
   assert.equal(rec.capturedVia, "photo");
@@ -132,17 +134,17 @@ test("a typed total beside the photo is a cross-check: a mismatch is flagged on 
   assert.ok(rec.warnings.some((w) => /typed on the Card Slip \(R ?1,600\.00\) is not what the photographed report reads/.test(w)), rec.warnings.join(" | "));
 });
 
-test("a photo printing the OTHER Concrete machine's TID is refused by name, never re-filed", async () => {
+// Junid's rule – do not weaken or delete without his written instruction.
+test("a photo printing the OTHER Concrete machine's TID: filed under the till it was sent for, the printed TID said (Junid's total rule)", async () => {
   const db = world();
   await send(db, C1);
   const [job] = await jobs(db);
   const out = await runToEnd(db, job.jobId, { ocr: reads(report({ tid: "0000OF1Y" })) });
-  assert.equal(out.final, "unread");
-  assert.equal(await node(db, `card_batches/concrete/${C2}`), null);
-  assert.equal(await node(db, `card_batches/concrete/${C1}`), null);
-  const marker = await node(db, `card_batch_overrides/unread/concrete/${C1}/2026-10-31`);
-  assert.equal(marker.photoReceived, true);
-  assert.match(marker.reason, /^Photo received — total unreadable\. .*prints TID 0000[O0]F1Y.*Concrete Till 2/);
+  assert.equal(out.final, "recorded");
+  assert.equal(await node(db, `card_batches/concrete/${C2}`), null, "never filed on the other machine");
+  const rec = await node(db, `card_batches/concrete/${C1}/12`);
+  assert.equal(rec.slip.totalCents, 165000);
+  assert.ok(rec.warnings.some((w) => /^NOTE \(not a rejection/.test(w) && /Concrete Till 2/.test(w)), rec.warnings.join(" | "));
 });
 
 test("an unreadable photo with NO typed total: 'photo received — total unreadable', and Junid is told", async () => {
@@ -225,13 +227,14 @@ test("Concrete's paper prints 0000OF2Y: a reader unsure of O-or-0 is not a refus
   assert.equal((await node(db, `card_batches/concrete/${C1}/12`)).slip.totalCents, 165000);
 });
 
-test("…but a low-confidence TID that is NOT this till's is still refused", async () => {
+// Junid's rule – do not weaken or delete without his written instruction.
+test("…and a low-confidence TID that is NOT this till's is a note, not a refusal (Junid's total rule)", async () => {
   const db = world();
   await send(db, C1);
   const [job] = await jobs(db);
   const out = await run(db, job.jobId, { ocr: reads(report({ tid: "0000ZZ9Q", confidence: { ...report().confidence, tid: 0.4 } })) });
-  assert.equal(out.final, null);
-  assert.equal(await node(db, `card_batches/concrete/${C1}`), null);
+  assert.equal(out.final, "recorded");
+  assert.equal((await node(db, `card_batches/concrete/${C1}/12`)).slip.totalCents, 165000);
 });
 
 // ── Concrete itself is back on the portal (Junid, 7 Nov 2026) ───────────────

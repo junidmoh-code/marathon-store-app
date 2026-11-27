@@ -31,11 +31,12 @@ test("an UNREGISTERED terminal is refused by name — it must surface, not vanis
   assert.match(r.reason, /9999ZZZZ/);
 });
 
-test("a MID that contradicts the registry is refused — the file is from elsewhere", () => {
+// Junid's rule – do not weaken or delete without his written instruction.
+test("a MID that contradicts the registry is a NOTE, never a refusal — the terminal decides (Junid's total rule, 27 Nov 2026)", () => {
   const r = routeEmailSlip({ extraction: { tid: "0000HP1X", mid: "100000001178101" }, terminals: TERMINALS });
-  assert.equal(r.ok, false);
-  assert.match(r.reason, /merchant ID/i);
-  assert.ok(!r.unmapped);
+  assert.equal(r.ok, true);
+  assert.equal(r.terminal.tillId, "till-1");
+  assert.ok(r.warnings.some((w) => /^NOTE \(not a rejection/.test(w) && /merchant ID/i.test(w)), r.warnings.join(" | "));
 });
 
 test("the registered merchant need only be AMONG the ones the file prints", () => {
@@ -50,14 +51,14 @@ test("the registered merchant need only be AMONG the ones the file prints", () =
   assert.equal(ok.ok, true, ok.reason);
   assert.deepEqual(ok.warnings, []);
 
-  // …and NONE of them being the registered merchant is still a refusal, which
-  // is what stops one reading being defeated by whichever section printed first.
+  // …and NONE of them being the registered merchant is a note on the record
+  // (Junid's total rule, 27 Nov 2026) — never a refusal.
   const bad = routeEmailSlip({
     extraction: { tid: "0000HP1X", mid: "100000001178101", mids: ["100000001178101", "377777777777777"] },
     terminals: TERMINALS,
   });
-  assert.equal(bad.ok, false);
-  assert.match(bad.reason, /merchant IDs/i);
+  assert.equal(bad.ok, true);
+  assert.ok(bad.warnings.some((w) => /merchant IDs/i.test(w)));
 });
 
 test("leading zeros are not a merchant difference", () => {

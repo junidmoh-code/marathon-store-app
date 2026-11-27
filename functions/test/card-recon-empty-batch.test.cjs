@@ -159,7 +159,7 @@ test("the callable widens the window only for an empty batch, before validating 
   const body = src.slice(src.indexOf("async function handleExtractPdfBody("), src.indexOf("async function handleSubmit("));
   const at = body.indexOf("emptyBatchOpenedAt(");
   assert.ok(at > 0 && body.lastIndexOf("if (extraction.emptyBatch === true)", at) > 0);
-  assert.ok(at < body.indexOf("validateExtraction(extraction"), "…before validation and the expected-figure read");
+  assert.ok(at < body.indexOf("totalRuleVerdict(extraction, validateExtraction"), "…before validation and the expected-figure read");
 });
 
 test("a dividerless APPROVED heading is not an empty batch", () => {
