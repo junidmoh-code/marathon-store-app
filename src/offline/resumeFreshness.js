@@ -119,13 +119,14 @@ export function resumeUpdating({ serving, feedOkAt: at, nowMs, savedShowing }) {
  * Pure: which face does the pill show? "hidden" | "updating" | "failed" | "offline".
  */
 export function markerState({
-  updating, mirrorStale = false, offline = false, idle = false,
+  updating, mirrorStale = false, savedShowing = false, offline = false, idle = false,
   since, failedAt = null, nowMs, timeoutMs = UPDATE_TIMEOUT_MS,
 }) {
   if (!updating) return "hidden";
   // Idle-suspended with nothing but an aged mirror to report: the line is shut
-  // on purpose and the first touch catches up. Not an outage, not "updating".
-  if (idle && mirrorStale && !offline) return "hidden";
+  // on purpose (goOffline, so the socket reads "dropped" too) and the first
+  // touch resumes and catches up. Not an outage, not "updating".
+  if (idle && mirrorStale && !savedShowing) return "hidden";
   if (offline) return "offline";
   if (mirrorStale && failedAt != null && since != null && failedAt >= since) return "failed";
   if (since != null && nowMs - since >= timeoutMs) return "failed";
@@ -141,20 +142,27 @@ const browserOffline = () => {
 export function currentMarkerState(isServing, nowMs = Date.now()) {
   const serving = (() => { try { return !!isServing(); } catch { return false; } })();
   const mirrorStale = serving && isMirrorStale(feedOkAt, nowMs);
-  const updating = resumeUpdating({ serving, feedOkAt, nowMs, savedShowing: saved.size > 0 });
-  if (!updating) {
+  const savedShowing = saved.size > 0;
+  const updating = resumeUpdating({ serving, feedOkAt, nowMs, savedShowing });
+  const offline = browserOffline() || connected === false;
+  // The clock runs only while the pill would actually say "Updating…": hidden
+  // (idle) or offline time is not time spent failing to update, and coming
+  // back from either starts a fresh attempt (Sonnet review, #1021).
+  const face = markerState({ updating, mirrorStale, savedShowing, offline, idle: suspended, since: null, nowMs });
+  if (face !== "updating") {
     updatingSince = null;
-    return "hidden";
+    return face;
   }
   if (updatingSince == null) {
     updatingSince = nowMs;
     // Do not wait for the next scheduled pass (up to 5 min after a failed
-    // one): ask for the catch-up now. Deferred so it never runs inside render.
-    Promise.resolve().then(() => runRetries(false));
+    // one): ask for the catch-up now — only when the mirror is what is behind.
+    // Deferred so it never runs inside render.
+    if (mirrorStale) Promise.resolve().then(() => runRetries(false));
   }
   return markerState({
-    updating, mirrorStale, offline: browserOffline() || connected === false,
-    idle: suspended, since: updatingSince, failedAt: feedFailedAt, nowMs,
+    updating, mirrorStale, savedShowing, offline, idle: suspended,
+    since: updatingSince, failedAt: feedFailedAt, nowMs,
   });
 }
 

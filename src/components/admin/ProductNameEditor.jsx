@@ -14,8 +14,15 @@
 import { useEffect, useState } from "react";
 import { renameProduct, renameRefusal } from "./productSave";
 
-export function ProductNameEditor({ product, allProducts, call, deviceId = null, buildExtras = null, beforeSave = null }) {
+// The search-identity seed runs before the rename (updateProductName's order).
+// It is a database transaction that never settles while the line is down, so
+// it gets this long; past it, the save stops with a message and nothing sent.
+export const BEFORE_SAVE_LIMIT_MS = 8000;
+
+export function ProductNameEditor({ product, allProducts, call, deviceId = null, buildExtras = null, beforeSave = null, beforeSaveLimitMs = BEFORE_SAVE_LIMIT_MS }) {
   const [editing, setEditing] = useState(false);
+  // The name as it was when Edit was tapped: what the server compares against.
+  const [baseName, setBaseName] = useState(product.name || "");
   const [draft, setDraft] = useState(product.name || "");
   const [status, setStatus] = useState(null); // { kind: "saving"|"saved"|"error", text }
   useEffect(() => { if (!editing) setDraft(product.name || ""); }, [product.name, editing]);
@@ -26,15 +33,31 @@ export function ProductNameEditor({ product, allProducts, call, deviceId = null,
   const saving = status?.kind === "saving";
   const canSave = changed && !blocked && !saving;
 
-  const start = () => { setDraft(product.name || ""); setStatus(null); setEditing(true); };
+  const start = () => { setDraft(product.name || ""); setBaseName(product.name || ""); setStatus(null); setEditing(true); };
   const cancel = () => { setDraft(product.name || ""); setStatus(null); setEditing(false); };
   const save = async () => {
     if (!canSave) return;
+    // Someone else renamed it while this was open: say so, never overwrite.
+    if ((product.name || "") !== baseName) {
+      setStatus({ kind: "error", text: `This product was renamed to “${product.name}” while you were editing. Cancel, then edit again.` });
+      return;
+    }
     setStatus({ kind: "saving", text: "Saving…" });
-    if (beforeSave) { try { await beforeSave(); } catch { /* best effort, as before */ } }
+    if (beforeSave) {
+      let timer;
+      const outcome = await Promise.race([
+        Promise.resolve().then(beforeSave).then(() => "done", () => "done"),   // a failure was always best effort
+        new Promise((r) => { timer = setTimeout(() => r("timeout"), beforeSaveLimitMs); }),
+      ]);
+      clearTimeout(timer);
+      if (outcome === "timeout") {
+        setStatus({ kind: "error", text: "Could not reach the database, so nothing was renamed. Check the connection and tap Save again." });
+        return;
+      }
+    }
     const extras = buildExtras ? buildExtras(trimmed) : null;
     const res = await renameProduct({
-      product, draft, allProducts, extras: extras && Object.keys(extras).length ? extras : null, deviceId, call,
+      product, draft, from: baseName, allProducts, extras: extras && Object.keys(extras).length ? extras : null, deviceId, call,
     });
     if (!res.ok) { setStatus({ kind: "error", text: res.message }); return; }
     const open = res.data?.openRefillRequests || 0;

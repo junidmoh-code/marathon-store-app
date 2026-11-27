@@ -8157,7 +8157,9 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
     // (previousNames, setProductName) — for the older events with no id.
     // Matching the current name alone made a renamed product read "Never sold".
     const names = new Set([product.name, ...(Array.isArray(product.previousNames) ? product.previousNames : [])].filter(Boolean));
-    const productLog = insightsLog.filter(e => e.productId ? e.productId === product.id : names.has(e.productName));
+    // An event with another id but this name still counts (merged or re-made
+    // records carried the old id; the twin check keeps names unique).
+    const productLog = insightsLog.filter(e => e.productId === product.id || names.has(e.productName));
     const placed     = productLog.filter(e => e.action === "placed");
     const sold       = productLog.filter(e => e.action === "collected" || e.action === "ready");
     let lastSoldLabel = "Never sold";
@@ -8339,7 +8341,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       <div style={sectionTitle}>Name</div>
       <div style={card}>
         <div style={cardInner}>
-          <ProductNameEditor product={product} allProducts={allProducts} call={setProductNameCall}
+          <ProductNameEditor key={product.id} product={product} allProducts={allProducts} call={setProductNameCall}
                              deviceId={getDeviceId()} buildExtras={nameExtras}
                              beforeSave={() => seedSearchIdentityFrom(product)} />
         </div>

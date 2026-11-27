@@ -93,6 +93,41 @@ describe("the name editor", () => {
     expect(byId("name-input").props.value).toBe("Renamed");
   });
 
+  it("a rename by someone else while this is open is a conflict, never an overwrite", async () => {
+    const call = vi.fn();
+    mount({ call });
+    await click("name-edit");
+    type("Mine");
+    act(() => { tree.update(<ProductNameEditor product={{ ...AM96, name: "Someone else's" }} allProducts={CATALOGUE} call={call} />); });
+    await click("name-save");
+    expect(text(byId("name-status"))).toMatch(/was renamed to “Someone else's” while you were editing/);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("Save sends the name as it was when Edit was tapped", async () => {
+    const call = vi.fn(async () => ({ data: { ok: true } }));
+    mount({ call });
+    await click("name-edit");
+    type("Mine");
+    await click("name-save");
+    expect(call.mock.calls[0][0].from).toBe(AM96.name);
+  });
+
+  it("a search-identity seed that never settles stops the save with a message, controls back", async () => {
+    vi.useFakeTimers();
+    try {
+      const call = vi.fn();
+      mount({ call, beforeSave: () => new Promise(() => {}), beforeSaveLimitMs: 8000 });
+      await click("name-edit");
+      type("Mine");
+      act(() => { byId("name-save").props.onClick(); });
+      await act(async () => { vi.advanceTimersByTime(8000); await Promise.resolve(); await Promise.resolve(); });
+      expect(text(byId("name-status"))).toMatch(/Could not reach the database, so nothing was renamed/);
+      expect(byId("name-save").props.disabled).toBe(false);
+      expect(call).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
   it("an empty catalogue never skips the twin check", () => {
     expect(renameRefusal({ product: AM96, draft: "Anything", allProducts: [] })).toMatch(/still loading/);
   });

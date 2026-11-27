@@ -12,9 +12,19 @@
 // requests by the productId index (counted only — they are matched by pid
 // and stay attached).
 //
-// The duplicate-name check runs on the page, against the catalogue it already
-// holds: /products has no index on name, and an unindexed orderByChild would
-// download the whole catalogue here.
+// THE TWIN CHECK, ON BOTH SIDES. The page refuses a name another product has
+// (against the catalogue it holds, normalised — case and spacing). The server
+// re-checks the exact name with an INDEXED query over REST (findByName): if
+// /products has no "name" index, the REST API refuses the query with "Index
+// not defined" instead of downloading the catalogue, and the server says so
+// in its log and leans on the page's check. (The Admin SDK would silently read
+// the whole node for an unindexed orderByChild — never used here.) The index
+// is a console rule: products/.indexOn ["styleCodeNormalised", "name"].
+//
+// THE NAME IS COMPARE-AND-SET. A transaction on products/{pid}/name writes the
+// new name only while the stored name is still the one the person started
+// editing; then one multi-path update carries the name (again, idempotent),
+// its history and the log entry. If that update fails, the name is put back.
 //
 // Deploy by name, never bare:
 //   firebase deploy --only functions:setProductName
@@ -24,7 +34,7 @@ const { requireStaffRecord } = require("../lib/require-staff-record.cjs");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { randomUUID } = require("node:crypto");
 const admin = require("firebase-admin");
-const { planRename, renameUpdate, NAME_PROPOSALS_ROOT } = require("../lib/product-rename.cjs");
+const { planRename, renameUpdate, twinsOf, NAME_PROPOSALS_ROOT } = require("../lib/product-rename.cjs");
 const { managerIdentity } = require("../deviceEnrolment/deviceEnrolment.js");
 const { _readCells: readCells, _whoIs: whoIs } = require("./setProductType.js");
 
@@ -39,6 +49,19 @@ async function countOpenRequests(db, pid) {
   const snap = await db.ref("refill_requests").orderByChild("productId").equalTo(pid).once("value");
   return Object.values(snap.val() || {}).filter((r) => r && !r.resolvedAt
     && !["fulfilled", "cancelled", "closed", "resolved", "out_of_stock"].includes(r.status)).length;
+}
+
+// Exact-name lookup through the REST API's index. Returns the matching
+// products, or null when the index is not live (the API refuses; nothing read).
+async function findByNameRest(name) {
+  const app = admin.app();
+  const base = app.options.databaseURL || "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
+  const { access_token: token } = await app.options.credential.getAccessToken();
+  const url = `${base}/products.json?orderBy=${encodeURIComponent('"name"')}&equalTo=${encodeURIComponent(JSON.stringify(name))}&limitToFirst=5`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (res.status === 400) return null;              // "Index not defined" — refused, nothing downloaded
+  if (!res.ok) throw new Error(`name lookup ${res.status}`);
+  return (await res.json()) || {};
 }
 
 async function handleSetProductName(request, deps) {
@@ -61,13 +84,42 @@ async function handleSetProductName(request, deps) {
   if (!plan.ok) throw new HttpsError(plan.code, plan.message);
   if (plan.noop) return { ok: true, noop: true, name: plan.to };
 
+  // The server's own twin check (indexed; see the header).
+  let twins = null;
+  try { twins = await deps.findByName(plan.to); } catch (e) { console.warn(`setProductName: name lookup failed: ${e?.message || e}`); }
+  if (twins === null) console.warn("setProductName: no /products name index — relying on the page's twin check");
+  const twin = twinsOf(twins || {}, pid, plan.to)[0];
+  if (twin) {
+    throw new HttpsError("already-exists",
+      `“${twin.name}” is already the name of another product (${twins[twin.id]?.styleCode || twin.id}). Choose a different name.`);
+  }
+
   const openRequests = await countOpenRequests(db, pid).catch(() => 0);
   const now = deps.now();
   const by = await whoIs(db, auth, manager, clientDeviceId);
   const key = `${now}_${deps.newId().slice(0, 8)}`;
+
+  // Compare-and-set on the name the person started editing.
+  const expected = plan.from;
+  let clash = false;
+  const txn = await db.ref(`products/${pid}/name`).transaction((cur) => {
+    if (cur === null && expected) return null;                // cold-cache probe
+    if ((cur ?? "") !== expected) { clash = true; return undefined; }
+    clash = false;
+    return plan.to;
+  });
+  if (!txn.committed || clash || txn.snapshot.val() !== plan.to) {
+    throw new HttpsError("aborted", "Someone else renamed this product a moment ago. Look again, then try again.");
+  }
   const update = renameUpdate({ pid, plan, now, key, by, uid: auth.uid, manager, proposal, openRequests });
-  // ONE multi-path write: the name, its history and the log land together or not at all.
-  await db.ref().update(update);
+  // ONE multi-path write: the name, its history and the log land together.
+  try {
+    await db.ref().update(update);
+  } catch (err) {
+    // Put the name back so it never stands without its log entry.
+    await db.ref(`products/${pid}/name`).transaction((cur) => (cur === null ? null : cur === plan.to ? expected : undefined)).catch(() => {});
+    throw new HttpsError("unavailable", `The rename could not be saved (${err?.message || err}). Nothing was changed — try again.`);
+  }
   const patch = { name: plan.to, nameChangedAt: now, previousNames: plan.previousNames.length ? plan.previousNames : null, ...plan.extras };
   return { ok: true, name: plan.to, from: plan.from, openRefillRequests: openRequests, patch };
 }
@@ -75,7 +127,7 @@ async function handleSetProductName(request, deps) {
 exports.setProductName = onCall(
   { region: "europe-west1", memory: "256MiB", timeoutSeconds: 30, maxInstances: 5 },
   (request) => handleSetProductName(request, {
-    db: admin.database(), now: () => Date.now(), newId: () => randomUUID(), managerIdentity,
+    db: admin.database(), now: () => Date.now(), newId: () => randomUUID(), managerIdentity, findByName: findByNameRest,
   }),
 );
 exports._handleSetProductName = handleSetProductName;

@@ -77,8 +77,11 @@ function planRename(product, to, { from, cellsByLoc = {}, isManager = false, ext
   if (!product || typeof product !== "object") return { ok: false, code: "not-found", message: "That product no longer exists." };
   const current = typeof product.name === "string" ? product.name : "";
   if (next === current) return { ok: true, noop: true, from: current, to: next };
-  // Compare-and-set on what the person was looking at.
-  if (typeof from === "string" && from !== current) {
+  // Compare-and-set on what the person was looking at — required, so a caller
+  // cannot skip it. (A rename landing in the instant between this read and the
+  // write is not caught; both are logged. Accepted: renames are rare and by hand.)
+  if (typeof from !== "string") return { ok: false, code: "invalid-argument", message: "Which name were you changing? Reload the page and try again." };
+  if (from !== current) {
     return { ok: false, code: "aborted", message: `Someone else renamed this product a moment ago, to “${current}”. Look again, then try again.` };
   }
   if (cellsExist(cellsByLoc) && !isManager) {

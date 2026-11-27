@@ -110,13 +110,13 @@ export function renameRefusal({ product, draft, allProducts = [] }) {
   return null;
 }
 
-export async function renameProduct({ product, draft, allProducts = [], extras = null, deviceId = null, call, echo = notePendingUpdate }) {
+export async function renameProduct({ product, draft, from = undefined, allProducts = [], extras = null, deviceId = null, call, echo = notePendingUpdate }) {
   const refused = renameRefusal({ product, draft, allProducts });
   if (refused) return { ok: false, message: refused };
   const name = String(draft).trim();
   if (name === product.name) return { ok: true, noop: true };
   try {
-    const res = await call({ productId: product.id, name, from: product.name ?? "", extras, deviceId });
+    const res = await call({ productId: product.id, name, from: from ?? product.name ?? "", extras, deviceId });
     const data = res?.data ?? res;
     if (data?.patch && Object.keys(data.patch).length) {
       try { echo(productPatchPaths(product.id, data.patch)); } catch { /* courtesy */ }

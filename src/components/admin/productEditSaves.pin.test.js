@@ -21,7 +21,7 @@ describe("the product edit page", () => {
       /save\(\{ hasShoeBoxOption: next \}/]) expect(body).toMatch(re);
   });
   it("renames only through ProductNameEditor → setProductName (Edit → Save), never on blur", () => {
-    expect(body).toMatch(/<ProductNameEditor product=\{product\} allProducts=\{allProducts\} call=\{setProductNameCall\}/);
+    expect(body).toMatch(/<ProductNameEditor key=\{product\.id\} product=\{product\} allProducts=\{allProducts\} call=\{setProductNameCall\}/);
     expect(app).toMatch(/const setProductNameCall = httpsCallable\(functions, "setProductName"\);/);
     expect(body).not.toMatch(/save\(\{ name:/);
     expect(body).not.toMatch(/onBlur=\{saveName\}/);

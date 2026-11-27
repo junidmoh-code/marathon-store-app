@@ -291,6 +291,13 @@ export async function startOfflineMirror({
     // walks behind it.
     const noteFeed = (feed, failed) => {
       if (feed && !feed.skipped && !failed) {
+        // Screens whose rows the feed moved are woken, and this device's own
+        // echoed writes confirmed, BEFORE the pill comes down (CodeRabbit,
+        // #1021) — not after the range walks.
+        if ((feed.applied ?? 0) + (feed.deleted ?? 0) > 0) {
+          bumpLegs(MIRROR_LEGS.filter((l) => l.feed === "changes").map((l) => l.name));
+        }
+        if (feed.paths?.length) confirmPending(feed.paths);
         state.feedOkAt = now();
         markMirrorFeedOk(state.feedOkAt);
       } else {
@@ -301,17 +308,15 @@ export async function startOfflineMirror({
     state.lastPass = { at: now(), ...report };
     state.lastError = report.errors.length ? report.errors[0] : null;
 
-    // Wake the screens whose nodes moved — and only those.
-    if ((report.feed?.applied ?? 0) + (report.feed?.deleted ?? 0) > 0) {
-      bumpLegs(MIRROR_LEGS.filter((l) => l.feed === "changes").map((l) => l.name));
-    }
+    // Wake the screens whose nodes moved — and only those. (The change-fed
+    // legs were woken in noteFeed, the moment the feed step ended.)
     for (const r of report.range) if (r.added > 0) bumpLegs([r.leg]);
 
     // The echo of this device's own writes is only worth keeping until the
     // feed brings the same fact back round. Dropping it the moment it does,
     // rather than letting it expire on a timer, is what stops it hiding
     // someone else's later change.
-    if (report.feed?.paths?.length) confirmPending(report.feed.paths);
+    // (Done in noteFeed, as soon as the feed step ended.)
 
     // Unsent writes are a reason not to reload, and the update checker's busy
     // registry is where that already lives.

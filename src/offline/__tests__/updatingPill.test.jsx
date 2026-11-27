@@ -179,6 +179,42 @@ describe("the pill on screen", () => {
   });
 });
 
+describe("review fixes (#1021)", () => {
+  test("idle-suspended with an aged mirror is hidden even though the socket reads dropped", async () => {
+    servingLegs.add("products");
+    act(() => { setDatabaseConnected(true); setDatabaseConnected(false); setMirrorSuspended(true); });
+    render(<ResumeUpdatingMarker />);
+    await tick(UPDATE_TIMEOUT_MS * 2);
+    expect(pill()).toBeNull();
+  });
+  test("time hidden or offline does not count: coming back starts a full fresh window", async () => {
+    servingLegs.add("products");
+    act(() => setMirrorSuspended(true));
+    render(<ResumeUpdatingMarker />);
+    await tick(UPDATE_TIMEOUT_MS * 3);
+    act(() => setMirrorSuspended(false));
+    await tick(0);
+    expect(pill().dataset.state).toBe("updating");
+    onLine = false;
+    await tick(UPDATE_TIMEOUT_MS * 3);
+    expect(pill().dataset.state).toBe("offline");
+    onLine = true;
+    await tick(1000);
+    expect(pill().dataset.state).toBe("updating");
+    await tick(UPDATE_TIMEOUT_MS - 2000);
+    expect(pill().dataset.state).toBe("updating");
+  });
+  test("the automatic catch-up is asked only when the mirror is what is behind", async () => {
+    const asked = [];
+    registerUpdateRetry((o) => asked.push(o));
+    render(<ResumeUpdatingMarker />);
+    act(() => setSavedShowing("users/u1", true));
+    await tick(0);
+    expect(pill().dataset.state).toBe("updating");
+    expect(asked).toEqual([]);
+  });
+});
+
 describe("the mirror engine says how the feed went before the slow range walks", () => {
   function world() {
     return createFakeRtdb({
@@ -192,20 +228,29 @@ describe("the mirror engine says how the feed went before the slow range walks",
     });
   }
 
-  test("onFeed fires with success as soon as the feed step ends", async () => {
+  test("onFeed fires with success as soon as the feed step ends — before any range walk reads", async () => {
     vi.useRealTimers();
     const db = await freshMirrorDb();
     const w = world();
-    let rangeReadsAtFeed = null;
-    const e = createSyncEngine({ db, adapter: w.adapter, now: () => T0, buildVersion: "b1" });
+    const events = [];
+    // Record every page read the engine makes, in order (the range walks use
+    // readKeyPage / readChildPage on their own nodes; the feed reads CHANGES_ROOT).
+    const adapter = {
+      ...w.adapter,
+      readKeyPage: (path, o) => { events.push(String(path).startsWith(CHANGES_ROOT) ? "feed" : `range:${path}`); return w.adapter.readKeyPage(path, o); },
+      readChildPage: (path, f, o) => { events.push(`range:${path}`); return w.adapter.readChildPage(path, f, o); },
+    };
+    const e = createSyncEngine({ db, adapter, now: () => T0, buildVersion: "b1" });
     await e.runSetup();
     w.write("products/p1/price", 999);
     w.write(`${CHANGES_ROOT}/${pushKeyForMs(T0 + 1000, "BBBBBBBBBBBB")}`, { n: "products", k: "p1", t: T0 + 1000 });
+    events.length = 0;
     const seen = [];
-    const before = w.calls.readKeyRange?.length ?? 0;
-    await e.runPass({ onFeed: (feed, failed) => { seen.push({ applied: feed.applied, failed }); rangeReadsAtFeed = (w.calls.readKeyRange?.length ?? 0) - before; } });
+    await e.runPass({ onFeed: (feed, failed) => { seen.push({ applied: feed.applied, failed }); events.push("onFeed"); } });
     expect(seen).toEqual([{ applied: 1, failed: false }]);
-    expect(rangeReadsAtFeed).toBe(0);              // told before any range walk ran
+    const at = events.indexOf("onFeed");
+    expect(events.slice(0, at).some((x) => x.startsWith("range:"))).toBe(false);
+    expect(events.slice(at + 1).some((x) => x.startsWith("range:"))).toBe(true);   // the walks did run, after
   });
 
   test("onFeed fires with failure when the feed read times out", async () => {
