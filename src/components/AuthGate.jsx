@@ -43,6 +43,8 @@ import {
 import { serverNowMs } from "../utils/serverTime";
 import { adoptDeviceId, getDeviceId } from "../device/deviceId";
 import ActiveStoreLayer from "./ActiveStoreLayer";
+import { resumeCopies } from "../offline/resumeCopy";
+import { setSavedShowing } from "../offline/resumeFreshness";
 import { auditSignOut, bindActiveStore, resetActiveStore, setActiveStoreLogger, signOutFailed } from "../utils/activeStore";
 
 // The two calls the code screen makes. Module-level so the screen's props are
@@ -173,7 +175,17 @@ export default function AuthGate({ children, renderTv }) {
       });
   }, [isTv]);
 
-  // Subscribe to /users/{uid} for real (non-anonymous) users
+  // Subscribe to /users/{uid} for real (non-anonymous) users.
+  //
+  // ── A COLD START PAINTS FROM THE SAVED RECORD (Junid, 27 Nov 2026) ─────────
+  // A phone that threw the page away while it was in the background used to
+  // come back to "Loading…" until this read answered over a fresh socket —
+  // the loading state Junid saw on Source. The last LIVE answer for this same
+  // uid is kept in the mirror's database (src/offline/resumeCopy.js), and the
+  // app opens on it at once with the "Updating…" marker up; the live answer
+  // replaces it the moment it lands. Never another person's record, never a
+  // missing one (no record would read as all-access), and nothing that writes
+  // trusts the UI: every write is checked by the database's own rules.
   useEffect(() => {
     if (!user || user.isAnonymous) {
       setPermRecord(null);
@@ -181,19 +193,43 @@ export default function AuthGate({ children, renderTv }) {
       return;
     }
     setPermLoaded(false);
-    const r = ref(database, `users/${user.uid}`);
+    const uid = user.uid;
+    const savedKey = `users/${uid}`;
+    const copies = resumeCopies();
+    let liveArrived = false;
+    let cancelled = false;
+    const adoptSaved = (saved) => {
+      if (cancelled || liveArrived || !saved || !saved.value || typeof saved.value !== "object") return;
+      setPermReadError(false);
+      setPermRecord(saved.value);
+      setPermUid(uid);
+      setPermLoaded(true);
+      setSavedShowing(savedKey, true);
+    };
+    const peeked = copies.peek(uid, savedKey);
+    if (peeked) adoptSaved(peeked);
+    else copies.load(uid, savedKey).then(adoptSaved, () => {});
+    const r = ref(database, `users/${uid}`);
     const off = onValue(
       r,
       (snap) => {
+        liveArrived = true;
+        const val = snap.val() || null;
         setPermReadError(false);
-        setPermRecord(snap.val() || null);
-        setPermUid(user.uid);
-        rememberRequired(user.uid, snap.val()?.deviceCodeRequired === true);
+        setPermRecord(val);
+        setPermUid(uid);
+        rememberRequired(uid, val?.deviceCodeRequired === true);
         setPermLoaded(true);
+        setSavedShowing(savedKey, false);
+        if (val && typeof val === "object") copies.save(uid, savedKey, val);
       },
-      (err)  => { console.warn("permissions read failed:", err); setPermReadError(true); setPermRecord(null); setPermLoaded(true); }
+      (err)  => {
+        liveArrived = true;
+        setSavedShowing(savedKey, false);
+        console.warn("permissions read failed:", err); setPermReadError(true); setPermRecord(null); setPermLoaded(true);
+      }
     );
-    return () => off();
+    return () => { cancelled = true; setSavedShowing(savedKey, false); off(); };
   }, [user]);
 
   // The active shop (src/utils/activeStore.js): home = /users/{uid}/destShop.

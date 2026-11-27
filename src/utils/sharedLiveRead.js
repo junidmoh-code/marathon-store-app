@@ -86,14 +86,16 @@ let wired = false;
 // The hide grace (sharedLiveReadCore.createHideGrace): idle entries survive a
 // short trip to another app and go when the page has been hidden longer.
 const grace = createHideGrace({ release: () => shared.releaseIdle() });
+const onHidden = () => { shared.setHidden(true); grace.hidden(); };
+const onVisible = () => { grace.visible(); shared.setHidden(false); };
 function wire() {
   if (wired) return;
   wired = true;
   try {
     if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "hidden") grace.hidden();
-        else grace.visible();
+        if (document.visibilityState === "hidden") onHidden();
+        else onVisible();
       });
     }
     if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
@@ -167,5 +169,5 @@ export function _resetSharedLiveReadsForTests() { shared.reset(); }
 export function _setHoldingForTests(on) { holding = !!on; if (wired) wireConnection(); }
 export function _connectionLostForTests() { shared.connectionLost(); }
 /** The hide grace the document's visibilitychange drives (hidden()/visible()). */
-export function _hideGraceForTests() { return grace; }
+export function _hideGraceForTests() { return { hidden: onHidden, visible: onVisible }; }
 export function _sharedLiveReadStatsForTests() { return shared.stats(); }

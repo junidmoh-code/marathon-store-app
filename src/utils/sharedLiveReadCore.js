@@ -81,6 +81,7 @@ export function createSharedLiveReads({
   if (typeof listen !== "function") throw new Error("createSharedLiveReads: listen is required");
   const entries = new Map();   // key -> entry
   let idleSeq = 0;             // release order: higher = left more recently
+  let hidden = false;          // the page is hidden: holds park instead of expiring
 
   const policyFor = (key) => {
     let p = null;
@@ -104,6 +105,7 @@ export function createSharedLiveReads({
     stopListening(e);
     e.has = false;
     e.snap = null;
+    e.parked = false;
     if (entries.get(e.key) === e) entries.delete(e.key);
   };
 
@@ -161,7 +163,7 @@ export function createSharedLiveReads({
   // it to keep three 1.5 MB ones would re-download ten times what it saved.
   // The largest is always kept.
   const enforceIdleCap = () => {
-    const idle = [...entries.values()].filter((e) => e.subs.size === 0 && e.linger != null)
+    const idle = [...entries.values()].filter((e) => e.subs.size === 0 && (e.linger != null || e.parked))
       .sort((a, b) => (a.bytes - b.bytes) || (a.idleSeq - b.idleSeq));   // cheapest, then oldest, first
     let total = idle.reduce((n, e) => n + e.bytes, 0);
     for (let i = 0; i < idle.length - 1 && total > maxIdleBytes; i += 1) {
@@ -183,7 +185,16 @@ export function createSharedLiveReads({
     if (!linger || e.dead || e.noLinger || noReplay(e) || !(p.lingerMs > 0)) { drop(e); return; }
     e.bytes = p.bytes;
     e.idleSeq = (idleSeq += 1);
-    e.linger = setTimer(() => { e.linger = null; if (e.subs.size === 0) drop(e); }, p.lingerMs);
+    e.linger = setTimer(() => {
+      e.linger = null;
+      if (e.subs.size !== 0) return;
+      // A hold that runs out while the page is HIDDEN is parked, not dropped:
+      // nobody can open a screen they cannot see, so the hold is counted from
+      // when they come back (setHidden(false)). The hide grace still bounds
+      // the whole thing — a long hide releases every idle entry, parked or not.
+      if (hidden) { e.parked = true; return; }
+      drop(e);
+    }, p.lingerMs);
     scheduleIdleCap();
   };
 
@@ -204,10 +215,11 @@ export function createSharedLiveReads({
     if (!e) {
       e = { key, makeTarget, subs: new Set(), stop: null, has: false, snap: null,
             dead: false, linger: null, noLinger: false, foreign: false, gen: 0,
-            bytes: 0, idleSeq: 0 };
+            bytes: 0, idleSeq: 0, parked: false };
       entries.set(key, e);
     }
     if (e.linger != null) { clearTimer(e.linger); e.linger = null; }
+    e.parked = false;
     const sub = { onData, onError };
     e.subs.add(sub);
     // Anything thrown before the unsubscribe exists would leave this
@@ -236,6 +248,19 @@ export function createSharedLiveReads({
     };
   }
 
+  /** The page went hidden / came back. Coming back re-arms each parked
+   *  entry's hold from now, so the person has the same window to reopen a
+   *  screen they would have had if they had never left. */
+  function setHidden(on) {
+    hidden = !!on;
+    if (hidden) return;
+    for (const e of [...entries.values()]) {
+      if (!e.parked) continue;
+      e.parked = false;
+      release(e);
+    }
+  }
+
   /** Release every listener nobody is subscribed to, now. */
   function releaseIdle() {
     for (const e of [...entries.values()]) if (e.subs.size === 0) drop(e);
@@ -259,6 +284,7 @@ export function createSharedLiveReads({
   }
 
   function reset() {
+    hidden = false;
     for (const e of [...entries.values()]) drop(e);
   }
 
@@ -268,7 +294,7 @@ export function createSharedLiveReads({
     keys: [...entries.keys()],
   });
 
-  return { subscribe, releaseIdle, connectionLost, identityChanged, reset, stats };
+  return { subscribe, releaseIdle, connectionLost, identityChanged, setHidden, reset, stats };
 }
 
 // ─── HELD THROUGH A HIDE, NOT DROPPED AT ONCE (Junid, 27 Nov 2026) ───────────

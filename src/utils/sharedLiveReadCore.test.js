@@ -571,3 +571,36 @@ describe("createHideGrace — held through a short hide, released after a long o
     r.g.pageHide(false); expect(r.released()).toBe(1);
   });
 });
+
+describe("a hold that runs out while the page is hidden is parked, not dropped", () => {
+  it("parked while hidden; back: re-armed for a full hold from now; then dropped as usual", () => {
+    const s = createSharedLiveReads({ listen: server.listen, setTimer: clock.setTimer, clearTimer: clock.clearTimer, lingerMs: 1000 });
+    const off = s.subscribe("a", () => "a", () => {});
+    server.push("a", 1);
+    off();
+    s.setHidden(true);
+    clock.advance(5000);                       // the hold ran out while hidden
+    expect(server.log.closes).toEqual([]);
+    s.setHidden(false);
+    clock.advance(999);
+    expect(server.log.closes).toEqual([]);     // a full hold, counted from coming back
+    const seen = [];
+    const again = s.subscribe("a", () => "a", (snap) => seen.push(snap.val()));
+    expect(server.log.opens).toEqual(["a"]);   // the held listener, not a reopen
+    expect(seen).toEqual([1]);
+    again();
+    clock.advance(1000);
+    expect(server.log.closes).toEqual(["a"]);
+  });
+  it("releaseIdle (the end of the hide grace) drops parked entries too", () => {
+    const s = createSharedLiveReads({ listen: server.listen, setTimer: clock.setTimer, clearTimer: clock.clearTimer, lingerMs: 1000 });
+    const off = s.subscribe("a", () => "a", () => {});
+    off();
+    s.setHidden(true);
+    clock.advance(5000);
+    s.releaseIdle();
+    expect(server.log.closes).toEqual(["a"]);
+    s.setHidden(false);
+    expect(server.log.opens).toEqual(["a"]);
+  });
+});
