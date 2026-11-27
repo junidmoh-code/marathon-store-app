@@ -2409,7 +2409,7 @@ export function useBroadcastHistory() {
       if (!data) { setBroadcasts([]); return; }
       setBroadcasts(Object.values(data).filter(Boolean)
         .sort((a, b) => tsMs(b.sentAt) - tsMs(a.sentAt)));
-    }, () => {});
+    }, (err) => console.warn("/broadcasts read failed:", err?.message ?? err));
     return () => unsub();
   }, [authReady]);
   return broadcasts;

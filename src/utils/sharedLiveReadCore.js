@@ -77,6 +77,9 @@ export function createSharedLiveReads({
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (t) => clearTimeout(t),
   warn = (...a) => console.warn(...a),
+  // Told when a held value that was UNCONFIRMED (the socket dropped since it
+  // was last heard) is current again — see markUnconfirmed.
+  onConfirm = () => {},
 } = {}) {
   if (typeof listen !== "function") throw new Error("createSharedLiveReads: listen is required");
   const entries = new Map();   // key -> entry
@@ -106,6 +109,7 @@ export function createSharedLiveReads({
     e.has = false;
     e.snap = null;
     e.parked = false;
+    if (e.unconfirmed) { e.unconfirmed = false; try { onConfirm(e.key); } catch { /* ignore */ } }
     if (entries.get(e.key) === e) entries.delete(e.key);
   };
 
@@ -129,6 +133,7 @@ export function createSharedLiveReads({
           e.has = true;
           e.snap = snap;
           e.foreign = false;        // the server's own answer, under whoever is signed in now
+          if (e.unconfirmed) { e.unconfirmed = false; try { onConfirm(e.key); } catch { /* the marker's bug */ } }
           for (const s of [...e.subs]) { if (e.subs.has(s)) tell(e, s, s.onData, snap); }
         },
         (err) => {
@@ -215,7 +220,7 @@ export function createSharedLiveReads({
     if (!e) {
       e = { key, makeTarget, subs: new Set(), stop: null, has: false, snap: null,
             dead: false, linger: null, noLinger: false, foreign: false, gen: 0,
-            bytes: 0, idleSeq: 0, parked: false };
+            bytes: 0, idleSeq: 0, parked: false, unconfirmed: false };
       entries.set(key, e);
     }
     if (e.linger != null) { clearTimer(e.linger); e.linger = null; }
@@ -261,6 +266,26 @@ export function createSharedLiveReads({
     }
   }
 
+  // ── A HELD VALUE THE SOCKET HAS NOT RE-CONFIRMED (Sonnet review, #1019) ──
+  // Idle entries now survive a socket drop while the page is hidden, so a
+  // screen opened right after coming back can be handed a snapshot from
+  // before the drop. It is still handed it (exactly what the SDK does for a
+  // bare onValue while offline), but the entry is UNCONFIRMED until the
+  // listener speaks again or the reconnect has settled (confirmAll), and the
+  // app shows "Updating…" meanwhile (sharedLiveRead.js).
+  function markUnconfirmed() {
+    for (const e of entries.values()) if (e.has) e.unconfirmed = true;
+  }
+  function confirmAll() {
+    for (const e of [...entries.values()]) {
+      if (!e.unconfirmed) continue;
+      e.unconfirmed = false;
+      try { onConfirm(e.key); } catch { /* ignore */ }
+    }
+  }
+  const isUnconfirmed = (key) => !!entries.get(key)?.unconfirmed;
+  const isInUse = (key) => (entries.get(key)?.subs.size ?? 0) > 0;
+
   /** Release every listener nobody is subscribed to, now. */
   function releaseIdle() {
     for (const e of [...entries.values()]) if (e.subs.size === 0) drop(e);
@@ -294,7 +319,7 @@ export function createSharedLiveReads({
     keys: [...entries.keys()],
   });
 
-  return { subscribe, releaseIdle, connectionLost, identityChanged, setHidden, reset, stats };
+  return { subscribe, releaseIdle, connectionLost, identityChanged, setHidden, markUnconfirmed, confirmAll, isUnconfirmed, isInUse, reset, stats };
 }
 
 // ─── HELD THROUGH A HIDE, NOT DROPPED AT ONCE (Junid, 27 Nov 2026) ───────────

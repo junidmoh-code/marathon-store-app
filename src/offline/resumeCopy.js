@@ -22,16 +22,24 @@
 // with the newest value always the one that lands.
 
 import { onIdentityChange } from "../utils/identityChange";
+import { offlineMirrorEnabled } from "./killSwitch";
 
 export const RESUME_PREFIX = "resume|";
 export const RESUME_MAX_BYTES = 128 * 1024;
 export const RESUME_WRITE_EVERY_MS = 30 * 1000;
+// A saved copy older than this is not offered: a phone that has not opened the
+// app for a week waits for the live answer (Sonnet review, #1019).
+export const RESUME_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function createResumeCopies({
   getDb,
   now = () => Date.now(),
   maxBytes = RESUME_MAX_BYTES,
   writeEveryMs = RESUME_WRITE_EVERY_MS,
+  maxAgeMs = RESUME_MAX_AGE_MS,
+  // Off → nothing is saved or offered (the mirror's database is not even
+  // opened). The app's instance passes the mirror switch.
+  enabled = () => true,
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (t) => clearTimeout(t),
   warn = (...a) => console.warn(...a),
@@ -55,15 +63,16 @@ export function createResumeCopies({
   return {
     /** The saved copy for this uid, or null. Never throws. */
     async load(uid, key) {
-      if (!uid || !key) return null;
+      if (!uid || !key || !enabled()) return null;
       const fk = fullKey(uid, key);
-      if (mem.has(fk)) { const r = mem.get(fk); return { value: r.value, at: r.at }; }
+      const fresh = (r) => r && now() - (Number(r.at) || 0) <= maxAgeMs;
+      if (mem.has(fk)) { const r = mem.get(fk); return fresh(r) ? { value: r.value, at: r.at } : null; }
       const myEpoch = epoch;
       try {
         const db = await getDb();
         const rec = await db.getMeta(fk);
         if (myEpoch !== epoch) return null;
-        if (!rec || rec.uid !== uid || !("value" in rec)) return null;
+        if (!rec || rec.uid !== uid || !("value" in rec) || !fresh(rec)) return null;
         if (!mem.has(fk)) mem.set(fk, rec);
         const r = mem.get(fk);
         return { value: r.value, at: r.at };
@@ -79,7 +88,7 @@ export function createResumeCopies({
     },
     /** Remember the latest LIVE answer. Returns false when it was not kept. */
     save(uid, key, value) {
-      if (!uid || !key || value === undefined) return false;
+      if (!uid || !key || value === undefined || !enabled()) return false;
       let json;
       try { json = JSON.stringify(value); } catch { return false; }
       if (typeof json !== "string" || json.length > maxBytes) return false;
@@ -99,6 +108,14 @@ export function createResumeCopies({
         }, writeEveryMs - since));
       }
       return true;
+    },
+    /** Forget one saved copy (a refused or missing record). */
+    forget(uid, key) {
+      if (!uid || !key) return;
+      const fk = fullKey(uid, key);
+      mem.delete(fk);
+      if (trailing.has(fk)) { clearTimer(trailing.get(fk)); trailing.delete(fk); }
+      Promise.resolve().then(getDb).then((db) => db.deleteMetaMany([fk])).catch(() => {});
     },
     /** Sign-out / another person: forget every saved copy, here and on disk. */
     async clearAll() {
@@ -123,6 +140,8 @@ export function resumeCopies() {
   if (!instance) {
     instance = createResumeCopies({
       getDb: async () => (await import("./mirrorDbHandle")).getMirrorDbHandle(),
+      // Only on a device that runs the mirror: its database is the mirror's.
+      enabled: () => offlineMirrorEnabled(),
     });
     try { onIdentityChange(() => { instance.clearAll(); }); } catch { /* no auth (tests) */ }
   }

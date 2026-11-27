@@ -51,6 +51,8 @@ const {
   _setHoldingForTests, _resetSharedLiveReadsForTests, releaseIdleLiveReads, _hideGraceForTests,
 } = await import("./sharedLiveRead.js");
 const { HIDDEN_GRACE_MS } = await import("./sharedLiveReadCore.js");
+const { RECONNECT_SETTLE_MS } = await import("./sharedLiveRead.js");
+const { isSavedShowing, _resetResumeFreshnessForTests } = await import("../offline/resumeFreshness.js");
 const { LINGER_MS, SHORT_LINGER_MS, MAX_IDLE_BYTES } = await import("./sharedLiveReadCore.js");
 const stock = await import("../components/stock/useStock.js");
 const layby = await import("../components/layby/useLayby.js");
@@ -305,6 +307,44 @@ describe("the stock chokepoint (usePathState) — the Refill queue's read", () =
     expect(countOf("refill_engine/open")).toBe(1);   // the held listener, not a second download
     expect(again.out.value).toEqual({ hub2: { p1: { s9: { qty: 1 } } } });
     again.unmount();
+  });
+
+  it("a held value from before the socket dropped is handed over with Updating… up, until the reconnect settles (Sonnet review, #1019)", () => {
+    _resetResumeFreshnessForTests();
+    const grace = _hideGraceForTests();
+    const src = mountHook(() => stock.useEngineOpen());
+    push("refill_engine/open", { v: 1 });
+    src.unmount();
+    act(() => { grace.hidden(); });
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    act(() => { handlers.get(".info/connected").cb({ val: () => false }); });   // dropped while away
+    act(() => { grace.visible(); });
+    const again = mountHook(() => stock.useEngineOpen());
+    expect(again.out.value).toEqual({ v: 1 });       // still handed over (what the SDK does offline)…
+    expect(isSavedShowing()).toBe(true);              // …but never as if live
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    vi.advanceTimersByTime(RECONNECT_SETTLE_MS);
+    expect(isSavedShowing()).toBe(false);
+    // A changed value from the server confirms it at once, too.
+    act(() => { handlers.get(".info/connected").cb({ val: () => false }); });
+    const third = mountHook(() => stock.useEngineOpen());
+    expect(isSavedShowing()).toBe(true);
+    push("refill_engine/open", { v: 2 });
+    expect(isSavedShowing()).toBe(false);
+    act(() => { handlers.get(".info/connected").cb({ val: () => true }); });
+    again.unmount(); third.unmount();
+  });
+
+  it("after the grace has released, an entry that goes idle later is not parked for the night", () => {
+    const grace = _hideGraceForTests();
+    const kept = mountHook(() => stock.useEngineOpen());
+    push("refill_engine/open", {});
+    act(() => { grace.hidden(); });
+    vi.advanceTimersByTime(HIDDEN_GRACE_MS);          // grace runs out while hidden
+    kept.unmount();                                   // a screen unmounts afterwards, still hidden
+    vi.advanceTimersByTime(60_000);                   // its short hold runs out
+    expect(closes).toContain("refill_engine/open");   // dropped, not parked
+    act(() => { grace.visible(); });
   });
 
   it("a LONG hide still lets go of idle listeners — by its timer, or the moment the page wakes", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isNewVersion, shouldAutoReload, setUpdateBusy, isUpdateBusy } from "./updateChecker.js";
+import { isNewVersion, shouldAutoReload, shouldReloadOnReturn, setUpdateBusy, isUpdateBusy } from "./updateChecker.js";
 
 const IDLE = 3 * 60 * 1000;
 
@@ -56,5 +56,24 @@ describe("busy registry", () => {
     expect(isUpdateBusy()).toBe(true);
     setUpdateBusy("payment", false);
     expect(isUpdateBusy()).toBe(false);
+  });
+});
+
+describe("shouldReloadOnReturn — the stale-bundle backstop (Sonnet review, #1019)", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const base = { updateAvailable: true, busy: false, buildAgeMs: DAY, hiddenMs: 30 * 60_000 };
+  it("a build out for a day is taken on a return after 30+ minutes away", () => {
+    expect(shouldReloadOnReturn(base)).toBe(true);
+  });
+  it("never on a quick trip to another app, never for a fresh build", () => {
+    expect(shouldReloadOnReturn({ ...base, hiddenMs: 29 * 60_000 })).toBe(false);
+    expect(shouldReloadOnReturn({ ...base, buildAgeMs: DAY - 1 })).toBe(false);
+  });
+  it("never busy, never the TV, latch and attempt floor respected", () => {
+    expect(shouldReloadOnReturn({ ...base, busy: true })).toBe(false);
+    expect(shouldReloadOnReturn({ ...base, tvRoute: true })).toBe(false);
+    expect(shouldReloadOnReturn({ ...base, alreadyAttempted: true })).toBe(false);
+    expect(shouldReloadOnReturn({ ...base, forced: true, alreadyAttempted: true, attempts: 1 })).toBe(true);
+    expect(shouldReloadOnReturn({ ...base, forced: true, attempts: 5 })).toBe(false);
   });
 });

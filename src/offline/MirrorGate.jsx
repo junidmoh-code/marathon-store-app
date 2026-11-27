@@ -27,6 +27,7 @@ import {
   offlineMirrorEnabled, subscribeMirrorSwitch, watchMirrorSwitchLive,
 } from "./killSwitch";
 import { setOfflineMirrorRuntime } from "./mirrorRuntime";
+import { isMirrorStale, mirrorFeedOkAt } from "./resumeFreshness";
 
 // PR #618 raced the start against an 8-second bound, because a start that
 // hung left the app behind a setup screen that could never finish. Nothing is
@@ -277,11 +278,9 @@ export function MirrorGate({ auth, storage, children }) {
   // seconds. A suspended device is resumed by idleSuspend instead.
   useEffect(() => {
     if (!enabled || !runtime || typeof document === "undefined") return undefined;
-    let fresh = null;
-    import("./resumeFreshness").then((m) => { fresh = m; }).catch(() => {});
     const onVis = () => {
-      if (document.visibilityState !== "visible" || !fresh) return;
-      if (fresh.isMirrorStale(fresh.mirrorFeedOkAt(), Date.now())) runtime.catchUp?.();
+      if (document.visibilityState !== "visible") return;
+      if (isMirrorStale(mirrorFeedOkAt(), Date.now())) runtime.catchUp?.();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);

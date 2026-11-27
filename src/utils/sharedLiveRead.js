@@ -13,6 +13,7 @@ import { createSharedLiveReads, createHideGrace, LINGER_MS, SHORT_LINGER_MS } fr
 import { onIdentityChange } from "./identityChange";
 import { legFor } from "../offline/localReads";
 import { isLegServing } from "../offline/serving";
+import { setSavedShowing } from "../offline/resumeFreshness";
 
 // ── HOW LONG EACH NODE IS HELD, AND ROUGHLY HOW BIG IT IS ───────────────────
 //
@@ -75,8 +76,11 @@ export function holdsInMode(mode) {
 }
 let holding = holdsInMode(import.meta.env && import.meta.env.MODE);
 
+// The "Updating…" marker's key for a held live value not yet re-confirmed.
+const markerKey = (key) => `live|${key}`;
 const shared = createSharedLiveReads({
   listen: (target, onSnap, onErr) => onValue(target, onSnap, onErr),
+  onConfirm: (key) => setSavedShowing(markerKey(key), false),
   policy: (key) => (holding ? lingerPolicyFor(key) : { lingerMs: 0, bytes: 0 }),
 });
 
@@ -88,7 +92,10 @@ const shared = createSharedLiveReads({
 let wired = false;
 // The hide grace (sharedLiveReadCore.createHideGrace): idle entries survive a
 // short trip to another app and go when the page has been hidden longer.
-const grace = createHideGrace({ release: () => shared.releaseIdle() });
+// When the grace runs out the idle entries go AND parking stops for the rest
+// of this hide: an entry that goes idle afterwards lingers and drops as usual,
+// rather than being parked until the page is next seen (Sonnet review, #1019).
+const grace = createHideGrace({ release: () => { shared.releaseIdle(); shared.setHidden(false); } });
 const onHidden = () => { shared.setHidden(true); grace.hidden(); };
 const onVisible = () => { grace.visible(); shared.setHidden(false); };
 function wire() {
@@ -109,6 +116,8 @@ function wire() {
   wireConnection();
 }
 
+export const RECONNECT_SETTLE_MS = 3000;
+
 // Opened with the hold, so not under the test runner: the hook tests that
 // predate this count every onValue call a mount makes, and with nothing held
 // there is nothing idle for a dropped connection to release.
@@ -123,9 +132,20 @@ function wireConnection() {
     // (.info/connected starts false before the first connect — only a TRUE
     // that turns false is a loss.)
     let was = false;
+    let settle = null;
     onValue(ref(database, ".info/connected"), (snap) => {
       const now = snap.val() === true;
-      if (was && !now) grace.connectionLost();
+      if (was && !now) {
+        grace.connectionLost();
+        shared.markUnconfirmed();
+        if (settle) { clearTimeout(settle); settle = null; }
+      } else if (!was && now) {
+        // Back: the SDK re-sends every held listen and the server answers
+        // with what changed (or nothing). Give it RECONNECT_SETTLE_MS, then
+        // what is held is as current as a listener that never dropped.
+        if (settle) clearTimeout(settle);
+        settle = setTimeout(() => { settle = null; shared.confirmAll(); }, RECONNECT_SETTLE_MS);
+      }
       was = now;
     }, () => {});
   } catch { /* no connection state — idle entries still go on hide and by their hold */ }
@@ -145,7 +165,17 @@ function mirrorServes(path) {
 export function subscribeLivePath(path, onSnap, onErr) {
   wire();
   const stop = shared.subscribe(path, () => ref(database, path), onSnap, onErr);
-  return () => stop({ linger: !mirrorServes(path) });
+  flagIfUnconfirmed(path);
+  return () => { stop({ linger: !mirrorServes(path) }); unflagIfUnused(path); };
+}
+
+// A screen was handed a held value the socket has not re-confirmed: up goes
+// "Updating…" until it is (onConfirm), or until nobody is looking at it.
+function flagIfUnconfirmed(key) {
+  if (shared.isUnconfirmed(key)) setSavedShowing(markerKey(key), true);
+}
+function unflagIfUnused(key) {
+  if (!shared.isInUse(key)) setSavedShowing(markerKey(key), false);
 }
 
 /**
@@ -158,7 +188,8 @@ export function subscribeLiveQuery(key, makeQuery, onSnap, onErr) {
   wire();
   const path = String(key).split("?")[0];
   const stop = shared.subscribe(key, makeQuery, onSnap, onErr);
-  return () => stop({ linger: !mirrorServes(path) });
+  flagIfUnconfirmed(key);
+  return () => { stop({ linger: !mirrorServes(path) }); unflagIfUnused(key); };
 }
 
 /** The key for a one-constraint child query, value escaped so it cannot
@@ -171,6 +202,7 @@ export function releaseIdleLiveReads() { shared.releaseIdle(); }
 export function _resetSharedLiveReadsForTests() { shared.reset(); }
 export function _setHoldingForTests(on) { holding = !!on; if (wired) wireConnection(); }
 export function _connectionLostForTests() { shared.connectionLost(); }
+export function _confirmAllForTests() { shared.confirmAll(); }
 /** The hide grace the document's visibilitychange drives (hidden()/visible()). */
 export function _hideGraceForTests() { return { hidden: onHidden, visible: onVisible }; }
 export function _sharedLiveReadStatsForTests() { return shared.stats(); }

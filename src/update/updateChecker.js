@@ -9,9 +9,11 @@
 //   - on the next cold start (index.html is served no-cache, so any fresh
 //     load is the new build),
 //   - on a tap of the pill (applyUpdate),
-//   - or, so no device can sit on an old bundle for ever, in the 03:00–05:00
-//     SAST quiet window with the store shut, after IDLE_MS untouched and with
-//     nothing busy.
+//   - in the 03:00–05:00 SAST quiet window with the store shut, after IDLE_MS
+//     untouched and with nothing busy,
+//   - or, once the waiting build has been out for a day, on the next return
+//     to the app after 30+ minutes away (shouldReloadOnReturn) — so a phone
+//     frozen every night cannot sit on an old bundle for ever.
 // The old rules reloaded a tab when it went hidden and a mirrored device 30 s
 // after any deploy; with several deploys a day that was a cold start — and a
 // fresh download of every non-mirrored read — each time staff came back to the
@@ -159,9 +161,31 @@ export function shouldAutoReload({
   return !alreadyAttempted;
 }
 
+// ── THE BACKSTOP: A BUILD OUT FOR A DAY IS TAKEN ON A LONG RETURN ───────────
+// (Sonnet architect review, #1019.) A phone is frozen at 03:00, so the quiet
+// window alone could leave it on an old bundle for as long as the OS keeps the
+// page — the $400/month failure. So once the waiting build has been deployed
+// for STALE_BUILD_MS, the next RETURN to the app after at least LONG_AWAY_MS
+// hidden takes it, at the moment of return, before anybody has started
+// anything (nothing busy; the mirror and saved copies paint the reloaded page
+// at once). A quick trip to another app never reloads.
+export const STALE_BUILD_MS = 24 * 60 * 60 * 1000;
+export const LONG_AWAY_MS = 30 * 60 * 1000;
+
+export function shouldReloadOnReturn({
+  updateAvailable, busy, tvRoute = false, buildAgeMs, hiddenMs,
+  forced = false, attempts = 0, alreadyAttempted = false,
+}) {
+  if (!updateAvailable || busy || tvRoute) return false;
+  if (!(buildAgeMs >= STALE_BUILD_MS) || !(hiddenMs >= LONG_AWAY_MS)) return false;
+  return forced ? attempts < FORCED_MAX_ATTEMPTS : !alreadyAttempted;
+}
+
 // ── Runtime ───────────────────────────────────────────────────────────────────
 let updateAvailable = false;
 let fetchedVersion = null;
+let fetchedBuiltAt = null;   // ms the waiting build was built (version.json builtAt)
+let hiddenAt = null;
 let lastActivity = Date.now();
 const subscribers = new Set();
 
@@ -244,6 +268,8 @@ async function check() {
     const data = await res.json();
     if (isNewVersion(CURRENT_VERSION, data?.version)) {
       fetchedVersion = data.version;
+      const built = Date.parse(data?.builtAt ?? "");
+      fetchedBuiltAt = Number.isFinite(built) ? built : null;
       if (!updateAvailable) {
         updateAvailable = true;
         notify();
@@ -273,7 +299,20 @@ export function startUpdateChecker() {
   // reloads. Going hidden does nothing at all: a hidden tab is a person who
   // will be back in a moment, and reloading it is what made them wait.
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") check();
+    if (document.visibilityState === "hidden") { if (hiddenAt === null) hiddenAt = Date.now(); return; }
+    const away = hiddenAt === null ? 0 : Date.now() - hiddenAt;
+    hiddenAt = null;
+    if (shouldReloadOnReturn({
+      updateAvailable,
+      busy: isUpdateBusy(),
+      tvRoute: isTvScreen(),
+      buildAgeMs: fetchedBuiltAt === null ? 0 : Date.now() - fetchedBuiltAt,
+      hiddenMs: away,
+      forced: forcedMode,
+      attempts: forcedAttempts(),
+      alreadyAttempted: alreadyAttempted(),
+    })) { applyUpdate(); return; }
+    check();
   });
   check();
 }

@@ -44,11 +44,15 @@ vi.mock("../firebase", () => ({ auth: { currentUser: { uid: "u1" } }, database: 
 vi.mock("../push/registerPush", () => ({ revokeBeforeSignOut: async () => {} }));
 vi.mock("./Login", () => ({ default: () => React.createElement("div", { "data-login": "" }) }));
 vi.mock("../update/updateChecker", () => ({ isUpdateBusy: () => false }));
+const binds = [];
+vi.mock("../utils/activeStore", async (orig) => ({ ...(await orig()), bindActiveStore: (a) => { binds.push(a); } }));
 
 const AuthGate = (await import("./AuthGate.jsx")).default;
 const { usePermissions } = await import("./PermissionsContext.jsx");
 const { _setResumeCopiesForTests } = await import("../offline/resumeCopy.js");
 const { isSavedShowing } = await import("../offline/resumeFreshness.js");
+const { setMirrorSwitchValue } = await import("../offline/killSwitch.js");
+setMirrorSwitchValue(true);   // saved copies exist only on a device that runs the mirror
 
 const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 5)); }); };
 const user = { uid: "u1", email: "staff@example.com", isAnonymous: false, getIdTokenResult: async () => ({ claims: {} }) };
@@ -74,6 +78,7 @@ describe("AuthGate after the page was thrown away", () => {
     // Discarded: a fresh page, nothing in memory, the socket not answering yet.
     _setResumeCopiesForTests(null);
     fb.answer = false;
+    binds.length = 0;
     const page2 = mount();
     await settle();
     const text = JSON.stringify(page2.r.toJSON());
@@ -81,12 +86,15 @@ describe("AuthGate after the page was thrown away", () => {
     expect(page2.seen.app).toBe(true);
     expect(page2.seen.ctx.hasPermission("source")).toBe(true);
     expect(isSavedShowing()).toBe(true);                    // "Updating…" is up
+    expect(binds.length).toBe(0);                           // the saved record binds no shop
+    const bindsBeforeLive = binds.length;
 
     // The live record lands — and it wins.
     fb.permRecord = { username: "pat", permissions: ["source", "returns"], destShop: "marathon-pe" };
     act(() => { for (const l of fb.userCbs) l(); });
     expect(page2.seen.ctx.hasPermission("returns")).toBe(true);
     expect(isSavedShowing()).toBe(false);
+    expect(binds.length).toBe(bindsBeforeLive + 1);         // …the live one does
     act(() => page2.r.unmount());
   });
 
@@ -100,5 +108,18 @@ describe("AuthGate after the page was thrown away", () => {
     expect(JSON.stringify(p.r.toJSON())).toContain("Loading");
     expect(isSavedShowing()).toBe(false);
     act(() => p.r.unmount());
+  });
+});
+
+describe("AuthGate's saved record is display-only", () => {
+  it("a device whose mirror is off never opens on a saved record", async () => {
+    setMirrorSwitchValue(false);
+    _setResumeCopiesForTests(null);
+    fb.user = user; fb.answer = false;
+    const p = mount();
+    await settle();
+    expect(JSON.stringify(p.r.toJSON())).toContain("Loading");
+    act(() => p.r.unmount());
+    setMirrorSwitchValue(true);
   });
 });

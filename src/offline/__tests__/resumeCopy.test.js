@@ -4,7 +4,7 @@
 import { describe, it, expect } from "vitest";
 import { IDBFactory } from "fake-indexeddb";
 import { openMirrorDb } from "../db";
-import { createResumeCopies, RESUME_PREFIX, RESUME_WRITE_EVERY_MS } from "../resumeCopy";
+import { createResumeCopies, RESUME_PREFIX, RESUME_WRITE_EVERY_MS, RESUME_MAX_AGE_MS } from "../resumeCopy";
 
 function rig() {
   const dbP = openMirrorDb({ indexedDBFactory: new IDBFactory(), dbName: "resume-test" });
@@ -74,5 +74,20 @@ describe("resume copies live in the mirror's own database", () => {
     expect(await c.load("u1", "k")).toBe(null);
     expect(c.save("u1", "k", { a: 1 })).toBe(true);
     expect(c.peek("u1", "k").value).toEqual({ a: 1 });
+  });
+
+  it("a copy older than a week is not offered; forget() removes one; off means nothing at all", async () => {
+    const r = rig();
+    const c = r.copies();
+    c.save("u1", "k", { a: 1 }); await r.settle();
+    r.advance(RESUME_MAX_AGE_MS + 1);
+    expect(await r.copies().load("u1", "k")).toBe(null);
+    const d = r.copies();
+    d.save("u1", "j", { b: 2 }); await r.settle();
+    d.forget("u1", "j"); await r.settle();
+    expect(await r.copies().load("u1", "j")).toBe(null);
+    const off = createResumeCopies({ getDb: () => r.dbP, enabled: () => false });
+    expect(off.save("u1", "x", 1)).toBe(false);
+    expect(await off.load("u1", "k")).toBe(null);
   });
 });
