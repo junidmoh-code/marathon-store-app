@@ -32,7 +32,7 @@
 // so nothing starts until auth says there is a user, and everything stops when
 // it says there is not.
 
-import { markMirrorFeedOk, resetMirrorFreshness } from "./resumeFreshness";
+import { markMirrorFeedOk, markMirrorFeedFailed, resetMirrorFreshness, setMirrorSuspended } from "./resumeFreshness";
 import { openMirrorDb } from "./db";
 import { createRtdbAdapter } from "./rtdbAdapter";
 import { createConnectionTracker } from "./connection";
@@ -284,14 +284,21 @@ export async function startOfflineMirror({
   async function runOnePass() {
     const signal = signalled;
     signalled = false;
-    const report = await engine.runPass({ signal });
-    state.lastPass = { at: now(), ...report };
     // The feed is CURRENT only if this pass actually read it. Skipped (backing
-    // off, benched) or failed is not current, however recent the pass.
-    if (report.feed && !report.feed.skipped && !report.errors.some((e) => e.where === "feed")) {
-      state.feedOkAt = now();
-      markMirrorFeedOk(state.feedOkAt);
-    }
+    // off, benched) or failed is not current, however recent the pass. Told
+    // the moment the feed step ends (onFeed), so the "Updating…" pill comes
+    // down — or turns into "Couldn't update" — without waiting for the range
+    // walks behind it.
+    const noteFeed = (feed, failed) => {
+      if (feed && !feed.skipped && !failed) {
+        state.feedOkAt = now();
+        markMirrorFeedOk(state.feedOkAt);
+      } else {
+        markMirrorFeedFailed(now());
+      }
+    };
+    const report = await engine.runPass({ signal, onFeed: noteFeed });
+    state.lastPass = { at: now(), ...report };
     state.lastError = report.errors.length ? report.errors[0] : null;
 
     // Wake the screens whose nodes moved — and only those.
@@ -669,6 +676,7 @@ export async function startOfflineMirror({
     suspendLive() {
       if (stopped || suspended) return false;
       suspended = true;
+      setMirrorSuspended(true);
       clearTimeoutFn(timer);
       clearTimeoutFn(signalTimer);
       if (signalUnsub) { signalUnsub(); signalUnsub = null; }
@@ -677,6 +685,7 @@ export async function startOfflineMirror({
     resumeLive() {
       if (!suspended) return false;
       suspended = false;
+      setMirrorSuspended(false);
       startedAt = now();
       if (stopped || !wanted) return true;
       schedule(0);
@@ -709,6 +718,7 @@ export async function startOfflineMirror({
       // the live subscription it now needs.
       setServingLegs([]);
       setForcedUpdateMode(false);
+      setMirrorSuspended(false);
       resetMirrorFreshness();
     },
   };
