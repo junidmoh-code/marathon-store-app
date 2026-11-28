@@ -118,4 +118,9 @@ describe("blockers — the brief's premise not holding", () => {
     const p = planCorrection(collectFacts({ ...base, rows, cells, manualActors: ["jun"] }));
     expect(p.blockers.map((b) => b.code)).toContain("mixed_transfer");
   });
+  it("includes a receive exactly on an offset-given window start (instants, not strings)", () => {
+    const { rows, cells } = cleanWorld();
+    const f = collectFacts({ ...base, receiveFrom: "2026-11-25T10:00:00+02:00", rows, cells, manualActors: ["jun"] });
+    expect(f.receiveEvents[0].units).toBe(10);
+  });
 });

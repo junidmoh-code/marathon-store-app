@@ -90,7 +90,7 @@ export function sizeMatchShare(a, b) {
  */
 export function levelBefore(rows, loc, sk, ts, nowCells) {
   const touching = rows
-    .filter((r) => r.ts >= ts && sizeKey(r.size) === sk && r.before && Object.prototype.hasOwnProperty.call(r.before, loc))
+    .filter((r) => Date.parse(r.ts) >= Date.parse(ts) && sizeKey(r.size) === sk && r.before && Object.prototype.hasOwnProperty.call(r.before, loc))
     .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
   if (touching.length) return Number(touching[0].before[loc]) || 0;
   return get(nowCells, loc, sk);
@@ -105,14 +105,17 @@ export function levelBefore(rows, loc, sk, ts, nowCells) {
 export function collectFacts({ wrongPid, rightPid, rows, cells, receiveFrom, receiveTo, manualDay, manualActors = null, userNames = {} }) {
   const W = rows.filter((r) => r.productId === wrongPid);
   const Rt = rows.filter((r) => r.productId === rightPid);
-  const inReceiveWindow = (r) => r.ts >= receiveFrom && r.ts < receiveTo;
+  // Compare instants, not strings: a boundary given with an offset ("…+02:00")
+  // must still include a "…Z" row on the same instant (CodeRabbit, PR #1028).
+  const fromMs = Date.parse(receiveFrom), toMs = Date.parse(receiveTo);
+  const inReceiveWindow = (r) => Date.parse(r.ts) >= fromMs && Date.parse(r.ts) < toMs;
   const isReceive = (r) => r.type === "received" || r.type === "opening";
   const name = (uid) => userNames[uid] || uid;
 
   // a) R — receives onto WRONG
   const wrongReceives = W.filter((r) => isReceive(r) && inReceiveWindow(r));
   const receiveEvents = groupReceiveEvents(wrongReceives).map((e) => ({ ...e, actorName: name(e.actor) }));
-  const firstReceiveTs = wrongReceives.length ? wrongReceives.map((r) => r.ts).sort()[0] : null;
+  const firstReceiveTs = wrongReceives.length ? wrongReceives.map((r) => r.ts).sort((a, b) => Date.parse(a) - Date.parse(b))[0] : null;
 
   // The same delivery received onto RIGHT too? (breaks the brief's premise)
   const rightReceives = Rt.filter((r) => isReceive(r) && inReceiveWindow(r));
@@ -127,7 +130,7 @@ export function collectFacts({ wrongPid, rightPid, rows, cells, receiveFrom, rec
   const preLevel = (loc, sk) => (firstReceiveTs ? levelBefore(W, loc, sk, firstReceiveTs, cells[wrongPid] || {}) : get(cells[wrongPid] || {}, loc, sk));
 
   // e) follow R through WRONG transfers since the receive
-  const since = (r) => firstReceiveTs && r.ts >= firstReceiveTs;
+  const since = (r) => firstReceiveTs && Date.parse(r.ts) >= Date.parse(firstReceiveTs);
   const phantom = {};
   for (const r of wrongReceives) add(phantom, r.to, sizeKey(r.size), Number(r.qty));
   const transfers = [];
