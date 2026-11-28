@@ -236,7 +236,7 @@ export default function AuthGate({ children, renderTv }) {
         setPermSaved(false);
         setSavedShowing(savedKey, false);
         copies.forget(uid, savedKey);   // a refused read must not be painted again on the next cold start
-        console.warn("permissions read failed:", err); setPermReadError(true); setPermRecord(null); setPermLoaded(true);
+        console.warn("permissions read failed:", err); setPermReadError(true); setPermRecord(null); setPermUid(uid); setPermLoaded(true);
       }
     );
     return () => { cancelled = true; setSavedShowing(savedKey, false); off(); };
@@ -288,7 +288,17 @@ export default function AuthGate({ children, renderTv }) {
   }
 
   if (!user || user.isAnonymous) return <Login />;
-  if (!permLoaded) return <LoadingScreen />;
+  // ── NEVER A RENDER WITH ANOTHER ACCOUNT'S (OR NO) RECORD (TV board, 28 Nov 2026) ──
+  // permLoaded is left TRUE by the signed-out branch above, so the first render
+  // after a sign-in or a restored session used to reach the app with the user
+  // set and permRecord still null — "no destShop", i.e. an unscoped account.
+  // That one render opened a whole-node /orders listen; for a shop-pinned
+  // account the rules refuse it, the shared-read hold kept it open past the
+  // unmount, and the SDK, serving the board's own destShop query from that
+  // pending whole-node view, cancelled both when the refusal came back: the
+  // store TV sat on 0 in every column. Nothing renders until the record (saved
+  // or live, or a read error) belongs to THIS uid.
+  if (!permLoaded || permUid !== user.uid) return <LoadingScreen />;
 
   const isSuperAdmin  = isSuperAdminEmail(user.email);
   // A login that needs a device code: the code screen and nothing else until
