@@ -21,6 +21,15 @@
 //     straight through, except that each merge movement gains a `note` naming
 //     this merge. The movement's `reason` stays "product_merge" — other code
 //     matches that exact string (scripts/repair-fulfil-credit-gap.mjs).
+//
+// KNOWN LIMITS of narrowDb, both accepted for THIS pair (Sonnet review, #1029):
+//   • /barcodes has no productId index, so a /barcodes row owned by the
+//     duplicate but absent from its own `barcodes` map would be missed. Its
+//     12 rows (00040275–00040286) all match its map, read one by one.
+//   • style_code_index sibling entries naming the duplicate are not found by
+//     the productId query. The duplicate has no style code (sameProductProblems
+//     refuses one), and siblings are only added between products that share a
+//     code, so there is none to miss.
 
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);

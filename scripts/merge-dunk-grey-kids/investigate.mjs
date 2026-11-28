@@ -15,7 +15,11 @@ import { KEEP_ID, REMOVE_ID, KEEP_STYLE_NORMALISED, mapSizes, sameProductProblem
 
 const { COUNT_SESSIONS_PATH, COUNTED_PATH } = createRequire(import.meta.url)("../../functions/lib/merge-disposition.cjs");
 
-export async function investigate(db) {
+// The highest BMP character: a key-prefix range is [prefix, prefix + KEY_END].
+// Written as an escape so a reader (or a grep) can see it; the raw character is invisible.
+export const KEY_END = "\uf8ff";
+
+export async function investigate(db, { sales: withSales = true } = {}) {
   const val = async (path) => (await db.ref(path).once("value")).val();
   const keep = await val(`products/${KEEP_ID}`);
   const remove = await val(`products/${REMOVE_ID}`);
@@ -36,7 +40,8 @@ export async function investigate(db) {
   // Sales: the ledger from the moment the ORIGINAL was created (19 Nov) — a
   // bounded, indexed (ts) window, filtered to the two ids.
   const fromIso = new Date(Number(KEEP_ID.slice(1))).toISOString();
-  const mv = (await db.ref("stock_movements").orderByChild("ts").startAt(fromIso).once("value")).val() || {};
+  // Report only — the apply path skips it ({ sales: false }).
+  const mv = withSales ? ((await db.ref("stock_movements").orderByChild("ts").startAt(fromIso).once("value")).val() || {}) : {};
   const sales = { [KEEP_ID]: { sold: 0, returned: 0, last: null }, [REMOVE_ID]: { sold: 0, returned: 0, last: null } };
   const removeMovements = [];
   for (const [id, m] of Object.entries(mv)) {
@@ -59,7 +64,7 @@ export async function investigate(db) {
     .map(([id, r]) => ({ id, requestingLocation: r.requestingLocation, size: r.size, qty: r.qty, createdAt: r.createdAt, engine: !!r.createdFrom?.engine }));
   const displayRegister = [];
   for (const loc of locs) {
-    const hits = (await db.ref(`settings/hubSneakerCount/register/${loc}`).orderByKey().startAt(`${REMOVE_ID}__`).endAt(`${REMOVE_ID}__`).once("value")).val();
+    const hits = (await db.ref(`settings/hubSneakerCount/register/${loc}`).orderByKey().startAt(`${REMOVE_ID}__`).endAt(`${REMOVE_ID}__${KEY_END}`).once("value")).val();
     for (const k of Object.keys(hits || {})) if (k.startsWith(`${REMOVE_ID}__`)) displayRegister.push(`${loc}/${k}`);
   }
   const sessions = (await val(COUNT_SESSIONS_PATH)) || {};
@@ -70,7 +75,7 @@ export async function investigate(db) {
     countedByLoc[loc] = [];
     if (!sid) continue;
     for (const pid of [REMOVE_ID, KEEP_ID]) {
-      const hits = (await db.ref(`${COUNTED_PATH}/${loc}/${sid}`).orderByKey().startAt(`${pid}::`).endAt(`${pid}::`).once("value")).val();
+      const hits = (await db.ref(`${COUNTED_PATH}/${loc}/${sid}`).orderByKey().startAt(`${pid}::`).endAt(`${pid}::${KEY_END}`).once("value")).val();
       for (const [k, rec] of Object.entries(hits || {})) {
         if (!k.startsWith(`${pid}::`)) continue;
         if (pid === REMOVE_ID) countedRecords.push(`${loc}/${sid}/${k}`);

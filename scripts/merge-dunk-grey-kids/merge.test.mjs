@@ -90,7 +90,60 @@ describe("plan (dry run)", () => {
   });
 });
 
+// The fake's orderByKey() ignores startAt/endAt; real RTDB honours them. This
+// wrapper applies the real inclusive key range, so a prefix query whose upper
+// bound is wrong (e.g. endAt without the \uf8ff suffix) finds nothing here too.
+function ranged(db) {
+  return { ref(p = "") {
+    const real = db.ref(p);
+    return { ...real, orderByKey() {
+      const r = {};
+      const q = { startAt(k) { r.s = k; return q; }, endAt(k) { r.e = k; return q; }, async once() {
+        const v = (await real.once()).val() || {};
+        const hit = Object.entries(v).filter(([k]) => (r.s === undefined || k >= r.s) && (r.e === undefined || k <= r.e));
+        return { val: () => (hit.length ? Object.fromEntries(hit) : null) };
+      } };
+      return q;
+    } };
+  } };
+}
+
+describe("prefix reads (real key-range semantics)", () => {
+  it("finds a display-register slot and a count record under the duplicate/original by prefix", async () => {
+    const w = base({ settings: { hubSneakerCount: {
+      sessions: { central: { sessionId: "s1" } },
+      counted: { central: { s1: { [`${KEEP_ID}::31`]: { at: 1 }, [`${REMOVE_ID}::25`]: { at: 1 } } } },
+      register: { hub3: { [`${REMOVE_ID}__24`]: { at: 1 }, [`${KEEP_ID}__26`]: { at: 1 } } },
+    } } });
+    const inv = await investigate(ranged(makeFakeDb(w)));
+    expect(inv.refs.displayRegister).toEqual([`hub3/${REMOVE_ID}__24`]);
+    expect(inv.refs.countedRecords).toEqual([`central/s1/${REMOVE_ID}::25`]);
+    const out = planFrom(inv);
+    expect(out.plan.countedRemovals.map((r) => r.size)).toEqual(["31"]);
+    expect(out.safeToApply).toBe(false);
+  });
+});
+
 describe("apply", () => {
+  it("refuses when a request on the duplicate opens between the plan and the merge", async () => {
+    const db = makeFakeDb(base());
+    let reads = 0;
+    const racing = { ref(p = "") {
+      const real = db.ref(p);
+      if (p !== "refill_requests") return real;
+      return { ...real, orderByChild(f) { const q = real.orderByChild(f); return { equalTo(v) { return { async once() {
+        reads += 1;
+        if (reads === 2) db.state.root.refill_requests = { late: { productId: REMOVE_ID, status: "open", size: "24", qty: 1 } };
+        return q.equalTo(v).once();
+      } }; } }; } };
+    } };
+    const before = JSON.stringify(db.state.root.stock);
+    const r = await run(racing, { apply: true, nowMs: NOW, log: () => {} });
+    expect(r.applied).toBe(false);
+    expect(r.refused.join(" ")).toMatch(/opened during preparation/);
+    expect(JSON.stringify(db.state.root.stock)).toBe(before);
+  });
+
   it("refuses — and writes nothing — while a blocker stands", async () => {
     const w = base({ refill_requests: { r1: { productId: REMOVE_ID, status: "open", size: "24", qty: 3 } } });
     const db = makeFakeDb(w);

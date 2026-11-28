@@ -43,11 +43,16 @@ export async function verify(db, { plan, locs, barcodeCodes }) {
 }
 
 export async function run(db, { apply, nowMs, log = console.log }) {
-  const inv = await investigate(db);
+  const inv = await investigate(db, { sales: false });
   const out = planFrom(inv);
   printPlan(out, log);
   if (!out.safeToApply) return { applied: false, refused: out.blockers, plan: out.plan };
   if (!apply) return { applied: false, dryRun: true, plan: out.plan };
+  // Last look, immediately before the merge: a request raised on the duplicate
+  // since the investigation must still stop it (performMerge fences stock only).
+  const late = (await db.ref("refill_requests").orderByChild("productId").equalTo(REMOVE_ID).once("value")).val() || {};
+  const lateOpen = Object.keys(late).filter((k) => late[k] && late[k].status === "open");
+  if (lateOpen.length) return { applied: false, refused: [`${lateOpen.length} refill request(s) on the duplicate opened during preparation.`], plan: out.plan };
   const barcodeCodes = Object.keys(inv.refs.barcodeRows || {});
   const res = await performMerge(narrowDb(db, { loserId: REMOVE_ID, barcodeCodes, note: MERGE_NOTE }), {
     loserId: REMOVE_ID, survivorId: KEEP_ID, actor: ACTOR, nowMs,
