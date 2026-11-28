@@ -324,7 +324,20 @@ function Barcodes({ products, BcsCard, css, Studio, shell }) {
   const base = order.map((id) => byId[id]).filter(Boolean).map((p) => ({ ...p, retailPrice: p.retailPrice || 750 }));
   // ?many=1 (phone / desktop / warehouse): the catalogue repeated to 64, so the
   // pinned-header tests can scroll 3000px.
-  const products = q.get("many") && screen !== "barcodes"
+  // ?bulk=N (phone): N synthetic products with ~110 KB local photos
+  // (scripts/sky-perf/gen-photos.mjs → dev/photos.local/), each its own URL so
+  // the photo cache treats every card as a distinct photo — the Marathon PE
+  // sneaker list is ~1,500 cards. Used by scripts/sky-perf/phone-scroll.mjs.
+  const BULK = Number(q.get("bulk") || 0);
+  const BRANDS = ["Nike", "Adidas", "Jordan", "New Balance", "Puma", "Asics", "Converse", "Vans", "Lacoste", "Diesel"];
+  const bulk = BULK > 0 ? Array.from({ length: BULK }, (_, i) => ({
+    id: `bulk${i}`, name: `Sample sneaker ${i + 1} ${i % 3 ? "Low Retro" : "Mid Premium Leather"}`, brand: BRANDS[i % BRANDS.length],
+    retailPrice: 650 + (i % 9) * 100, sizes: ["6", "7", "8", "9", "10"], photo: "👟",
+    // ?photoHost=http://localhost:5299 — a separate origin that answers like
+    // Firebase Storage (CORS + one-year immutable caching): phone-scroll.mjs.
+    photoUrl: `${q.get("photoHost") || ""}/dev/photos.local/${i % 80}.jpg?v=${i}`,
+  })) : null;
+  const products = bulk ? bulk : q.get("many") && screen !== "barcodes"
     ? Array.from({ length: 64 }, (_, i) => ({ ...base[i % base.length], id: `${base[i % base.length].id}-${i}` })) : base;
   const { SkyShellHeader } = await import("../components/sky/Sky.jsx");
   // The shell header App.jsx draws above every screen but home and the order view.
@@ -358,10 +371,14 @@ function Barcodes({ products, BcsCard, css, Studio, shell }) {
     // Inside AssistantView's own wrapper (overflow-x:hidden — it cancels a
     // sticky band, which is how the band scrolled away on a real phone).
     el = <div style={{ minHeight: "100vh", color: "#fff", fontFamily: "var(--sky-font)", maxWidth: 880, margin: "0 auto", overflowX: "hidden", paddingBottom: 40 }}>
-      <Phone products={products.slice(0, Number(q.get("n") || 16))} /></div>;
+      <Phone products={bulk ? products : products.slice(0, Number(q.get("n") || 16))} /></div>;
   } else {
     const { RoleIcons } = q.get("mock") ? await import("../App.jsx") : {};
     el = <Home icons={RoleIcons || null} />;
   }
+  // ?hold=1: wait for window.__go() before drawing, so a perf script can turn
+  // on network throttling first and time the photos, not the dev server.
+  if (q.get("hold")) await new Promise((r) => { window.__go = r; window.__ready = true; });
+  window.__t0 = performance.now();
   createRoot(document.getElementById("root")).render(el);
 })();
