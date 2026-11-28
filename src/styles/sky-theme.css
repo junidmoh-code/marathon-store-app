@@ -1,0 +1,278 @@
+/* ─── SKY THEME — the whole app onto the DNA, without touching each screen ────
+ *
+ * Most of this app is styled with inline style objects written for a black
+ * background (App.jsx alone is ~21k lines; ~250 component files; several of
+ * the stock screens are guarded files no reskin may edit — see CLAUDE.md). The
+ * screens that have a reference image were rebuilt by hand (src/components/sky,
+ * AssistantDesktop). Every other screen is brought onto the room HERE, by
+ * re-mapping the old dark palette where the browser serialises it into the
+ * style attribute ("background: rgb(0, 0, 0);"). A stylesheet !important beats
+ * a non-important inline declaration, so this changes how screens LOOK and
+ * nothing about what they do.
+ *
+ * The map, in the DNA's words (design/DNA.md):
+ *   page blacks ................ transparent — the room shows through, raw
+ *   dark panels / sheets / cards STANDARD glass (40% white, blur 28, rim)
+ *   faint white surfaces ....... standard glass
+ *   modal scrims ............... transparent (nothing darkens the photo)
+ *   ALL text ................... NAVY (#0b2a52). White on glass read as white
+ *                                on clouds (Junid, 2026-11-02); navy clears
+ *                                4.5:1 on glass AND on the bare sky
+ *   the old accent blue ........ navy text; solid fills become navy buttons
+ *                                (white text kept on those fills only)
+ *   orange / amber ............. navy (no orange in the DNA)
+ *   red / green ................ KEPT as deep red / deep green text on light
+ *                                glass — a refusal and a success mean something
+ *
+ * Scope: html[data-sky="on"] #root only. The TV board turns it off (useSkyOff).
+ * The screens rebuilt by hand use classes, not these inline colours, so the
+ * remap never reaches them.
+ */
+
+/* ── Type: navy ink is the default for everything in the app. Legacy screens
+ * get the deeper navy: a title there may sit on the bare sky rather than on
+ * glass, and #0b2a52 measured 4.36:1 on the sky's mid-blue. */
+html[data-sky="on"] #root { color: var(--sky-ink); --sky-legacy-ink: #04122b; }   /* deep ink: the brighter phone sky (5 Nov) put #071d3d at 4.43:1 */
+html[data-sky="on"] #root [style*="font-family: -apple-system"],
+html[data-sky="on"] #root [style*="font-family: system-ui"],
+html[data-sky="on"] #root [style*="SF Pro Display"] {
+  font-family: var(--sky-font) !important;
+}
+
+/* ── Page blacks → the room ── */
+html[data-sky="on"] #root [style*="background: rgb(0, 0, 0)"],
+html[data-sky="on"] #root [style*="background-color: rgb(0, 0, 0)"],
+html[data-sky="on"] #root [style*="background: rgb(10, 10, 10)"],
+html[data-sky="on"] #root [style*="background: rgb(8, 9, 12)"],
+html[data-sky="on"] #root [style*="background: rgb(5, 5, 5)"] {
+  background: transparent !important;
+}
+
+/* ── Dark panels, sheets and cards → white glass ── */
+html[data-sky="on"] #root [style*="background: rgb(4, 5, 10)"],
+html[data-sky="on"] #root [style*="background: rgb(6, 9, 20)"],
+html[data-sky="on"] #root [style*="background: rgb(17, 17, 17)"],
+html[data-sky="on"] #root [style*="background: rgb(20, 20, 20)"],
+html[data-sky="on"] #root [style*="background: rgb(26, 26, 26)"],
+html[data-sky="on"] #root [style*="background: rgb(28, 28, 30)"],
+html[data-sky="on"] #root [style*="background: rgb(44, 44, 46)"],
+html[data-sky="on"] #root [style*="background: rgb(11, 14, 24)"],
+html[data-sky="on"] #root [style*="background: rgb(6, 8, 15)"],
+html[data-sky="on"] #root [style*="background: rgb(12, 23, 48)"],
+html[data-sky="on"] #root [style*="background: rgb(10, 16, 32)"],
+html[data-sky="on"] #root [style*="background: rgb(13, 17, 23)"],
+html[data-sky="on"] #root [style*="background: rgb(15, 15, 15)"],
+html[data-sky="on"] #root [style*="background: rgba(12, 16, 30"],
+html[data-sky="on"] #root [style*="background: rgba(4, 6, 14"],
+html[data-sky="on"] #root [style*="background: rgba(10, 12, 22"],
+html[data-sky="on"] #root [style*="background: rgba(6, 9, 20"] {
+  background: var(--sky-glass) !important;
+  border-color: var(--sky-rim) !important;
+  box-shadow: var(--sky-highlight), var(--sky-shadow) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(1.6) brightness(1.05);
+  backdrop-filter: blur(28px) saturate(1.6) brightness(1.05);
+  color: var(--sky-ink);
+}
+/* The danger modal (shop switch on the phone) stays glass with its red rim. */
+html[data-sky="on"] #root [style*="background: rgb(28, 14, 14)"] {
+  background: var(--sky-glass-strong) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(1.6) brightness(1.05); backdrop-filter: blur(28px) saturate(1.6) brightness(1.05);
+}
+/* Bottom sheets and fixed side panels are dense with text: STRONG glass. */
+html[data-sky="on"] #root [style*="position: fixed"][style*="background: rgb(4, 5, 10)"],
+html[data-sky="on"] #root [style*="border-top-left-radius"][style*="background: rgb(4, 5, 10)"] {
+  background: var(--sky-glass-strong) !important;
+}
+
+/* ── Faint surfaces → visible glass ── */
+html[data-sky="on"] #root [style*="background: rgba(255, 255, 255, 0.0"],
+html[data-sky="on"] #root [style*="background: rgba(255, 255, 255, 0.1)"],
+html[data-sky="on"] #root [style*="background: rgba(60, 110, 255"],
+html[data-sky="on"] #root [style*="background: rgba(74, 127, 255"],
+html[data-sky="on"] #root [style*="background: rgba(120, 150, 255"],
+html[data-sky="on"] #root [style*="background: rgba(100, 100, 100"],
+html[data-sky="on"] #root [style*="background: rgba(150, 160, 190"],
+html[data-sky="on"] #root [style*="background: rgba(20, 40, 100"],
+html[data-sky="on"] #root [style*="background: rgba(251, 191, 36"],
+html[data-sky="on"] #root [style*="background: rgba(245, 158, 11"],
+html[data-sky="on"] #root [style*="background: rgba(245, 166, 35"],
+html[data-sky="on"] #root [style*="background: rgba(245, 196, 81"],
+html[data-sky="on"] #root [style*="background: rgba(255, 170, 40"],
+html[data-sky="on"] #root [style*="background: rgba(255, 159, 10"] {
+  background: rgba(255, 255, 255, 0.40) !important;
+}
+html[data-sky="on"] #root [style*="background: rgba(255, 255, 255, 0.0"][style*="border"],
+html[data-sky="on"] #root [style*="background: rgba(60, 110, 255"][style*="border"],
+html[data-sky="on"] #root [style*="background: rgba(74, 127, 255"][style*="border"] {
+  border-color: rgba(255, 255, 255, 0.75) !important;
+}
+
+/* ── Scrims → nothing over the photo ── */
+html[data-sky="on"] #root [style*="background: rgba(0, 0, 0, 0."] {
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+/* …but a small dark chip ON a photo (a gallery count, a zoom button) stays a
+   glass chip rather than vanishing. */
+html[data-sky="on"] #root button[style*="background: rgba(0, 0, 0, 0."],
+html[data-sky="on"] #root span[style*="background: rgba(0, 0, 0, 0."] {
+  background: rgba(255, 255, 255, 0.7) !important;
+  color: var(--sky-ink) !important;
+}
+
+/* ── Solid accent fills → navy primary buttons ── */
+html[data-sky="on"] #root [style*="background: rgb(74, 127, 255)"],
+html[data-sky="on"] #root [style*="background: rgb(60, 110, 255)"],
+html[data-sky="on"] #root [style*="background: rgb(10, 132, 255)"],
+html[data-sky="on"] #root [style*="background: rgb(47, 111, 224)"] {
+  background: var(--sky-navy) !important;
+  color: #fff !important;
+  border-color: var(--sky-navy) !important;
+}
+
+/* ── Borders in the old accent / hairline whites → the white rim ── */
+html[data-sky="on"] #root [style*="solid rgba(60, 110, 255"],
+html[data-sky="on"] #root [style*="solid rgba(74, 127, 255"],
+html[data-sky="on"] #root [style*="solid rgba(120, 150, 255"],
+html[data-sky="on"] #root [style*="solid rgba(255, 255, 255, 0.0"],
+html[data-sky="on"] #root [style*="solid rgba(255, 255, 255, 0.1"],
+html[data-sky="on"] #root [style*="solid rgb(74, 127, 255)"],
+html[data-sky="on"] #root [style*="solid rgba(251, 191, 36"],
+html[data-sky="on"] #root [style*="solid rgba(245, 196, 81"],
+html[data-sky="on"] #root [style*="solid rgba(255, 170, 40"] {
+  border-color: rgba(255, 255, 255, 0.75) !important;
+}
+
+/* ── Text: white, the old accent blue, the dim greys and the dim whites → white ──
+ * Matched as a whole declaration ("; color:" or at the start) so a
+ * background-color or border-color with the same value is not caught. */
+html[data-sky="on"] #root [style^="color: rgb(255, 255, 255)"], html[data-sky="on"] #root [style*="; color: rgb(255, 255, 255)"],
+html[data-sky="on"] #root [style^="color: rgb(243, 246, 255)"], html[data-sky="on"] #root [style*="; color: rgb(243, 246, 255)"],
+html[data-sky="on"] #root [style^="color: rgb(242, 242, 247)"], html[data-sky="on"] #root [style*="; color: rgb(242, 242, 247)"],
+html[data-sky="on"] #root [style^="color: rgb(233, 238, 255)"], html[data-sky="on"] #root [style*="; color: rgb(233, 238, 255)"],
+html[data-sky="on"] #root [style^="color: rgb(223, 231, 255)"], html[data-sky="on"] #root [style*="; color: rgb(223, 231, 255)"],
+html[data-sky="on"] #root [style^="color: rgb(244, 246, 255)"], html[data-sky="on"] #root [style*="; color: rgb(244, 246, 255)"],
+html[data-sky="on"] #root [style^="color: rgb(185, 192, 212)"], html[data-sky="on"] #root [style*="; color: rgb(185, 192, 212)"],
+html[data-sky="on"] #root [style^="color: rgb(183, 240, 204)"], html[data-sky="on"] #root [style*="; color: rgb(183, 240, 204)"],
+html[data-sky="on"] #root [style^="color: rgb(74, 127, 255)"], html[data-sky="on"] #root [style*="; color: rgb(74, 127, 255)"],
+html[data-sky="on"] #root [style^="color: rgb(106, 159, 255)"], html[data-sky="on"] #root [style*="; color: rgb(106, 159, 255)"],
+html[data-sky="on"] #root [style^="color: rgb(157, 188, 255)"], html[data-sky="on"] #root [style*="; color: rgb(157, 188, 255)"],
+html[data-sky="on"] #root [style^="color: rgb(60, 110, 255)"], html[data-sky="on"] #root [style*="; color: rgb(60, 110, 255)"],
+html[data-sky="on"] #root [style^="color: rgb(122, 162, 255)"], html[data-sky="on"] #root [style*="; color: rgb(122, 162, 255)"],
+html[data-sky="on"] #root [style^="color: rgb(85, 85, 85)"], html[data-sky="on"] #root [style*="; color: rgb(85, 85, 85)"],
+html[data-sky="on"] #root [style^="color: rgb(68, 68, 68)"], html[data-sky="on"] #root [style*="; color: rgb(68, 68, 68)"],
+html[data-sky="on"] #root [style^="color: rgb(102, 102, 102)"], html[data-sky="on"] #root [style*="; color: rgb(102, 102, 102)"],
+html[data-sky="on"] #root [style^="color: rgb(119, 119, 119)"], html[data-sky="on"] #root [style*="; color: rgb(119, 119, 119)"],
+html[data-sky="on"] #root [style^="color: rgb(136, 136, 136)"], html[data-sky="on"] #root [style*="; color: rgb(136, 136, 136)"],
+html[data-sky="on"] #root [style^="color: rgb(153, 153, 153)"], html[data-sky="on"] #root [style*="; color: rgb(153, 153, 153)"],
+html[data-sky="on"] #root [style^="color: rgb(142, 142, 147)"], html[data-sky="on"] #root [style*="; color: rgb(142, 142, 147)"],
+html[data-sky="on"] #root [style^="color: rgb(156, 163, 175)"], html[data-sky="on"] #root [style*="; color: rgb(156, 163, 175)"],
+html[data-sky="on"] #root [style^="color: rgb(204, 204, 204)"], html[data-sky="on"] #root [style*="; color: rgb(204, 204, 204)"],
+html[data-sky="on"] #root [style^="color: rgb(207, 214, 228)"], html[data-sky="on"] #root [style*="; color: rgb(207, 214, 228)"],
+html[data-sky="on"] #root [style^="color: rgba(255, 255, 255, 0."], html[data-sky="on"] #root [style*="; color: rgba(255, 255, 255, 0."],
+html[data-sky="on"] #root [style^="color: rgba(233, 238, 255"], html[data-sky="on"] #root [style*="; color: rgba(233, 238, 255"],
+html[data-sky="on"] #root [style^="color: rgba(157, 188, 255"], html[data-sky="on"] #root [style*="; color: rgba(157, 188, 255"],
+html[data-sky="on"] #root [style^="color: rgba(255, 255, 255, 0.3"], html[data-sky="on"] #root [style*="; color: rgba(255, 255, 255, 0.3"] {
+  color: var(--sky-legacy-ink) !important;
+}
+/* Orange and amber are not in the DNA. */
+html[data-sky="on"] #root [style^="color: rgb(251, 191, 36)"], html[data-sky="on"] #root [style*="; color: rgb(251, 191, 36)"],
+html[data-sky="on"] #root [style^="color: rgb(255, 159, 10)"], html[data-sky="on"] #root [style*="; color: rgb(255, 159, 10)"],
+html[data-sky="on"] #root [style^="color: rgb(245, 166, 35)"], html[data-sky="on"] #root [style*="; color: rgb(245, 166, 35)"],
+html[data-sky="on"] #root [style^="color: rgb(245, 158, 11)"], html[data-sky="on"] #root [style*="; color: rgb(245, 158, 11)"],
+html[data-sky="on"] #root [style^="color: rgb(255, 196, 107)"], html[data-sky="on"] #root [style*="; color: rgb(255, 196, 107)"],
+html[data-sky="on"] #root [style^="color: rgb(245, 196, 81)"], html[data-sky="on"] #root [style*="; color: rgb(245, 196, 81)"],
+html[data-sky="on"] #root [style^="color: rgb(255, 209, 102)"], html[data-sky="on"] #root [style*="; color: rgb(255, 209, 102)"] {
+  color: var(--sky-ink) !important;
+  font-weight: 700;
+}
+/* Red stays red — a refusal must still look like one — deepened and given a
+   white halo so it reads on the blue room. */
+html[data-sky="on"] #root [style*="; color: rgb(248, 113, 113)"], html[data-sky="on"] #root [style^="color: rgb(248, 113, 113)"],
+html[data-sky="on"] #root [style*="; color: rgb(255, 107, 107)"], html[data-sky="on"] #root [style^="color: rgb(255, 107, 107)"],
+html[data-sky="on"] #root [style*="; color: rgb(255, 69, 58)"], html[data-sky="on"] #root [style^="color: rgb(255, 69, 58)"] {
+  color: #b00020 !important;
+}
+html[data-sky="on"] #root [style*="background: rgba(150, 20, 20"],
+html[data-sky="on"] #root [style*="background: rgba(248, 113, 113"],
+html[data-sky="on"] #root [style*="background: rgba(255, 80, 80"],
+html[data-sky="on"] #root [style*="background: rgba(255, 107, 107"] {
+  background: rgba(255, 255, 255, 0.72) !important;
+  border-color: rgba(200, 20, 30, 0.55) !important;
+}
+html[data-sky="on"] #root [style*="background: rgba(0, 150, 70"],
+html[data-sky="on"] #root [style*="background: rgba(74, 222, 128"],
+html[data-sky="on"] #root [style*="background: rgba(74, 202, 122"] {
+  background: rgba(255, 255, 255, 0.72) !important;
+  border-color: rgba(10, 120, 60, 0.55) !important;
+}
+html[data-sky="on"] #root [style*="; color: rgb(74, 222, 128)"], html[data-sky="on"] #root [style^="color: rgb(74, 222, 128)"],
+html[data-sky="on"] #root [style*="; color: rgb(74, 202, 122)"], html[data-sky="on"] #root [style^="color: rgb(74, 202, 122)"] {
+  color: #0a6b34 !important;
+}
+
+/* ── SVG strokes in the old accent → white ── */
+html[data-sky="on"] #root svg[stroke="#4A7FFF"], html[data-sky="on"] #root svg[stroke="#6A9FFF"],
+html[data-sky="on"] #root svg [stroke="#4A7FFF"], html[data-sky="on"] #root svg[stroke="rgba(255,255,255,.35)"],
+html[data-sky="on"] #root svg[stroke="rgba(255,255,255,.65)"], html[data-sky="on"] #root svg[stroke="#fff"] {
+  stroke: var(--sky-ink);
+}
+
+/* ── Form fields → white fields with navy text ── */
+html[data-sky="on"] #root input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+html[data-sky="on"] #root textarea,
+html[data-sky="on"] #root select {
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: var(--sky-ink) !important;
+  border-color: rgba(255, 255, 255, 0.95) !important;
+  caret-color: var(--sky-navy);
+}
+html[data-sky="on"] #root input::placeholder, html[data-sky="on"] #root textarea::placeholder { color: rgba(0, 20, 49, 0.45) !important; }
+html[data-sky="on"] #root div.sky-search input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]) { background: transparent !important; color: var(--sky-ink) !important; border: 0 !important; }
+html[data-sky="on"] #root .sky-search input::placeholder { color: var(--sky-ink-2) !important; }
+html[data-sky="on"] #root input[type="checkbox"], html[data-sky="on"] #root input[type="radio"] { accent-color: var(--sky-navy); }
+
+
+/* ── White text survives ONLY on solid fills (navy buttons, the red alarm) ──
+ * Last in the file so it wins over the navy remap above, for the fill itself
+ * and everything inside it. */
+html[data-sky="on"] #root [style*="background: rgb(74, 127, 255)"], html[data-sky="on"] #root [style*="background: rgb(74, 127, 255)"] *,
+html[data-sky="on"] #root [style*="background: rgb(60, 110, 255)"], html[data-sky="on"] #root [style*="background: rgb(60, 110, 255)"] *,
+html[data-sky="on"] #root [style*="background: rgb(10, 132, 255)"], html[data-sky="on"] #root [style*="background: rgb(10, 132, 255)"] *,
+html[data-sky="on"] #root [style*="background: rgb(47, 111, 224)"], html[data-sky="on"] #root [style*="background: rgb(47, 111, 224)"] *,
+html[data-sky="on"] #root [style*="background: rgb(224, 49, 49)"], html[data-sky="on"] #root [style*="background: rgb(224, 49, 49)"] *,
+html[data-sky="on"] #root [style*="background: rgba(230, 40, 40"], html[data-sky="on"] #root [style*="background: rgba(230, 40, 40"] *,
+html[data-sky="on"] #root [style*="background: rgba(225, 40, 40"], html[data-sky="on"] #root [style*="background: rgba(225, 40, 40"] *,
+html[data-sky="on"] #root [style*="background: rgba(200, 20, 20"], html[data-sky="on"] #root [style*="background: rgba(200, 20, 20"] *,
+html[data-sky="on"] #root .sky-primary, html[data-sky="on"] #root .sky-primary *,
+html[data-sky="on"] #root .sky-szq[aria-pressed="true"], html[data-sky="on"] #root .sky-szq[aria-pressed="true"] * {
+  color: #fff !important;
+}
+
+/* ── Header bands drawn as a radial/linear gradient over the photo → glass.
+ * A gradient over the room is exactly what the DNA forbids, and the text on
+ * those bands (screen titles) sat on the bare sky's deep blue, where no dark
+ * ink reaches 4.5:1. They become standard glass instead. */
+html[data-sky="on"] #root [style*="background: radial-gradient"] {
+  background: var(--sky-glass) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(1.6) brightness(1.05); backdrop-filter: blur(28px) saturate(1.6) brightness(1.05);
+  border-color: var(--sky-rim) !important;
+}
+/* Fades to black under old hero art. */
+html[data-sky="on"] #root [style*="linear-gradient(transparent, rgb(0, 0, 0))"],
+html[data-sky="on"] #root [style*="linear-gradient(rgb(0, 0, 0), transparent)"],
+html[data-sky="on"] #root [style*="linear-gradient(transparent, rgba(0, 0, 0"] {
+  display: none !important;
+}
+/* The old dark hero photos (public/hero/*): the room is the only background. */
+html[data-sky="on"] #root img[src^="/hero/"] { display: none !important; }
+html[data-sky="on"] #root div:has(> img[src^="/hero/"]) { display: none !important; }
+
+/* ── Sidebars / rails: STRONG glass (dense with text). ── */
+html[data-sky="on"] #root aside[style*="background: rgba(255, 255, 255, 0.0"],
+html[data-sky="on"] #root aside[style*="background: rgb(4, 5, 10)"] {
+  background: var(--sky-glass-strong) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(1.6) brightness(1.05); backdrop-filter: blur(28px) saturate(1.6) brightness(1.05);
+  border-color: var(--sky-rim) !important;
+}

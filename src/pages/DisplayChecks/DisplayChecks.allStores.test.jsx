@@ -99,6 +99,10 @@ describe("gates", () => {
   });
   it("the Home card / route stays open whichever shop is active", () => {
     expect(displayChecksVisibleForViewer({ email: "a@b", permissions: ["display_checks"], destShop: "marathon-pine" })).toBe(true);
-    expect(displayChecksVisibleForViewer({ email: "a@b", permissions: [] })).toBe(false);
+    // Sky branch: Junid's policy (12 Nov 2026) — every signed-in staff member
+    // sees Display Check, permission or not (src/config/displayChecks.js); no
+    // identity at all still sees nothing.
+    expect(displayChecksVisibleForViewer({ email: "a@b", permissions: [] })).toBe(true);
+    expect(displayChecksVisibleForViewer({ permissions: ["display_checks"] })).toBe(false);
   });
 });

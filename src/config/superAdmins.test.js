@@ -10,7 +10,6 @@ import { isStockHoldSuperAdmin } from "./stockHold";
 import { isHubCountSuperAdmin, canUseHubSneakerCount } from "./hubSneakerCount";
 import { enginePolicyVisibleForViewer, enginePolicySeatingWritable, enginePolicySeatingMovable } from "./enginePolicy";
 import { isDisplayChecksSuperAdmin } from "./displayChecks";
-import { canTogglePreview, PREVIEW_TOGGLE_EMAILS } from "../components/assistant/orderViewPreview";
 import { effectiveStoreIds } from "../utils/stores";
 
 const JUNID = "gunidmoh@gmail.com";
@@ -70,8 +69,8 @@ describe.each([
   it("engine policy seating writable", () => expect(enginePolicySeatingWritable({ email })).toBe(expected));
   it("engine policy seating movable", () => expect(enginePolicySeatingMovable({ email })).toBe(expected));
   it("display checks super-admin", () => expect(isDisplayChecksSuperAdmin({ email })).toBe(expected));
-  it("sneaker-wall preview toggle", () => expect(canTogglePreview(email)).toBe(expected));
-  it("preview list carries the super admins", () => expect(PREVIEW_TOGGLE_EMAILS.includes(email)).toBe(expected));
+  // (No sneaker-wall preview toggle on the sky branch: the wall and its
+  // toggle are gone from the order view — skyOrderView.render.test.jsx.)
   it("store access bypass (via AuthGate's isSuperAdmin)", () => {
     const ids = effectiveStoreIds({ storeIds: [] }, isSuperAdmin(email));
     expect(ids.length > 0).toBe(expected);

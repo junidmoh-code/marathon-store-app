@@ -54,21 +54,24 @@ async function mount() {
   mounted.push(t);
   return t;
 }
-const shopButtons = (t) => t.root.findAll((n) => n.type === "button" && typeof n.props.children === "string"
-  && ["Marathon PE", "Trophy", "Pine", "Concrete"].includes(n.props.children));
+// Sky: the shop list is the store pill (SkyStorePill) — its stores render in
+// a popover only while open, so the pill's own props are what is asserted.
+const { SkyStorePill } = await import("../sky/Sky.jsx");
+const pill = (t) => t.root.findAllByType(SkyStorePill)[0];
+const ids = (stores) => (stores || []).map((s) => (typeof s === "string" ? s : s.id));
 
 describe("order screen for a Marathon PE account", () => {
   it("renders and offers all four shops", async () => {
     const t = await mount();
-    expect(shopButtons(t).map((b) => b.props.children).sort()).toEqual(["Concrete", "Marathon PE", "Pine", "Trophy"]);
+    const p = pill(t);
+    expect(ids(p.props.stores).map((id) => p.props.labelOf(id)).sort()).toEqual(["Concrete", "Marathon PE", "Pine", "Trophy"]);
   });
 
   it("tapping Concrete opens the app-wide confirmation; Yes moves the screen to Concrete", async () => {
     const t = await mount();
-    await act(async () => { shopButtons(t).find((b) => b.props.children === "Concrete").props.onClick(); });
+    await act(async () => { pill(t).props.onPick("concrete"); });
     expect(S.getActiveStore().pending).toBe("concrete");
     await act(async () => { S.confirmSwitch(); });
-    const on = shopButtons(t).find((b) => b.props.style?.color === "#fff");
-    expect(on.props.children).toBe("Concrete");
+    expect(pill(t).props.value).toBe("concrete");
   });
 });

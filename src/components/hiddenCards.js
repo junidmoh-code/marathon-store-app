@@ -61,9 +61,14 @@ export function hiddenCardsFor(permRecord) {
  * it is the recovery path: the account that edits these lists must not be able
  * to lock itself out of the screen it edits them from.
  */
+// Cards no hide list can take away. Display Check: Junid's policy (12 Nov
+// 2026) is that EVERY signed-in staff member sees and can open it.
+export const NEVER_HIDDEN = new Set(["display_checks"]);
+
 export function isCardHidden(cardKey, permRecord, isSuperAdmin = false) {
   if (isSuperAdmin) return false;
   if (!cardKey) return false;
+  if (NEVER_HIDDEN.has(cardKey)) return false;
   return hiddenCardsFor(permRecord).includes(cardKey);
 }
 
@@ -103,5 +108,6 @@ export function roleForCard(cardKey) {
 export function isRoleHidden(role, permRecord, isSuperAdmin = false) {
   if (isSuperAdmin) return false;
   if (!role) return false;
+  if (NEVER_HIDDEN.has(role)) return false;
   return hiddenCardsFor(permRecord).some((card) => roleForCard(card) === role);
 }

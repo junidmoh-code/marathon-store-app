@@ -131,9 +131,9 @@ describe("the strip is wired into both sheets", () => {
   it("the quick-view renders it too", () => {
     expect(APP).toContain("const full = alternativesFor?.(qv, qvNa.size) ?? null;");
     expect(APP).toContain("<AlternativesStrip compact key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null}");
-    // …and on the wall the popup's own strip replaces it, fed by the same call.
-    expect(APP).toContain("const alt = alternativesFor?.(qv, qvNa.size) ?? null;");
-    expect(APP).toContain("<WallAlternatives key={`${qv.id}|${qvNa.size}`} hidden={qvDP} rows={alt ? alt.rows : null} requestedSize={qvNa.size}");
+    // The sneaker wall (and its own strip) was removed with the sky redesign
+    // (2026-11-02): the popup's strip is the only one.
+    expect(APP).not.toContain("<WallAlternatives");
   });
 });
 

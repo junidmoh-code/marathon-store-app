@@ -27,7 +27,6 @@ beforeAll(() => {
 });
 
 const { AssistantDesktop } = await import("../../App.jsx");
-const { default: SneakerWall } = await import("./SneakerWall.jsx");
 const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
 
 
@@ -69,11 +68,11 @@ function mount(over = {}) {
 }
 const rerender = (r, over) => { r.props = { ...r.props, ...over }; act(() => { r.update(<AssistantDesktop {...r.props} />); }); };
 // Card order as product ids, and which cards carry the badge.
-const cardIds = (r) => r.root.findAll(n => n.type === "article" && n.props?.className === "ad-card")
-  .map(art => art.findAll(n => n.props?.product?.id)[0].props.product.id);
-const badgedIds = (r) => r.root.findAll(n => n.type === "article" && n.props?.className === "ad-card")
+const cardIds = (r) => r.root.findAll(n => n.type === "article" && /(^| )ad-card( |$)/.test(n.props?.className || ""))
+  .map(art => art.findAll(n => (n.props?.product || n.props?.p)?.id)[0].props).map(pr => (pr.product || pr.p).id);
+const badgedIds = (r) => r.root.findAll(n => n.type === "article" && /(^| )ad-card( |$)/.test(n.props?.className || ""))
   .filter(art => art.findAll(n => n.props?.["data-testid"] === "card-unavailable" && typeof n.type === "string").length)
-  .map(art => art.findAll(n => n.props?.product?.id)[0].props.product.id);
+  .map(art => art.findAll(n => (n.props?.product || n.props?.p)?.id)[0].props).map(pr => (pr.product || pr.p).id);
 const ids = (list) => list.map(p => p.id);
 
 describe("unavailableLast — the one partition", () => {
@@ -131,32 +130,41 @@ describe("the desktop's own brand filter and sort still apply within each group"
     { ...mk("p3", "Nike"), retailPrice: 700 }, { ...mk("p4", "Nike"), retailPrice: 100 },
     { ...mk("p5", "Adidas"), retailPrice: 500 },
   ];
-  const sel = (r, label) => r.root.find(n => n.type === "select" && n.props["aria-label"] === label);
+  // Sky desktop: sort lives in the Filter popover (menuitemradio buttons) and
+  // the brand filter is the logo chip row (role="group" aria-label="Brand").
+  const pickSort = (r, v) => {
+    const label = { ph: "Price · high", pl: "Price · low", az: "Name · A–Z", feat: "Featured" }[v];
+    // The popover renders through a portal only while open; its items are
+    // still the element's children, and each one's onClick is the real setSort.
+    const pop = r.root.find(n => typeof n.type === "function" && n.props.label === "Filter and sort" && n.props.anchorRef);
+    const items = [].concat(...[].concat(pop.props.children)).filter(Boolean);
+    items.find(el => el?.props?.children === label).props.onClick();
+  };
+  const pickBrand = (r, b) => {
+    r.root.find(n => n.type === "button" && typeof n.props["aria-label"] === "string" && n.props["aria-label"].startsWith(`${b} (`)).props.onClick();
+  };
   it("price high-to-low: available by price, then unavailable by price", () => {
     const r = mount({ products: P, searchResults: P, unavailableIds: new Set(["p2", "p4"]) });
-    act(() => { sel(r, "Sort").props.onChange({ target: { value: "ph" } }); });
+    act(() => { pickSort(r, "ph"); });
     expect(cardIds(r)).toEqual(["p3", "p5", "p1", "p2", "p4"]);
   });
   it("a brand filter narrows first, then the partition", () => {
     const r = mount({ products: P, searchResults: P, unavailableIds: new Set(["p1"]) });
-    act(() => { sel(r, "Brand").props.onChange({ target: { value: "Nike" } }); });
+    act(() => { pickBrand(r, "Nike"); });
     expect(cardIds(r)).toEqual(["p3", "p4", "p1"]);
   });
 });
 
-describe("?view=wall preview shares the list", () => {
-  it("hands the wall the same partitioned order", () => {
-    const r = mount({ wallPreview: true, unavailableIds: new Set(["a"]) });
-    const wall = r.root.findByType(SneakerWall);
-    expect(ids(wall.props.visible)).toEqual(["b", "c", "d", "e", "f", "a"]);
-  });
-});
+// (No ?view=wall preview on the sky branch: the order view has no wall —
+// skyOrderView.render.test.jsx.)
 
 describe("App.jsx wiring (phone / iPad grid and the desktop list)", () => {
   it("the phone photo grid renders the partitioned list, built from the badge's Set", () => {
-    expect(APP).toContain("const photoGrid = useMemo(() => unavailableLast(filtered, unavailableIds), [filtered, unavailableIds]);");
-    expect(APP).toContain("{photoGrid.map(p => {");
-    expect(APP).toContain("const unavail = unavailableIds.has(p.id);");
+    // Sky: the phone grid is AssistantPhone, fed the brand-filtered list
+    // partitioned on the badge's Set; the badge is drawn from the same Set.
+    expect(APP).toContain("const photoGrid = useMemo(() => unavailableLast(phoneShown, unavailableIds), [phoneShown, unavailableIds]);");
+    expect(APP).toContain("products={isRefillMode ? [] : photoGrid} showGrid");
+    expect(APP).toContain("unavailableIds.has(p.id) ? <span className=\"sky-unavail sky-unavail--inline\" data-testid=\"card-unavailable\"");
   });
   it("the desktop list partitions after its own sort, live on the Set", () => {
     expect(APP).toContain("return unavailableLast(list, unavailableIds);\n  }, [searchResults, catalog, brand, sort, unavailableIds]);");

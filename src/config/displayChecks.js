@@ -186,19 +186,15 @@ export function canManageDisplayChecks(user, storeId) {
 }
 
 // ROUTER CONVENIENCE — should the Home card + route be visible to this viewer?
-// Composes master flag + base access + per-store enable. Super-admin sees the
-// entry whenever the master flag is on (the store toggle lives inside the view);
-// staff see it only for their own, enabled store.
-// Staff: the base permission and at least ONE shop with checks or its website
-// strip on — not "their" shop: the module opens for every shop, and switching
-// to a shop whose checks are off (Pine) inside it must not close the route.
-export function displayChecksVisibleForViewer(user, network = currentNetwork(), switches = currentDisplayCheckSwitches()) {
+// Junid's policy (12 Nov 2026): EVERY signed-in staff member — any role, any
+// store, any device — sees and can open Display Check. So the entry needs only
+// the master flag and a signed-in identity (uid or email). Store scoping still
+// applies INSIDE the module (which store's checks are shown, and who may
+// complete them), and the database rules + the completeDisplayCheck callable
+// stay the authority on what each account can read and write.
+// (storeId is accepted for call-site compatibility and no longer narrows.)
+// eslint-disable-next-line no-unused-vars
+export function displayChecksVisibleForViewer(user, storeId) {
   if (!DISPLAY_CHECKS_MASTER_ENABLED) return false;
-  if (isDisplayChecksSuperAdmin(user)) return true;
-  const perms = Array.isArray(user?.permissions) ? user.permissions : [];
-  if (!perms.includes(DISPLAY_CHECKS_PERMISSION)) return false;
-  // The website strip lives in this module, so a store with only its strip on
-  // (Pine) opens it too; its normal check list is simply empty.
-  return displayChecksAllStores(network).some((id) =>
-    isDisplayChecksStoreEnabled(id, network, switches) || isWebsiteStripStoreEnabled(id, network, switches));
+  return !!(user && (user.uid || user.email));
 }

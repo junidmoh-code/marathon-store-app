@@ -17,8 +17,10 @@ import { useStockCells } from "./useStock";
 import { labelFor, transferTargets, wallAllowedLocations } from "./locations";
 import { barcodeSizeKey } from "./barcode";
 import { TOP_CATEGORIES, UNCATEGORIZED_TOP, topCategory } from "../../utils/productCategory";
-import { Toast, Empty, LocationPicker } from "./widgets";
-import { GLASS, CARD, GRAY, GREEN, RED, BLUE_L, AMBER, BORDER, bGreen, bGhost, input } from "./ui";
+import { Toast, Empty } from "./widgets";
+import SkyOverlay from "../sky/SkyOverlay.jsx";
+import { useScrollRow } from "./useScrollRow";
+import { GRAY, GREEN, RED, BLUE_L, BORDER, bGreen, bGhost, input } from "./ui";
 import { productMatchesQuery } from "../../utils/productSearch";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
@@ -31,8 +33,27 @@ const DEFAULT_LOCATION = "marathon-pe";   // counts happen at Marathon PE by def
 function Thumb({ product, productId, onOpen }) {
   const url = primaryPhotoUrl(product);
   if (url) return <PrimaryPhoto product={product} productId={productId} alt="" loading="lazy" onClick={onOpen} onError={(e) => { e.currentTarget.style.display = "none"; }}
-    style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 8, flexShrink: 0, cursor: "zoom-in" }} />;
-  return <div style={{ width: 40, height: 40, borderRadius: 8, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>👟</div>;
+    className="sky-li__thumb" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 12, flexShrink: 0, cursor: "zoom-in" }} />;
+  return (
+    <div className="sky-li__thumb sky-thumb-empty" aria-hidden="true">
+      <svg className="sky-thumb-empty__ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="M21 16l-5-5-8 8" /></svg>
+    </div>
+  );
+}
+
+// Small line icons for the row actions and the info line.
+const IcMove = () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>;
+const IcClear = () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" /></svg>;
+const IcChevron = () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>;
+const IcInfo = () => <svg className="sky-stock-info__ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5h.01" /></svg>;
+
+// A chip whose count sits inside it in a lighter weight: "Hub 1 3".
+function CountChip({ on, label, n, onClick }) {
+  return (
+    <button type="button" className="sky-stock-chip" aria-pressed={on} onClick={onClick}>
+      {label}{typeof n === "number" ? <span className="sky-stock-chip__n">{n}</span> : null}
+    </button>
+  );
 }
 
 export default function CountedStockReview({ products = [], registry, actorRole }) {
@@ -60,6 +81,10 @@ export default function CountedStockReview({ products = [], registry, actorRole 
   const [undo, setUndo] = useState(null);          // { label, items:[{loc,pid,size,qty}] } — 30s window
   const [lightbox, setLightbox] = useState(null);  // full-screen photo url
   const [toast, setToast] = useState(null);
+  const [infoOpen, setInfoOpen] = useState(false);  // the explanatory line, collapsed to one line
+  // Each chip row: one scrolling line, its selected chip kept in view.
+  const locRowRef = useScrollRow(locFilter);
+  const typeRowRef = useScrollRow(typeFilter);
   const toggleExpand = (key) => setExpanded(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
 
   // The undo offer lasts 30 seconds, then disappears.
@@ -232,48 +257,34 @@ export default function CountedStockReview({ products = [], registry, actorRole 
 
   return (
     <div>
-      <div style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>Counted Stock review</div>
-        <div style={{ fontSize: 11, color: GRAY, marginTop: 4, lineHeight: 1.45 }}>
+      {/* What this screen is — one line; tap the info icon to read it all. */}
+      <button type="button" className="sky-stock-info" aria-expanded={infoOpen} onClick={() => setInfoOpen((o) => !o)}
+              aria-label={infoOpen ? "Hide the explanation" : "Show the explanation"}>
+        <IcInfo />
+        <span className="sky-stock-info__t">
           Every cell that currently holds a quantity. <b>Clear</b> zeroes a cell (a reversible
           adjustment) and marks it <b>uncounted</b> so it's clearly waiting to be re-counted.
           Touches quantities only — never the product or its barcode.
-        </div>
-      </div>
+        </span>
+      </button>
 
       {/* Location quick-switch — tap "All" to see everything, or a location to focus it. */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
-        {[["all", `All (${totalCells})`], ...locsWithCounts.map(loc => [loc, `${labelFor(loc, registry)} (${countByLoc(loc)})`])].map(([val, lbl]) => {
-          const on = locFilter === val;
-          return (
-            <button key={val} onClick={() => { setLocFilter(val); cancelEdit(); }}
-              style={{ padding: "6px 13px", borderRadius: 9, cursor: "pointer", fontSize: 12, fontWeight: 700,
-                       background: on ? "rgba(60,110,255,.25)" : "rgba(255,255,255,.04)",
-                       border: on ? "1px solid rgba(60,110,255,.6)" : BORDER, color: on ? "#fff" : GRAY }}>
-              {lbl}
-            </button>
-          );
-        })}
+      <div ref={locRowRef} className="sky-stock-chips sky-row1" data-chip-row="" role="group" aria-label="Location">
+        {[["all", "All", totalCells], ...locsWithCounts.map(loc => [loc, labelFor(loc, registry), countByLoc(loc)])].map(([val, lbl, n]) => (
+          <CountChip key={val} on={locFilter === val} label={lbl} n={n} onClick={() => { setLocFilter(val); cancelEdit(); }} />
+        ))}
       </div>
-
-      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search product or barcode…"
-        style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 8 }} />
 
       {/* Category chips — display filter only (one per real top-level category,
           + All / Uncategorized). Does NOT change the audited movement `type`. */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-        {TYPE_CHIPS.map((val) => [val, val === "all" ? "All" : val]).map(([val, lbl]) => {
-          const on = typeFilter === val;
-          return (
-            <button key={val} onClick={() => { setTypeFilter(val); cancelEdit(); }}
-              style={{ padding: "6px 14px", borderRadius: 9, cursor: "pointer", fontSize: 12, fontWeight: 600,
-                       background: on ? "rgba(60,110,255,.2)" : "rgba(255,255,255,.04)",
-                       border: on ? "1px solid rgba(60,110,255,.6)" : BORDER, color: on ? "#fff" : GRAY }}>
-              {lbl}
-            </button>
-          );
-        })}
+      <div ref={typeRowRef} className="sky-stock-chips sky-row1" data-chip-row="" role="group" aria-label="Category">
+        {TYPE_CHIPS.map((val) => [val, val === "all" ? "All" : val]).map(([val, lbl]) => (
+          <CountChip key={val} on={typeFilter === val} label={lbl} onClick={() => { setTypeFilter(val); cancelEdit(); }} />
+        ))}
       </div>
+
+      <input type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Search product or barcode…"
+        className="sky-stock-search" aria-label="Search product or barcode" />
 
       {/* Undo a clear — available for 30 seconds. */}
       {undo && (
@@ -292,35 +303,36 @@ export default function CountedStockReview({ products = [], registry, actorRole 
         <Empty>{groups.length === 0 ? "No counted stock — nothing has a quantity yet." : "No products match the filter."}</Empty>
       ) : (
         <>
-          <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>{filtered.length} product(s) · {shownCells} size(s) · {shownUnits} unit(s)</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="sky-stock-sum">{filtered.length} product{filtered.length === 1 ? "" : "s"} · {shownCells} size{shownCells === 1 ? "" : "s"} · {shownUnits} unit{shownUnits === 1 ? "" : "s"}</div>
+          <div className="sky-stock-list">
             {filtered.map(g => {
               const gk = `${g.loc}|${g.pid}`;
               const prodBusy = busyKey === `prod:${gk}`;
               const open = expanded.has(gk);
               return (
-                <div key={gk} style={{ background: CARD, border: BORDER, borderRadius: 12, padding: 11 }}>
+                <div key={gk} className="sky-stock-row" data-testid="counted-row">
                   {/* Product header — tap to expand/collapse the size breakdown. */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div className="sky-li">
                     <Thumb product={g.product} productId={g.pid} onOpen={() => g.photoUrl && setLightbox(g.photoUrl)} />
-                    <div onClick={() => toggleExpand(gk)} style={{ flex: 1, minWidth: 0, cursor: "pointer" }}>
-                      <div style={{ fontSize: 13.5, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.name}</div>
-                      <div style={{ fontSize: 11, color: GRAY }}>
-                        <span style={{ color: BLUE_L }}>{labelFor(g.loc, registry)}</span> · {g.sizes.filter(s => s.qty !== 0).length} counted · {g.sizes.reduce((s, x) => s + x.qty, 0)} units
+                    <div className="sky-li__body" onClick={() => toggleExpand(gk)}>
+                      <div className="sky-li__title">{g.name}</div>
+                      <div className="sky-li__sub">
+                        {labelFor(g.loc, registry)} · {g.sizes.filter(s => s.qty !== 0).length} counted · {g.sizes.reduce((s, x) => s + x.qty, 0)} units
                       </div>
                     </div>
-                    {/* Move — relocate this product's counted stock to another location. */}
-                    <button onClick={() => { setMoveGroup(g); setMoveLoc(""); }} disabled={!!busyKey} title="Move counted stock to another location"
-                      style={{ ...bGhost, padding: "6px 11px", fontSize: 11.5, color: BLUE_L, borderColor: "rgba(60,110,255,.45)", opacity: (busyKey === `move:${gk}`) ? 0.6 : 1 }}>
-                      {busyKey === `move:${gk}` ? "Moving…" : "Move"}
-                    </button>
-                    {/* Clear — opens a red confirmation popup before wiping anything. */}
-                    <button onClick={() => setConfirmClear(g)} disabled={!!busyKey} title="Zero all sizes → uncounted (re-count this product)"
-                      style={{ ...bGhost, padding: "6px 11px", fontSize: 11.5, color: RED, borderColor: "rgba(248,113,113,.45)", opacity: prodBusy ? 0.6 : 1 }}>
-                      {prodBusy ? "Clearing…" : "Clear"}
-                    </button>
-                    <button onClick={() => toggleExpand(gk)} aria-label={open ? "Collapse" : "Expand"}
-                      style={{ background: "transparent", border: "none", color: BLUE_L, cursor: "pointer", fontSize: 15, padding: "4px 2px", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▸</button>
+                    <div className="sky-li__end">
+                      {/* Move — relocate this product's counted stock to another location. */}
+                      <button type="button" className="sky-stock-act" onClick={() => { setMoveGroup(g); setMoveLoc(""); }} disabled={!!busyKey} title="Move counted stock to another location">
+                        <IcMove />{busyKey === `move:${gk}` ? "Moving…" : "Move"}
+                      </button>
+                      {/* Clear — opens a confirmation before wiping anything. */}
+                      <button type="button" className="sky-stock-act sky-stock-act--clear" onClick={() => setConfirmClear(g)} disabled={!!busyKey} title="Zero all sizes → uncounted (re-count this product)">
+                        <IcClear />{prodBusy ? "Clearing…" : "Clear"}
+                      </button>
+                      <button type="button" className="sky-stock-exp" onClick={() => toggleExpand(gk)} aria-label={open ? "Collapse" : "Expand"} aria-expanded={open}>
+                        <IcChevron />
+                      </button>
+                    </div>
                   </div>
                   {/* Size grid (collapsible) — tap a number to correct it (e.g. 3 → 2). */}
                   {open && (
@@ -361,63 +373,69 @@ export default function CountedStockReview({ products = [], registry, actorRole 
         </>
       )}
 
-      {/* Move counted stock to another location (e.g. Marathon PE → Hub 1). */}
-      {moveGroup && (
-        <div onClick={() => !busyKey && setMoveGroup(null)}
-          style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div onClick={e => e.stopPropagation()}
-            style={{ width: "100%", maxWidth: 380, background: "#0d1426", border: "1px solid rgba(60,110,255,.5)", borderRadius: 14, padding: 20, boxShadow: "0 0 40px rgba(60,110,255,.35)" }}>
-            <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", textAlign: "center" }}>Move counted stock</div>
-            <div style={{ fontSize: 13, color: "#fff", textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
-              Move all counted quantities of<br /><b>{moveGroup.name}</b><br />
-              from <b style={{ color: BLUE_L }}>{labelFor(moveGroup.loc, registry)}</b> to:
-            </div>
-            <div style={{ marginTop: 12 }}>
-              <LocationPicker registry={registry} value={moveLoc} onChange={setMoveLoc} filter={(reg) => wallAllowedLocations(transferTargets(reg), moveGroup.loc)} exclude={moveGroup.loc} />
-            </div>
-            <div style={{ fontSize: 11, color: "#86efac", textAlign: "center", marginTop: 10 }}>✓ Counts &amp; barcodes are kept — just relocated.</div>
-            <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-              <button onClick={() => setMoveGroup(null)} disabled={!!busyKey} style={{ ...bGhost, flex: 1, padding: "11px 0", fontSize: 13 }}>Cancel</button>
-              <button onClick={moveProduct} disabled={!moveLoc || !!busyKey}
-                style={{ ...bGreen, flex: 1, padding: "11px 0", fontSize: 13, fontWeight: 800, opacity: (!moveLoc || busyKey) ? 0.5 : 1 }}>
-                {busyKey ? "Moving…" : "Move"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Move counted stock to another location (e.g. Marathon PE → Hub 1).
+          The one overlay (SkyOverlay): each destination its own glass card —
+          the same list the old dropdown offered (wall-allowed transfer
+          targets, the source excluded). */}
+      <SkyOverlay open={!!moveGroup} onClose={() => !busyKey && setMoveGroup(null)} variant="auto" label="Move counted stock" testId="counted-move">
+        {moveGroup && (() => {
+          const dests = wallAllowedLocations(transferTargets(registry), moveGroup.loc).filter((l) => l.id !== moveGroup.loc);
+          return (
+            <>
+              <div className="sky-ovl-card sky-ovl-msg">
+                <div className="sky-ovl-msg__title">Move counted stock</div>
+                <div className="sky-ovl-msg__body">
+                  Move all counted quantities of <b>{moveGroup.name}</b> from <b>{labelFor(moveGroup.loc, registry)}</b> to:
+                </div>
+                <div className="sky-ovl-msg__note">Counts &amp; barcodes are kept — just relocated.</div>
+              </div>
+              <div className="sky-pop__lab sky-pop__lab--gap">Destination</div>
+              <div role="radiogroup" aria-label="Destination">
+                {dests.map((l) => (
+                  <button key={l.id} type="button" role="radio" aria-checked={moveLoc === l.id} className="sky-ovl-card sky-pop__i" onClick={() => setMoveLoc(l.id)}>
+                    <span>{labelFor(l.id, registry)}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="sky-ovl-actions">
+                <button type="button" className="sky-ovl-card sky-ovl-btn sky-ovl-btn--ghost" onClick={() => setMoveGroup(null)} disabled={!!busyKey}>Cancel</button>
+                <button type="button" className="sky-ovl-card sky-ovl-btn sky-ovl-btn--primary" onClick={moveProduct} disabled={!moveLoc || !!busyKey}>
+                  {busyKey ? "Moving…" : "Move"}
+                </button>
+              </div>
+            </>
+          );
+        })()}
+      </SkyOverlay>
 
-      {/* Scary red confirmation — on top of everything — before wiping a product's counts. */}
-      {confirmClear && (
-        <div onClick={() => !busyKey && setConfirmClear(null)}
-          style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div onClick={e => e.stopPropagation()} role="alertdialog"
-            style={{ width: "100%", maxWidth: 380, background: "#1a0708", border: "2px solid #ef4444", borderRadius: 14, padding: 20, boxShadow: "0 0 40px rgba(239,68,68,.5)" }}>
-            <div style={{ fontSize: 38, textAlign: "center", lineHeight: 1 }}>⚠️</div>
-            <div style={{ fontSize: 17, fontWeight: 800, color: "#fca5a5", textAlign: "center", marginTop: 8, textTransform: "uppercase", letterSpacing: ".03em" }}>
-              Clear counted stock?
-            </div>
-            <div style={{ fontSize: 13, color: "#fff", textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
-              This will <b style={{ color: "#fca5a5" }}>WIPE all {confirmClear.sizes.filter(s => s.qty !== 0).length} counted {confirmClear.sizes.filter(s => s.qty !== 0).length === 1 ? "quantity" : "quantities"}</b> for<br />
-              <b>{confirmClear.name}</b> at <b>{labelFor(confirmClear.loc, registry)}</b><br />
-              and mark them <b style={{ color: "#fca5a5" }}>UNCOUNTED</b>.
-            </div>
-            <div style={{ fontSize: 11.5, color: "#86efac", textAlign: "center", marginTop: 10 }}>
-              ✓ Barcodes are kept — you only re-count the size, no reprint.
-            </div>
-            <div style={{ fontSize: 11, color: GRAY, textAlign: "center", marginTop: 6 }}>You'll have 30 seconds to undo.</div>
-            <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
-              <button onClick={() => setConfirmClear(null)} disabled={!!busyKey}
-                style={{ ...bGhost, flex: 1, padding: "11px 0", fontSize: 13 }}>Cancel</button>
-              <button onClick={() => clearProduct(confirmClear)} disabled={!!busyKey}
-                style={{ flex: 1, padding: "11px 0", fontSize: 13, fontWeight: 800, borderRadius: 10, cursor: "pointer",
-                         background: "#ef4444", color: "#fff", border: "none", opacity: busyKey ? 0.6 : 1 }}>
-                {busyKey ? "Clearing…" : `Yes, clear ${confirmClear.sizes.filter(s => s.qty !== 0).length}`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Confirmation before wiping a product's counts — the one overlay, a
+          dialog: navy words (no red text on glass), the alert icon, Cancel and
+          the action. */}
+      <SkyOverlay open={!!confirmClear} onClose={() => !busyKey && setConfirmClear(null)} variant="dialog" role="alertdialog" label="Clear counted stock?" testId="counted-clear">
+        {confirmClear && (() => {
+          const n = confirmClear.sizes.filter(s => s.qty !== 0).length;
+          return (
+            <>
+              <div className="sky-ovl-card sky-ovl-msg">
+                <span className="sky-ovl-msg__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><line x1="12" y1="7.5" x2="12" y2="13" /><line x1="12" y1="16.5" x2="12.01" y2="16.5" /></svg>
+                </span>
+                <div className="sky-ovl-msg__title">Clear counted stock?</div>
+                <div className="sky-ovl-msg__body">
+                  This will <b>wipe all {n} counted {n === 1 ? "quantity" : "quantities"}</b> for <b>{confirmClear.name}</b> at <b>{labelFor(confirmClear.loc, registry)}</b> and mark them <b>uncounted</b>.
+                </div>
+                <div className="sky-ovl-msg__note">Barcodes are kept — you only re-count the size, no reprint. You'll have 30 seconds to undo.</div>
+              </div>
+              <div className="sky-ovl-actions">
+                <button type="button" className="sky-ovl-card sky-ovl-btn sky-ovl-btn--ghost" onClick={() => setConfirmClear(null)} disabled={!!busyKey} data-autofocus="">Cancel</button>
+                <button type="button" className="sky-ovl-card sky-ovl-btn sky-ovl-btn--primary" onClick={() => clearProduct(confirmClear)} disabled={!!busyKey}>
+                  {busyKey ? "Clearing…" : `Yes, clear ${n}`}
+                </button>
+              </div>
+            </>
+          );
+        })()}
+      </SkyOverlay>
 
       {/* Full-screen photo — tap anywhere to close. */}
       {lightbox && (

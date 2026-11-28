@@ -16,9 +16,9 @@ const PRECACHE = [
   "/",
   "/index.html",
   "/manifest.json",
-  "/icons/icon-192.png",
-  "/icons/icon-512.png",
-  "/icons/icon-180-apple.png",
+  "/icons/icon-192-sky.png",
+  "/icons/icon-512-sky.png",
+  "/icons/icon-180-apple-sky.png",
 ];
 
 self.addEventListener("install", (event) => {

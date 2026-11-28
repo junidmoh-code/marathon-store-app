@@ -66,9 +66,9 @@ messaging.onBackgroundMessage((payload) => {
   const title = d.title || "New order";
   return self.registration.showNotification(title, {
     body: d.body || "",
-    // The circuit icon is the installed app's own icon, so the notification
+    // The sky icon is the installed app's own icon, so the notification
     // looks like it came from Marathon and not from a generic web page.
-    icon: "/icons/icon-192-circuit.png",
+    icon: "/icons/icon-192-sky.png",
     badge: "/icons/icon-192-maskable-circuit.png",
     // Collapse in the TRAY as well as at the server: one store's burst replaces
     // its own previous notification rather than stacking a column of them.

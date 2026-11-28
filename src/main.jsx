@@ -2,6 +2,13 @@ import { isFirebaseArgumentError } from "./utils/withoutUndefined";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./appShell.css";
+import "./styles/sky.css";
+import "./styles/sky-theme.css";
+import "./styles/sky-admin.css";
+import "./styles/sky-stock.css";
+import "./styles/sky-chips.css";
+import { startChipRowFade } from "./utils/chipRowFade.js";
+startChipRowFade();
 import App from "./App.jsx";
 import { startUpdateChecker } from "./update/updateChecker.js";
 import { applyPushDeepLink } from "./push/deepLink.js";
@@ -10,6 +17,11 @@ import { MirrorGate } from "./offline/MirrorGate.jsx";
 import DeviceQuarantine from "./device/DeviceQuarantine.jsx";
 import { auth, storage } from "./firebase.js";
 import { consumeAssignHash } from "./components/cardrecon/portalAssign.js";
+import { installZoomLock } from "./device/zoomLock.js";
+
+// The app never zooms (Junid 5 Nov) — pinch / double-tap / focus; the photo
+// viewer zooms on its own (ZoomImage). See src/device/zoomLock.js.
+installZoomLock();
 
 // Last-resort crash surface: show ANY uncaught error / promise rejection as a
 // fixed banner on screen, so a failure can never be a silent black screen with

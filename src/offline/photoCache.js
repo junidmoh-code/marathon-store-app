@@ -34,6 +34,7 @@
 
 import { getBlob, ref as storageRef } from "firebase/storage";
 import { productPhotoThumbPath, productPhotoObjectPath, photoContentMarker } from "../utils/productPhotoPaths";
+import { clearTileCache } from "./tilePhotoCache";
 
 export const PHOTO_CACHE_NAME = "marathon-store-photo-mirror-v1";
 export const PHOTO_CACHE_INDEX_META_KEY = "photoCache.index";
@@ -186,6 +187,9 @@ export async function clearPhotoCache(db) {
     // return value was added to remove, in the other direction.
     if (isPhotoCacheApiAvailable()) cleared = (await caches.delete(PHOTO_CACHE_NAME)) === true;
   } catch { /* best effort */ }
+  // The order screen's full-size tile photos (tilePhotoCache.js) are the same
+  // kind of re-downloadable picture and go with them.
+  try { await clearTileCache(); } catch { /* best effort */ }
   // The index is the record of what is held; clearing it is what makes the
   // terminal stop believing it has photos, so it counts either way.
   try { await writeIndex(db, {}); } catch { cleared = false; }

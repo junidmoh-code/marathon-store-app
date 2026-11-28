@@ -90,14 +90,17 @@ export default function AlbumCard({ products = [], onNotice }) {
   return (
     <RowBoundary>
       <div style={{ font: FONT, color: "#fff" }}>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
-          {FILTERS.map((f) => (
-            <button key={f.key} onClick={() => setFilter(f.key)}
-                    style={{ ...(filter === f.key ? tabOn : tabOff), padding: "6px 12px", fontSize: ".76rem" }}>
-              {f.label}
-            </button>
-          ))}
-          <span style={{ color: GRAY, fontSize: ".74rem", marginLeft: "auto" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+          {/* The filters are ONE scrolling row (Junid 12 Nov); the count stays beside it. */}
+          <div data-chip-row="" style={{ display: "flex", gap: 8, flexWrap: "nowrap", overflowX: "auto", flex: "1 1 auto", minWidth: 0 }}>
+            {FILTERS.map((f) => (
+              <button key={f.key} onClick={() => setFilter(f.key)}
+                      style={{ ...(filter === f.key ? tabOn : tabOff), padding: "6px 12px", fontSize: ".76rem" }}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <span style={{ color: GRAY, fontSize: ".74rem", flex: "0 0 auto", whiteSpace: "nowrap" }}>
             {busy ? "reading the album…" : `${shown.length} of ${all.length} picture${all.length === 1 ? "" : "s"}`}
           </span>
         </div>
