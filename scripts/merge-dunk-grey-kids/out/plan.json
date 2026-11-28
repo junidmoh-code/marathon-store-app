@@ -1,0 +1,215 @@
+{
+  "at": "2026-11-28T16:18:51.165Z",
+  "plan": {
+    "rows": [
+      {
+        "loc": "central",
+        "size": "24",
+        "duplicateQty": 3,
+        "originalBefore": 0,
+        "originalAfter": 3,
+        "action": "transfer"
+      },
+      {
+        "loc": "central",
+        "size": "25",
+        "duplicateQty": 3,
+        "originalBefore": 0,
+        "originalAfter": 3,
+        "action": "transfer"
+      },
+      {
+        "loc": "central",
+        "size": "26",
+        "duplicateQty": 4,
+        "originalBefore": 0,
+        "originalAfter": 4,
+        "action": "transfer"
+      },
+      {
+        "loc": "central",
+        "size": "27",
+        "duplicateQty": 5,
+        "originalBefore": 0,
+        "originalAfter": 5,
+        "action": "transfer"
+      },
+      {
+        "loc": "central",
+        "size": "28",
+        "duplicateQty": 4,
+        "originalBefore": 0,
+        "originalAfter": 4,
+        "action": "transfer"
+      },
+      {
+        "loc": "central",
+        "size": "29",
+        "duplicateQty": 3,
+        "originalBefore": 0,
+        "originalAfter": 3,
+        "action": "transfer"
+      },
+      {
+        "loc": "central",
+        "size": "30",
+        "duplicateQty": 4,
+        "originalBefore": 0,
+        "originalAfter": 4,
+        "action": "transfer"
+      },
+      {
+        "loc": "central",
+        "size": "31",
+        "duplicateQty": 4,
+        "originalBefore": 2,
+        "originalAfter": 6,
+        "action": "transfer"
+      },
+      {
+        "loc": "central",
+        "size": "32",
+        "duplicateQty": 5,
+        "originalBefore": 1,
+        "originalAfter": 6,
+        "action": "transfer"
+      },
+      {
+        "loc": "central",
+        "size": "33",
+        "duplicateQty": 5,
+        "originalBefore": 0,
+        "originalAfter": 5,
+        "action": "transfer"
+      },
+      {
+        "loc": "central",
+        "size": "34",
+        "duplicateQty": 5,
+        "originalBefore": 0,
+        "originalAfter": 5,
+        "action": "transfer"
+      },
+      {
+        "loc": "central",
+        "size": "35",
+        "duplicateQty": 5,
+        "originalBefore": 0,
+        "originalAfter": 5,
+        "action": "transfer"
+      },
+      {
+        "loc": "hub3",
+        "size": "24",
+        "duplicateQty": 0,
+        "originalBefore": 1,
+        "originalAfter": 1,
+        "action": "empty-cell-dropped"
+      },
+      {
+        "loc": "hub3",
+        "size": "25",
+        "duplicateQty": 0,
+        "originalBefore": 0,
+        "originalAfter": 0,
+        "action": "empty-cell-dropped"
+      },
+      {
+        "loc": "hub3",
+        "size": "26",
+        "duplicateQty": 0,
+        "originalBefore": 2,
+        "originalAfter": 2,
+        "action": "empty-cell-dropped"
+      },
+      {
+        "loc": "hub3",
+        "size": "27",
+        "duplicateQty": 0,
+        "originalBefore": 0,
+        "originalAfter": 0,
+        "action": "empty-cell-dropped"
+      },
+      {
+        "loc": "hub3",
+        "size": "28",
+        "duplicateQty": 0,
+        "originalBefore": 3,
+        "originalAfter": 3,
+        "action": "empty-cell-dropped"
+      },
+      {
+        "loc": "hub3",
+        "size": "29",
+        "duplicateQty": 0,
+        "originalBefore": 1,
+        "originalAfter": 1,
+        "action": "empty-cell-dropped"
+      },
+      {
+        "loc": "hub3",
+        "size": "30",
+        "duplicateQty": 0,
+        "originalBefore": 1,
+        "originalAfter": 1,
+        "action": "empty-cell-dropped"
+      },
+      {
+        "loc": "hub3",
+        "size": "31",
+        "duplicateQty": 0,
+        "originalBefore": 0,
+        "originalAfter": 0,
+        "action": "empty-cell-dropped"
+      },
+      {
+        "loc": "hub3",
+        "size": "32",
+        "duplicateQty": 0,
+        "originalBefore": 2,
+        "originalAfter": 2,
+        "action": "empty-cell-dropped"
+      },
+      {
+        "loc": "hub3",
+        "size": "33",
+        "duplicateQty": 0,
+        "originalBefore": 1,
+        "originalAfter": 1,
+        "action": "empty-cell-dropped"
+      },
+      {
+        "loc": "hub3",
+        "size": "34",
+        "duplicateQty": 0,
+        "originalBefore": 2,
+        "originalAfter": 2,
+        "action": "empty-cell-dropped"
+      },
+      {
+        "loc": "hub3",
+        "size": "35",
+        "duplicateQty": 0,
+        "originalBefore": 0,
+        "originalAfter": 0,
+        "action": "empty-cell-dropped"
+      }
+    ],
+    "unmappedHeld": [],
+    "negatives": [],
+    "countedRemovals": [],
+    "totals": {
+      "keepBefore": 26,
+      "removeBefore": 50,
+      "combinedBefore": 76,
+      "keepAfter": 76,
+      "removeAfter": 0,
+      "combinedAfter": 76
+    },
+    "totalsUnchanged": true
+  },
+  "blockers": [
+    "21 open refill request(s) name the duplicate. The Refill Queue sends with the request's own product id, so after the merge each would try to send from the duplicate's Central cell, which the merge deletes. Re-pointing or cancelling them is a refill-request change: Junid decides (CLAUDE.md)."
+  ],
+  "safeToApply": false
+}

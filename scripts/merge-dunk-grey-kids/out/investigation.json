@@ -1,0 +1,1207 @@
+{
+  "at": "2026-11-28T16:18:33.310Z",
+  "keep": {
+    "id": "p1795103464793",
+    "name": "Nike SB dunk low grey small",
+    "styleCode": "845013-100",
+    "styleCodeNormalised": "845013100",
+    "brand": "Nike",
+    "categoryKey": "kids-shoes",
+    "sizes": [
+      "24",
+      "25",
+      "26",
+      "27",
+      "28",
+      "29",
+      "30",
+      "31",
+      "32",
+      "33",
+      "34",
+      "35"
+    ],
+    "sku": "6516",
+    "barcodes": {
+      "24": "00039616",
+      "25": "00039617",
+      "26": "00039618",
+      "27": "00039619",
+      "28": "00039620",
+      "29": "00039621",
+      "30": "00039622",
+      "31": "00039623",
+      "32": "00039624",
+      "33": "00039625",
+      "34": "00039626",
+      "35": "00039627"
+    },
+    "hasPhoto": true,
+    "retailPrice": 300,
+    "stockPrice": 250,
+    "hubs": [
+      "hub1",
+      "hub3"
+    ],
+    "mergedInto": null,
+    "claim": {
+      "claimedAt": 1795268430475,
+      "claimedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+      "productId": "p1795103464793"
+    },
+    "sales": {
+      "sold": 27,
+      "returned": 2,
+      "last": "2026-11-28T14:54:57.789Z"
+    },
+    "openRequests": [
+      {
+        "id": "-P7VxEj03Rr7L0EC70Rd",
+        "requestingLocation": "hub1",
+        "size": "32",
+        "qty": 1,
+        "createdAt": "2026-11-28T07:00:10.997Z",
+        "engine": true
+      },
+      {
+        "id": "-P7X11S5MUufWVhSoJyK",
+        "requestingLocation": "hub1",
+        "size": "31",
+        "qty": 2,
+        "createdAt": "2026-11-28T12:00:48.908Z",
+        "engine": true
+      }
+    ]
+  },
+  "remove": {
+    "id": "p1795600675612",
+    "name": "Nike dunk low  grey and white",
+    "styleCode": null,
+    "styleCodeNormalised": null,
+    "brand": "Nike",
+    "categoryKey": "kids-shoes",
+    "sizes": [
+      "24",
+      "25",
+      "26",
+      "27",
+      "28",
+      "29",
+      "30",
+      "31",
+      "32",
+      "33",
+      "34",
+      "35"
+    ],
+    "sku": "6628",
+    "barcodes": {
+      "24": "00040275",
+      "25": "00040276",
+      "26": "00040277",
+      "27": "00040278",
+      "28": "00040279",
+      "29": "00040280",
+      "30": "00040281",
+      "31": "00040282",
+      "32": "00040283",
+      "33": "00040284",
+      "34": "00040285",
+      "35": "00040286"
+    },
+    "hasPhoto": true,
+    "retailPrice": 450,
+    "stockPrice": 400,
+    "hubs": [
+      "hub1",
+      "hub3"
+    ],
+    "mergedInto": null,
+    "sales": {
+      "sold": 0,
+      "returned": 0,
+      "last": null
+    },
+    "movements": [
+      {
+        "id": "-P7H86NwHoS-uucVC5vR",
+        "type": "received",
+        "size": "24",
+        "qty": 3,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:29.849Z",
+        "reason": null
+      },
+      {
+        "id": "-P7H86b33g6jw5qvD1YE",
+        "type": "received",
+        "size": "25",
+        "qty": 3,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:30.829Z",
+        "reason": null
+      },
+      {
+        "id": "-P7H86vCk_ZEnN6SsTaP",
+        "type": "received",
+        "size": "26",
+        "qty": 4,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:32.374Z",
+        "reason": null
+      },
+      {
+        "id": "-P7H87HM45k4WYlo_D1b",
+        "type": "received",
+        "size": "27",
+        "qty": 5,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:33.905Z",
+        "reason": null
+      },
+      {
+        "id": "-P7H87boH5v-Q9U1mrYW",
+        "type": "received",
+        "size": "28",
+        "qty": 4,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:34.893Z",
+        "reason": null
+      },
+      {
+        "id": "-P7H87pvTMmY1ah1iFZ2",
+        "type": "received",
+        "size": "29",
+        "qty": 3,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:37.186Z",
+        "reason": null
+      },
+      {
+        "id": "-P7H88OWWIAJijFt1kzR",
+        "type": "received",
+        "size": "30",
+        "qty": 4,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:38.240Z",
+        "reason": null
+      },
+      {
+        "id": "-P7H88e5Z5FLA9s-wYjS",
+        "type": "received",
+        "size": "31",
+        "qty": 4,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:39.296Z",
+        "reason": null
+      },
+      {
+        "id": "-P7H88ufafVfgWCWfix-",
+        "type": "received",
+        "size": "32",
+        "qty": 5,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:40.240Z",
+        "reason": null
+      },
+      {
+        "id": "-P7H897pb07rz6z8pZOL",
+        "type": "received",
+        "size": "33",
+        "qty": 5,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:41.159Z",
+        "reason": null
+      },
+      {
+        "id": "-P7H89NgX_1fW68cMT4V",
+        "type": "received",
+        "size": "34",
+        "qty": 5,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:42.283Z",
+        "reason": null
+      },
+      {
+        "id": "-P7H89d3FBZnfsuUgstB",
+        "type": "received",
+        "size": "35",
+        "qty": 5,
+        "from": null,
+        "to": "central",
+        "ts": "2026-11-25T09:58:43.137Z",
+        "reason": null
+      }
+    ]
+  },
+  "sameProductProblems": [],
+  "sizeMap": {
+    "pairs": [
+      {
+        "from": "24",
+        "to": "24"
+      },
+      {
+        "from": "25",
+        "to": "25"
+      },
+      {
+        "from": "26",
+        "to": "26"
+      },
+      {
+        "from": "27",
+        "to": "27"
+      },
+      {
+        "from": "28",
+        "to": "28"
+      },
+      {
+        "from": "29",
+        "to": "29"
+      },
+      {
+        "from": "30",
+        "to": "30"
+      },
+      {
+        "from": "31",
+        "to": "31"
+      },
+      {
+        "from": "32",
+        "to": "32"
+      },
+      {
+        "from": "33",
+        "to": "33"
+      },
+      {
+        "from": "34",
+        "to": "34"
+      },
+      {
+        "from": "35",
+        "to": "35"
+      }
+    ],
+    "unmapped": []
+  },
+  "stock": {
+    "keep": {
+      "central": {
+        "24": 0,
+        "25": 0,
+        "26": 0,
+        "27": 0,
+        "28": 0,
+        "29": 0,
+        "30": 0,
+        "31": 2,
+        "32": 1,
+        "33": 0,
+        "34": 0,
+        "35": 0
+      },
+      "hub1": {
+        "24": 2,
+        "25": 1,
+        "26": 1,
+        "27": 2,
+        "28": 1,
+        "29": 0,
+        "30": 0,
+        "31": 0,
+        "32": 0,
+        "33": 0,
+        "34": 3,
+        "35": 0
+      },
+      "hub3": {
+        "24": 1,
+        "25": 0,
+        "26": 2,
+        "27": 0,
+        "28": 3,
+        "29": 1,
+        "30": 1,
+        "32": 2,
+        "33": 1,
+        "34": 2,
+        "35": 0
+      }
+    },
+    "remove": {
+      "central": {
+        "24": 3,
+        "25": 3,
+        "26": 4,
+        "27": 5,
+        "28": 4,
+        "29": 3,
+        "30": 4,
+        "31": 4,
+        "32": 5,
+        "33": 5,
+        "34": 5,
+        "35": 5
+      },
+      "hub3": {
+        "24": 0,
+        "25": 0,
+        "26": 0,
+        "27": 0,
+        "28": 0,
+        "29": 0,
+        "30": 0,
+        "31": 0,
+        "32": 0,
+        "33": 0,
+        "34": 0,
+        "35": 0
+      }
+    }
+  },
+  "raw": {
+    "keepStock": {
+      "central": {
+        "24": {
+          "lastType": "transfer_out",
+          "mv": "rrf_-P7423qva7IuFFTB4REz",
+          "qty": 0,
+          "updatedAt": "2026-11-24T09:53:45.834Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 2
+        },
+        "25": {
+          "lastType": "transfer_out",
+          "mv": "rrf_-P7423qwa4ESPXNhLqxk",
+          "qty": 0,
+          "updatedAt": "2026-11-24T09:55:18.079Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 2
+        },
+        "26": {
+          "lastType": "transfer_out",
+          "mv": "rrf_-P7423qwa4ESPXNhLqxl",
+          "qty": 0,
+          "updatedAt": "2026-11-24T09:55:51.973Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 2
+        },
+        "27": {
+          "lastType": "transfer_out",
+          "mv": "rrf_-P7423qwa4ESPXNhLqxm",
+          "qty": 0,
+          "updatedAt": "2026-11-24T09:56:22.218Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 2
+        },
+        "28": {
+          "lastType": "transfer_out",
+          "mv": "rrf_-P7423qwa4ESPXNhLqxn",
+          "qty": 0,
+          "updatedAt": "2026-11-24T09:56:53.409Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 2
+        },
+        "29": {
+          "lastType": "transfer_out",
+          "mv": "rrf_-P75zZFed6fMgux7aYot",
+          "qty": 0,
+          "updatedAt": "2026-11-24T09:57:48.979Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 2
+        },
+        "30": {
+          "lastType": "transfer_out",
+          "mv": "rrf_-P7423qwa4ESPXNhLqxp",
+          "qty": 0,
+          "updatedAt": "2026-11-24T09:58:10.723Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 2
+        },
+        "31": {
+          "lastType": "transfer_out",
+          "mv": "rrf_-P7423qwa4ESPXNhLqxq",
+          "qty": 2,
+          "updatedAt": "2026-11-24T09:58:56.140Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 1
+        },
+        "32": {
+          "lastType": "transfer_out",
+          "mv": "rrf_-P7423qwa4ESPXNhLqxr",
+          "qty": 1,
+          "updatedAt": "2026-11-24T09:59:32.696Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 2
+        },
+        "33": {
+          "lastType": "transfer_out",
+          "mv": "-P7C3SW6VtoEu4E30R9X:p1795103464793:33",
+          "qty": 0,
+          "updatedAt": "2026-11-24T10:20:05.077Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 3
+        },
+        "34": {
+          "lastType": "transfer_out",
+          "mv": "-P7C3XvS-_ITjzR6QPki:p1795103464793:34",
+          "qty": 0,
+          "updatedAt": "2026-11-24T10:20:26.829Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 3
+        },
+        "35": {
+          "lastType": "transfer_out",
+          "mv": "-P7C3XvS-_ITjzR6QPki:p1795103464793:35",
+          "qty": 0,
+          "updatedAt": "2026-11-24T10:20:28.954Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 3
+        }
+      },
+      "hub1": {
+        "24": {
+          "lastType": "transfer_out",
+          "mv": "rrf_-P7423qva7IuFFTB4REz",
+          "qty": 2,
+          "updatedAt": "2026-11-24T09:53:45.834Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "25": {
+          "lastType": "sold",
+          "mv": "sold:-P7X2CgOXfLni5Fds9vo:hub1:p1795103464793:25",
+          "qty": 1,
+          "updatedAt": "2026-11-28T12:05:10.276Z",
+          "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+          "v": 1
+        },
+        "26": {
+          "lastType": "sold",
+          "mv": "sold:-P7Xe4ptxV6_1frabHMU:hub1:p1795103464793:26",
+          "qty": 1,
+          "updatedAt": "2026-11-28T14:55:01.707Z",
+          "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+          "v": 1
+        },
+        "27": {
+          "lastType": "transfer_out",
+          "mv": "rrf_-P7423qwa4ESPXNhLqxm",
+          "qty": 2,
+          "updatedAt": "2026-11-24T09:56:22.218Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "28": {
+          "lastType": "sold",
+          "mv": "sold:-P7RnGbMOhAXWT2DwCvy:hub1:p1795103464793:28",
+          "qty": 1,
+          "updatedAt": "2026-11-27T11:37:29.731Z",
+          "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+          "v": 1
+        },
+        "29": {
+          "lastType": "sold",
+          "mv": "sold:-P7Mdd1CFGL-fpzsCq6W:hub1:p1795103464793:29",
+          "qty": 0,
+          "updatedAt": "2026-11-26T11:37:25.888Z",
+          "updatedBy": "58ayGw6WJAabRpH4j6EspZNGKrk2",
+          "v": 2
+        },
+        "30": {
+          "lastType": "sold",
+          "mv": "sold:-P7SNcTXMzsKR7wLD1QN:hub1:p1795103464793:30",
+          "qty": 0,
+          "updatedAt": "2026-11-27T14:22:09.553Z",
+          "updatedBy": "6uAgJkz4euh9fB3FrwXQhCA5TNu1",
+          "v": 2
+        },
+        "31": {
+          "lastType": "sold",
+          "mv": "sold:-P7XUGhCijZDJmS0jZVG:hub1:p1795103464793:31",
+          "qty": 0,
+          "updatedAt": "2026-11-28T14:09:31.795Z",
+          "updatedBy": "6uAgJkz4euh9fB3FrwXQhCA5TNu1",
+          "v": 2
+        },
+        "32": {
+          "lastType": "sold",
+          "mv": "sold:-P7HCFxgiCgYRCG5LVEl:hub1:p1795103464793:32",
+          "qty": 0,
+          "updatedAt": "2026-11-25T10:16:41.007Z",
+          "updatedBy": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+          "v": 1
+        },
+        "33": {
+          "lastType": "sold",
+          "mv": "sold:-P7Wyy2OVxUey_EY4jGg:hub1:p1795103464793:33",
+          "qty": 0,
+          "updatedAt": "2026-11-28T11:48:06.355Z",
+          "updatedBy": "HqaOF3hkqONISwq9ajs9apqCLuu2",
+          "v": 4
+        },
+        "34": {
+          "lastType": "transfer_out",
+          "mv": "-P7C3XvS-_ITjzR6QPki:p1795103464793:34",
+          "qty": 3,
+          "updatedAt": "2026-11-24T10:20:26.829Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 1
+        },
+        "35": {
+          "lastType": "sold",
+          "mv": "sold:-P7XUGhCijZDJmS0jZVG:hub1:p1795103464793:35",
+          "qty": 0,
+          "updatedAt": "2026-11-28T14:09:30.459Z",
+          "updatedBy": "6uAgJkz4euh9fB3FrwXQhCA5TNu1",
+          "v": 6
+        }
+      },
+      "hub3": {
+        "24": {
+          "lastType": "transfer_out",
+          "mv": "-P6oWAF8EHrZ8oaBWWY4:p1795103464793:24",
+          "qty": 1,
+          "updatedAt": "2026-11-19T15:55:01.728Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "25": {
+          "lastType": "sold",
+          "mv": "sold:-P7MDAtYnqy8y7DRVUlp:hub3:p1795103464793:25",
+          "qty": 0,
+          "updatedAt": "2026-11-26T09:38:49.135Z",
+          "updatedBy": "6uAgJkz4euh9fB3FrwXQhCA5TNu1",
+          "v": 1
+        },
+        "26": {
+          "lastType": "transfer_out",
+          "mv": "-P6oWAF8EHrZ8oaBWWY4:p1795103464793:26",
+          "qty": 2,
+          "updatedAt": "2026-11-19T15:55:08.326Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "27": {
+          "lastType": "sold",
+          "mv": "sold:-P77KnSDJn9EHQHnxlPu:hub3:p1795103464793:27",
+          "qty": 0,
+          "updatedAt": "2026-11-23T12:17:45.403Z",
+          "updatedBy": "MRiyMH8KsIg2iKYTTtaHdvTeVJ62",
+          "v": 2
+        },
+        "28": {
+          "checkedAt": "2026-11-26T06:44:58.560Z",
+          "checkedBy": "l0gyzcGO6OTQRYLLu4RMx49DbTB3",
+          "lastType": "received",
+          "mv": "dispreg_hub3_p1795103464793_28",
+          "qty": 3,
+          "updatedAt": "2026-11-26T06:44:58.560Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 1
+        },
+        "29": {
+          "lastType": "sold",
+          "mv": "sold:-P776wWMOu3pKu3HbZKU:hub3:p1795103464793:29",
+          "qty": 1,
+          "updatedAt": "2026-11-23T11:17:16.574Z",
+          "updatedBy": "6uAgJkz4euh9fB3FrwXQhCA5TNu1",
+          "v": 1
+        },
+        "30": {
+          "lastType": "sold",
+          "mv": "sold:-P7R5yuY0BOlNSgeImzd:hub3:p1795103464793:30",
+          "qty": 1,
+          "updatedAt": "2026-11-27T08:25:30.237Z",
+          "updatedBy": "MRiyMH8KsIg2iKYTTtaHdvTeVJ62",
+          "v": 1
+        },
+        "32": {
+          "lastType": "transfer_out",
+          "mv": "-P6oWAF8EHrZ8oaBWWY4:p1795103464793:32",
+          "qty": 2,
+          "updatedAt": "2026-11-19T15:55:16.760Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "33": {
+          "lastType": "sold",
+          "mv": "sold:-P71tci4fYit0oD9UCR0:hub3:p1795103464793:33",
+          "qty": 1,
+          "updatedAt": "2026-11-22T10:56:34.962Z",
+          "updatedBy": "6uAgJkz4euh9fB3FrwXQhCA5TNu1",
+          "v": 1
+        },
+        "34": {
+          "checkedAt": "2026-11-24T15:24:17.722Z",
+          "checkedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "lastType": "transfer_out",
+          "mv": "-P6oWAF8EHrZ8oaBWWY4:p1795103464793:34",
+          "qty": 2,
+          "updatedAt": "2026-11-24T15:24:17.722Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "35": {
+          "lastType": "sold",
+          "mv": "sold:-P7Ra7kOHj3u22AlyMeY:hub3:p1795103464793:35",
+          "qty": 0,
+          "updatedAt": "2026-11-27T10:41:36.108Z",
+          "updatedBy": "MRiyMH8KsIg2iKYTTtaHdvTeVJ62",
+          "v": 4
+        }
+      }
+    },
+    "removeStock": {
+      "central": {
+        "24": {
+          "lastType": "received",
+          "mv": "-P7H86NwHoS-uucVC5vR",
+          "qty": 3,
+          "updatedAt": "2026-11-25T09:58:29.849Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "25": {
+          "lastType": "received",
+          "mv": "-P7H86b33g6jw5qvD1YE",
+          "qty": 3,
+          "updatedAt": "2026-11-25T09:58:30.829Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "26": {
+          "lastType": "received",
+          "mv": "-P7H86vCk_ZEnN6SsTaP",
+          "qty": 4,
+          "updatedAt": "2026-11-25T09:58:32.374Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "27": {
+          "lastType": "received",
+          "mv": "-P7H87HM45k4WYlo_D1b",
+          "qty": 5,
+          "updatedAt": "2026-11-25T09:58:33.905Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "28": {
+          "lastType": "received",
+          "mv": "-P7H87boH5v-Q9U1mrYW",
+          "qty": 4,
+          "updatedAt": "2026-11-25T09:58:34.893Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "29": {
+          "lastType": "received",
+          "mv": "-P7H87pvTMmY1ah1iFZ2",
+          "qty": 3,
+          "updatedAt": "2026-11-25T09:58:37.186Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "30": {
+          "lastType": "received",
+          "mv": "-P7H88OWWIAJijFt1kzR",
+          "qty": 4,
+          "updatedAt": "2026-11-25T09:58:38.240Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "31": {
+          "lastType": "received",
+          "mv": "-P7H88e5Z5FLA9s-wYjS",
+          "qty": 4,
+          "updatedAt": "2026-11-25T09:58:39.296Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "32": {
+          "lastType": "received",
+          "mv": "-P7H88ufafVfgWCWfix-",
+          "qty": 5,
+          "updatedAt": "2026-11-25T09:58:40.240Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "33": {
+          "lastType": "received",
+          "mv": "-P7H897pb07rz6z8pZOL",
+          "qty": 5,
+          "updatedAt": "2026-11-25T09:58:41.159Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "34": {
+          "lastType": "received",
+          "mv": "-P7H89NgX_1fW68cMT4V",
+          "qty": 5,
+          "updatedAt": "2026-11-25T09:58:42.283Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        },
+        "35": {
+          "lastType": "received",
+          "mv": "-P7H89d3FBZnfsuUgstB",
+          "qty": 5,
+          "updatedAt": "2026-11-25T09:58:43.137Z",
+          "updatedBy": "vWfHqbLEPvRMItXhH0B9NvYW0LG3",
+          "v": 0
+        }
+      },
+      "hub3": {
+        "24": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        },
+        "25": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        },
+        "26": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        },
+        "27": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        },
+        "28": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        },
+        "29": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        },
+        "30": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        },
+        "31": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        },
+        "32": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        },
+        "33": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        },
+        "34": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        },
+        "35": {
+          "lastType": "count",
+          "mv": "seed",
+          "qty": 0,
+          "state": "live",
+          "trusted": true,
+          "trustedAt": "2026-11-25T19:57:01.845Z",
+          "trustedVia": "solve",
+          "updatedAt": "2026-11-25T19:57:01.845Z",
+          "updatedBy": "P4EQ7TjPeKYi76HVX2LhdcL6L0d2",
+          "v": 0
+        }
+      }
+    }
+  },
+  "countedByLoc": {
+    "central": [],
+    "hub3": []
+  },
+  "refs": {
+    "openRequests": [
+      {
+        "id": "-P7JH6Af5MaU3MSjbHd2",
+        "requestingLocation": "hub3",
+        "size": "24",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7JH6Af5MaU3MSjbHd3",
+        "requestingLocation": "hub3",
+        "size": "25",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7JH6Af5MaU3MSjbHd4",
+        "requestingLocation": "hub3",
+        "size": "26",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7JH6Af5MaU3MSjbHd5",
+        "requestingLocation": "hub3",
+        "size": "27",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7JH6Af5MaU3MSjbHd6",
+        "requestingLocation": "hub3",
+        "size": "28",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7JH6Af5MaU3MSjbHd7",
+        "requestingLocation": "hub3",
+        "size": "29",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7JH6Af5MaU3MSjbHd8",
+        "requestingLocation": "hub3",
+        "size": "30",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7JH6Af5MaU3MSjbHd9",
+        "requestingLocation": "hub3",
+        "size": "31",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7JH6Af5MaU3MSjbHdA",
+        "requestingLocation": "hub3",
+        "size": "32",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7JH6Af5MaU3MSjbHdB",
+        "requestingLocation": "hub3",
+        "size": "33",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7JH6Af5MaU3MSjbHdC",
+        "requestingLocation": "hub3",
+        "size": "34",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7JH6Af5MaU3MSjbHdD",
+        "requestingLocation": "hub3",
+        "size": "35",
+        "qty": 3,
+        "sentQty": 0,
+        "createdAt": "2026-11-25T19:57:01.845Z",
+        "via": "missing_sneakers",
+        "by": "Jafer"
+      },
+      {
+        "id": "-P7McOpUY_BUMOgAthoa",
+        "requestingLocation": "hub1",
+        "size": "26",
+        "qty": 1,
+        "sentQty": 0,
+        "createdAt": "2026-11-26T11:33:17.034Z",
+        "via": "missing_sneakers",
+        "by": "2POS"
+      },
+      {
+        "id": "-P7McOpVmzQ4ypwj-a0X",
+        "requestingLocation": "hub1",
+        "size": "27",
+        "qty": 2,
+        "sentQty": 0,
+        "createdAt": "2026-11-26T11:33:17.034Z",
+        "via": "missing_sneakers",
+        "by": "2POS"
+      },
+      {
+        "id": "-P7McOpVmzQ4ypwj-a0Y",
+        "requestingLocation": "hub1",
+        "size": "28",
+        "qty": 1,
+        "sentQty": 0,
+        "createdAt": "2026-11-26T11:33:17.034Z",
+        "via": "missing_sneakers",
+        "by": "2POS"
+      },
+      {
+        "id": "-P7McOpVmzQ4ypwj-a0Z",
+        "requestingLocation": "hub1",
+        "size": "30",
+        "qty": 1,
+        "sentQty": 0,
+        "createdAt": "2026-11-26T11:33:17.034Z",
+        "via": "missing_sneakers",
+        "by": "2POS"
+      },
+      {
+        "id": "-P7McOpVmzQ4ypwj-a0_",
+        "requestingLocation": "hub1",
+        "size": "31",
+        "qty": 1,
+        "sentQty": 0,
+        "createdAt": "2026-11-26T11:33:17.034Z",
+        "via": "missing_sneakers",
+        "by": "2POS"
+      },
+      {
+        "id": "-P7McOpVmzQ4ypwj-a0a",
+        "requestingLocation": "hub1",
+        "size": "32",
+        "qty": 2,
+        "sentQty": 0,
+        "createdAt": "2026-11-26T11:33:17.034Z",
+        "via": "missing_sneakers",
+        "by": "2POS"
+      },
+      {
+        "id": "-P7McOpVmzQ4ypwj-a0b",
+        "requestingLocation": "hub1",
+        "size": "33",
+        "qty": 2,
+        "sentQty": 0,
+        "createdAt": "2026-11-26T11:33:17.034Z",
+        "via": "missing_sneakers",
+        "by": "2POS"
+      },
+      {
+        "id": "-P7McOpVmzQ4ypwj-a0c",
+        "requestingLocation": "hub1",
+        "size": "34",
+        "qty": 2,
+        "sentQty": 0,
+        "createdAt": "2026-11-26T11:33:17.034Z",
+        "via": "missing_sneakers",
+        "by": "2POS"
+      },
+      {
+        "id": "-P7McOpVmzQ4ypwj-a0d",
+        "requestingLocation": "hub1",
+        "size": "35",
+        "qty": 2,
+        "sentQty": 0,
+        "createdAt": "2026-11-26T11:33:17.034Z",
+        "via": "missing_sneakers",
+        "by": "2POS"
+      }
+    ],
+    "displayRegister": [],
+    "countedRecords": [],
+    "targets": [],
+    "attention": [],
+    "openDuplicatePairsOther": [],
+    "barcodeRows": {
+      "00040275": {
+        "at": "2026-11-25T09:58:30.292Z",
+        "productId": "p1795600675612",
+        "size": "24"
+      },
+      "00040276": {
+        "at": "2026-11-25T09:58:32.372Z",
+        "productId": "p1795600675612",
+        "size": "25"
+      },
+      "00040277": {
+        "at": "2026-11-25T09:58:34.486Z",
+        "productId": "p1795600675612",
+        "size": "26"
+      },
+      "00040278": {
+        "at": "2026-11-25T09:58:37.184Z",
+        "productId": "p1795600675612",
+        "size": "27"
+      },
+      "00040279": {
+        "at": "2026-11-25T09:58:38.627Z",
+        "productId": "p1795600675612",
+        "size": "28"
+      },
+      "00040280": {
+        "at": "2026-11-25T09:58:40.035Z",
+        "productId": "p1795600675612",
+        "size": "29"
+      },
+      "00040281": {
+        "at": "2026-11-25T09:58:41.456Z",
+        "productId": "p1795600675612",
+        "size": "30"
+      },
+      "00040282": {
+        "at": "2026-11-25T09:58:42.937Z",
+        "productId": "p1795600675612",
+        "size": "31"
+      },
+      "00040283": {
+        "at": "2026-11-25T09:58:45.312Z",
+        "productId": "p1795600675612",
+        "size": "32"
+      },
+      "00040284": {
+        "at": "2026-11-25T09:58:46.691Z",
+        "productId": "p1795600675612",
+        "size": "33"
+      },
+      "00040285": {
+        "at": "2026-11-25T09:58:48.193Z",
+        "productId": "p1795600675612",
+        "size": "34"
+      },
+      "00040286": {
+        "at": "2026-11-25T09:58:49.987Z",
+        "productId": "p1795600675612",
+        "size": "35"
+      }
+    },
+    "styleCodeClaims": [],
+    "duplicatePairRow": null,
+    "shopifyPublish": null,
+    "cellHolds": null,
+    "productAttributes": true
+  }
+}
