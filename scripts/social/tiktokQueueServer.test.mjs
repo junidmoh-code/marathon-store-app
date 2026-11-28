@@ -128,6 +128,20 @@ describe("marks", () => {
     expect(j.posts[1]).toMatchObject({ status: "posted", posted_via: "signal-studio" });
     writeFileSync(join(dir, "poster", "ledger.json"), JSON.stringify({ families: {} }));
   });
+  it("a poster refusal (nothing created) stays pending", async () => {
+    writeFileSync(join(dir, "poster", "ledger.json"), JSON.stringify({ families: { "-Ptwo": { state: "refused", attempts: 3 } } }));
+    const j = await (await fetch(`${base}/latest.json`)).json();
+    expect(j.posts[1].status).not.toBe("posted");
+    writeFileSync(join(dir, "poster", "ledger.json"), JSON.stringify({ families: {} }));
+  });
+  it("unmark with one unreadable file changes nothing", async () => {
+    await post("/mark-posted", { post_id: "-Pone" });
+    const before = readFileSafe("posted.json");
+    writeFileSync(join(dir, "skipped.json"), "[broken");
+    expect((await post("/unmark", { post_id: "-Pone" })).status).toBe(500);
+    expect(readFileSafe("posted.json")).toBe(before);
+    writeFileSync(join(dir, "skipped.json"), "{}");
+  });
   it("rejects bad JSON", async () => {
     const r = await fetch(`${base}/mark-posted`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}` }, body: "{nope" });
     expect(r.status).toBe(400);

@@ -53,6 +53,9 @@ describe("toPhoto", () => {
     const m = await sharp(out).metadata();
     expect([m.format, m.width, m.height]).toEqual(["jpeg", 1080, 1920]);
   });
+  it("rejects (gone) a corrupt image instead of treating it as an outage", async () => {
+    await expect(toPhoto(Buffer.from("definitely not an image"))).rejects.toMatchObject({ gone: true });
+  });
   it("fills an oversized 9:16 picture down to 1080x1920", async () => {
     const big = await sharp({ create: { width: 2160, height: 3840, channels: 3, background: "#123" } }).jpeg().toBuffer();
     const m = await sharp(await toPhoto(big)).metadata();

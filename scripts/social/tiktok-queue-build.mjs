@@ -162,10 +162,11 @@ async function main() {
   const posts = [];
   const transient = [];
   let inARow = 0;
+  let outOfTime = false;
   for (const c of pickBatch(queue, state, Infinity, carry)) {
     if (posts.length >= PER_BATCH) break;
     if (inARow >= 2) { log("  two transient failures in a row: stopping this run"); break; }
-    if (Date.now() > deadline) { log("  preparation budget used up: stopping this run"); break; }
+    if (Date.now() > deadline) { outOfTime = true; log("  preparation budget used up: stopping this run"); break; }
     try {
       const files = await prepare(c);
       const { caption, hashtags } = tiktokCaption(c);
@@ -189,7 +190,7 @@ async function main() {
     }
   }
   // Nothing written when the run fell short only because of an outage: the retry launch builds the full batch.
-  if (posts.length < PER_BATCH && transient.length && !LAST_TRY) throw new Error(`batch ${id} short (${posts.length}/${PER_BATCH}) after transient failures, left for the retry run: ${transient.slice(0, 3).join("; ")}`);
+  if (posts.length < PER_BATCH && (transient.length || outOfTime) && !LAST_TRY) throw new Error(`batch ${id} short (${posts.length}/${PER_BATCH}) after ${outOfTime ? "running out of time" : "transient failures"}, left for the retry run (prepared media is kept): ${transient.slice(0, 3).join("; ")}`);
   if (!posts.length && transient.length) throw new Error(`no post could be prepared: ${transient.slice(0, 3).join("; ")}`);
 
   const batch = {

@@ -12,16 +12,25 @@ const FFMPEG = existsSync("/opt/homebrew/bin/ffmpeg") ? "/opt/homebrew/bin/ffmpe
 const FFPROBE = existsSync("/opt/homebrew/bin/ffprobe") ? "/opt/homebrew/bin/ffprobe" : "ffprobe";
 const gone = (msg) => Object.assign(new Error(msg), { gone: true });
 
+/** The tool ran and refused the file (non-zero exit): the media is bad. The tool could not start, timed out or was killed: retry later. */
+const toolRefused = (e) => typeof e?.status === "number" && e.status !== 0 && !e.signal;
+const lastLine = (e) => String(e?.stderr || e?.message || "").trim().split("\n").pop().slice(0, 200);
+
 function probe(f) {
   try { return JSON.parse(execFileSync(FFPROBE, ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", f], { stdio: ["ignore", "pipe", "pipe"] }).toString()); }
-  catch (e) { throw gone(`video unreadable: ${String(e.stderr || e.message).trim().split("\n").pop().slice(0, 200)}`); }
+  catch (e) { if (toolRefused(e)) throw gone(`video unreadable: ${lastLine(e)}`); throw new Error(`ffprobe failed to run: ${lastLine(e)}`); }
 }
 
 /** JPEG, exactly 1080x1920, at most 20 MB. A non-vertical picture sits on a blurred, darkened fill of itself (the story look). */
 export async function toPhoto(buf) {
   const sharp = adminRequire(import.meta.url)("sharp");
-  const src = sharp(buf).rotate();
-  const { width = 0, height = 0 } = await src.metadata();
+  let width = 0, height = 0;
+  try {
+    const m = await sharp(buf).metadata();
+    [width, height] = (m.orientation || 1) >= 5 ? [m.height || 0, m.width || 0] : [m.width || 0, m.height || 0]; // EXIF 5-8 = quarter turn
+    await sharp(buf).stats(); // decodes every pixel: a corrupt file fails here, not halfway through
+  }
+  catch (e) { throw gone(`image unreadable: ${String(e.message).slice(0, 200)}`); }
   let img;
   if (isVertical(width, height)) {
     img = sharp(buf).rotate().resize(PHOTO_W, PHOTO_H, { fit: "cover" }).flatten({ background: "#ffffff" });
@@ -51,7 +60,8 @@ export function toVideo(buf, out) {
       "-pix_fmt", "yuv420p", "-r", "30", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-f", "mp4", out], { timeout: 15 * 60000, stdio: ["ignore", "ignore", "pipe"] });
     } catch (e) {
       rmSync(out, { force: true });
-      throw Object.assign(new Error(`video re-encode failed: ${String(e.stderr || e.message).trim().split("\n").pop().slice(0, 200)}`), { gone: true });
+      if (toolRefused(e)) throw gone(`video re-encode failed: ${lastLine(e)}`);
+      throw new Error(`ffmpeg failed to run: ${lastLine(e)}`);
     }
     const after = videoPlan(probe(out));
     if (!after.ok || after.transcode) throw Object.assign(new Error(`video still unusable after re-encode: ${after.reason || after.transcode}`), { gone: true });

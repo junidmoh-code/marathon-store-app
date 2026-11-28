@@ -31,7 +31,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { BATCH_ID_RE, POST_ID_RE, applyMark, staleAfter } from "./tiktokHfQueue.mjs";
-import { eligible } from "./tiktokQueue.mjs";
+import { eligible } from "./tiktokQueue.mjs"; // eligible(undefined) is true: no entry, not sent
 
 const DIR = process.env.TIKTOK_QUEUE_DIR || join(homedir(), ".marathon-tiktok-queue");
 const PORT = Number(process.env.TIKTOK_QUEUE_PORT || 8798);
@@ -109,9 +109,10 @@ function markNow(res, path, body) {
     const postId = body?.post_id;
     if (path === "/unmark") {
       if (typeof postId !== "string" || !POST_ID_RE.test(postId)) return send(res, 400, { error: "post_id missing or malformed" });
+      // Read both before changing either, so an unreadable file means nothing changed.
+      const maps = Object.values(MARKS).map((f) => [f, readMap(join(DIR, f))]);
       let removed = false;
-      for (const f of Object.values(MARKS)) {
-        const map = readMap(join(DIR, f));
+      for (const [f, map] of maps) {
         if (map[postId]) { delete map[postId]; writeJson(join(DIR, f), map); removed = true; }
       }
       console.log(`${new Date().toISOString()} unmark ${postId}: ${removed ? "removed" : "nothing to remove"}`);
@@ -136,7 +137,8 @@ function send(res, status, body, headers = {}) {
 // The Signal Studio poster's ledger counts too: once the audit passes, a family it sent is never offered here as pending.
 export function withStatus(batch, posted, skipped, ledger = null, now = Date.now()) {
   if (!batch) return null;
-  const viaPoster = (id) => ledger?.families?.[id] && !eligible(ledger.families[id]);
+  // Sent, live, in flight or of unknown outcome. A refusal created nothing on TikTok, however many times it happened.
+  const viaPoster = (id) => { const e = ledger?.families?.[id]; return !!e && e.state !== "refused" && !eligible(e); };
   const posts = (batch.posts || []).map((p) => ({
     ...p,
     status: posted[p.post_id] || viaPoster(p.post_id) ? "posted" : skipped[p.post_id] ? "skipped" : "pending",

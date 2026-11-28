@@ -119,7 +119,8 @@ function handoffTaken() {
   for (const f of ["posted.json", "skipped.json"]) {
     let map;
     try { map = JSON.parse(readFileSync(join(HANDOFF_DIR, f), "utf8")); } catch (e) { if (e.code === "ENOENT") continue; throw new Error(`handoff queue ${f} unreadable (${e.code || e.message}); not posting`); }
-    for (const k of Object.keys(map || {})) keys.add(k);
+    if (!map || typeof map !== "object" || Array.isArray(map)) throw new Error(`handoff queue ${f} is not a map; not posting`);
+    for (const k of Object.keys(map)) keys.add(k);
   }
   return keys;
 }
