@@ -8,6 +8,7 @@
 //
 //   node scripts/af1-misreceive-investigate.mjs [--receive-from ISO] [--receive-to ISO]
 //        [--manual-day YYYY-MM-DD] [--manual-actor uid …] [--history-from ISO] [--out file.json]
+//        [--expected-receive-day YYYY-MM-DD]   (default 2026-11-25, as in the plan script)
 //
 // Defaults: receive window 22 Nov 00:00 SAST → now (the 21 Nov receive onto
 // the wrong product was already reversed by hand the same morning, so it is
@@ -118,7 +119,7 @@ console.log("\nCells now — WRONG:");
 console.log(nested(cells[wrong.pid]));
 console.log("Cells now — RIGHT:");
 console.log(nested(cells[right.pid]));
-const plan = planCorrection(facts, { expectedReceiveDay: null });
+const plan = planCorrection(facts, { expectedReceiveDay: opt("--expected-receive-day", "2026-11-25") });
 console.log(`\nAmbiguous: ${facts.ambiguous.length}`);
 for (const a of facts.ambiguous) console.log(`  ${a.loc} ${a.size}: ${a.note}`);
 console.log(`\nPlan status if applied as briefed: ${plan.status}`);

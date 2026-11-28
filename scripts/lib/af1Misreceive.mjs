@@ -156,6 +156,15 @@ export function collectFacts({ wrongPid, rightPid, rows, cells, receiveFrom, rec
     else add(ys, loc, sk, n);
     ysLines.push(line);
   }
+  // Ys can never exceed the receive units sitting in that cell: a sale beyond
+  // them sold something else (Sonnet review, PR #1028) — ambiguous, not reassigned.
+  for (const [loc, sz] of Object.entries(ys)) for (const [sk, n] of Object.entries(sz)) {
+    const cap = Math.max(get(phantom, loc, sk), 0);
+    if (n > cap) {
+      ambiguous.push({ kind: "wrong_sale_beyond_receive", product: "wrong", loc, size: sk, note: `${n} Yellow Logo sold here but only ${cap} received unit(s) sit here — ${n - cap} not reassigned` });
+      sz[sk] = cap;
+    }
+  }
 
   // c) Ws — RIGHT sales since the receive (stay deducted; reported only)
   const ws = {};
@@ -191,25 +200,23 @@ export function collectFacts({ wrongPid, rightPid, rows, cells, receiveFrom, rec
 export function planCorrection(f, { expectedReceiveDay = null } = {}) {
   const lines = [], negative = [];
   const wrongNow = f.cells[f.wrongPid] || {}, rightNow = f.cells[f.rightPid] || {};
-  const delta = { [f.rightPid]: {}, [f.wrongPid]: {} };
   const locs = new Set([...Object.keys(f.R), ...Object.keys(f.M), ...Object.keys(f.Ys)]);
+  let heldM = 0;
   for (const loc of locs) {
     const sks = new Set([...Object.keys(f.R[loc] || {}), ...Object.keys(f.M[loc] || {}), ...Object.keys(f.Ys[loc] || {})]);
     for (const sk of sks) {
       const R = get(f.R, loc, sk), M = get(f.M, loc, sk), Ys = get(f.Ys, loc, sk);
-      add(delta[f.rightPid], loc, sk, R - M - Ys);
-      add(delta[f.wrongPid], loc, sk, -R + Ys);
+      const pair = [[f.rightPid, "right", rightNow, R - M - Ys], [f.wrongPid, "wrong", wrongNow, -R + Ys]]
+        .filter(([, , , d]) => d)
+        .map(([productId, product, now, d]) => { const before = get(now, loc, sk); return { productId, product, loc, size: sk, delta: d, before, after: before + d }; });
+      // A cell's two lines are one move: if either side would go negative, BOTH
+      // are held (Sonnet review, PR #1028) — half a move would create or lose units.
+      if (pair.some((l) => l.after < 0)) { negative.push(...pair); heldM += M; } else lines.push(...pair);
     }
   }
-  for (const [pid, now] of [[f.rightPid, rightNow], [f.wrongPid, wrongNow]]) {
-    for (const [loc, sz] of Object.entries(delta[pid])) for (const [sk, d] of Object.entries(sz)) {
-      if (!d) continue;
-      const before = get(now, loc, sk), after = before + d;
-      const line = { productId: pid, product: pid === f.rightPid ? "right" : "wrong", loc, size: sk, delta: d, before, after };
-      (after < 0 ? negative : lines).push(line);
-    }
-  }
-  const totalDelta = lines.reduce((t, l) => t + l.delta, 0) + negative.reduce((t, l) => t + l.delta, 0);
+  // The check is over what WOULD be applied: those lines must change the two
+  // products together by exactly −(the manual add in the cells not held).
+  const totalDelta = lines.reduce((t, l) => t + l.delta, 0);
   const mUnits = sumNested(f.M);
   const blockers = [];
   if (!f.receiveEvents.length) blockers.push({ code: "no_wrong_receive", text: "No receive onto the wrong product in the window." });
@@ -218,16 +225,20 @@ export function planCorrection(f, { expectedReceiveDay = null } = {}) {
   if (f.mirrors.length) blockers.push({ code: "right_product_also_received", text: `The right product was received in the same window with matching sizes (${f.mirrors.length} matching event pair(s)) — adding R to it would count that delivery twice.` });
   if (f.receiveEvents.length > 1) blockers.push({ code: "multiple_wrong_receives", text: `${f.receiveEvents.length} separate receive events onto the wrong product — possibly one delivery entered more than once.` });
   if (!f.manualActors || !f.manualActors.length) blockers.push({ code: "manual_add_unconfirmed", text: `Whose add is "the manual add" is not confirmed — ${f.manualCandidates.length} candidate row(s) on the manual day.` });
-  // Ambiguous and negative lines do NOT block the plan (the brief: list them,
-  // don't apply them): an ambiguous sale is already left out of Ys, and a
-  // negative line is held out of `lines` above.
+  // A transfer that left a cell holding real Yellow Logo too cannot say which
+  // units it carried, so R at its destination is a guess — block, don't guess.
+  const mixed = f.ambiguous.filter((a) => a.kind === "transfer_mixed");
+  if (mixed.length) blockers.push({ code: "mixed_transfer", text: `${mixed.length} transfer(s) left a cell that also held real Yellow Logo.` });
+  // Ambiguous SALES and negative cells do NOT block the plan (the brief: list
+  // them, don't apply them): an ambiguous sale is left out of Ys, and a
+  // negative cell's two lines are held out of `lines` above.
   return {
     status: blockers.length ? "BLOCKED" : "READY",
     reason: REASON,
     lines, negative, blockers,
     totals: {
-      R: sumNested(f.R), M: mUnits, Ys: sumNested(f.Ys), Ws: sumNested(f.Ws),
-      combinedDelta: totalDelta, combinedDeltaOk: totalDelta === -mUnits,
+      R: sumNested(f.R), M: mUnits, heldM, Ys: sumNested(f.Ys), Ws: sumNested(f.Ws),
+      combinedDelta: totalDelta, combinedDeltaOk: totalDelta === -(mUnits - heldM),
     },
   };
 }

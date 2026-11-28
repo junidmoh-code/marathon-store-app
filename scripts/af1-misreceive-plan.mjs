@@ -28,10 +28,10 @@ console.log(`R ${plan.totals.R} · M ${plan.totals.M} · Ys ${plan.totals.Ys} (W
 const sorted = (ls) => [...ls].sort((a, b) => (a.product + a.loc).localeCompare(b.product + b.loc) || parseFloat(show(a.size)) - parseFloat(show(b.size)));
 console.log("\nLines:");
 for (const l of sorted(plan.lines)) console.log(`  ${name(l).padEnd(44)} ${l.loc.padEnd(10)} size ${show(l.size).padEnd(4)} ${l.delta > 0 ? "+" : ""}${l.delta}  ${l.before} → ${l.after}`);
-console.log("\nWould go negative (not applied):");
+console.log("\nWould go negative — both lines of the cell held, not applied:");
 for (const l of sorted(plan.negative)) console.log(`  ${name(l).padEnd(44)} ${l.loc.padEnd(10)} size ${show(l.size).padEnd(4)} ${l.delta}  ${l.before} → ${l.after}`);
 if (!plan.negative.length) console.log("  (none)");
-console.log(`\nCombined change across both products: ${plan.totals.combinedDelta} (must equal −M = ${-plan.totals.M}) → ${plan.totals.combinedDeltaOk ? "OK" : "MISMATCH"}`);
+console.log(`\nCombined change of the lines that would apply: ${plan.totals.combinedDelta} (must equal −(M − M in held cells) = ${-(plan.totals.M - plan.totals.heldM)}) → ${plan.totals.combinedDeltaOk ? "OK" : "MISMATCH"}`);
 console.log(`\nAmbiguous lines (${facts.ambiguous.length}):`);
 for (const a of facts.ambiguous) console.log(`  ${a.loc} size ${show(a.size)}: ${a.note}`);
 console.log(`\nSTATUS: ${plan.status}`);

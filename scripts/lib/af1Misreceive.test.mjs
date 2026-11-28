@@ -63,12 +63,13 @@ describe("collectFacts + planCorrection — a world that matches the brief", () 
     expect(p.blockers).toEqual([]);
     expect(p.status).toBe("READY");
     const byKey = Object.fromEntries(p.lines.map((l) => [`${l.product}:${l.loc}:${l.size}`, l]));
-    // hub1/5: RIGHT +2 −3 −1 = −2 → 1 → −1 is negative, reported not applied
-    expect(p.negative.map((l) => `${l.product}:${l.loc}:${l.size}:${l.delta}`)).toEqual(["right:hub1:5:-2"]);
+    // hub1/5: RIGHT +2 −3 −1 = −2 → 1 → −1 is negative, so BOTH lines of that cell are held
+    expect(p.negative.map((l) => `${l.product}:${l.loc}:${l.size}:${l.delta}`).sort()).toEqual(["right:hub1:5:-2", "wrong:hub1:5:-1"]);
+    expect(byKey["wrong:hub1:5"]).toBeUndefined();
     expect(byKey["right:central:5"].delta).toBe(4);
     expect(byKey["wrong:central:5"]).toMatchObject({ delta: -4, before: 4, after: 0 });
-    expect(byKey["wrong:hub1:5"]).toMatchObject({ delta: -1, before: 1, after: 0 });
-    expect(p.totals.combinedDelta).toBe(-3);
+    expect(p.totals.heldM).toBe(3);
+    expect(p.totals.combinedDelta).toBe(0);   // −(M − held M)
     expect(p.totals.combinedDeltaOk).toBe(true);
   });
 });
@@ -103,5 +104,18 @@ describe("blockers — the brief's premise not holding", () => {
     const { rows, cells } = cleanWorld();
     rows.push(row({ productId: W, ts: "2026-11-25T09:30:00Z", type: "received", size: "5", qty: 6, to: "central", before: { central: 4 } }));
     expect(planCorrection(collectFacts({ ...base, rows, cells, manualActors: ["jun"] })).blockers.map((b) => b.code)).toContain("multiple_wrong_receives");
+  });
+  it("caps Ys at the receive units in that cell; the excess is ambiguous", () => {
+    const { rows, cells } = cleanWorld();
+    rows.push(row({ productId: W, ts: "2026-11-27T10:00:00Z", type: "sold", size: "5", qty: 2, from: "hub1", before: { hub1: 1 }, after: { hub1: -1 } }));
+    const f = collectFacts({ ...base, rows, cells, manualActors: ["jun"] });
+    expect(f.Ys).toEqual({ hub1: { 5: 2 } });   // 3 sold, only 2 received units there
+    expect(f.ambiguous.map((a) => a.kind)).toContain("wrong_sale_beyond_receive");
+  });
+  it("blocks a transfer out of a cell that also held real wrong-product stock", () => {
+    const { rows, cells } = cleanWorld();
+    rows[0] = { ...rows[0], before: { central: 3 } };   // central/5 held 3 real before the receive
+    const p = planCorrection(collectFacts({ ...base, rows, cells, manualActors: ["jun"] }));
+    expect(p.blockers.map((b) => b.code)).toContain("mixed_transfer");
   });
 });
