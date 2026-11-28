@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import SkyOverlay from "./SkyOverlay.jsx";
 import { HiResPhoto } from "../assistant/HiResPhoto.jsx";
+import TilePhoto from "./TilePhoto.jsx";
 import { IconGrid, IconUser, IconSearch, IconCamera, IconFilter, IconPlus, IconCart } from "./SkyIcons.jsx";
 import { brandIcon, brandTextLabel, noteUnmappedBrand } from "./brandLogos.js";
 
@@ -362,7 +363,10 @@ export function cutoutSrc(p) {
  * resolution photo (same source and cache as before — HiResPhoto) in a white
  * rounded frame filling the stage, no podium. Both states are finished looks.
  */
-export function ProductStage({ p, height, emoji = "👟", podiumWidth, cutoutHeight, priority = false }) {
+// `tile`: the phone/iPad order grid's photo — TilePhoto (placeholder at once,
+// the full photo from the device cache, faded in). Every other caller keeps
+// HiResPhoto exactly as before.
+export function ProductStage({ p, height, emoji = "👟", podiumWidth, cutoutHeight, priority = false, tile = false }) {
   const cut = cutoutSrc(p);
   const [cutFailed, setCutFailed] = useState(null);
   const useCut = cut && cutFailed !== cut;
@@ -380,8 +384,11 @@ export function ProductStage({ p, height, emoji = "👟", podiumWidth, cutoutHei
   return (
     <div className="sky-stage" style={{ height }} data-stage="frame">
       <div className="sky-frame">
-        <HiResPhoto key={p.photoUrl || ""} p={p} alt={p.name || ""}
-                    fallback={<span style={{ fontSize: 46 }}>{p.photo || emoji}</span>} />
+        {tile
+          ? <TilePhoto key={`${p.id}|${p.photoUrl || ""}`} p={p} alt={p.name || ""} priority={priority}
+                       fallback={<span style={{ fontSize: 46 }}>{p.photo || emoji}</span>} />
+          : <HiResPhoto key={p.photoUrl || ""} p={p} alt={p.name || ""}
+                        fallback={<span style={{ fontSize: 46 }}>{p.photo || emoji}</span>} />}
       </div>
     </div>
   );
