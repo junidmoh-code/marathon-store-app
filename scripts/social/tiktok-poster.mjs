@@ -108,6 +108,18 @@ async function report(run) {
   saveMemory(m);
 }
 
+/**
+ * Families Junid already published through the Higgsfield handoff queue (tiktok-queue-server.mjs writes
+ * ~/.marathon-tiktok-queue/posted.json when his Claude chat reports a post live). Never posted again from here.
+ * An unreadable file stops the run, like an unreadable ledger: posting from a blank memory would repost.
+ */
+const HANDOFF_POSTED = join(process.env.TIKTOK_QUEUE_DIR || join(homedir(), ".marathon-tiktok-queue"), "posted.json");
+function notPostedViaHandoff(queue) {
+  let posted;
+  try { posted = JSON.parse(readFileSync(HANDOFF_POSTED, "utf8")); } catch (e) { if (e.code === "ENOENT") return queue; throw new Error(`handoff queue posted.json unreadable (${e.code || e.message}); not posting`); }
+  return queue.filter((c) => !posted?.[c.key]);
+}
+
 /** Empty only when there is no ledger yet. An unreadable one stops the run: posting from a blank memory would repost. */
 function readLedger() {
   let text;
@@ -319,7 +331,7 @@ async function runOnce(admin, want) {
   if (!st.connected) { log(`TikTok: not connected in Signal Studio (${st.reason || "unknown"}); skipped`); return run; }
 
   const snap = await admin.database().ref("social_posts").once("value");
-  const queue = buildQueue(Object.entries(snap.val() || {}).map(([id, p]) => ({ id, ...p })));
+  const queue = notPostedViaHandoff(buildQueue(Object.entries(snap.val() || {}).map(([id, p]) => ({ id, ...p }))));
   if (!lock()) { log("TikTok: another run is in progress; skipped"); return run; }
   try {
     const ledger = readLedger();
@@ -394,7 +406,7 @@ async function main() {
   // still resolve through it (buildQueue keeps only posted records as sources).
   const snap = await admin.database().ref("social_posts").once("value");
   const posts = Object.entries(snap.val() || {}).map(([id, p]) => ({ id, ...p }));
-  const queue = buildQueue(posts);
+  const queue = notPostedViaHandoff(buildQueue(posts));
   const ledger = readLedger();
   const n = counts(queue, ledger);
   const summary = `queue ${n.total} (${n.photos} photos, ${n.videos} videos): ${n.posted} live, ${n.pending} pending, ${n.failed} failed, ${n.waiting} waiting`;

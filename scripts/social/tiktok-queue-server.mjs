@@ -14,11 +14,23 @@
 //   GET  /health
 // Everything here is public by design (it is what goes on TikTok anyway);
 // nothing reads outside ~/.marathon-tiktok-queue. docs/tiktok-queue.md.
-import { createReadStream, readFileSync, statSync } from "node:fs";
+//
+// WRITES (token required: Authorization: Bearer <token>, or X-Queue-Token):
+//   POST /mark-posted   {post_id, tiktok_url?, note?}  Junid's chat confirms the post is live on TikTok
+//   POST /mark-skipped  {post_id, note?}               Junid does not want this one; never offered again
+//   POST /unmark        {post_id}                      undo either (a mistaken mark)
+// Each also works as a GET with query parameters (?post_id=..&token=..) for chat
+// tools that can only fetch URLs.
+// The token is ~/.config/marathon/tiktok-queue.token (TIKTOK_QUEUE_TOKEN_FILE),
+// read on every request so it can be rotated without a restart. This process
+// is the only writer of posted.json and skipped.json; the builder and the
+// Signal Studio poster only read them.
+import { createHash, timingSafeEqual } from "node:crypto";
+import { createReadStream, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { BATCH_ID_RE, POST_ID_RE } from "./tiktokHfQueue.mjs";
+import { BATCH_ID_RE, POST_ID_RE, applyMark } from "./tiktokHfQueue.mjs";
 
 const DIR = process.env.TIKTOK_QUEUE_DIR || join(homedir(), ".marathon-tiktok-queue");
 const PORT = Number(process.env.TIKTOK_QUEUE_PORT || 8798);
@@ -28,7 +40,78 @@ const PREFIX = "/studio/tiktok-queue";
 const STALE_MS = 13 * 3600000; // a batch older than this means a build was missed
 const TYPES = { jpg: "image/jpeg", mp4: "video/mp4" };
 
+const TOKEN_FILE = process.env.TIKTOK_QUEUE_TOKEN_FILE || join(homedir(), ".config", "marathon", "tiktok-queue.token");
+const BODY_MAX = 8 * 1024;
+
 const readJson = (f, fallback) => { try { return JSON.parse(readFileSync(f, "utf8")); } catch { return fallback; } };
+function writeJson(f, v) {
+  mkdirSync(DIR, { recursive: true });
+  const tmp = `${f}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(v, null, 1));
+  renameSync(tmp, f);
+}
+
+/** Constant-time token check. No token file → every write is refused. */
+function authorized(req, query) {
+  let want;
+  try { want = readFileSync(TOKEN_FILE, "utf8").trim(); } catch { return false; }
+  if (want.length < 32) return false;
+  const auth = String(req.headers.authorization || "");
+  const got = auth.startsWith("Bearer ") ? auth.slice(7).trim() : String(req.headers["x-queue-token"] || query?.get("token") || "").trim();
+  if (!got) return false;
+  const h = (s) => createHash("sha256").update(s).digest();
+  return timingSafeEqual(h(got), h(want));
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const parts = [];
+    req.on("data", (d) => { size += d.length; if (size > BODY_MAX) { reject(Object.assign(new Error("body too large"), { status: 413 })); req.destroy(); } else parts.push(d); });
+    req.on("end", () => {
+      const text = Buffer.concat(parts).toString("utf8");
+      try { resolve(text ? JSON.parse(text) : {}); } catch { reject(Object.assign(new Error("body is not JSON"), { status: 400 })); }
+    });
+    req.on("error", reject);
+  });
+}
+
+/** Is this post_id in any batch we built? (Stops marks for ids that never went out.) */
+function knownPost(postId) {
+  let files = [];
+  try { files = readdirSync(join(DIR, "batches")).filter((f) => f.endsWith(".json")); } catch { return false; }
+  return files.some((f) => (readJson(join(DIR, "batches", f), { posts: [] }).posts || []).some((p) => p.post_id === postId));
+}
+
+// One write at a time, in arrival order.
+let chain = Promise.resolve();
+const serial = (fn) => { const run = chain.then(fn, fn); chain = run.catch(() => {}); return run; };
+
+const MARKS = { "/mark-posted": "posted.json", "/mark-skipped": "skipped.json" };
+async function mark(req, res, path, query = null) {
+  if (!authorized(req, query)) { await new Promise((r) => setTimeout(r, 500)); return send(res, 401, { error: "bad or missing token" }); }
+  let body;
+  if (query) body = { post_id: query.get("post_id"), tiktok_url: query.get("tiktok_url") || undefined, note: query.get("note") || undefined };
+  else { try { body = await readBody(req); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
+  return serial(() => {
+    const postId = body?.post_id;
+    if (path === "/unmark") {
+      if (typeof postId !== "string" || !POST_ID_RE.test(postId)) return send(res, 400, { error: "post_id missing or malformed" });
+      let removed = false;
+      for (const f of Object.values(MARKS)) {
+        const map = readJson(join(DIR, f), {});
+        if (map[postId]) { delete map[postId]; writeJson(join(DIR, f), map); removed = true; }
+      }
+      console.log(`${new Date().toISOString()} unmark ${postId}: ${removed ? "removed" : "nothing to remove"}`);
+      return send(res, 200, { ok: true, post_id: postId, removed });
+    }
+    const file = join(DIR, MARKS[path]);
+    const r = applyMark(readJson(file, {}), postId, body || {}, knownPost);
+    if (r.error) return send(res, r.error.includes("not in any batch") ? 404 : 400, { error: r.error });
+    if (!r.already) writeJson(file, r.map);
+    console.log(`${new Date().toISOString()} ${path.slice(1)} ${postId}${r.already ? " (already)" : ""}`);
+    return send(res, 200, { ok: true, post_id: postId, status: path === "/mark-posted" ? "posted" : "skipped", already: r.already, at: r.map[postId].at });
+  });
+}
 
 function send(res, status, body, headers = {}) {
   const text = typeof body === "string" ? body : JSON.stringify(body, null, 1);
@@ -81,6 +164,9 @@ export async function handle(req, res) {
     return b ? send(res, 200, b) : send(res, 404, { error: "no batch built yet" });
   }
   if (get && path === "/health") return send(res, 200, { ok: true });
+  if (req.method === "POST" && (MARKS[path] || path === "/unmark")) return mark(req, res, path);
+  // GET form for chat tools that cannot POST: same token, as ?token=. HEAD never marks.
+  if (req.method === "GET" && (MARKS[path] || path === "/unmark")) return mark(req, res, path, new URL(req.url, "http://x").searchParams);
   let m;
   if (get && (m = /^\/batches\/([^/]+)\.json$/.exec(path)) && BATCH_ID_RE.test(m[1])) {
     const b = withStatus(readJson(join(DIR, "batches", `${m[1]}.json`), null), readJson(join(DIR, "posted.json"), {}), readJson(join(DIR, "skipped.json"), {}));

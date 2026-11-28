@@ -10,6 +10,15 @@ TS=$(command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tai
 
 mkdir -p "$HOME/.marathon-tiktok-queue" "$REPO/logs"
 
+# mark-posted token (kept if it exists). Junid's Claude chat sends it as "Authorization: Bearer <token>".
+TOKEN="$HOME/.config/marathon/tiktok-queue.token"
+if [ ! -s "$TOKEN" ]; then
+  mkdir -p "$(dirname "$TOKEN")"
+  ( umask 077; openssl rand -hex 32 > "$TOKEN" )
+  echo "created $TOKEN"
+fi
+chmod 600 "$TOKEN"
+
 for job in com.marathon.tiktokqueue.server com.marathon.tiktokqueue.build; do
   cp "$REPO/scripts/social/$job.plist" "$AGENTS/$job.plist"
   launchctl bootout "gui/$UIDN/$job" 2>/dev/null || true

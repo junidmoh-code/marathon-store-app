@@ -1,7 +1,7 @@
 // ── TIKTOK HANDOFF QUEUE — tests for the pure parts (tiktokHfQueue.mjs) ─────
 import { describe, it, expect } from "vitest";
 import {
-  CAPTION_MAX, batchOrder, blocked, capEmoji, isVertical, pickBatch, rate, sast, slotFor, tiktokCaption, unsafeSentence, videoPlan,
+  CAPTION_MAX, MAX_OFFERS, applyMark, batchOrder, blocked, carryOver, capEmoji, isVertical, pickBatch, rate, sast, slotFor, tiktokCaption, unsafeSentence, videoPlan,
 } from "./tiktokHfQueue.mjs";
 
 const at = (iso) => Date.parse(iso);
@@ -109,5 +109,49 @@ describe("pickBatch", () => {
   it("families offered before come after fresh ones, least-offered first", () => {
     const state = { offered: { p1: 2, p2: 1 } };
     expect(pickBatch(q, state, 5).map((c) => c.key)).toEqual(["p3", "p4", "v1", "p2", "p1"]);
+  });
+});
+
+describe("rollover", () => {
+  const q = [
+    { key: "p1", media: "PHOTO" }, { key: "p2", media: "PHOTO" }, { key: "p3", media: "PHOTO" },
+    { key: "p4", media: "PHOTO" }, { key: "p5", media: "PHOTO" }, { key: "v1", media: "VIDEO" },
+  ];
+  const prev = { posts: [{ post_id: "v1" }, { post_id: "p2" }, { post_id: "p3" }] };
+
+  it("an unconfirmed post comes back first in the next batch, same post_id", () => {
+    const state = { posted: { p2: {} }, offered: { v1: 1, p2: 1, p3: 1 } };
+    const carry = carryOver(prev, q, state);
+    expect(carry.map((c) => c.key)).toEqual(["v1", "p3"]);
+    expect(pickBatch(q, state, 3, carry).map((c) => c.key)).toEqual(["v1", "p3", "p1"]);
+  });
+  it("a confirmed or skipped post never rolls", () => {
+    const state = { posted: { v1: {} }, skipped: { p3: {} }, offered: { v1: 1, p2: 1, p3: 1 } };
+    expect(carryOver(prev, q, state).map((c) => c.key)).toEqual(["p2"]);
+  });
+  it(`after ${MAX_OFFERS} offers a post stops rolling and goes behind never-offered ones`, () => {
+    const state = { offered: { v1: MAX_OFFERS, p2: 1, p3: 1 } };
+    const carry = carryOver(prev, q, state);
+    expect(carry.map((c) => c.key)).toEqual(["p2", "p3"]);
+    expect(pickBatch(q, state, 6, carry).map((c) => c.key)).toEqual(["p2", "p3", "p1", "p4", "p5", "v1"]);
+  });
+  it("a family gone from the queue (deleted record) is dropped", () => {
+    expect(carryOver({ posts: [{ post_id: "gone" }] }, q, {})).toEqual([]);
+  });
+  it("first batch ever: nothing to carry", () => expect(carryOver(null, q, {})).toEqual([]));
+});
+
+describe("applyMark", () => {
+  const known = (id) => id === "-Pa";
+  it("records once, keeps a valid TikTok URL, ignores other URLs", () => {
+    const r = applyMark({}, "-Pa", { tiktok_url: "https://www.tiktok.com/@marathon.club7/video/1", at: "T" }, known);
+    expect(r.map["-Pa"]).toEqual({ at: "T", tiktok_url: "https://www.tiktok.com/@marathon.club7/video/1" });
+    expect(applyMark(r.map, "-Pa", {}, known).already).toBe(true);
+    expect(applyMark({}, "-Pa", { tiktok_url: "https://evil.example/x" }, known).map["-Pa"].tiktok_url).toBeUndefined();
+  });
+  it("refuses unknown and malformed ids", () => {
+    expect(applyMark({}, "-Pz", {}, known).error).toMatch(/not in any batch/);
+    expect(applyMark({}, "a/b", {}, known).error).toMatch(/malformed/);
+    expect(applyMark({}, undefined, {}, known).error).toMatch(/missing/);
   });
 });

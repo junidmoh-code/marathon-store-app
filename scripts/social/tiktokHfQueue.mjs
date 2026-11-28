@@ -159,18 +159,54 @@ export function blocked(key, { posted = {}, skipped = {}, rejects = {}, ledger =
 }
 
 /**
- * The posts for one batch: up to `n` families, photos first, oldest first.
- *   queue    tiktokQueue.buildQueue output
- *   state    { posted, skipped, rejects, ledger, offered }
- *            offered: { [post_id]: times offered in earlier batches }
- * Never-offered families come first; families offered before and never
- * confirmed come after them, least-offered first.
+ * ROLLOVER: a post of the previous batch that Junid's chat did not confirm comes
+ * back first in the next batch, same post_id, same files. A post offered
+ * MAX_OFFERS times without a confirmation goes back to the end of the queue
+ * (never-offered families come first), so one unwanted post cannot block the
+ * queue for good. POST /mark-skipped drops a post at once.
  */
-export function pickBatch(queue, state, n = PER_BATCH) {
+export const MAX_OFFERS = 4;
+
+/** Queue entries of `prev` (the previous batch) still owed a posting, in their batch order. */
+export function carryOver(prev, queue, state) {
   const offered = state.offered || {};
-  const open = queue.filter((c) => !blocked(c.key, state));
+  const byKey = new Map(queue.map((c) => [c.key, c]));
+  return (prev?.posts || [])
+    .map((p) => byKey.get(p.post_id))
+    .filter((c) => c && !blocked(c.key, state) && (offered[c.key] || 0) < MAX_OFFERS);
+}
+
+/**
+ * The candidates for one batch, best first (the builder takes the first `n`
+ * whose media it can prepare):
+ *   1. `carry`: the previous batch's unconfirmed posts (carryOver)
+ *   2. never-offered families, photos first, oldest first
+ *   3. families offered before and never confirmed, least-offered first
+ *   queue  tiktokQueue.buildQueue output
+ *   state  { posted, skipped, rejects, ledger, offered: { [post_id]: earlier offers } }
+ */
+export function pickBatch(queue, state, n = PER_BATCH, carry = []) {
+  const offered = state.offered || {};
+  const carried = new Set(carry.map((c) => c.key));
+  const open = queue.filter((c) => !carried.has(c.key) && !blocked(c.key, state));
   const fresh = open.filter((c) => !offered[c.key]);
   const again = open.filter((c) => offered[c.key]).sort((a, b) => offered[a.key] - offered[b.key]);
   const order = (list) => [...list.filter((c) => c.media === "PHOTO"), ...list.filter((c) => c.media !== "PHOTO")];
-  return [...order(fresh), ...order(again)].slice(0, n);
+  return [...carry, ...order(fresh), ...order(again)].slice(0, n);
+}
+
+// ── MARKING (server side) ────────────────────────────────────────────────────
+
+/**
+ * Record one post as posted (or skipped) in its map. Idempotent: a second call
+ * keeps the first record. Returns { map, already, error }.
+ */
+export function applyMark(map, postId, info, known) {
+  if (typeof postId !== "string" || !POST_ID_RE.test(postId)) return { map, error: "post_id missing or malformed" };
+  if (!known(postId)) return { map, error: "post_id is not in any batch" };
+  if (map[postId]) return { map, already: true };
+  const rec = { at: info.at || new Date().toISOString() };
+  if (typeof info.tiktok_url === "string" && /^https:\/\/(www\.|vm\.|vt\.)?tiktok\.com\/\S{1,300}$/.test(info.tiktok_url)) rec.tiktok_url = info.tiktok_url;
+  if (typeof info.note === "string" && info.note.trim()) rec.note = info.note.trim().slice(0, 200);
+  return { map: { ...map, [postId]: rec }, already: false };
 }

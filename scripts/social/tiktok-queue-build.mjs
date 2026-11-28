@@ -27,7 +27,7 @@ import { adminRequire } from "../adminRequire.mjs";
 import { buildQueue } from "./tiktokQueue.mjs";
 import {
   BATCH_ID_RE, PER_BATCH, PHOTO_H, PHOTO_MAX_BYTES, PHOTO_MAX_ITEMS, PHOTO_W, POST_ID_RE, SLOT_NAMES, SLOT_READY,
-  batchId, batchOrder, isVertical, pickBatch, sast, slotFor, tiktokCaption, videoPlan,
+  batchId, batchOrder, carryOver, isVertical, pickBatch, sast, slotFor, tiktokCaption, videoPlan,
 } from "./tiktokHfQueue.mjs";
 
 const args = process.argv.slice(2);
@@ -41,6 +41,7 @@ const DIR = process.env.TIKTOK_QUEUE_DIR || join(homedir(), ".marathon-tiktok-qu
 const POSTER_LEDGER = join(process.env.TIKTOK_POSTER_STATE || join(homedir(), ".marathon-tiktok"), "ledger.json");
 const PUBLIC_BASE = (process.env.TIKTOK_QUEUE_PUBLIC_BASE || "https://mac-mini-von-marathon-3.tail5a5180.ts.net/studio/tiktok-queue").replace(/\/+$/, "");
 const FFMPEG = existsSync("/opt/homebrew/bin/ffmpeg") ? "/opt/homebrew/bin/ffmpeg" : "ffmpeg";
+const HF_IMPORT_MAX_BYTES = 50 * 1024 * 1024; // Higgsfield media_import_url, the step before tiktok_prepare_publish
 const FFPROBE = existsSync("/opt/homebrew/bin/ffprobe") ? "/opt/homebrew/bin/ffprobe" : "ffprobe";
 
 const stamp = () => new Date().toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg", hour12: false });
@@ -129,6 +130,7 @@ async function prepare(c) {
     const dest = join(dir, want[i]);
     if (c.media === "VIDEO") {
       const why = toVideo(raw, `${dest}.part`);
+      if (statSync(`${dest}.part`).size > HF_IMPORT_MAX_BYTES) { rmSync(`${dest}.part`, { force: true }); throw Object.assign(new Error("video over Higgsfield's 50 MB import limit"), { gone: true }); }
       renameSync(`${dest}.part`, dest);
       if (why) log(`  ${c.key}: re-encoded video (${why})`);
     } else {
@@ -176,12 +178,16 @@ async function main() {
     offered: offeredCounts(id),
   };
 
+  // Rollover: the previous batch's posts Junid's chat did not confirm come first, same post_id.
+  const prevId = listBatches().filter((b) => batchOrder(b, id) < 0).at(-1);
+  const prev = prevId ? readJson(join(DIR, "batches", `${prevId}.json`), null) : null;
+  const carry = carryOver(prev, queue, state);
+  const carried = new Set(carry.map((c) => c.key));
+
   const posts = [];
-  const tried = new Set();
-  while (posts.length < PER_BATCH) {
-    const [c] = pickBatch(queue.filter((q) => !tried.has(q.key)), state, 1);
-    if (!c) break;
-    tried.add(c.key);
+  const transient = [];
+  for (const c of pickBatch(queue, state, Infinity, carry)) {
+    if (posts.length >= PER_BATCH) break;
     try {
       const files = await prepare(c);
       const { caption, hashtags } = tiktokCaption(c);
@@ -196,12 +202,14 @@ async function main() {
         kind: c.kind,
         is_aigc: c.isAigc,
         offers_before: state.offered[c.key] || 0,
+        rolled_over: carried.has(c.key),
       });
     } catch (e) {
       if (e.gone) { rejects[c.key] = { at: new Date().toISOString(), reason: e.message }; log(`  ${c.key}: rejected (${e.message})`); }
-      else throw e; // Storage or the network: stop, build nothing half-way
+      else { transient.push(`${c.key}: ${e.message}`); log(`  ${c.key}: not ready this run (${e.message}); stays in the queue`); } // Storage or the network
     }
   }
+  if (!posts.length && transient.length) throw new Error(`no post could be prepared: ${transient.slice(0, 3).join("; ")}`);
 
   const batch = {
     batch_id: id, slot, date, ready_by: `${date} ${SLOT_READY[slot]} SAST`, generated_at: new Date().toISOString(),
