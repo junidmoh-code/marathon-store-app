@@ -131,7 +131,11 @@ export const WINDOW_MARGIN_SLOW = "100% 0px";
 const AHEAD_CHUNKS = 3;
 // How many leading chunks show photos before the observer has answered, so
 // the first screen never starts without them.
+// (one chunk on save-data / 2g: on screen and no more).
 const INITIAL_LIVE = 3;
+const INITIAL_LIVE_SLOW = 1;
+// The most chunks whose photos are mounted at once (~320 photos at 2 columns).
+export const MAX_LIVE_CHUNKS = 40;
 const FIRST_CHUNKS = 5;
 const GROW_CHUNKS = 8;
 
@@ -163,13 +167,24 @@ function ApGrid({ products, scrollRef, selectedId, handlers }) {
   // through this ref so a cart or stock update does not re-render 1,500 cards.
   const h = useRef(handlers);
   h.current = handlers;
-  const [live, setLive] = useState(() => new Set(Array.from({ length: INITIAL_LIVE }, (_, i) => i)));
+  const [live, setLive] = useState(() => new Set(Array.from({ length: slowConnection() ? INITIAL_LIVE_SLOW : INITIAL_LIVE }, (_, i) => i)));
   // FIRST PAINT FAST: the first FIRST_CHUNKS chunks (about three screens) are
   // drawn at once; the rest of the list follows GROW_CHUNKS at a time in idle
   // slots straight after — small commits, so the first screen and its photos
   // never wait on 1,500 cards and a commit never blocks a frame for long. The
   // list simply grows below; nothing is drawn empty.
   const [drawnN, setDrawnN] = useState(FIRST_CHUNKS);
+  // A new list (search, brand, shop, division) starts small again, so a switch
+  // to another long list is never one 1,500-card commit — but only while the
+  // list is near its top: a stock update re-sorting the list under someone
+  // scrolled far down must not pull the floor out from under them.
+  const lastList = useRef(products);
+  if (lastList.current !== products) {
+    lastList.current = products;
+    const el = scrollRef.current;
+    const nearTop = !el || el.scrollTop < (el.clientHeight || 800);
+    if (nearTop && drawnN !== FIRST_CHUNKS) setDrawnN(FIRST_CHUNKS);
+  }
   const lastScroll = useRef(0);
   useEffect(() => {
     if (drawnN >= chunks.length) return undefined;
@@ -202,7 +217,7 @@ function ApGrid({ products, scrollRef, selectedId, handlers }) {
     // urgent, so React renders it in slices and the scroll keeps its frames.
     const obs = new IntersectionObserver((entries) => startTransition(() => {
       setLive((prev) => {
-        let next = null;
+        let next = null, near = 0;
         for (const e of entries) {
           const i = Number(e.target.dataset.chunk);
           // Grow-only: a photo, once mounted, stays. Unmounting it off screen
@@ -212,6 +227,14 @@ function ApGrid({ products, scrollRef, selectedId, handlers }) {
           if (!e.isIntersecting || prev.has(i)) continue;
           next ||= new Set(prev);
           next.add(i);
+          near = i;
+        }
+        // …but not without limit (architect review): past MAX_LIVE_CHUNKS the
+        // chunks FARTHEST from the one just reached let their photos go, so a
+        // scroll through 1,500 cards holds ~320 photos, not all of them.
+        if (next && next.size > MAX_LIVE_CHUNKS) {
+          const far = [...next].sort((a, b) => Math.abs(b - near) - Math.abs(a - near));
+          for (const c of far) { if (next.size <= MAX_LIVE_CHUNKS) break; next.delete(c); }
         }
         return next || prev;
       });

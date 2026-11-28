@@ -19,10 +19,10 @@
 // decoding="async", fetchpriority="high" on the first rows, eager loading —
 // the grid only mounts photos near the screen (AssistantPhone's window).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { tilePhotoSrc } from "../assistant/HiResPhoto.jsx";
 import { useMirroredPhotoSrc } from "../../offline/useMirroredPhotoSrc";
-import { getTile, loadTileIndex, memoTileUrl, onTileIndex, tileCacheEnabled, tileIndexNow, tinyFor, tinySvg } from "../../offline/tilePhotoCache";
+import { getTile, loadTileIndex, memoTileUrl, onTileIndex, releaseTile, retainTile, tileCacheEnabled, tileIndexNow, tinyFor, tinySvg } from "../../offline/tilePhotoCache";
 
 function decoded(url) {
   if (typeof Image === "undefined") return Promise.resolve();
@@ -52,12 +52,27 @@ export default function TilePhoto({ p, alt = "", priority = false, fallback = nu
   const cur = st.key === key ? st : { key, url: mem, ready: !!mem, mode: mem ? "cache" : enabled ? "cache" : "direct" };
   if (st.key !== key) setSt(cur);
 
+  // The object URL this card shows is HELD while shown (retainTile), so the
+  // in-memory list can never revoke it from under a mounted <img>.
+  const held = useRef(null);
+  const hold = (url) => {
+    if (held.current && held.current.url === url) return;
+    if (held.current) releaseTile(held.current.id, held.current.url);
+    held.current = url ? { id, url } : null;
+    if (url) retainTile(id, url);
+  };
+  useEffect(() => () => hold(null), []);   // eslint-disable-line react-hooks/exhaustive-deps
+  // Hold what is shown; let go only when the card stops showing a cached photo
+  // (a URL taken in the getTile callback stays held through its decode).
+  useEffect(() => { if (cur.mode !== "cache") hold(null); else if (cur.url) hold(cur.url); });
+
   useEffect(() => {
     if (!src || cur.ready || cur.mode !== "cache") return undefined;
     let gone = false;
     getTile(id, src, { priority: priority ? "high" : "auto" }).then(async (url) => {
       if (gone) return;
       if (!url) { setSt({ key, url: null, ready: false, mode: "direct" }); return; }
+      hold(url);                // before the decode: nothing may revoke it meanwhile
       await decoded(url);
       if (!gone) setSt({ key, url, ready: true, mode: "cache" });
     });

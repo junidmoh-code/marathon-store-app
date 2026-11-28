@@ -43,7 +43,14 @@ const emit = () => { for (const fn of [...subs]) { try { fn(); } catch { /* a su
 /** The mirror read the change feed successfully at `at` (bootstrap.runOnePass). */
 export function markMirrorFeedOk(at) { feedOkAt = at; emit(); }
 /** The mirror stopped: no read vouches for anything any more. */
-export function resetMirrorFreshness() { feedOkAt = null; emit(); }
+export function resetMirrorFreshness() {
+  feedOkAt = null;
+  // A pass that hung across a stop must not hand its start time to the next
+  // session (architect review).
+  passSince = null;
+  if (passTimer) { clearTimeout(passTimer); passTimer = null; }
+  emit();
+}
 export function mirrorFeedOkAt() { return feedOkAt; }
 
 let passSince = null;

@@ -90,6 +90,29 @@ describe("the phone order grid", () => {
     expect(photosOn()).toBe(withSix);
   });
 
+  it("photos stay mounted near the reader, but never more than MAX_LIVE_CHUNKS chunks at once", async () => {
+    const { MAX_LIVE_CHUNKS } = await import("./AssistantPhone.jsx");
+    const many = Array.from({ length: 2000 }, (_, i) => ({ id: `q${i}`, name: `Q ${i}`, retailPrice: 700, sizes: ["8"], photoUrl: `/q/${i}.jpg` }));
+    let r;
+    act(() => {
+      r = TestRenderer.create(
+        <AssistantPhone mode="sneaker" shops={[]} effectiveShop="marathon-pe" shopLabel={() => "MP"} onShop={() => {}}
+          search="" onSearch={() => {}} onScan={() => {}} products={many} selectedId={null} onOpen={() => {}} onExit={() => {}} />,
+        { createNodeMock: (el) => ({ getBoundingClientRect: () => ({ height: 120 }), dataset: { chunk: el.props?.["data-chunk"] }, querySelector: () => null, querySelectorAll: () => [],
+          addEventListener() {}, removeEventListener() {}, scrollTop: 0, scrollHeight: 1e6, clientHeight: 700 }) });
+    });
+    await act(async () => { await new Promise((res) => setTimeout(res, 1200)); });   // the list grows in slices
+    const io = observers[observers.length - 1];
+    for (let c = 0; c < 60; c++) {
+      await act(async () => { io.cb([{ target: { dataset: { chunk: String(c) } }, isIntersecting: true }]); await new Promise((res) => setTimeout(res, 0)); });
+    }
+    await act(async () => { await new Promise((res) => setTimeout(res, 30)); });
+    const onChunks = new Set(cards(r).filter((c) => c.props["data-photo"] === "on").map((c) => Math.floor(Number(textOf(c).match(/Q (\d+)/)[1]) / (2 * CHUNK_ROWS))));
+    expect(onChunks.size).toBeLessThanOrEqual(MAX_LIVE_CHUNKS);
+    expect(onChunks.has(59)).toBe(true);                       // where the reader is
+    expect(onChunks.has(0)).toBe(false);                       // the far end let go
+  });
+
   it("the scroller starts below the brand row; cards keep the glass, never content-visibility", () => {
     const r = mount();
     const sc = r.root.find((n) => n.props?.["data-testid"] === "ap-scroll");

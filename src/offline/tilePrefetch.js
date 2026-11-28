@@ -46,7 +46,8 @@ function pump() {
     const it = queue.shift();
     if (isTileHeld(it.id, it.src)) continue;
     running++;
-    getTile(it.id, it.src, { priority: "low" }).finally(() => { running--; idle(pump); });
+    // warm: bytes to the device only — no object URL, nothing held in memory.
+    getTile(it.id, it.src, { priority: "low", warm: true }).finally(() => { running--; idle(pump); });
   }
 }
 

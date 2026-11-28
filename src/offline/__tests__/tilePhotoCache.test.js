@@ -114,6 +114,41 @@ describe("tile photo cache", () => {
     expect(T.tileFetchAllowed()).toBe(true);
   });
 
+  it("prefetch (warm) puts the bytes on the device and makes no object URL", async () => {
+    expect(await T.getTile("p1", "u1", { warm: true, priority: "low" })).toBe(true);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    await T._flushTileWritesForTests();
+    expect(T.isTileHeld("p1", "u1")).toBe(true);
+    expect(await T.getTile("p1", "u1", { warm: true })).toBe(true);
+    expect(fetches).toHaveLength(1);
+  });
+
+  it("a URL a card is showing is never revoked, however many photos pass through memory", async () => {
+    const shown = await T.getTile("keep", "u-keep");
+    T.retainTile("keep", shown);
+    for (let i = 0; i < 130; i++) await T.getTile(`x${i}`, `u-x${i}`, { keep: false });
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(shown);
+    expect(URL.revokeObjectURL).toHaveBeenCalled();             // unheld ones do go
+    T.releaseTile("keep", shown);
+    await T.getTile("one-more", "u-one-more", { keep: false });
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(shown);
+  });
+
+  it("a timed-out download is the line, not CORS: it never turns fetching off", async () => {
+    globalThis.fetch.mockImplementation(async () => { throw Object.assign(new Error("aborted"), { name: "AbortError" }); });
+    for (const id of ["a", "b", "c", "d"]) expect(await T.getTile(id, `u-${id}`)).toBe(null);
+    expect(T.tileFetchAllowed()).toBe(true);
+  });
+
+  it("a refused verdict is re-armed after ten minutes", async () => {
+    globalThis.fetch.mockImplementation(async () => { throw new TypeError("Failed to fetch"); });
+    const now = Date.now();
+    for (const id of ["a", "b", "c"]) await T.getTile(id, `u-${id}`);
+    expect(T.tileFetchAllowed()).toBe(false);
+    const spy = vi.spyOn(Date, "now").mockReturnValue(now + 11 * 60 * 1000);
+    try { expect(T.tileFetchAllowed()).toBe(true); } finally { spy.mockRestore(); }
+  });
+
   it("mirror off means off: no fetch, no cache", async () => {
     mirrorOn = false;
     expect(await T.getTile("p1", "u1")).toBe(null);
