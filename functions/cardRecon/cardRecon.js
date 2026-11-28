@@ -72,7 +72,9 @@ const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal, terminalBank, resolveRegisteredTid, canonicalTid, STANDARD_BANK, isPhotoPrimary, isPortalRecordTerminal, registeredRowFor } = require("../lib/card-terminals.cjs");
 const { isPortalDay } = require("../lib/card-portal.cjs");
-const { SB_READER_VERSION, planSbFiling, sequenceTidProof, typedCheck: sbTypedCheck, typedStandsFor, sastYmd: sbSastYmd } = require("../lib/card-sb-photo.cjs");
+const { SB_READER_VERSION, planSbFiling, sequenceTidProof, typedCheck: sbTypedCheck, typedStandsFor, sastYmd: sbSastYmd, isSyntheticRecord } = require("../lib/card-sb-photo.cjs");
+const { NO_TOTAL_REASON, hasTotal, repairForTotalRule, totalRuleVerdict, bottomTotalCents, tidForReport, note: totalRuleNote } = require("../lib/card-total-rule.cjs");
+const { recordCardReconError } = require("../lib/card-recon-errors.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { activeTillsOf } = require("../lib/pos-tills.cjs");
 const { locationOf } = require("../lib/network-registry.cjs");
@@ -1320,6 +1322,69 @@ async function displaceCovered(db, tidPath, keys, byKey, nowMs) {
   }
 }
 
+/**
+ * THE WRITE UNDER JUNID'S TOTAL RULE (27 Nov 2026). resolveWriteFor decides as
+ * always; what it refuses becomes, in order:
+ *   • a FILING-number slip (no batch number read) whose day already holds the
+ *     same total → a duplicate (a retake or re-send is never a second record);
+ *     a different total on that day's own filing record → its correction;
+ *   • a real report whose printed number is a filing number on file → a fresh
+ *     number (it never takes over another day's record);
+ *   • the same number on file with the SAME total → the duplicate refusal stands;
+ *   • the same number with a DIFFERENT total → a correction, both kept.
+ * Returns resolveWriteFor's answer plus { batchNo, correction, note }.
+ */
+async function totalRuleWrite(db, { storeId, tid, extraction, correction = false, onFileBatchNo = null }) {
+  const tidPath = `${CARD_BATCHES_PATH}/${storeId}/${tid}`;
+  const total = extraction.totalCents;
+  let batchNo = normaliseBatchNo(extraction.batchNo);
+  let note = null;
+  const write = (no, corr) => resolveWriteFor(db, { storeId, tid, batchNo: no, correction: corr, lines: extraction.lines, totalCents: total, incoming: extraction });
+  if (extraction.batchFrom === "filing" && Number.isFinite(extraction.closedAt) && !correction) {
+    const dayStart = sastDayStartMs(sastDayYmd(extraction.closedAt));
+    const onDay = (await db.ref(tidPath).orderByChild("slip/closedAt").startAt(dayStart).endAt(dayStart + 24 * 60 * 60 * 1000 - 1).once("value")).val() || {};
+    const live = Object.values(onDay).filter((r) => r && typeof r === "object" && !r.displacedBy && r.slip);
+    if (live.some((r) => r.slip.totalCents === total)) {
+      return { write: { ok: false, reason: `This day's total (${formatCents(total)}) is already captured for this till — the same slip sent again.` }, batchNo, correction, note };
+    }
+    // The day's own stand-in — an earlier filing-number read, or a typed /
+    // portal figure (isSyntheticRecord) — is replaced, never added to.
+    const filed = live.filter((r) => (r.totalRule && r.totalRule.batchFrom === "filing") || isSyntheticRecord(r)).sort((a, b) => Number(b.revision || 1) - Number(a.revision || 1))[0];
+    if (filed && Number.isInteger(Number(filed.batchNo))) {
+      batchNo = String(filed.batchNo);
+      extraction.batchNo = batchNo;
+      note = `A total for this day was already on file as #${batchNo} (${formatCents(filed.slip.totalCents)}, ${isSyntheticRecord(filed) ? "typed or portal" : "an earlier photo"}); this read (${formatCents(total)}) replaces it as a correction — both kept.`;
+      return { ...(await write(batchNo, true)), batchNo, correction: true, note };
+    }
+  }
+  let out = await write(batchNo, correction);
+  if (out.write.ok || correction || !out.existingKeys || !out.existingKeys.length) return { ...out, batchNo, correction, note };
+  const key = out.existingKeys.at(-1);
+  const [onTotal, onRule] = await Promise.all([
+    db.ref(`${tidPath}/${key}/slip/totalCents`).once("value").then((x) => x.val()),
+    db.ref(`${tidPath}/${key}/totalRule`).once("value").then((x) => x.val()),
+  ]);
+  if (onRule && onRule.batchFrom === "filing" && extraction.batchFrom !== "filing") {
+    const next = String(Math.max(Number(onFileBatchNo) || 0, Number(batchNo) || 0) + 1);
+    note = `This report prints #${batchNo}, which is a filing number on file for another slip, so it is filed as #${next}.`;
+    extraction.printedBatchNo = Number(batchNo);
+    extraction.batchNo = next;
+    out = await write(next, false);
+    return { ...out, batchNo: next, correction: false, note };
+  }
+  if (Number.isInteger(onTotal) && onTotal === total) return { ...out, batchNo, correction, note };
+  // An EMPTY (R0) report of a batch that holds money is the machine's next,
+  // empty batch printed under the old number — never a correction that would
+  // erase the day's money. It is a duplicate: the figure is already in.
+  if (total === 0 && Number.isInteger(onTotal) && onTotal !== 0) {
+    return { existingKeys: out.existingKeys, comparison: out.comparison, reprintOpensAt: null, batchNo, correction, note,
+      write: { ok: false, reason: `Batch #${batchNo} is already captured with ${formatCents(onTotal)} — this empty (R0.00) report of it adds nothing.` } };
+  }
+  note = `Batch #${batchNo} is already on file${Number.isInteger(onTotal) ? ` with ${formatCents(onTotal)}` : ""}; this report reads ${formatCents(total)} — recorded as a correction, both kept.`;
+  out = await write(batchNo, true);
+  return { ...out, batchNo, correction: true, note };
+}
+
 async function handleExtract(db, request, opts = {}) {
   const { photos, pdf, pickedTid, channel } = request.data || {};
 
@@ -1391,7 +1456,9 @@ async function handleExtract(db, request, opts = {}) {
   // AN EMAIL-ONLY MACHINE TAKES NO PHOTO. The screen shows it no camera; this
   // is the half that holds when an old bundle or a direct call sends one
   // anyway — before any OCR is paid for.
-  if (!takesPhoto(terminal)) {
+  // A photo ALREADY KEPT (a background read of a received slip) is read
+  // whatever the till's capture setting — Junid, 27 Nov 2026.
+  if (!takesPhoto(terminal) && !opts.storedPhotoPaths) {
     return reject(`${terminal.label || picked} is set to Email only, so its report is not photographed — it ticks when the email arrives. Junid can change this in Card machines → settings.`);
   }
 
@@ -1459,8 +1526,11 @@ async function handleExtract(db, request, opts = {}) {
     });
   } catch (err) { console.warn("cardBatchCapture: usage log failed:", err.message); }
 
-  if (!ocr.parsed) return reject("The photos could not be read as a batch report — retake them, filling the frame with the slip.");
+  if (!ocr.parsed) return reject(NO_TOTAL_REASON);
   const extraction = toExtraction(ocr.parsed);
+  // JUNID'S TOTAL RULE (27 Nov 2026, lib/card-total-rule.cjs): a photo whose
+  // bottom total cannot be found is the ONLY photo refused from here on.
+  if (!declared && !hasTotal(extraction)) return reject(NO_TOTAL_REASON);
   console.log(photoReadLogLine(picked, ocr));
   // What the reader made of the total, kept beside the typed one — on a
   // half-printed slip this is normally null, and when it is not, the owner can
@@ -1500,14 +1570,20 @@ async function handleExtract(db, request, opts = {}) {
   // A STANDARD BANK REPORT WHOSE TID LINE PRINTED TOO FAINTLY (7 Nov 2026):
   // proven by the picked till's own batch chain, or refused by name
   // (lib/card-sb-photo.cjs sequenceTidProof). Never for an FNB till.
+  // Under the total rule the chain no longer decides anything: when it proves
+  // the till its note is kept; when it cannot, the slip is filed under the till
+  // it was sent for (repairForTotalRule below), with a note — never refused.
   let sbSequence = null;
   if (!declared && !extraction.tid && isPhotoPrimary(terminal)) {
-    sbSequence = await sbSequenceProofFor(db, { terminal, tid: picked, extraction, terminals });
-    if (!sbSequence.ok) return reject(sbSequence.reason);
-    extraction.tid = picked;
+    try {
+      sbSequence = await sbSequenceProofFor(db, { terminal, tid: picked, extraction, terminals });
+    } catch (err) {
+      console.warn(`cardBatchCapture: batch-chain check for ${picked} failed (${err && err.message}) — filed under the till it was sent for`);
+      sbSequence = null;
+    }
+    if (sbSequence && sbSequence.ok) extraction.tid = picked;
   }
-  if (!extraction.tid) return reject("No terminal ID could be read off the slip — retake the header photo.");
-  const readTid = extraction.tid;
+  const readTid = extraction.tid || null;
   // An O read for a 0 (or I for 1) on the PICKED till's own TID is that TID.
   // From here on the record carries the registry's spelling, never the misread.
   if (extraction.tid !== picked && slipTidMatchesPicked(extraction.tid, picked, Object.keys(terminals))) {
@@ -1520,13 +1596,21 @@ async function handleExtract(db, request, opts = {}) {
       && resolveRegisteredTid(extraction.tid, terminals) === picked) {
     extraction.tid = picked;
   }
-  if (extraction.tid !== picked) {
-    // Named by the machine it belongs to — a Standard Bank TID read with an O
-    // for a 0 is still that machine (resolveRegisteredTid: exact first).
-    const mapped = terminals[extraction.tid] || registeredRowFor(extraction.tid, terminals);
-    const where = mapped && mapped.label ? ` (that slip belongs to ${mapped.label})` : mapped ? ` (that slip belongs to ${mapped.storeId}/${mapped.tillId})` : " — and that TID is not registered at all";
-    return reject(`This slip prints TID ${extraction.tid}, not the till you picked${where}. Capture the slip on its own till.`);
-  }
+  // THE TILL IT WAS SENT FOR DECIDES (Junid, 27 Nov 2026): a TID that is
+  // missing, unreadable or another machine's no longer refuses the slip — it
+  // is filed under the till it was submitted for, and the record says what the
+  // paper printed. The window and the batch number are filled in the same way
+  // when the header did not read (lib/card-total-rule.cjs).
+  const otherRow = extraction.tid && extraction.tid !== picked ? (terminals[extraction.tid] || registeredRowFor(extraction.tid, terminals)) : null;
+  const ruleDay = opts.dayYmd || slipTradingDay(Date.now());
+  const lastOnFile = await readLastBatchFor(db, terminal.storeId, picked);
+  const repaired = repairForTotalRule(extraction, {
+    picked, dayYmd: ruleDay, dayCloseMs: batchCloseOf(ruleDay),
+    onFile: lastOnFile,
+    otherTill: otherRow ? (otherRow.label || `${otherRow.storeId}/${otherRow.tillId}`) : null,
+  });
+  Object.assign(extraction, repaired.extraction);
+  const totalRuleNotes = repaired.notes;
   // A STANDARD BANK TILL: the photographed report is the record
   // (lib/card-sb-photo.cjs). The TID above proved which machine printed it —
   // the till is never chosen or checked by MID (card-terminal-identity.test).
@@ -1539,16 +1623,27 @@ async function handleExtract(db, request, opts = {}) {
   if (declared) extraction.totalCents = declared.cents;
 
   // Overlapping photos collapse; conflicting readings refuse.
+  let recordSummaryOnly = !!summaryOnly;
   if (!summaryOnly) {
     const dedup = dedupeLines(extraction.lines);
-    if (!dedup.ok) return reject(dedup.reason);
-    extraction.lines = dedup.lines;
+    if (dedup.ok) extraction.lines = dedup.lines;
+    else {
+      // Conflicting line readings: the TOTAL is the figure (Junid's rule) — the
+      // lines are left off the record and the reason kept as a note.
+      totalRuleNotes.push(`NOTE (not a rejection — Junid's total rule): ${dedup.reason}`);
+      extraction.lines = [];
+      recordSummaryOnly = true;
+    }
   } else {
     extraction.lines = [];
   }
 
-  const verdict = validateExtraction(extraction, { summaryOnly: !!summaryOnly, declaredTotal: declaring });
+  // Under the total rule only a missing total refuses; everything else
+  // validateExtraction finds is a note on the record (lib/card-total-rule.cjs).
+  const verdict = totalRuleVerdict(extraction, validateExtraction, { summaryOnly: recordSummaryOnly, declaredTotal: declaring });
   if (!verdict.ok) return reject(verdict.reason);
+  if (verdict.summaryOnly) recordSummaryOnly = true;
+  verdict.warnings = [...totalRuleNotes, ...(verdict.warnings || [])];
 
   // A STANDARD BANK TILL'S REPORT may print a batch number the SimplyBLU
   // portal's day record (or a staff-typed total) already took — the portal
@@ -1556,7 +1651,7 @@ async function handleExtract(db, request, opts = {}) {
   // decided once, here (lib/card-sb-photo.cjs), and carried on the draft.
   let sbFiling = null;
   let correction = !!request.data.correction;
-  if (photoPrimary && !declared) {
+  if (photoPrimary && !declared && extraction.batchFrom !== "filing") {
     sbFiling = await sbFilingFor(db, { terminal, tid: extraction.tid, extraction });
     if (String(sbFiling.batchNo) !== String(normaliseBatchNo(extraction.batchNo))) {
       extraction.printedBatchNo = Number(normaliseBatchNo(extraction.batchNo));
@@ -1571,12 +1666,14 @@ async function handleExtract(db, request, opts = {}) {
   // Duplicate check at extract time so the operator hears it BEFORE reviewing.
   // The submit transaction re-checks — this one is for the message, that one
   // is the guarantee.
-  const batchNo = normaliseBatchNo(extraction.batchNo);
-  const { write } = await resolveWriteFor(db, {
-    storeId: terminal.storeId, tid: extraction.tid, batchNo,
-    correction, lines: extraction.lines, totalCents: extraction.totalCents,
-    incoming: extraction,
-  });
+  // The write under Junid's total rule (totalRuleWrite): a different total on
+  // file is a correction, an identical one a duplicate, a filing number met by
+  // a real report a fresh number — never a refusal for anything but a duplicate.
+  const ruled = await totalRuleWrite(db, { storeId: terminal.storeId, tid: extraction.tid, extraction, correction, onFileBatchNo: lastOnFile.batchNo });
+  const write = ruled.write;
+  correction = ruled.correction;
+  const batchNo = ruled.batchNo;
+  if (ruled.note) verdict.warnings.unshift(totalRuleNote(ruled.note));
   if (!write.ok) return reject(write.reason);
 
   // ── EXPECTED — the POS ledger's answer for the slip's own window ──
@@ -1597,7 +1694,7 @@ async function handleExtract(db, request, opts = {}) {
   const match = reconciledByTotals
     ? null
     : await matchBatch(db, {
-    extraction, terminal: recon, summaryOnly: !!summaryOnly,
+    extraction, terminal: recon, summaryOnly: recordSummaryOnly,
   });
   // The SAME findings the PDF route reports. Computing a match and then
   // saying nothing about it left a manager unable to see that a machine had
@@ -1656,7 +1753,9 @@ async function handleExtract(db, request, opts = {}) {
     createdAt: Date.now(),
     expiresAt: Date.now() + DRAFT_TTL_MS,
     pickedTid: picked,
-    summaryOnly: !!summaryOnly,
+    summaryOnly: recordSummaryOnly,
+    // Junid's total rule: submit re-validates the same way (only a missing total refuses).
+    totalRule: true,
     correction,
     warnings: warnings.length ? warnings : null,
     // A Standard Bank report: where it was filed and why, and what staff typed.
@@ -1696,7 +1795,7 @@ async function handleExtract(db, request, opts = {}) {
       reconLine: extraction.reconLine,
       confidence: extraction.confidence,
       lineCount: extraction.lines.length,
-      summaryOnly: !!summaryOnly,
+      summaryOnly: recordSummaryOnly,
       totalDeclaredByHand: !!declared,
       warnings,
       // CAPTURE ONLY. The manager confirms the OCR read the SLIP IN THEIR HAND
@@ -1778,8 +1877,39 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
   // THE WHOLE PURE PDF PATH — parse, line dedupe, every validation, and the
   // totals-only fallback when only the transaction list failed — in one call
   // the real-report corpus test measures too (lib/card-recon-pdf.cjs).
-  const read = readSlipPdfLines(text.lines);
-  if (!read.ok) return reject(read.reason);
+  let read = readSlipPdfLines(text.lines);
+  // JUNID'S TOTAL RULE (27 Nov 2026): the strict parser could not read the
+  // report, but if its bottom TOTAL can be found and the till is known (the
+  // till it was sent for, or the mailbox mapping), it is READ — summary-only,
+  // the parser's reason kept as a note. Never for a file that names none of
+  // our terminals (a customer's proof of payment), which stays refused.
+  if (!read.ok) {
+    // A file the parser KNOWS is not a batch report (a transaction history, a
+    // statement) stays refused — salvage is for incomplete batch reports only.
+    if (read.unrelated) return reject(read.reason);
+    const salvageTid = tidForReport({ picked, subject: intake && intake.subject, rows: text.lines, terminals });
+    const salvageCents = salvageTid ? bottomTotalCents(text.lines) : null;
+    if (!salvageTid || !Number.isInteger(salvageCents)) {
+      return reject(salvageTid ? `${NO_TOTAL_REASON} (${read.reason})` : read.reason);
+    }
+    // What of the header CAN be read is kept: the batch number (the report's
+    // own "Batch: N", else the subject's), and the day it was printed.
+    const textBatch = text.lines.map((l) => String(l).match(/^Batch:?\s*#?\s*([0-9]{1,8})\b/i)).find(Boolean);
+    const subjectBatch = textBatch || String((intake && intake.subject) || "").match(/Batch\s+([0-9]{1,8})\b/i);
+    const printedLine = text.lines.map((l) => String(l).match(/^(\d{2})-(\d{2})-(\d{4}) (\d{2}):(\d{2}):(\d{2})$/)).find(Boolean);
+    const printedAt = printedLine ? Date.parse(`${printedLine[3]}-${printedLine[2]}-${printedLine[1]}T${printedLine[4]}:${printedLine[5]}:${printedLine[6]}+02:00`) : null;
+    read = {
+      ok: true, summaryOnly: true, totalRule: true,
+      warnings: [totalRuleNote(read.reason), totalRuleNote("Only the report's bottom TOTAL was read; the rest of the report is on the stored file.")],
+      extraction: {
+        tid: salvageTid, mid: null, mids: [], batchNo: subjectBatch ? subjectBatch[1] : null,
+        openedAt: null, closedAt: null, printedAt: Number.isFinite(printedAt) ? printedAt : null, openedText: null, closedText: null,
+        txnCount: null, purchasesCents: null, cashCents: null, refundsCents: null, totalCents: salvageCents,
+        reconLine: null, confidence: null, format: "total-salvage", windowSource: null, lastTxnAt: null,
+        lines: [], declined: [], declinedCount: null, declinedUnread: null,
+      },
+    };
+  }
   const extraction = read.extraction;
   // TRUE only for an emailed report whose list would not read but whose
   // identity and both totals blocks did: recorded summary-only, never with a
@@ -1809,9 +1939,12 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
       extraction.tid = picked;
     }
     if (extraction.tid !== picked) {
+      // The till it was sent for decides (Junid's total rule) — said, never refused.
       const mapped = terminals[extraction.tid];
-      const where = mapped && mapped.label ? ` (that file belongs to ${mapped.label})` : mapped ? ` (that file belongs to ${mapped.storeId}/${mapped.tillId})` : " — and that TID is not registered at all";
-      return reject(`This PDF is for TID ${extraction.tid}, not the till you picked${where}. Capture it on its own till.`);
+      const where = mapped && mapped.label ? ` (registered to ${mapped.label})` : mapped ? ` (registered to ${mapped.storeId}/${mapped.tillId})` : " (not a registered terminal)";
+      routingWarnings.push(totalRuleNote(`This PDF prints TID ${extraction.tid || "—"}${extraction.tid ? where : ""}, not ${picked} — it is filed under the till it was sent for.`));
+      extraction.printedTid = extraction.tid || null;
+      extraction.tid = picked;
     }
     terminal = terminals[picked];
   } else {
@@ -1877,18 +2010,32 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
   // widened back to the previous batch's close, so the window that will
   // actually bound the ledger read is validated again here, before it is
   // used. Every other capture validates identically the second time.
-  const verdict = validateExtraction(extraction, { summaryOnly, source: "pdf" });
+  // JUNID'S TOTAL RULE: a window or batch number the report did not give is
+  // filled from the day it arrived (lib/card-total-rule.cjs), then only a
+  // missing total refuses.
+  let pdfSummaryOnly = summaryOnly;
+  if (read.totalRule || !Number.isInteger(extraction.openedAt) || !Number.isInteger(extraction.closedAt) || normaliseBatchNo(extraction.batchNo) === null) {
+    // The report's own print day when it reads; else the day it arrived.
+    const arrived = Number.isFinite(extraction.printedAt) ? extraction.printedAt : intake && Number.isInteger(intake.receivedAt) ? intake.receivedAt : Date.now();
+    const day = slipTradingDay(arrived);
+    const last = await readLastBatchFor(db, terminal.storeId, extraction.tid);
+    const fixed = repairForTotalRule(extraction, { picked: extraction.tid, keepTid: true, dayYmd: day, dayCloseMs: batchCloseOf(day), onFile: last });
+    Object.assign(extraction, fixed.extraction);
+    routingWarnings.push(...fixed.notes);
+  }
+  const verdict = totalRuleVerdict(extraction, validateExtraction, { summaryOnly: pdfSummaryOnly, source: "pdf" });
   if (!verdict.ok) return reject(verdict.reason);
+  if (verdict.summaryOnly) pdfSummaryOnly = true;
   // The pure path's warnings (a totals-only note, the long-batch note) are
   // the ones to keep: summary-only validation adds a generic line of its own
   // that the totals-only warning already says better.
-  verdict.warnings = read.warnings;
-  const batchNo = normaliseBatchNo(extraction.batchNo);
-  const { write, reprintOpensAt } = await resolveWriteFor(db, {
-    storeId: terminal.storeId, tid: extraction.tid, batchNo,
-    correction: !!request.data.correction, lines: extraction.lines, totalCents: extraction.totalCents,
-    incoming: extraction,
-  });
+  verdict.warnings = [...(read.warnings || []), ...(verdict.relaxed ? verdict.warnings.filter((w) => /^NOTE \(not a rejection/.test(w)) : [])];
+  const pdfLast = await readLastBatchFor(db, terminal.storeId, extraction.tid);
+  const ruled = await totalRuleWrite(db, { storeId: terminal.storeId, tid: extraction.tid, extraction, correction: !!request.data.correction, onFileBatchNo: pdfLast.batchNo });
+  const { write, reprintOpensAt } = ruled;
+  const pdfCorrection = ruled.correction;
+  const batchNo = ruled.batchNo;
+  if (ruled.note) verdict.warnings.unshift(totalRuleNote(ruled.note));
   if (!write.ok) return reject(write.reason);
   // ── AN EMPTY BATCH RE-PRINTED ON A LATER DAY — that day's report ──────────
   // See emptyReprintOpensAt. Its window runs from the report on file to this
@@ -1928,7 +2075,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
   const reconciledByTotals = totalsAgree(extraction, expected);
   const match = reconciledByTotals
     ? null
-    : await matchBatch(db, { extraction, terminal: recon, summaryOnly });
+    : await matchBatch(db, { extraction, terminal: recon, summaryOnly: pdfSummaryOnly });
 
   // A DERIVED WINDOW HAS NO SLACK, so say when legs land just outside it rather
   // than letting them show up only as a variance. This is a warning, never a
@@ -1987,8 +2134,10 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
     createdAt: Date.now(),
     expiresAt: Date.now() + DRAFT_TTL_MS,
     pickedTid: picked,
-    summaryOnly,
-    correction: !!request.data.correction,
+    summaryOnly: pdfSummaryOnly,
+    // Junid's total rule: submit re-validates the same way.
+    totalRule: true,
+    correction: pdfCorrection,
     warnings: warnings.length ? warnings : null,
     photoPaths: [],
     pdfPath,
@@ -2021,7 +2170,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
       reconLine: extraction.reconLine,
       confidence: null,
       lineCount: extraction.lines.length,
-      summaryOnly,
+      summaryOnly: pdfSummaryOnly,
       capturedVia: "pdf",
       channel: intake ? "email" : "app",
       warnings,
@@ -2119,7 +2268,7 @@ async function handleSubmit(db, request) {
   const revalid = !batchNo || !normaliseTid(extraction.tid) || !mapped
     || mapped.storeId !== terminal.storeId || mapped.tillId !== terminal.tillId
     ? { ok: false, reason: "This capture no longer matches a registered terminal — extract the slip again." }
-    : validateExtraction(extraction, {
+    : (draft.totalRule === true ? (v, o) => totalRuleVerdict(v, validateExtraction, o) : validateExtraction)(extraction, {
         summaryOnly: !!draft.summaryOnly,
         // A typed capture has no OCR confidence to gate — see validateExtraction.
         source: typedOnly ? "typed" : (draft.capturedVia === "pdf" ? "pdf" : "photo"),
@@ -2258,6 +2407,15 @@ async function handleSubmit(db, request) {
     } : null,
   });
 
+  // JUNID'S TOTAL RULE: what the server filled in, kept on the record so a
+  // later report can tell a filing number from a real one (totalRuleWrite)
+  // and the watchdog can name a slip filed under another machine's TID.
+  if (extraction.tidFrom || extraction.batchFrom || extraction.windowSource === "total-rule" || extraction.printedTid) {
+    record.totalRule = {
+      tidFrom: extraction.tidFrom || null, batchFrom: extraction.batchFrom || null,
+      printedTid: extraction.printedTid || null, window: extraction.windowSource === "total-rule" ? "day" : null,
+    };
+  }
   // A STAFF SLIP THIS RECORD TAKES OVER FROM stays beside it, as a supporting
   // slip — the machine's report of its filing number, or Junid's correction,
   // outranks it but must not hide what was typed (lib/card-supporting-slips.cjs).
@@ -2464,9 +2622,13 @@ async function handleSlip(db, request, deps = {}) {
   if (isPhotoPrimary(terminal)) {
     let cents = null;
     if (hasDeclaredTotal(data.declaredTotal)) {
+      // A typed figure that will not parse never costs the PHOTO (Junid, 27 Nov
+      // 2026: the photo is always accepted). The photo is kept and read; the
+      // figure is left off and the reason recorded for the watchdog.
       const declared = readDeclaredTotal(data.declaredTotal);
-      if (declared.err) return reject(declared.err);
-      cents = declared.cents;
+      if (declared.err) {
+        await recordCardReconError(db, { kind: "typed-total-unparsed", storeId: terminal.storeId, tid: picked, label: terminal.label, message: `${declared.err} — the photo was kept without it` });
+      } else cents = declared.cents;
     }
     const decodedPhotos = data.photos.map(decodePhoto);
     if (!decodedPhotos.every((d) => d.buffer.length > 3 && d.buffer[0] === 0xff && d.buffer[1] === 0xd8 && d.buffer[2] === 0xff)) {
@@ -2500,10 +2662,10 @@ async function handleSlip(db, request, deps = {}) {
   // off the photo exactly as a manager's photographed slip is — stored first,
   // read in the background, recorded, or marked Unread for Junid
   // (handleReceive). Gated above by the per-till scope, never by card_recon.
+  // THE PHOTO IS ALWAYS ACCEPTED (Junid, 27 Nov 2026): with no typed total,
+  // on ANY till (a typed-total till and an email-only one included), the photo
+  // is stored and read in the background like every other — never refused.
   if (!hasDeclaredTotal(data.declaredTotal)) {
-    if (typesTotal(terminal)) {
-      throw new HttpsError("invalid-argument", "Type the card total on the slip — 0 if there were no card sales.");
-    }
     return handleReceive(db, request, { ...deps, staffSlip: true });
   }
   const decoded = data.photos.map(decodePhoto);
@@ -2527,16 +2689,24 @@ async function handleSlip(db, request, deps = {}) {
   const drafted = await handleTypedCapture(db, request, {
     picked, terminal, nowMs, slip: { photos: decoded, bucket: deps.bucket || null },
   });
-  if (!drafted || drafted.ok !== true) return drafted;
+  // A typed total that cannot be recorded never costs the PHOTO (Junid, 27
+  // Nov 2026): the photo is stored and read in the background instead, and
+  // the reason is recorded for the 19:00 watchdog.
+  const keepPhotoInstead = async (why) => {
+    await recordCardReconError(db, { kind: "typed-slip-not-recorded", storeId: terminal.storeId, tid: picked, label: terminal.label, message: `${why} — the photo was kept and is read in the background` });
+    const { declaredTotal: _typed, ...photoOnly } = data;
+    return handleReceive(db, { ...request, data: photoOnly }, { ...deps, staffSlip: true });
+  };
+  if (!drafted || drafted.ok !== true) return keepPhotoInstead((drafted && drafted.reason) || "the typed total could not be drafted");
   const done = await handleSubmit(db, { auth: request.auth, data: { action: "submit", draftId: drafted.draftId } });
   if (!done || done.ok !== true) {
-    // Nothing was recorded, so the stored photo is evidence of nothing — remove
-    // it rather than leave an orphan per refused attempt.
+    // Nothing was recorded under the draft, so its copy of the photo is
+    // removed — and the photo is kept the other way, below.
     const bucket = deps.bucket || admin.storage().bucket(STORAGE_BUCKET);
     for (let i = 0; i < decoded.length; i++) {
-      try { await bucket.file(`${PHOTO_STORAGE_PREFIX}/${drafted.draftId}/photo-${i}.jpg`).delete(); } catch { /* best effort */ }
+      try { await bucket.file(`${PHOTO_STORAGE_PREFIX}/${drafted.draftId}/photo-${i}.jpg`).delete(); } catch { /* best effort: a duplicate copy */ }
     }
-    return done;
+    return keepPhotoInstead((done && done.reason) || "the typed total could not be recorded");
   }
   console.log(`cardBatchCapture: slip recorded picked=${picked} key=${done.batchKey} by=${uid}`);
   const receipt = await logStaffSlip(db, request, {
@@ -2550,6 +2720,7 @@ async function handleSlip(db, request, deps = {}) {
     await queueSlipCheck(db, { terminal, picked, batchKey: done.batchKey, nowMs: (deps.now || Date.now)() });
   } catch (err) {
     console.error(`cardBatchCapture: slip check not queued for ${picked}/${done.batchKey}: ${err && err.message}`);
+    await recordCardReconError(db, { kind: "slip-check-not-queued", storeId: terminal.storeId, tid: picked, label: terminal.label, message: err && err.message });
   }
   // "Sent" — and nothing about the figure, the batch or how it compares.
   return { ok: true, received: true, receipt };
@@ -2576,6 +2747,7 @@ async function logStaffSlip(db, request, { kind, terminal, picked, nowMs, photos
       break;
     } catch (err) {
       console.error(`cardBatchCapture: staff slip log not written for ${picked}/${dayYmd} (attempt ${attempt}): ${err && err.message}`);
+      if (attempt === 2) await recordCardReconError(db, { kind: "staff-slip-log-failed", storeId: terminal.storeId, tid: picked, dayYmd, label: terminal.label, message: err && err.message });
     }
   }
   return { at: nowMs, dayYmd };
@@ -2831,7 +3003,9 @@ async function handleReceive(db, request, deps = {}) {
   if (isRetiredTerminal(terminal)) return reject(retiredCaptureRefusal(picked, terminal));
   const walled = await sectionRefusalFor(db, request, picked, terminal);
   if (walled) return reject(walled);
-  if (!takesPhoto(terminal)) {
+  // A STAFF SLIP's photo is always kept (Junid, 27 Nov 2026), whatever the
+  // till's capture setting; only a manager's direct "receive" still honours it.
+  if (!takesPhoto(terminal) && !deps.staffSlip) {
     return reject(`${terminal.label || picked} is set to Email only, so its report is not photographed — it ticks when the email arrives. Junid can change this in Card machines → settings.`);
   }
 
@@ -2958,6 +3132,9 @@ async function readJobOnce(db, job, photos, deps = {}) {
   }, {
     storedPhotoPaths: Array.isArray(job.photoPaths) ? job.photoPaths : Object.values(job.photoPaths || {}),
     typedCents: Number.isInteger(job.typedCents) ? job.typedCents : null,
+    // The day the slip was sent: under the total rule an unreadable header is
+    // reconciled against this day's card sales.
+    dayYmd: typeof job.dayYmd === "string" ? job.dayYmd : null,
     ...(deps.ocr ? { ocr: deps.ocr } : {}),
   });
   if (!extract || extract.ok !== true) {
@@ -3001,6 +3178,7 @@ async function processReadJob(db, jobId, deps = {}) {
       : classifyRun(await (deps.read || readJobOnce)(db, job, photos, deps));
   } catch (err) {
     console.error(`cardBatchReadJob: job ${jobId} run failed: ${err && err.message}`);
+    await recordCardReconError(db, { kind: "read-run-failed", storeId: job.storeId, tid: job.pickedTid, dayYmd: job.dayYmd, jobId, label: job.label, message: err && err.message });
     outcome = classifyRun({ thrown: err });
   }
 
@@ -3028,11 +3206,13 @@ async function processReadJob(db, jobId, deps = {}) {
       fellBack = await (deps.typedFallback || recordTypedFallback)(db, done, outcome, t, deps);
     } catch (err) {
       console.error(`cardBatchReadJob: typed fallback failed for ${jobId}: ${err && err.message}`);
+      await recordCardReconError(db, { kind: "typed-fallback-failed", storeId: job.storeId, tid: job.pickedTid, dayYmd: job.dayYmd, jobId, label: job.label, message: err && err.message });
     }
   }
   if (fellBack && fellBack.ok) {
     try { await resolveJobDay(db, done, fellBack.batchKey, t); } catch (err) {
       console.error(`cardBatchReadJob: resolving ${job.dayYmd} after the typed fallback failed: ${err && err.message}`);
+      await recordCardReconError(db, { kind: "resolve-day-failed", storeId: job.storeId, tid: job.pickedTid, dayYmd: job.dayYmd, jobId, label: job.label, message: err && err.message });
     }
     console.warn(`CARD_RECON_PHOTO_NOT_READ ${job.label || job.pickedTid} ${job.dayYmd}: the typed total stands as ${fellBack.batchKey} — ${unreadReason(job, outcome)}`);
   } else if (!check && final === "unread") await markJobUnread(db, done, outcome, t);
@@ -3060,6 +3240,7 @@ async function processReadJob(db, jobId, deps = {}) {
       }
     } catch (err) {
       console.error(`cardBatchReadJob: typed total for ${job.dayYmd} failed for ${jobId}: ${err && err.message}`);
+      await recordCardReconError(db, { kind: "typed-stands-failed", storeId: job.storeId, tid: job.pickedTid, dayYmd: job.dayYmd, jobId, label: job.label, message: err && err.message });
     }
   }
   if (!check) await noteStaffSlipRead(db, done, outcome, final, t);
@@ -3103,7 +3284,9 @@ async function noteStaffSlipRead(db, job, outcome, final, nowMs) {
       const closedAt = (await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${read.batchKey}/slip/closedAt`).once("value")).val();
       const filed = sbSastYmd(Number(closedAt));
       if (filed) read.filedDayYmd = filed;
-    } catch { /* the note is best-effort */ }
+    } catch (err) {
+      await recordCardReconError(db, { kind: "staff-slip-note-failed", storeId: job.storeId, tid: job.pickedTid, dayYmd: job.dayYmd, jobId: job.jobId, message: err && err.message });
+    }
   }
   try {
     await db.ref(path).transaction((cur) => (cur === null ? null : { ...cur, read }));
@@ -3187,6 +3370,7 @@ async function recordTypedFallback(db, job, outcome, nowMs, deps = {}) {
     }
   } catch (err) {
     console.error(`cardBatchReadJob: photoRead note on ${done.batchKey} failed: ${err && err.message}`);
+    await recordCardReconError(db, { kind: "photo-read-note-failed", storeId: job.storeId, tid: job.pickedTid, dayYmd: job.dayYmd, jobId: job.jobId, label: job.label, message: err && err.message });
   }
   return { ok: true, batchKey: done.batchKey };
 }
@@ -3309,7 +3493,12 @@ async function listNotices(db, nowMs) {
   return {
     ok: true,
     to: NOTIFY_TO,
-    notices: take.map(([key, n]) => ({ key, subject: n.subject.slice(0, 200), text: n.text.slice(0, 4000) })),
+    // A notice may name its own kind and recipient: the 19:00 watchdog's goes
+    // to gunidmoh@ and is EMAILED (Junid, 27 Nov 2026); an unread notice stays
+    // held under the quiet rule (scripts/cardrecon/email-poller.mjs).
+    notices: take.map(([key, n]) => ({ key, subject: n.subject.slice(0, 200), text: n.text.slice(0, 4000),
+      ...(typeof n.kind === "string" ? { kind: n.kind.slice(0, 30) } : {}),
+      ...(typeof n.to === "string" ? { to: n.to.slice(0, 120) } : {}) })),
   };
 }
 
@@ -3359,16 +3548,27 @@ exports.cardBatchCapture = onCall(
     // card_recon and must not need to; handleSlip refuses everyone outside
     // their own till. Every other action below still requires card_recon.
     if (action === "slipTills") return handleSlipTills(db, request);
+    // NO SILENT FAILURES (Junid, 27 Nov 2026): a slip refused or failed here
+    // leaves an error record the 19:00 watchdog reads (lib/card-recon-errors.cjs).
+    // Never for a caller with no sign-in (anyone could fill the log), nor a
+    // permission refusal; every other refused or failed upload is recorded.
+    const uploadFailed = (kind, message, err = null) => (!request.auth?.uid || (err && (err.code === "permission-denied" || err.code === "unauthenticated")))
+      ? Promise.resolve() : recordCardReconError(db, {
+      kind, tid: typeof request.data?.pickedTid === "string" ? normaliseTid(request.data.pickedTid) : null,
+      message: `${request.auth?.token?.email || request.auth?.uid || "?"}: ${message}`,
+    });
     if (action === "slip") {
-      const out = await handleSlip(db, request);
-      if (out && out.ok === false) console.warn(refusalLogLine(request.data?.pickedTid, out.reason));
+      let out;
+      try { out = await handleSlip(db, request); } catch (err) { await uploadFailed("slip-upload-failed", err && err.message, err); throw err; }
+      if (out && out.ok === false) { console.warn(refusalLogLine(request.data?.pickedTid, out.reason)); await uploadFailed("slip-upload-refused", out.reason); }
       return out;
     }
     await assertCardRecon(request);
     // ── THE MANAGER'S SUBMIT: kept, queued, "Received" — see handleReceive ──
     if (action === "receive") {
-      const out = await handleReceive(db, request);
-      if (out && out.ok === false) console.warn(refusalLogLine(request.data?.pickedTid, out.reason));
+      let out;
+      try { out = await handleReceive(db, request); } catch (err) { await uploadFailed("receive-upload-failed", err && err.message, err); throw err; }
+      if (out && out.ok === false) { console.warn(refusalLogLine(request.data?.pickedTid, out.reason)); await uploadFailed("receive-upload-refused", out.reason); }
       return out;
     }
     // ── THE POLLER'S MAIL ROUND: notices to Junid, then what became of them ──
@@ -3396,6 +3596,10 @@ exports.cardBatchCapture = onCall(
       // so "it said try again" can be read back exactly afterwards.
       if (out && out.ok === false) {
         console.warn(refusalLogLine(request.data?.pickedTid, out.reason));
+        // An emailed file that names none of our terminals (a customer's proof
+        // of payment) is not a card-recon failure; anything with a till is.
+        const failedTid = request.data?.pickedTid ? normaliseTid(request.data.pickedTid) : (out.tid || null);
+        if (failedTid) await recordCardReconError(db, { kind: request.data?.channel === "email" ? "email-report-refused" : "extract-refused", tid: failedTid, message: out.reason });
       }
       // Every answer says which parser gave it, so the row the poller writes
       // can be re-run when a later one is deployed.

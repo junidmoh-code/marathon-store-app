@@ -44,6 +44,7 @@ import UpdateBanner from "./update/UpdateBanner";
 import { setUpdateBusy, setTvBoardMounted } from "./update/updateChecker";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { brandOnRename } from "./utils/brands.js";
+import { eventsForProduct } from "./utils/productActivity.js";
 import { categorize, brandOf, brandInfo, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
@@ -136,6 +137,7 @@ import OnlineOrdersSettingsCard from "./components/admin/OnlineOrdersSettingsCar
 import ShippingCard from "./components/admin/ShippingCard";
 import DeviceCodesCard from "./device/DeviceCodesCard";
 import { changeProductType, saveProductPatch, useLiveProduct } from "./components/admin/productSave";
+import { ProductNameEditor } from "./components/admin/ProductNameEditor.jsx";
 import { deviceStamp, orderActionName, stampPatch, stampRecord } from "./device/deviceStamp";
 import { countReject, thisDevicePaused } from "./device/rejectCount";
 import { PAUSED_MESSAGE } from "./device/deviceRejects";
@@ -7716,12 +7718,13 @@ function AdminProductRow({ product }) {
 }
 
 // ─── ADMIN PRODUCT DETAIL ────────────────────────────────────────────────────
-// Full-page edit surface reached via #product/{id}. Every field auto-saves
-// — name on blur, type/sizes/hubs on every toggle. Photo replace runs the
+// Full-page edit surface reached via #product/{id}. Type/sizes/hubs save on
+// every toggle; the name is Edit → Save (ProductNameEditor, 27 Nov 2026). Photo replace runs the
 // existing compression pipeline and uploads immediately on file pick (no
 // preview step; consistent with the auto-save theme). Delete prompts for
 // confirmation then navigates back.
 const setProductTypeCall = httpsCallable(functions, "setProductType");
+const setProductNameCall = httpsCallable(functions, "setProductName");
 
 function AdminProductDetail({ product: listProduct, allProducts = [], insightsLog, receivePrefill = null, onPrefillConsumed, onBack }) {
   // What the SERVER holds, not the device's offline copy (productSave.js).
@@ -7779,22 +7782,13 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
   // Every code and label alias this product answers to — the two admin-only
   // identity stores folded server-side (utils/labelIdentityStore).
   const identity = useLabelIdentity();
-  const [nameDraft, setNameDraft] = useState(product.name);
-  useEffect(() => { setNameDraft(product.name); }, [product.name]);
-  const saveName = () => {
-    const next = nameDraft.trim();
-    if (next && next !== product.name) {
-      // Seed FIRST, then rename (see updateProductName).
-      seedSearchIdentityFrom(product)
-        // Same rule as updateProductName: only an empty brand is re-derived.
-        .then(() => save({ name: next, ...(brandOnRename(product, next) || {}),
-          // Renamed to a cap / beanie / bucket hat while filed elsewhere: re-file
-          // it under Caps & Beanies in the same save (one-size products only).
-          ...(headwearRenamePatch(product, next, (k) => legacyFor(detailTaxonomy.registry, k)) || {}) }, "the name"))
-        .catch((err) => setSaveError(`Could not save the name: ${err?.message || err}. Try again.`));
-    }
-    else if (!next) setNameDraft(product.name);
-  };
+  // Name — read-only with Edit → Save / Cancel (ProductNameEditor): through the
+  // setProductName callable, same rule as Type, every rename logged. The two
+  // fields a rename always re-derived ride in the same write, unchanged.
+  const nameExtras = (next) => ({ ...(brandOnRename(product, next) || {}),
+    // Renamed to a cap / beanie / bucket hat while filed elsewhere: re-file it
+    // under Caps & Beanies in the same save (one-size products only).
+    ...(headwearRenamePatch(product, next, (k) => legacyFor(detailTaxonomy.registry, k)) || {}) });
 
   // Photo — pick file → compress in-browser → upload → set photoUrl. No
   // preview/confirm; the upload is the action. Compression pipeline is the
@@ -8131,7 +8125,8 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
   // insights_log (orders/{id} is daily-counter-ephemeral so can't be trusted
   // for historical aggregates; see project-insights-past-days-pattern memory).
   const activity = useMemo(() => {
-    const productLog = insightsLog.filter(e => e.productName === product.name);
+    // By id, then by this name or a previous one (utils/productActivity.js).
+    const productLog = eventsForProduct(insightsLog, product, allProducts);
     const placed     = productLog.filter(e => e.action === "placed");
     const sold       = productLog.filter(e => e.action === "collected" || e.action === "ready");
     let lastSoldLabel = "Never sold";
@@ -8145,7 +8140,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       }
     }
     return `${lastSoldLabel} · ${placed.length} order${placed.length === 1 ? "" : "s"} all-time`;
-  }, [insightsLog, product.name]);
+  }, [insightsLog, allProducts, product.id, product.name, product.previousNames]);
 
   // Restock-existing (Stock rework): the same optional per-size receive as the
   // product-add form, for a product already in the system (re-orders arrive
@@ -8313,11 +8308,9 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       <div style={sectionTitle}>Name</div>
       <div style={card}>
         <div style={cardInner}>
-          <input value={nameDraft}
-                 onChange={e => setNameDraft(e.target.value)}
-                 onBlur={saveName}
-                 onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
-                 style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, padding:0, fontFamily:"inherit" }}/>
+          <ProductNameEditor key={product.id} product={product} allProducts={allProducts} call={setProductNameCall}
+                             deviceId={getDeviceId()} buildExtras={nameExtras}
+                             beforeSave={() => seedSearchIdentityFrom(product)} />
         </div>
       </div>
 

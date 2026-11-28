@@ -37,13 +37,16 @@ export function planNoticeRound(reply) {
     .filter((n) => n && typeof n.key === "string" && /^[A-Za-z0-9_~-]{1,120}$/.test(n.key)
       && typeof n.subject === "string" && n.subject.trim() && typeof n.text === "string")
     .slice(0, MAX_NOTICES)
-    .map((n) => ({ key: n.key, subject: oneLine(n.subject, 200), text: String(n.text).slice(0, 4000) }));
+    .map((n) => ({ key: n.key, subject: oneLine(n.subject, 200), text: String(n.text).slice(0, 4000),
+      // A notice's own kind and recipient (the 19:00 card-recon watchdog, 27 Nov 2026).
+      kind: typeof n.kind === "string" ? oneLine(n.kind, 30) : null,
+      to: typeof n.to === "string" && EMAIL_RE.test(n.to.trim()) ? n.to.trim() : null }));
   return { to, notices, refusal: null };
 }
 
 /** One notice as a message nodemailer can send. Plain text only. */
 export function noticeMail({ from, to, notice }) {
-  return { from, to, subject: notice.subject, text: notice.text };
+  return { from, to: notice.to || to, subject: notice.subject, text: notice.text, ...(notice.kind ? { kind: notice.kind } : {}) };
 }
 
 /**

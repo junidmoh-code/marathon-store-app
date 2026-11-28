@@ -32,7 +32,7 @@
 // so nothing starts until auth says there is a user, and everything stops when
 // it says there is not.
 
-import { markMirrorFeedOk, markMirrorPass, resetMirrorFreshness } from "./resumeFreshness";
+import { markMirrorFeedOk, markMirrorFeedFailed, resetMirrorFreshness, setMirrorSuspended } from "./resumeFreshness";
 import { openMirrorDb } from "./db";
 import { createRtdbAdapter } from "./rtdbAdapter";
 import { createConnectionTracker } from "./connection";
@@ -284,27 +284,39 @@ export async function startOfflineMirror({
   async function runOnePass() {
     const signal = signalled;
     signalled = false;
-    const report = await engine.runPass({ signal });
-    state.lastPass = { at: now(), ...report };
     // The feed is CURRENT only if this pass actually read it. Skipped (backing
-    // off, benched) or failed is not current, however recent the pass.
-    if (report.feed && !report.feed.skipped && !report.errors.some((e) => e.where === "feed")) {
-      state.feedOkAt = now();
-      markMirrorFeedOk(state.feedOkAt);
-    }
+    // off, benched) or failed is not current, however recent the pass. Told
+    // the moment the feed step ends (onFeed), so the "Updating…" pill comes
+    // down — or turns into "Couldn't update" — without waiting for the range
+    // walks behind it.
+    const noteFeed = (feed, failed) => {
+      if (feed && !feed.skipped && !failed) {
+        // Screens whose rows the feed moved are woken, and this device's own
+        // echoed writes confirmed, BEFORE the pill comes down (CodeRabbit,
+        // #1021) — not after the range walks.
+        if ((feed.applied ?? 0) + (feed.deleted ?? 0) > 0) {
+          bumpLegs(MIRROR_LEGS.filter((l) => l.feed === "changes").map((l) => l.name));
+        }
+        if (feed.paths?.length) confirmPending(feed.paths);
+        state.feedOkAt = now();
+        markMirrorFeedOk(state.feedOkAt);
+      } else {
+        markMirrorFeedFailed(now());
+      }
+    };
+    const report = await engine.runPass({ signal, onFeed: noteFeed });
+    state.lastPass = { at: now(), ...report };
     state.lastError = report.errors.length ? report.errors[0] : null;
 
-    // Wake the screens whose nodes moved — and only those.
-    if ((report.feed?.applied ?? 0) + (report.feed?.deleted ?? 0) > 0) {
-      bumpLegs(MIRROR_LEGS.filter((l) => l.feed === "changes").map((l) => l.name));
-    }
+    // Wake the screens whose nodes moved — and only those. (The change-fed
+    // legs were woken in noteFeed, the moment the feed step ended.)
     for (const r of report.range) if (r.added > 0) bumpLegs([r.leg]);
 
     // The echo of this device's own writes is only worth keeping until the
     // feed brings the same fact back round. Dropping it the moment it does,
     // rather than letting it expire on a timer, is what stops it hiding
     // someone else's later change.
-    if (report.feed?.paths?.length) confirmPending(report.feed.paths);
+    // (Done in noteFeed, as soon as the feed step ended.)
 
     // Unsent writes are a reason not to reload, and the update checker's busy
     // registry is where that already lives.
@@ -352,12 +364,8 @@ export async function startOfflineMirror({
     if (stopped) return;
     if (passRunning) { passAgain = true; return; }
     passRunning = true;
-    // The "Updating…" marker shows only while a pass is actually running
-    // (resumeFreshness.js) — this lock is the one place that knows.
-    markMirrorPass(true);
     try { await tickOnce(); } finally {
       passRunning = false;
-      markMirrorPass(false);
       if (passAgain) { passAgain = false; schedule(0); }
     }
   }
@@ -673,6 +681,7 @@ export async function startOfflineMirror({
     suspendLive() {
       if (stopped || suspended) return false;
       suspended = true;
+      setMirrorSuspended(true);
       clearTimeoutFn(timer);
       clearTimeoutFn(signalTimer);
       if (signalUnsub) { signalUnsub(); signalUnsub = null; }
@@ -681,6 +690,7 @@ export async function startOfflineMirror({
     resumeLive() {
       if (!suspended) return false;
       suspended = false;
+      setMirrorSuspended(false);
       startedAt = now();
       if (stopped || !wanted) return true;
       schedule(0);
@@ -713,6 +723,7 @@ export async function startOfflineMirror({
       // the live subscription it now needs.
       setServingLegs([]);
       setForcedUpdateMode(false);
+      setMirrorSuspended(false);
       resetMirrorFreshness();
     },
   };

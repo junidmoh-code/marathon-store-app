@@ -8,17 +8,14 @@ name: Card recon tests
 # Tests only. This workflow must never gain a deploy step — functions are
 # shared with marathon-pos-app and are deployed BY NAME, by hand; rules are
 # never deployed from CI. See DEPLOY-TRACKER.md.
+# TILL 2 GUARDS (Junid, 27 Nov 2026 — "Till 2 must never break again"): this
+# runs on EVERY pull request (no path filter), so no change anywhere can merge
+# past test/card-recon-till2-guard.test.cjs or the Card Slip screen's tests.
+# Junid's rule – do not weaken or delete without his written instruction.
 on:
   pull_request:
-    paths:
-      - "functions/**"
-      - "scripts/cardrecon/**"
-      - ".github/workflows/card-recon-tests.yml"
   push:
     branches: [main]
-    paths:
-      - "functions/**"
-      - "scripts/cardrecon/**"
 
 jobs:
   card-recon:
@@ -49,8 +46,30 @@ jobs:
           test/pdf-*.test.cjs
           test/card-batch-supersede.test.cjs
           test/card-expected.test.cjs
+      - name: Till 2 guards (Junid's rule — photo always accepted, bottom total only, never stuck)
+        working-directory: functions
+        run: node --test test/card-recon-till2-guard.test.cjs test/card-sb-faded-tid.test.cjs test/card-slip-concrete.test.cjs test/card-sb-typed-stands.test.cjs
       - run: npm ci
         working-directory: scripts/cardrecon
       - name: Mailbox poller decisions
         working-directory: scripts/cardrecon
         run: npx vitest run
+
+  # The Card Slip screen (store app): a photo is always sendable.
+  card-slip-screen:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      # slipTerminals.test.jsx is left out: its till-list fetch is flaky under
+      # load (pre-existing on main, fails ~1 run in 2 on a busy machine) and it
+      # guards nothing about whether a photo is sent.
+      - name: Card Slip screen tests
+        run: npx vitest run src/components/cardrecon --exclude "**/slipTerminals.test.jsx"

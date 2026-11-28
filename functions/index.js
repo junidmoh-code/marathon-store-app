@@ -4358,6 +4358,11 @@ exports.deviceEnrolmentEmail = require("./deviceEnrolment/deviceEnrolment.js").d
 //   firebase deploy --only functions:setProductType
 exports.setProductType = require("./productType/setProductType.js").setProductType;
 
+// ─── PRODUCT NAME — setProductName (the edit page's Name: Edit → Save) ───────
+// Same rule and logging as setProductType; see functions/productType/setProductName.js.
+//   firebase deploy --only functions:setProductName
+exports.setProductName = require("./productType/setProductName.js").setProductName;
+
 // ─── SHOPIFY PUBLISHING — mediaHashClaim (the wrong-photo guard) ─────────────
 // Every new publishing photo/video is hashed on the phone and claimed here
 // before upload; an exact file already on a DIFFERENT product is refused and
@@ -4446,6 +4451,44 @@ exports.cardReconHealthScan = onSchedule(
       console.log(`cardReconHealthScan: the poller is back (heartbeat ${verdict.staleMinutes} min old) — the outage alerted on is over.`);
     } else {
       console.log(`cardReconHealthScan: ${verdict.ok ? "ok" : `stale ${verdict.staleMinutes} min (already alerted)`}`);
+    }
+  },
+);
+
+// ─── CARD RECON — cardReconWatchdog (Junid, 27 Nov 2026: "Till 2 must never break again") ─
+// 19:00 SAST, every day, on Google's scheduler. For each active till that took
+// POS card money today, ONE email to gunidmoh@gmail.com — ONLY when something
+// is wrong — one line per till: no slip/report arrived; a slip arrived but no
+// total was read and none was typed; or an upload/ingest error in the last
+// 24 h (lib/card-recon-errors.cjs). Delivered by the Mac mini's mailbox poller
+// as a notice of kind "watchdog" (scripts/cardrecon/email-poller.mjs). Never
+// WhatsApp. Bounded reads only (lib/card-recon-watchdog.cjs). A run that fails
+// writes its own error record, which tomorrow's run reports.
+//   firebase deploy --only functions:cardReconWatchdog
+exports.cardReconWatchdog = onSchedule(
+  { schedule: "0 19 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 120 },
+  async () => {
+    const db = admin.database();
+    const nowMs = Date.now(); // the server's own clock
+    const watchdog = require("./lib/card-recon-watchdog.cjs");
+    const { NOTICES_PATH } = require("./lib/card-unread.cjs");
+    const { recordCardReconError } = require("./lib/card-recon-errors.cjs");
+    try {
+      const verdict = watchdog.assessWatchdog({ nowMs, ...(await watchdog.readWatchdogInputs(db, { nowMs })) });
+      const notice = watchdog.watchdogNotice(verdict, nowMs);
+      if (notice) {
+        // Once per day: a re-run never sends the day's email twice.
+        await db.ref(`card_recon_watchdog_sent/${verdict.dayYmd}`).transaction((cur) => (cur ? undefined : nowMs)).then(async (t) => {
+          if (t.committed) await db.ref(`${NOTICES_PATH}/watchdog~${verdict.dayYmd}`).set(notice);
+        });
+        console.warn(`CARD_RECON_WATCHDOG ${verdict.dayYmd}: ${verdict.lines.length} problem(s) — emailed: ${verdict.lines.join(" | ")}`);
+      } else {
+        console.log(`cardReconWatchdog ${verdict.dayYmd}: every till that took card money has its figure — no email.`);
+      }
+      await db.ref("card_recon_watchdog").set({ checkedAt: nowMs, dayYmd: verdict.dayYmd, problems: verdict.lines.length ? verdict.lines : null });
+    } catch (err) {
+      console.error(`CARD_RECON_WATCHDOG_FAILED: ${err && err.stack || err}`);
+      await recordCardReconError(db, { kind: "watchdog-failed", message: err && err.message }, nowMs);
     }
   },
 );

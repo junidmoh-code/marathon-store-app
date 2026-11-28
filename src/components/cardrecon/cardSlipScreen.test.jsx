@@ -268,19 +268,19 @@ describe("Amanda's screen: Trophy Till 2 is a typed-total till — photo AND num
     expect(everyString(t)).toMatch(/Card total on the slip \(R\)/);
   });
 
-  it("Submit waits for BOTH the photo and the number, and says which", async () => {
+  // Junid's rule – do not weaken or delete without his written instruction.
+  it("the photo alone can be sent (27 Nov 2026); without a photo Submit waits, and says so", async () => {
     const t = render();
-    expect(everyString(t)).toMatch(/Add the slip photo and type the card total/);
     type(t, "1,250.00");
     expect(submitBtn(t).props.disabled).toBe(true);
-    expect(everyString(t)).toMatch(/Add the slip photo \(step 1\)/);
+    expect(everyString(t)).toMatch(/Add the slip photo/);
     type(t, "");
     await pick(fileInputs(t)[0]);
-    expect(submitBtn(t).props.disabled).toBe(true);
-    expect(everyString(t)).toMatch(/Type the card total \(step 2\)/);
+    expect(submitBtn(t).props.disabled).toBe(false);
     type(t, "1,250.00");
     expect(submitBtn(t).props.disabled).toBe(false);
   });
+
 
   it("0 is a number: a no-sales evening sends R0 with its photo", async () => {
     const t = render();
@@ -354,22 +354,31 @@ describe("Amanda's screen: a Standard Bank till is photographed", () => {
   });
   afterEach(() => { delete ESTATE["00000F2Y"]; });
 
-  // Junid, 25 Nov 2026: the PAX settles itself at 18:50, after the photo, so
-  // today's typed total is REQUIRED (0 if none) — it is the day's figure until
-  // tonight's report is read.
-  it("leads with the end-of-day report; Submit needs the photo AND today's card total (0 allowed)", async () => {
+  // Junid's rule – do not weaken or delete without his written instruction.
+  // (27 Nov 2026, "Till 2 must never break again"): the PHOTO is always
+  // accepted. Today's card total is asked for (0 if none — it is the day's
+  // figure until tonight's report is read, and the fallback if the photo
+  // cannot be read), but it never blocks the photo.
+  it("leads with the end-of-day report; the photo alone can be sent, today's card total is asked for (0 allowed)", async () => {
     const t = render();
     const text = everyString(t);
     expect(text).toMatch(/Photograph the end-of-day report/);
     expect(text).toMatch(/Today's card total/);
-    expect(text).not.toMatch(/optional/);
     expect(text).not.toMatch(/emailed|awaiting/i);
     expect(fileInputs(t).map((i) => !!i.props.multiple)).toEqual([false, true]);
     await pick(fileInputs(t)[0]);
-    expect(submitBtn(t).props.disabled).toBe(true);
-    expect(everyString(t)).toMatch(/Type the card total/);
+    expect(submitBtn(t).props.disabled).toBe(false);
     type(t, "0");
     expect(submitBtn(t).props.disabled).toBe(false);
+  });
+
+  // Junid's rule – do not weaken or delete without his written instruction.
+  it("a photo sent with NO typed total still goes, and is Sent on the server's receipt", async () => {
+    const t = render();
+    await pick(fileInputs(t)[0]);
+    await press(submitBtn(t));
+    expect([...calls]).toEqual([{ action: "slip", pickedTid: "00000F2Y", photos: [{ base64: "QUJDRA==" }] }]);
+    expect(everyString(t)).toMatch(/Sent — thank you/);
   });
 
   it("several photos go as one report, with the typed total", async () => {

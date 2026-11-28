@@ -85,9 +85,12 @@ html[data-sky="on"] body { font-family: var(--sky-font); }
 }
 html[data-sky="off"] .sky-bg { display: none; }
 
-/* The "Updating…" pill (ResumeUpdatingMarker) on the sky: the theme already
-   gives it navy text on white glass; its amber rim goes too — navy only. */
-html[data-sky="on"] [data-testid="resume-updating"] { border-color: rgba(255,255,255,.8) !important; }
+/* The "Updating…" pill (ResumeUpdatingMarker, main #1021: updating / offline /
+   failed) on the sky — navy only, no amber, red or grey: white glass with navy
+   text, and the tappable "Couldn't update" in solid navy so it reads as the
+   button it is. */
+html[data-sky="on"] [data-testid="resume-updating"] { background: rgba(255,255,255,.4) !important; border-color: rgba(255,255,255,.8) !important; color: var(--sky-navy) !important; }
+html[data-sky="on"] [data-testid="resume-updating"][data-state="failed"] { background: var(--sky-navy) !important; border-color: var(--sky-navy) !important; color: #fff !important; }
 
 /* ── appShell.css (main #973) WHILE THE SKY IS ON ─────────────────────────
    The sky pads each header by its own safe-area inset (.sky-header,

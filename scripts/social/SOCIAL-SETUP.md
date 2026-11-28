@@ -222,8 +222,21 @@ Secret Manager posts them.
 
 **Current way:** `scripts/social/tiktok-poster.mjs`, launchd `com.marathon.tiktokposter` (plist beside it).
 It posts every past Instagram/Facebook post to @marathon.club7, one per family (a feed post and its story
-twin, or a reel and its story twin, go once), oldest first, photos and videos alternating: 3 from 08:30
-and 3 from 18:30 SAST, 15-20 minutes apart. New posts join the end of the queue by themselves.
+twin, or a reel and its story twin, go once): **photo posts first** (oldest first), videos once no photo post
+is left, **no stories** (a family made only of stories is skipped; a story twin still gives its feed post the
+9:16 render). 6 a day: 3 from 08:30 and 3 from 18:30 SAST, 15-20 minutes apart. New posts join by themselves.
+
+- **Retries:** a slot whose run stops on a short outage (Signal Studio not answering, TikTok 5xx/rate limit, a
+  Storage download failing) runs again twice, 10 minutes apart, for the posts still owed. The audit refusal, a
+  missing connection and spam limits are not retried within the slot (the next slot tries again).
+- **Quiet rule:** WhatsApp to Junid (Jamie relay, `127.0.0.1:8789/alert-junid`) only for a real failure, each kind
+  at most once a day: the account was connected and is not any more; Signal Studio silent on two runs in a row; a
+  post FAILED at TikTok or its outcome is unknown; the run crashed. Never for the audit refusal, for waiting on
+  the first connection, or for an empty queue. Memory: `~/.marathon-tiktok/alerts.json`.
+- **While the audit is pending** (28 Nov 2026): TikTok refuses every post to a public account. Each slot still
+  runs, logs the refusal (nothing counted) and checks the slot's next picks (download, fit, probe) so the queue
+  is known to be ready. The first post TikTok accepts publicly flips Signal Studio to audited and the log says
+  "TikTok audit has passed"; from then on posts go out PUBLIC_TO_EVERYONE with no change here.
 
 - It posts through **Signal Studio** (`~/marathon-photo-service`, `src/social/local.ts`): Signal Studio
   owns the TikTok app (Production keys) and the verified `/studio/` URL prefix TikTok pulls media from.
@@ -238,6 +251,27 @@ and 3 from 18:30 SAST, 15-20 minutes apart. New posts join the end of the queue 
   `curl -s -X POST -H "authorization: Bearer $SIGNAL_LOCAL_POST_TOKEN" http://127.0.0.1:8796/tiktok/connect-url`
   (one hour, one use), sign in as @marathon.club7, tap "Yes, connect".
 - `--dry-run` shows the queue and the next six; `--kickoff 3` posts three now.
+
+### Connect + test, 28 Nov 2026 (Signal Studio app 7708075265691551752, live in production since 26 Nov)
+
+- Account: **@marathon.club7** ("Marathon Club"), the account Junid created on 14 Nov 2026, not
+  concreteworldofficial. It was connected through Signal Studio's Login Kit, but under the app's **sandbox**
+  keys (`SIGNAL_TIKTOK_SANDBOX_*` in `~/.env` override the production pair). Signal Studio now uses the production
+  keys (client key `aw41…`), so the account has to authorise once more. Junid got a 7-day link on WhatsApp
+  (`POST 127.0.0.1:8796/tiktok/connect-link`).
+- `creator_info` for @marathon.club7: privacy options `PUBLIC_TO_EVERYONE, MUTUAL_FOLLOW_FRIENDS, SELF_ONLY`,
+  max video 3600 s. The account is **public** (Junid, 15 Nov: it stays public).
+- **Test Direct Post, 28 Nov 2026 09:07 SAST** (`tiktok-poster.mjs --kickoff 1`, photo family
+  `-P-kT7-0JLXPAUPMp5J9`): TikTok refused the init for `PUBLIC_TO_EVERYONE` and again for `SELF_ONLY` with
+  `unaudited_client_can_only_post_to_private_accounts` ("Please review our integration guidelines at
+  https://developers.tiktok.com/doc/content-sharing-guidelines/"). **Nothing was created**, so there is no publish
+  id and no privacy status to query. The ledger is unchanged.
+- What that means: until the Direct Post audit passes, TikTok accepts posts from Signal Studio **only for private
+  accounts**, and then only as SELF_ONLY. A public account like @marathon.club7 gets nothing at all, not even
+  private posts. The same app does post to a private account: @signalstudio.demo got a live SELF_ONLY Direct Post
+  on 28 Nov 09:23 SAST (`PUBLISH_COMPLETE`, recorded for the audit video).
+- Higgsfield's TikTok publishing is no bridge: its only connected account is concrete-world, and every Higgsfield
+  publish needs a person to review and submit TikTok's form, so it cannot run on a schedule.
 
 The section below is the history of why this took a separate app.
 

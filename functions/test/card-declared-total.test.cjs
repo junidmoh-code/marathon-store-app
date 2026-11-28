@@ -175,14 +175,15 @@ test("the owner gate and the photo requirement run BEFORE any OCR is paid for", 
   assert.match(extractBody, /channel === "email" \|\| pdf/);
 });
 
-test("the typed figure replaces the TOTAL only, after the TID has been checked", () => {
-  const tidCheck = extractBody.indexOf("not the till you picked");
+test("the typed figure replaces the TOTAL only, after the till is settled (Junid's total rule, 27 Nov 2026)", () => {
+  // The till a slip was sent for decides (lib/card-total-rule.cjs) — the TID
+  // printed on it no longer refuses it — and the typed figure goes on only
+  // after that, before validation, so the gate sees the typed figure.
+  const tillSettled = extractBody.indexOf("repairForTotalRule(extraction");
   const replace = extractBody.indexOf("extraction.totalCents = declared.cents");
-  assert.ok(tidCheck > -1 && replace > -1);
-  assert.ok(tidCheck < replace, "the slip must prove its till before the typed figure goes on it");
-  // The TID refusal reads extraction.tid, which the typed total never touches;
-  // the replacement sits before validation so the gate sees the typed figure.
-  assert.ok(replace < extractBody.indexOf("validateExtraction("));
+  assert.ok(tillSettled > -1 && replace > -1);
+  assert.ok(tillSettled < replace, "the till is settled before the typed figure goes on");
+  assert.ok(replace < extractBody.indexOf("totalRuleVerdict(extraction, validateExtraction"));
   assert.equal((extractBody.match(/extraction\.\w+ = declared/g) || []).length, 1);
 });
 
@@ -246,12 +247,12 @@ test("the batch number is still gated on a declared capture — it is the record
   assert.equal(validateExtraction(ex, { summaryOnly: true, declaredTotal: true }).ok, false);
 });
 
-test("callable: a missing TID is filled from the tapped till ONLY on a declared capture, and before the refusal", () => {
+test("callable: a missing or different TID never refuses — the tapped till decides, said on the record (Junid's total rule)", () => {
   const fill = extractBody.indexOf("if (declared && !extraction.tid)");
-  const refuse = extractBody.indexOf('if (!extraction.tid) return reject("No terminal ID');
-  const mismatch = extractBody.indexOf("not the till you picked");
-  assert.ok(fill > -1 && fill < refuse, "filled before the no-TID refusal");
-  assert.ok(mismatch > fill, "a DIFFERENT printed TID still reaches the wrong-slip refusal");
+  const repair = extractBody.indexOf("repairForTotalRule(extraction");
+  assert.ok(fill > -1 && fill < repair, "the declared fill keeps its own note, before the general repair");
+  assert.doesNotMatch(extractBody, /return reject\("No terminal ID/);
+  assert.doesNotMatch(extractBody, /not the till you picked\$\{where\}\. Capture the slip on its own till/);
   assert.match(extractBody, /warnings\.unshift\(\.\.\.declaredNotes\)/);
 });
 

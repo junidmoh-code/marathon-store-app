@@ -27,7 +27,7 @@ import {
   offlineMirrorEnabled, subscribeMirrorSwitch, watchMirrorSwitchLive,
 } from "./killSwitch";
 import { setOfflineMirrorRuntime } from "./mirrorRuntime";
-import { isMirrorStale, mirrorFeedOkAt } from "./resumeFreshness";
+import { isMirrorStale, mirrorFeedOkAt, registerUpdateRetry } from "./resumeFreshness";
 
 // PR #618 raced the start against an 8-second bound, because a start that
 // hung left the app behind a setup screen that could never finish. Nothing is
@@ -284,6 +284,15 @@ export function MirrorGate({ auth, storage, children }) {
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
+  }, [enabled, runtime]);
+
+  // ── THE PILL ASKS, THE MIRROR CATCHES UP (27 Nov 2026) ─────────────────────
+  // When the pill goes up, and on a tap of "Couldn't update. Tap to retry",
+  // run a pass now — changes since the stored cursor — instead of waiting for
+  // the next scheduled one, which after a failed pass is PASS_BACKOFF_MS away.
+  useEffect(() => {
+    if (!enabled || !runtime) return undefined;
+    return registerUpdateRetry(() => { runtime.catchUp?.(); });
   }, [enabled, runtime]);
 
   // Nothing is ever shown over the app: see autoConsent. `runtime` is kept

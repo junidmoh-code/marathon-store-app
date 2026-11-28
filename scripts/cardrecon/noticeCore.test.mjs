@@ -65,6 +65,16 @@ describe("deliverNotices", () => {
     expect(calls).toEqual([{ action: "notices" }]);
   });
 
+  // Junid's rule – do not weaken or delete without his written instruction.
+  it("the 19:00 watchdog's notice keeps its kind and its own recipient (gunidmoh@, 27 Nov 2026); a bad address falls back", () => {
+    const p = planNoticeRound({ ok: true, to: "j@x.com", notices: [
+      { key: "watchdog~2026-11-26", subject: "Card recon 19:00 check", text: "t", kind: "watchdog", to: "gunidmoh@gmail.com" },
+      { key: "w2", subject: "s", text: "t", kind: "watchdog", to: "x@y.com\nBcc: z@q.com" },
+    ] });
+    expect(noticeMail({ from: "m@x.com", to: p.to, notice: p.notices[0] })).toEqual({ from: "m@x.com", to: "gunidmoh@gmail.com", subject: "Card recon 19:00 check", text: "t", kind: "watchdog" });
+    expect(noticeMail({ from: "m@x.com", to: p.to, notice: p.notices[1] }).to).toBe("j@x.com");
+  });
+
   it("the mail is plain text with the notice's own words and nothing added", () => {
     const m = noticeMail({ from: "m@x.com", to: "j@x.com", notice: N("a") });
     expect(Object.keys(m).sort()).toEqual(["from", "subject", "text", "to"]);

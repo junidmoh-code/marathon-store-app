@@ -139,32 +139,49 @@ test("PE Till 2's real #564: TID line blank, recorded under the till by its chai
   assert.equal(await node(db, `card_batches/pe/${HP1X}/564-r2`), null);
 });
 
-test("the whole read: Trophy Till 2 closing its own #563 in the same minutes makes it ambiguous", async () => {
+// ── JUNID'S TOTAL RULE (27 Nov 2026) — these four were refusals until then ──
+// Junid's rule – do not weaken or delete without his written instruction.
+// The bottom total is the only thing a slip needs. A faint, missing or
+// different TID, or a batch that does not follow on, is a NOTE on the record;
+// the till is the one the slip was sent for. The 26 Nov 2026 refusal of PE
+// Till 2's #584 ("does not follow on … no #583") was exactly the second case.
+const NOTE = /^NOTE \(not a rejection — Junid's total rule\)/;
+
+test("the whole read: Trophy Till 2 ALSO closing a #563 then — still recorded under the till it was sent for, with a note", async () => {
   const trophy563 = rec(563, "2026-11-05T17:00:00", "2026-11-06T17:04:10", 120000, { tid: Z4M6, storeId: "trophy" });
   const db = world({ 560: B560, 563: P563, "563-r2": B563R2 });
   await db.ref(`card_batches/trophy/${Z4M6}/563`).set(trophy563);
   const out = await sendAndRead(db, report564(), SAST("2026-11-07T16:41:46"));
-  assert.match(out.job.lastReason, /could follow on from Trophy Till 2 as well as Marathon Till 2/);
-  assert.equal(await node(db, `card_batches/pe/${HP1X}/564`), null);
+  assert.equal(out.final, "recorded", out.job.lastReason);
+  const r = await node(db, `card_batches/pe/${HP1X}/564`);
+  assert.equal(r.slip.totalCents, 7101500);
+  assert.ok(r.warnings.some((w) => NOTE.test(w) && /filed under the till it was sent for/.test(w)), r.warnings.join(" | "));
 });
 
-test("no read report before it: refused by name, not filed", async () => {
+test("26 Nov 2026 regression: faint TID AND no #N-1 on file — RECORDED, never 'does not follow on'", async () => {
   const db = world({ 560: B560, 563: P563_LIVE });
   const out = await sendAndRead(db, report564(), SAST("2026-11-07T16:41:46"));
-  assert.equal(out.final, null, "refused reads are retried before Unread");
-  assert.match(out.job.lastReason, /terminal-ID line on this slip is too faint to read, and batch #564 does not follow on/);
-  assert.equal(await node(db, `card_batches/pe/${HP1X}/564`), null);
+  assert.equal(out.final, "recorded", out.job.lastReason);
+  const r = await node(db, `card_batches/pe/${HP1X}/564`);
+  assert.equal(r.slip.totalCents, 7101500);
+  assert.equal(r.tid, HP1X);
+  assert.ok(!r.warnings.some((w) => /does not follow on/.test(w) && !NOTE.test(w)));
 });
 
-test("a DIFFERENT TID read off the paper is still the wrong slip", async () => {
+test("a DIFFERENT TID read off the paper: filed under the till it was sent for, the printed TID said on the record", async () => {
   const db = world({ 560: B560, "563-r2": B563R2 });
   const out = await sendAndRead(db, report564({ tid: "0000Z4M6", confidence: { ...report564().confidence, tid: 0.99 } }), SAST("2026-11-07T16:41:46"));
-  assert.match(out.job.lastReason, /prints TID 0000Z4M6, not the till you picked \(that slip belongs to Trophy Till 2\)/);
-  assert.equal(await node(db, `card_batches/pe/${HP1X}/564`), null);
+  assert.equal(out.final, "recorded", out.job.lastReason);
+  const r = await node(db, `card_batches/pe/${HP1X}/564`);
+  assert.equal(r.slip.totalCents, 7101500);
+  assert.ok(r.warnings.some((w) => NOTE.test(w) && /prints terminal ID 0000Z4M6 \(registered to Trophy Till 2\)/.test(w)), r.warnings.join(" | "));
+  assert.equal(await node(db, `card_batches/trophy/${Z4M6}/564`), null, "never filed on the other machine");
 });
 
-test("FNB is never asked: a blank TID on an FNB till refuses exactly as before", async () => {
+test("FNB too: a blank TID on an FNB photo is filed under the till it was sent for", async () => {
   const db = world({}, { tid: FNB });
   const out = await sendAndRead(db, report564(), SAST("2026-11-07T16:41:46"), FNB);
-  assert.equal(out.job.lastReason, "No terminal ID could be read off the slip — retake the header photo.");
+  assert.equal(out.final, "recorded", out.job.lastReason);
+  const recs = await node(db, `card_batches/pe/${FNB}`);
+  assert.equal(Object.values(recs)[0].slip.totalCents, 7101500);
 });
