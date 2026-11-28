@@ -26,7 +26,9 @@ export function listenerRetryDelay(n) {
  * while it is retried.
  *
  *   open(range, i, onSnap, onErr) → unsubscribe
- *   onRows(parts)   every time any range answers (parts[i] = its last value)
+ *   onRows(parts, failing, loading)  every time any range answers (parts[i] =
+ *                   its last value; failing = ranges refused right now;
+ *                   loading = ranges that have neither answered nor failed yet)
  *   onError(err, i) every cancel, before its retry is scheduled
  *
  * Returns stop(): closes every listener and every pending retry.
@@ -39,17 +41,24 @@ export function subscribeRangesWithRetry({
   const unsubs = ranges.map(() => null);
   const timers = ranges.map(() => null);
   const tries = ranges.map(() => 0);
+  const failed = ranges.map(() => false);
+  const seen = ranges.map(() => false);
+  const failing = () => failed.filter(Boolean).length;
+  const loading = () => ranges.filter((_, i) => !seen[i] && !failed[i]).length;
   let stopped = false;
   const start = (i) => {
     if (stopped) return;
     unsubs[i] = open(ranges[i], i, (value) => {
       if (stopped) return;
       tries[i] = 0;
+      failed[i] = false;
+      seen[i] = true;
       parts[i] = value;
-      onRows(parts);
+      onRows(parts, failing(), loading());
     }, (err) => {
       if (stopped) return;
       unsubs[i] = null;          // the SDK has already dropped a cancelled listener
+      failed[i] = true;
       try { onError(err, i); } catch { /* a caller's bug must not stop the retry */ }
       const delay = listenerRetryDelay(tries[i]);
       tries[i] += 1;

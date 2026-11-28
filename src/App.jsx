@@ -182,6 +182,7 @@ import { sellableLocations, labelFor, transferTargets, warehouseLocations, withS
 import { useNetwork } from "./utils/useNetwork";
 import { TV_ORDER_KEY_START, TV_ORDER_KEY_END, TV_ONLINE_ORDER_KEY_RANGES, keyInTvOnlineOrdersRange, tvRowsOf } from "./utils/tvOrdersRange";
 import { listenerRetryDelay, subscribeRangesWithRetry } from "./utils/listenerRetry";
+import { feedAnswered, REFUSED_SHOW_MS } from "./components/tv/boardHealth";
 import { currentNetwork } from "./utils/networkStore";
 import { wallAllows, storesOf, backStockHubsOf } from "./utils/networkRegistry";
 import { useMySections } from "./utils/useMySections";
@@ -1256,7 +1257,7 @@ function useTvOrders() {
   useEffect(() => {
     if (live || !mirrored.settled) return;
     const data = mirrored.value;
-    if (!data) { setOrders([]); return; }
+    if (!data) { setOrders(Object.assign([], { answered: true })); return; }   // an empty answer is still an answer
     // The SAME bound as the server query. TV_ORDER_KEY_END's \uf8ff is
     // invisible in an editor and must never be "tidied" — see
     // src/utils/tvOrdersRange.js for why the range is what it is.
@@ -1264,7 +1265,7 @@ function useTvOrders() {
     for (const [key, value] of Object.entries(data)) {
       if ((key >= TV_ORDER_KEY_START && key <= TV_ORDER_KEY_END) || keyInTvOnlineOrdersRange(key)) inRange[key] = value;
     }
-    setOrders(shapeTvOrders(Object.keys(inRange).length ? inRange : null));
+    setOrders(Object.assign(shapeTvOrders(Object.keys(inRange).length ? inRange : null), { answered: true }));
   }, [live, mirrored.settled, mirrored.value, shapeTvOrders]);
 
   useEffect(() => {
@@ -1282,10 +1283,17 @@ function useTvOrders() {
         (snap) => onSnap(i === 0 ? (snap.val() || {}) : tvRowsOf(snap.val())), // codes only — never a prefixed store's "P001"
         onErr,
       ),
-      onRows: (parts) => setOrders(shapeTvOrders(Object.assign({}, ...parts.filter(Boolean)))),
+      // A range answering while another is refused is a working board with
+      // real rows (partial), not a refused one (Sonnet review, #1027).
+      // Answered once no range is still loading; a refused one beside answering
+      // ones is "partial" (CodeRabbit, #1027).
+      onRows: (parts, failing, loading) => setOrders(Object.assign(shapeTvOrders(Object.assign({}, ...parts.filter(Boolean))),
+        { answered: loading === 0, partial: failing > 0 })),
       onError: (err) => {
         console.warn("Firebase read error on /orders (TV key range):", err);
-        setOrders((prev) => Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" }));
+        setOrders((prev) => (prev.answered
+          ? Object.assign(prev.slice(), { answered: true, partial: true })
+          : Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" })));
       },
     });
   }, [authReady, live, shapeTvOrders]);
@@ -1319,7 +1327,7 @@ function useSectionTvOrders(section) {
     for (const [key, value] of Object.entries(mirrored.value || {})) {
       if (keyInOrderRanges(key, ranges)) inRange[key] = value;
     }
-    setOrders(shape(inRange));
+    setOrders(Object.assign(shape(inRange), { answered: true }));
   }, [live, mirrored.settled, mirrored.value, shape, ranges]);
 
   useEffect(() => {
@@ -1333,10 +1341,15 @@ function useSectionTvOrders(section) {
         (snap) => onSnap(snap.val()),
         onErr,
       ),
-      onRows: (parts) => setOrders(shape(Object.assign({}, ...parts.map((p) => p || {})))),
+      // Answered once no range is still loading; a refused one beside answering
+      // ones is "partial" (CodeRabbit, #1027).
+      onRows: (parts, failing, loading) => setOrders(Object.assign(shape(Object.assign({}, ...parts.map((p) => p || {}))),
+        { answered: loading === 0, partial: failing > 0 })),
       onError: (err) => {
         console.warn("Firebase read error on /orders (section TV key range):", err);
-        setOrders((prev) => Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" }));
+        setOrders((prev) => (prev.answered
+          ? Object.assign(prev.slice(), { answered: true, partial: true })
+          : Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" })));
       },
     });
   }, [authReady, live, shape, ranges]);
@@ -20150,7 +20163,7 @@ const INSIGHT_TAB_ICON = {
   reorder:          <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15l-1.9-4.1L5.5 9l4.6-1.4L12 3z" />,
 };
 
-function InsightsView({ onExit }) {
+function InsightsView({ onExit, ordersHeld = false }) {
   const isDesktop = !useIsNarrow(1024);
   const [tab,        setTab]        = usePersistedTab("insights", "overview");
   const [filterMode, setFilterMode] = useState("day");
@@ -20169,7 +20182,9 @@ function InsightsView({ onExit }) {
   const touchStartX = useRef(null);
   const returnsLog = useReturnsLog();
   const products   = useProducts();
-  const orders     = useOrders();
+  // Unscoped read: held like the main feed while the record cannot vouch for
+  // "no shop pin" (a saved copy without destShop — CodeRabbit, #1027).
+  const orders     = useOrders(null, !ordersHeld);
 
   // Compute filterStart / filterEnd (exclusive) / filterLabel from mode + anchor date.
   const { filterStart, filterEnd, filterLabel } = useMemo(() => {
@@ -21477,7 +21492,7 @@ function AdminSignInScreen({ onCancel }) {
 // (which means this branch only ever fires when isSuperAdmin === false from
 // AuthGate's perspective, e.g. signed out from the Google session).
 function AppInner() {
-  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut, deviceIdentity } = usePermissions();
+  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut, deviceIdentity, permSaved = false, permReadError = false } = usePermissions();
   // ── WEB PUSH ───────────────────────────────────────────────────────────────
   // Hoisted to the app root rather than to the home screen, because a staff
   // member with a persisted role opens straight into their workspace and may go
@@ -21692,7 +21707,13 @@ function AppInner() {
   const myShop = isSuperAdmin || !permRecord?.destShop ? null : (activeShopForMe || permRecord.destShop);
   // Off while the hub Orders card is open: it reads its own hub's orders only
   // (useHubOrders), so the whole node is not downloaded behind it (26 Nov 2026).
-  const orders = useOrders(myShop, role !== ROLES.WAREHOUSE);
+  // ── NO UNSCOPED ORDERS READ ON A RECORD THAT CANNOT VOUCH FOR IT (28 Nov 2026) ──
+  // "No destShop" means "read every order" — only the LIVE record may say so.
+  // A saved copy without a pin (the pin may be newer than the copy) or a
+  // refused /users read holds the feed: a whole-node /orders listen refused
+  // for a pinned account cancels its own destShop query too (the blank TV).
+  const ordersHeld = !isSuperAdmin && (permReadError || (permSaved && !permRecord?.destShop));
+  const orders = useOrders(myShop, role !== ROLES.WAREHOUSE && !ordersHeld);
   // Pine and Concrete share their orders: the sibling's feed joins the three
   // screens that show a customer's order (utils/sharedOrders.js). Everything
   // else keeps the shop's own feed. Marathon PE / Trophy have no sibling, read
@@ -21983,7 +22004,7 @@ function AppInner() {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
     view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} push={push} mute={mute} />;
-  } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
+  } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} ordersHeld={ordersHeld} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMERS_DB)   view = guard(ROLES.CUSTOMERS_DB, <CustomersView  onExit={() => setRole(null)} />);
@@ -22186,6 +22207,30 @@ const VOICE_VOCAB = {
 };
 
 function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
+  // ── IS THE ORDERS READ LIVE? (28 Nov 2026) ──────────────────────────────────
+  // Read off the list itself (its error / settled / answered flags — no extra
+  // listener): the status line and the watchdog in TvDisplayMockup act on it.
+  const [boardFeedOkAt, setBoardFeedOkAt] = useState(null);
+  const feedOk = feedAnswered(ordersRaw);
+  const feedErr = !!ordersRaw?.error;
+  // The status is the CURRENT read's: a new scope's read that has not answered
+  // yet (useOrders hands an unsettled list after a shop switch) is "Waiting
+  // for orders", never "live" on the strength of the previous shop's answer
+  // (CodeRabbit, #1027). Stamped on the first good answer of each read — not
+  // on every order update.
+  useEffect(() => {
+    if (feedOk) setBoardFeedOkAt((at) => at ?? Date.now());
+    else if (!feedErr) setBoardFeedOkAt(null);
+  }, [feedOk, feedErr]);
+  // A refusal shows red only once it has lasted REFUSED_SHOW_MS: the first
+  // retry (3 s) usually mends a passing cancel.
+  const [refusedShown, setRefusedShown] = useState(false);
+  useEffect(() => {
+    if (!feedErr) { setRefusedShown(false); return undefined; }
+    const t = setTimeout(() => setRefusedShown(true), REFUSED_SHOW_MS);
+    return () => clearTimeout(t);
+  }, [feedErr]);
+  const boardFeed = useMemo(() => ({ error: feedErr && refusedShown, lastOkAt: boardFeedOkAt }), [feedErr, refusedShown, boardFeedOkAt]);
   // The customer pickup board shows REAL customer orders only. "Shop Refill"
   // rows are internal clothing-refill (CR) requests that live in the SAME
   // /orders node — the warehouse Order Queue already excludes them (see the
@@ -22562,7 +22607,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
 
   return (
     <>
-      <TvDisplayMockup orders={filteredOrders} specials={specials} onExit={onExit} />
+      <TvDisplayMockup orders={filteredOrders} specials={specials} onExit={onExit} feed={boardFeed} />
       {/* Corner hint, ONLY when the browser really blocked audio and never on a
           ?kiosk=1 launch. Any touch anywhere re-arms (tvVoiceKeeper); the hint
           dismisses itself after a minute. There is no mute toggle. */}

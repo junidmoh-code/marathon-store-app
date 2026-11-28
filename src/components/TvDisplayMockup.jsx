@@ -25,6 +25,8 @@ import { DEMO_BOARD, isDemoMode } from "./tv/queueBoardDemo";
 import { useTvPromo, tvPromoMode } from "../utils/tvPromo";
 import { useTvBackgrounds, pickTvBackground, photosForDay, johannesburgDay } from "../utils/tvBackgrounds";
 import { tvBackgroundCache } from "./tv/tvBackgroundCache";
+import { boardStatus } from "./tv/boardHealth";
+import { useBoardWatchdog } from "./tv/useBoardWatchdog";
 // The wall: Junid's sneaker-room photo (Nike box walls, the reader in the
 // middle), 1920×1080. It carries no sign, so the lit MARATHON / STORE
 // OPERATIONS sign is drawn on top, and the photo is dimmed so the glass and
@@ -237,13 +239,27 @@ export function useRtdbConnected() {
   return connected;
 }
 
-function ConnectionStatus({ connected }) {
-  const color = connected === true ? COLORS.green : connected === false ? COLORS.red : COLORS.faint;
-  const label = connected === true ? "System connected" : connected === false ? "Reconnecting" : "Connecting";
+// The status line. With `status` (boardHealth.boardStatus) it is the board's
+// own answer — the socket AND the orders read; green only when both are good,
+// red "Orders not loading" when the orders read was refused (28 Nov: the TV
+// sat on 0 with a green dot). Without it (older callers, tests) it is the
+// socket alone, as before.
+const STATUS_FACE = {
+  live:    { color: COLORS.green, label: "System connected" },
+  waiting: { color: COLORS.amber, label: "Waiting for orders" },
+  refused: { color: COLORS.red,   label: "Orders not loading — retrying" },
+  offline: { color: COLORS.red,   label: "Reconnecting" },
+  booting: { color: COLORS.faint, label: "Connecting" },
+};
+function ConnectionStatus({ connected, status = null }) {
+  const face = status
+    ? STATUS_FACE[status]
+    : STATUS_FACE[connected === true ? "live" : connected === false ? "offline" : "booting"];
   return (
-    <span className="qb-conn" data-connected={String(connected)}>
-      <span className="qb-dot" style={{ background: color, boxShadow: `0 0 10px ${color}aa` }} />
-      {label}
+    <span className="qb-conn" data-connected={String(connected)} data-status={status || undefined}
+          data-testid="board-status" role="status" aria-live="polite">
+      <span className="qb-dot" style={{ background: face.color, boxShadow: `0 0 10px ${face.color}aa` }} />
+      {face.label}
     </span>
   );
 }
@@ -333,7 +349,7 @@ function BoardBackground({ url }) {
   );
 }
 
-export default function TvDisplayMockup({ orders, specials, onExit }) {
+export default function TvDisplayMockup({ orders, specials, onExit, feed = null }) {
   const hasSpecials = !!(specials && specials.length > 0);
   const scale = useStageScale(hasSpecials);
   const backgroundUrl = useBoardBackground();
@@ -365,6 +381,19 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
     [demo, orders, nowMs]
   );
   const connected = useRtdbConnected();
+  // `feed` = { error, lastOkAt } from the board's orders read (App.jsx
+  // TvWithAutoCollect). Absent → the socket alone, as before.
+  const status = feed && !demo
+    ? boardStatus({ connected, feedError: !!feed.error, lastOkAt: feed.lastOkAt ?? null })
+    : null;
+  // Nobody touches the TV: a board that stays unhealthy mends itself
+  // (tv/useBoardWatchdog.js — reopen the socket at 3 min, reload at 6, never
+  // more than one reload per 5 min).
+  useBoardWatchdog({
+    healthy: status === null || status === "live",
+    neverAnswered: !!feed && (feed.lastOkAt ?? null) == null,
+    enabled: !!feed && !demo,
+  });
 
   // Exit TV mode: drop out of browser fullscreen if we're in it, then leave the TV
   // view (onExit clears the #tv hash / returns to the picker). Reachable by the
@@ -428,7 +457,7 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
             <>
               <div className="qb-status-top">
                 {demo && <span className="qb-demo">DEMO</span>}
-                <ConnectionStatus connected={connected} />
+                <ConnectionStatus connected={connected} status={status} />
               </div>
               {promoMode === "photo"
                 ? <div className="qb-promo-photo" role="img" aria-label={promo.name || "Promotion"}
@@ -440,7 +469,7 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
               <span className="qb-footer-brand">MARATHON</span>
               {demo && <span className="qb-demo">DEMO</span>}
               <span className="qb-footer-line" />
-              <ConnectionStatus connected={connected} />
+              <ConnectionStatus connected={connected} status={status} />
             </footer>
           )}
 

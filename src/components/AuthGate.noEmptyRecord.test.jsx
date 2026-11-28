@@ -22,9 +22,9 @@ window.location ||= { hash: "" };
 window.addEventListener ||= () => {};
 window.removeEventListener ||= () => {};
 
-const fb = { user: null, answer: true, userCbs: new Set(), permRecord: null };
+const fb = { user: null, answer: true, userCbs: new Set(), permRecord: null, authCbs: new Set(), refuse: false };
 vi.mock("firebase/auth", () => ({
-  onAuthStateChanged: (_a, cb) => { cb(fb.user); return () => {}; },
+  onAuthStateChanged: (_a, cb) => { fb.authCbs.add(cb); cb(fb.user); return () => fb.authCbs.delete(cb); },
   onIdTokenChanged: (_a, cb) => { cb(fb.user); return () => {}; },
   signInAnonymously: vi.fn(async () => {}), signOut: vi.fn(async () => {}), signInWithCustomToken: vi.fn(async () => {}),
 }));
@@ -32,8 +32,8 @@ vi.mock("firebase/database", () => ({
   ref: (_d, path) => ({ path }),
   set: vi.fn(async () => {}), push: vi.fn(async () => {}), increment: (n) => ({ increment: n }),
   get: vi.fn(async () => ({ val: () => null })),
-  onValue: (_r, cb) => {
-    const l = () => cb({ val: () => fb.permRecord });
+  onValue: (_r, cb, onErr) => {
+    const l = () => (fb.refuse ? onErr?.(new Error("permission_denied")) : cb({ val: () => fb.permRecord }));
     fb.userCbs.add(l);
     if (fb.answer) l();
     return () => fb.userCbs.delete(l);
@@ -76,12 +76,40 @@ describe("AuthGate never shows the app a signed-in user without that user's reco
     act(() => m.r.unmount());
   });
 
-  it("a refused /users read still opens the app (fail-closed record), never hangs on Loading", async () => {
-    // Same harness, but onValue's error path: covered by setPermUid(uid) on the
-    // error branch — asserted here through the source so the hang cannot return.
-    const { readFileSync } = await import("node:fs");
-    const gate = readFileSync(new URL("./AuthGate.jsx", import.meta.url), "utf8");
-    expect(gate).toMatch(/setPermReadError\(true\); setPermRecord\(null\); setPermUid\(uid\); setPermLoaded\(true\);/);
-    expect(gate).toContain("if (!permLoaded || permUid !== user.uid) return <LoadingScreen />;");
+  it("the SAME account signing out and back in waits for its record again (Sonnet review, #1026)", async () => {
+    fb.user = user; fb.refuse = false;
+    fb.permRecord = { username: "pat", permissions: ["product_admin"], destShop: "marathon-pe" };
+    fb.answer = true;
+    const m = mount();
+    await settle();
+    expect(m.renders.length).toBeGreaterThan(0);
+    // Sign out.
+    fb.user = null;
+    act(() => { for (const cb of [...fb.authCbs]) cb(null); });
+    await settle();
+    // Same uid signs back in; the socket has not answered yet.
+    fb.answer = false;
+    m.renders.length = 0;
+    fb.user = user;
+    act(() => { for (const cb of [...fb.authCbs]) cb(user); });
+    await settle();
+    expect(m.renders.filter((x) => x.uid === "u1" && !x.record)).toEqual([]);
+    act(() => { for (const l of [...fb.userCbs]) l(); });
+    await settle();
+    expect(m.renders.some((x) => x.record?.destShop === "marathon-pe")).toBe(true);
+    act(() => m.r.unmount());
+  });
+
+  it("a refused /users read opens the app fail-closed (no record, read error flagged) — never hangs on Loading", async () => {
+    fb.user = user; fb.refuse = true; fb.answer = true;
+    const seen = [];
+    const Probe = () => { const c = usePermissions(); seen.push({ record: c.permRecord, err: c.permReadError }); return null; };
+    let r;
+    act(() => { r = TestRenderer.create(React.createElement(AuthGate, null, React.createElement(Probe))); });
+    await settle();
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.at(-1)).toEqual({ record: null, err: true });
+    act(() => r.unmount());
+    fb.refuse = false;
   });
 });
