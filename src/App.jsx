@@ -181,6 +181,7 @@ import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations, withSeedGaps } from "./components/stock/locations";
 import { useNetwork } from "./utils/useNetwork";
 import { TV_ORDER_KEY_START, TV_ORDER_KEY_END, TV_ONLINE_ORDER_KEY_RANGES, keyInTvOnlineOrdersRange, tvRowsOf } from "./utils/tvOrdersRange";
+import { listenerRetryDelay } from "./utils/listenerRetry";
 import { currentNetwork } from "./utils/networkStore";
 import { wallAllows, storesOf, backStockHubsOf } from "./utils/networkRegistry";
 import { useMySections } from "./utils/useMySections";
@@ -1068,6 +1069,10 @@ function updateProductHubs(id, hubs) {
 function useOrders(scopeShop = null, enabled = true) {
   const authReady = useAuthReady() && enabled;
   const [orders, setOrders] = useState(() => Object.assign([], { settled: false, scope: scopeShop }));
+  // A cancelled listener is dead in the SDK: re-subscribe on a backoff
+  // (utils/listenerRetry.js — the TV board sat on 0 all of 28 Nov morning).
+  const [retryTick, setRetryTick] = useState(0);
+  const retryTries = useRef(0);
 
   // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
   // /orders is 2.6 MB. The mirror holds the whole node, so a SCOPED caller
@@ -1106,7 +1111,9 @@ function useOrders(scopeShop = null, enabled = true) {
     // shop-scoped read never shares a listener with the whole node or with
     // another shop's.
     const readKey = scopeShop ? childQueryKey("orders", "destShop", scopeShop) : "orders";
+    let retryTimer = null;
     const unsub = subscribeLiveQuery(readKey, () => readRef, (snap) => {
+      retryTries.current = 0;
       const data = snap.val();
       if (!data) {
         setOrders(Object.assign([], { settled: true, scope: scopeShop }));
@@ -1150,9 +1157,13 @@ function useOrders(scopeShop = null, enabled = true) {
       setOrders((prev) => (prev.scope === scopeShop
         ? Object.assign(prev.slice(), { settled: prev.settled === true, error: true, scope: scopeShop })
         : Object.assign([], { settled: false, error: true, scope: scopeShop })));
+      // Open it again on the backoff; the rows above stay on screen meanwhile.
+      const delay = listenerRetryDelay(retryTries.current);
+      retryTries.current += 1;
+      retryTimer = setTimeout(() => setRetryTick((n) => n + 1), delay);
     });
-    return () => unsub();
-  }, [authReady, scopeShop, liveOrders]);
+    return () => { if (retryTimer) clearTimeout(retryTimer); unsub(); };
+  }, [authReady, scopeShop, liveOrders, retryTick]);
 
   // ALL-STORE ACCESS (20 Nov 2026): the scope can change in place (a confirmed
   // switch of the active shop). Until the new scope's first answer, hand back
@@ -1222,6 +1233,8 @@ function useHubOrders(hub, network) {
 function useTvOrders() {
   const authReady = useAuthReady();
   const [orders, setOrders] = useState([]);
+  const [retryTick, setRetryTick] = useState(0);   // utils/listenerRetry.js
+  const retryTries = useRef(0);
 
   const shapeTvOrders = useCallback((data) => (
     data
@@ -1260,16 +1273,24 @@ function useTvOrders() {
     // (tvOrdersRange.js) — merged into one list. Each is a key range: no index.
     const ranges = [[TV_ORDER_KEY_START, TV_ORDER_KEY_END], ...TV_ONLINE_ORDER_KEY_RANGES];
     const parts = ranges.map(() => null);
+    let retryTimer = null;
     const unsubs = ranges.map(([a, b], i) => onValue(
       query(ref(database, "orders"), orderByKey(), startAt(a), endAt(b)),
       (snap) => {
+        retryTries.current = 0;
         parts[i] = i === 0 ? (snap.val() || {}) : tvRowsOf(snap.val()); // codes only — never a prefixed store's "P001"
         setOrders(shapeTvOrders(Object.assign({}, ...parts.filter(Boolean))));
       },
-      (err) => { console.warn("Firebase read error on /orders (TV key range):", err); },
+      (err) => {
+        console.warn("Firebase read error on /orders (TV key range):", err);
+        setOrders((prev) => Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" }));
+        if (retryTimer) return;   // one re-open for the whole set
+        retryTimer = setTimeout(() => setRetryTick((n) => n + 1), listenerRetryDelay(retryTries.current));
+        retryTries.current += 1;
+      },
     ));
-    return () => unsubs.forEach((u) => u());
-  }, [authReady, live, shapeTvOrders]);
+    return () => { if (retryTimer) clearTimeout(retryTimer); unsubs.forEach((u) => u()); };
+  }, [authReady, live, shapeTvOrders, retryTick]);
   return orders;
 }
 
@@ -1293,6 +1314,8 @@ function useSectionTvOrders(section) {
   ), [tvNetwork, section]);
   const mirrored = useMirroredPath("orders", authReady);
   const live = mirrored.verdict === "fallback";
+  const [retryTick, setRetryTick] = useState(0);   // utils/listenerRetry.js
+  const retryTries = useRef(0);
 
   useEffect(() => {
     if (live || !mirrored.settled) return;
@@ -1307,13 +1330,20 @@ function useSectionTvOrders(section) {
     if (!authReady || !live) return undefined;
     // One listener per range, merged by key before shaping.
     const parts = ranges.map(() => null);
+    let retryTimer = null;
     const unsubs = ranges.map((r, i) => onValue(
       query(ref(database, "orders"), orderByKey(), startAt(r.start), endAt(r.end)),
-      (snap) => { parts[i] = snap.val(); setOrders(shape(Object.assign({}, ...parts.map((p) => p || {})))); },
-      (err) => { console.warn("Firebase read error on /orders (section TV key range):", err); },
+      (snap) => { retryTries.current = 0; parts[i] = snap.val(); setOrders(shape(Object.assign({}, ...parts.map((p) => p || {})))); },
+      (err) => {
+        console.warn("Firebase read error on /orders (section TV key range):", err);
+        setOrders((prev) => Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" }));
+        if (retryTimer) return;
+        retryTimer = setTimeout(() => setRetryTick((n) => n + 1), listenerRetryDelay(retryTries.current));
+        retryTries.current += 1;
+      },
     ));
-    return () => unsubs.forEach((u) => u());
-  }, [authReady, live, shape, ranges]);
+    return () => { if (retryTimer) clearTimeout(retryTimer); unsubs.forEach((u) => u()); };
+  }, [authReady, live, shape, ranges, retryTick]);
   return orders;
 }
 

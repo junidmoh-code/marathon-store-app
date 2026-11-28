@@ -25,7 +25,7 @@ test("useTvOrders bounds /orders by the shared range, on BOTH of its sources", (
   // shows a different set of orders depending on which one answered. The
   // mirrored path applies the SAME TV_ORDER_KEY_START/END constants by string
   // comparison, which is what the server query does.
-  const hook = app.match(/function useTvOrders\(\) \{[\s\S]{0,3000}?\n\}/);
+  const hook = app.match(/function useTvOrders\(\) \{[\s\S]{0,4500}?\n\}/);
   expect(hook, "useTvOrders should exist").toBeTruthy();
   // The live path: the numeric range plus the website-order code ranges.
   expect(hook[0]).toContain('ref(database, "orders")');
