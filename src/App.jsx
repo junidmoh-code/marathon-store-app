@@ -182,6 +182,7 @@ import { sellableLocations, labelFor, transferTargets, warehouseLocations, withS
 import { useNetwork } from "./utils/useNetwork";
 import { TV_ORDER_KEY_START, TV_ORDER_KEY_END, TV_ONLINE_ORDER_KEY_RANGES, keyInTvOnlineOrdersRange, tvRowsOf } from "./utils/tvOrdersRange";
 import { listenerRetryDelay, subscribeRangesWithRetry } from "./utils/listenerRetry";
+import { feedAnswered } from "./components/tv/boardHealth";
 import { currentNetwork } from "./utils/networkStore";
 import { wallAllows, storesOf, backStockHubsOf } from "./utils/networkRegistry";
 import { useMySections } from "./utils/useMySections";
@@ -1264,7 +1265,7 @@ function useTvOrders() {
     for (const [key, value] of Object.entries(data)) {
       if ((key >= TV_ORDER_KEY_START && key <= TV_ORDER_KEY_END) || keyInTvOnlineOrdersRange(key)) inRange[key] = value;
     }
-    setOrders(shapeTvOrders(Object.keys(inRange).length ? inRange : null));
+    setOrders(Object.assign(shapeTvOrders(Object.keys(inRange).length ? inRange : null), { answered: true }));
   }, [live, mirrored.settled, mirrored.value, shapeTvOrders]);
 
   useEffect(() => {
@@ -1282,7 +1283,8 @@ function useTvOrders() {
         (snap) => onSnap(i === 0 ? (snap.val() || {}) : tvRowsOf(snap.val())), // codes only — never a prefixed store's "P001"
         onErr,
       ),
-      onRows: (parts) => setOrders(shapeTvOrders(Object.assign({}, ...parts.filter(Boolean)))),
+      onRows: (parts, failing) => setOrders(Object.assign(shapeTvOrders(Object.assign({}, ...parts.filter(Boolean))),
+        failing ? { error: true } : { answered: true })),
       onError: (err) => {
         console.warn("Firebase read error on /orders (TV key range):", err);
         setOrders((prev) => Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" }));
@@ -1319,7 +1321,7 @@ function useSectionTvOrders(section) {
     for (const [key, value] of Object.entries(mirrored.value || {})) {
       if (keyInOrderRanges(key, ranges)) inRange[key] = value;
     }
-    setOrders(shape(inRange));
+    setOrders(Object.assign(shape(inRange), { answered: true }));
   }, [live, mirrored.settled, mirrored.value, shape, ranges]);
 
   useEffect(() => {
@@ -1333,7 +1335,8 @@ function useSectionTvOrders(section) {
         (snap) => onSnap(snap.val()),
         onErr,
       ),
-      onRows: (parts) => setOrders(shape(Object.assign({}, ...parts.map((p) => p || {})))),
+      onRows: (parts, failing) => setOrders(Object.assign(shape(Object.assign({}, ...parts.map((p) => p || {}))),
+        failing ? { error: true } : { answered: true })),
       onError: (err) => {
         console.warn("Firebase read error on /orders (section TV key range):", err);
         setOrders((prev) => Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" }));
@@ -21477,7 +21480,7 @@ function AdminSignInScreen({ onCancel }) {
 // (which means this branch only ever fires when isSuperAdmin === false from
 // AuthGate's perspective, e.g. signed out from the Google session).
 function AppInner() {
-  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut, deviceIdentity } = usePermissions();
+  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut, deviceIdentity, permSaved = false, permReadError = false } = usePermissions();
   // ── WEB PUSH ───────────────────────────────────────────────────────────────
   // Hoisted to the app root rather than to the home screen, because a staff
   // member with a persisted role opens straight into their workspace and may go
@@ -21692,7 +21695,13 @@ function AppInner() {
   const myShop = isSuperAdmin || !permRecord?.destShop ? null : (activeShopForMe || permRecord.destShop);
   // Off while the hub Orders card is open: it reads its own hub's orders only
   // (useHubOrders), so the whole node is not downloaded behind it (26 Nov 2026).
-  const orders = useOrders(myShop, role !== ROLES.WAREHOUSE);
+  // ── NO UNSCOPED ORDERS READ ON A RECORD THAT CANNOT VOUCH FOR IT (28 Nov 2026) ──
+  // "No destShop" means "read every order" — only the LIVE record may say so.
+  // A saved copy without a pin (the pin may be newer than the copy) or a
+  // refused /users read holds the feed: a whole-node /orders listen refused
+  // for a pinned account cancels its own destShop query too (the blank TV).
+  const ordersHeld = !isSuperAdmin && (permReadError || (permSaved && !permRecord?.destShop));
+  const orders = useOrders(myShop, role !== ROLES.WAREHOUSE && !ordersHeld);
   // Pine and Concrete share their orders: the sibling's feed joins the three
   // screens that show a customer's order (utils/sharedOrders.js). Everything
   // else keeps the shop's own feed. Marathon PE / Trophy have no sibling, read
@@ -22186,6 +22195,14 @@ const VOICE_VOCAB = {
 };
 
 function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
+  // ── IS THE ORDERS READ LIVE? (28 Nov 2026) ──────────────────────────────────
+  // Read off the list itself (its error / settled / answered flags — no extra
+  // listener): the status line and the watchdog in TvDisplayMockup act on it.
+  const [boardFeedOkAt, setBoardFeedOkAt] = useState(null);
+  useEffect(() => {
+    if (feedAnswered(ordersRaw)) setBoardFeedOkAt(Date.now());
+  }, [ordersRaw]);
+  const boardFeed = useMemo(() => ({ error: !!ordersRaw?.error, lastOkAt: boardFeedOkAt }), [ordersRaw, boardFeedOkAt]);
   // The customer pickup board shows REAL customer orders only. "Shop Refill"
   // rows are internal clothing-refill (CR) requests that live in the SAME
   // /orders node — the warehouse Order Queue already excludes them (see the
@@ -22562,7 +22579,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
 
   return (
     <>
-      <TvDisplayMockup orders={filteredOrders} specials={specials} onExit={onExit} />
+      <TvDisplayMockup orders={filteredOrders} specials={specials} onExit={onExit} feed={boardFeed} />
       {/* Corner hint, ONLY when the browser really blocked audio and never on a
           ?kiosk=1 launch. Any touch anywhere re-arms (tvVoiceKeeper); the hint
           dismisses itself after a minute. There is no mute toggle. */}

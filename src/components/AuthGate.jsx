@@ -194,10 +194,12 @@ export default function AuthGate({ children, renderTv }) {
   useEffect(() => {
     if (!user || user.isAnonymous) {
       setPermRecord(null);
+      setPermUid(null);      // a sign-out forgets whose record it was: the SAME account signing back in waits too
       setPermLoaded(true);
       return;
     }
     setPermLoaded(false);
+    setPermUid(null);
     const uid = user.uid;
     const savedKey = `users/${uid}`;
     const copies = resumeCopies();
@@ -344,7 +346,10 @@ export default function AuthGate({ children, renderTv }) {
   return (
     <PermissionsContext.Provider
       value={{ user, permRecord, isSuperAdmin, permissions, storeIds, hasPermission, signOut: doSignOut,
-               deviceIdentity: identityFrom({ claims, permRecord, user }) }}>
+               deviceIdentity: identityFrom({ claims, permRecord, user }),
+               // The record on screen is the saved copy / the live read failed:
+               // App holds reads whose SCOPE comes from the record (the orders feed).
+               permSaved, permReadError }}>
       <ActiveStoreLayer>{children}</ActiveStoreLayer>
     </PermissionsContext.Provider>
   );
