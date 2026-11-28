@@ -12,10 +12,12 @@
 // the existing label finder, a store pick asks the existing red switch-confirm,
 // the bar opens the existing checkout. Nothing here reads or writes data.
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SkyHeader, SkyBackGrid, SkySearch, SkyBrandStrip, SkyStorePill, SkyPopover, ProductStage, SkyPlus, SkyBottomBar } from "./Sky.jsx";
 import { fmtR } from "../assistant/assistantOrderModel.js";
 import { retailPriceOf } from "../../utils/retailPrice";
+import { tilePhotoSrc } from "../assistant/HiResPhoto.jsx";
+import { noteTileScroll, setTilePrefetchPlan, slowConnection } from "../../offline/tilePrefetch";
 
 export default function AssistantPhone({
   mode, onMode,
@@ -28,12 +30,12 @@ export default function AssistantPhone({
 }) {
   const [me, setMe] = useState(false);
   // LIKE THE LAPTOP (Junid, 6 Nov): the header and the search are FIXED at the
-  // top on no background; the brand logos FLOAT over the shoes with nothing
+  // top on no background; the brand logos sit on the sky with nothing
   // behind them; only the shoes scroll — in their own area (.ap-scroll) that
   // starts under the search, so nothing ever slides behind the header or the
   // search box. (A sticky band was cancelled by AssistantView's
   // overflow-x:hidden wrapper and scrolled away on real phones.)
-  const topRef = useRef(null), brandsRef = useRef(null);
+  const topRef = useRef(null), brandsRef = useRef(null), scrollRef = useRef(null);
   const [topH, setTopH] = useState(0);
   const [brandsH, setBrandsH] = useState(0);
   useLayoutEffect(() => {
@@ -73,7 +75,8 @@ export default function AssistantPhone({
 
       {/* The brand strip — phones only (below 768px; the CSS hides it above).
           The same brand value as the desktop chip row (AssistantView). It
-          FLOATS over the shoes: no background, the cards scroll under it. */}
+          sits on the sky with no background; since 27 Nov the cards no longer
+          scroll under it (the scroller starts below it). */}
       {brands && brands.length > 1 && onBrand ? (
         <div className="ap-brandsfloat" ref={brandsRef} data-contrast-exempt="" data-testid="ap-brands-float" style={{ top: topH }}>
           <SkyBrandStrip className="ap-brands" brands={brands} value={brand} onChange={onBrand} />
@@ -81,48 +84,19 @@ export default function AssistantPhone({
       ) : null}
 
       {/* THE ONLY SCROLLER: everything from here down. Its top is the bottom of
-          the search; its padding holds the first row below the logos. */}
-      <div className="ap-scroll" data-scroll="" data-testid="ap-scroll" style={{ top: topH, paddingTop: brandsH + 11 }}>
+          the BRAND ROW (Junid's recording, 27 Nov: cards slid under and over
+          the logos and the search) — so the header block, logos included,
+          stays put and the cards clip cleanly at its edge. At rest the first
+          row sits exactly where it did (the 11px gap is unchanged). */}
+      <div className="ap-scroll" ref={scrollRef} data-scroll="" data-testid="ap-scroll" style={{ top: topH + brandsH, paddingTop: 11 }}>
 
       {children}
 
       {showGrid && (products.length === 0 ? (
         <div className="ap-empty sky-glass">{emptyText}</div>
       ) : (
-        <div className="ap-grid">
-          {products.map((p) => {
-            const price = retailPriceOf(p);   // docs/ASSISTANT-NO-PRICE-SET.md
-            const priced = price !== null;
-            const dead = isDead ? isDead(p) : false;
-            const n = photoCount ? photoCount(p) : 0;
-            return (
-              <article key={p.id} className="sky-card sky-glass sky-sheen ap-card" tabIndex={0}
-                       aria-current={selectedId === p.id ? "true" : undefined}
-                       onClick={() => onOpen(p)} onKeyDown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) onOpen(p); }}>
-                {/* The photo (or its 👟 stand-in) is a picture, not text. */}
-                <div data-contrast-exempt="" style={{ display: "contents" }}><ProductStage p={p} height="var(--ap-stage)" emoji={p.photo || "👟"} /></div>
-                {p.photoUrl && onViewPhotos && (
-                  <button type="button" className="ap-zoom" aria-label={n > 1 ? `View ${n} photos` : "View full photo"}
-                          onClick={(e) => { e.stopPropagation(); onViewPhotos(p); }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="M20 20l-4.6-4.6M10.5 8v5M8 10.5h5" /></svg>
-                    {n > 1 ? <span>{n}</span> : null}
-                  </button>
-                )}
-                {renderActions ? renderActions(p) : null}
-                <div className="ap-body">
-                  <div className="sky-name ap-name" data-contrast-exempt="">{p.name}{renderDeactivated ? renderDeactivated(p) : null}</div>
-                  {dead ? <div className="ap-dead" data-contrast-exempt="">Deactivated — no sizes on offer</div> : null}
-                  <div className="ap-row">
-                    {priced
-                      ? <span className="sky-price ap-price" data-contrast-exempt="">{fmtR(price)}</span>
-                      : <span className="ap-noprice" data-contrast-exempt="">No price set</span>}
-                    <SkyPlus label={`Add ${p.name}`} onClick={(e) => { e.stopPropagation(); onOpen(p); }} />
-                  </div>
-                </div>
-              </article>
-            );
-          })}
-        </div>
+        <ApGrid products={products} scrollRef={scrollRef} selectedId={selectedId}
+                handlers={{ onOpen, onViewPhotos, photoCount, renderActions, renderDeactivated, isDead }} />
       ))}
 
       {/* Bottom room for the cart bar + safe area, so the last row is never under it. */}
@@ -130,6 +104,201 @@ export default function AssistantPhone({
       </div>
       {showBar && cartCount > 0 ? <SkyBottomBar count={cartCount} onOpen={onCart} label={cartLabel} disabled={cartDisabled} /> : null}
     </div>
+  );
+}
+
+// ─── THE GRID: NEVER EMPTY, PHOTOS WINDOWED (Junid's recording, 27 Nov) ─────
+//
+// Measured in the harness (scripts/sky-perf/phone-scroll.mjs, 1,500 cards):
+//   • .sky-card's `content-visibility: auto` was the blank cards — WebKit (the
+//     iPhone's engine) skipped painting a card's insides until it was nearly
+//     on screen, so a fling showed bare glass that filled in a second later —
+//     and it was the main cost of the scroll in WebKit too. It is off here.
+//   • every card's text and glass is drawn all the time: no style toggles
+//     (switching a card's look re-styles the whole list in WebKit — measured).
+//   • only the PHOTO is windowed: a card within WINDOW_MARGIN of the visible
+//     part of the scroller (2.5 screens above and below) mounts its full photo;
+//     the rest hold the stage at the same height with the placeholder. That
+//     keeps the decoded full-resolution photos to a few dozen instead of 1,500
+//     (a phone would otherwise hold gigabytes of bitmaps after one long scroll).
+// The list is observed in chunks of CHUNK_ROWS rows; chunks are memoised, so a
+// scroll re-renders only the chunks whose photos turn on or off.
+export const CHUNK_ROWS = 4;
+export const WINDOW_MARGIN = "250% 0px";
+// save-data / 2g / slow-2g: what is on screen and one screen on, nothing more.
+export const WINDOW_MARGIN_SLOW = "100% 0px";
+// Prefetch: this many chunks below the window first, then the rest.
+const AHEAD_CHUNKS = 3;
+// How many leading chunks show photos before the observer has answered, so
+// the first screen never starts without them.
+const INITIAL_LIVE = 3;
+const FIRST_CHUNKS = 5;
+const GROW_CHUNKS = 8;
+
+// Columns as the CSS grid lays them out (the same breakpoints as .ap-grid).
+export function apColumns(width) { return width >= 820 ? 4 : width >= 600 ? 3 : 2; }
+function useColumns() {
+  const get = () => (typeof window === "undefined" ? 2 : apColumns(window.innerWidth || 390));
+  const [cols, setCols] = useState(get);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.addEventListener) return undefined;
+    const on = () => setCols(get());
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+  return cols;
+}
+
+export function chunkList(products, size) {
+  const out = [];
+  for (let i = 0; i < products.length; i += size) out.push(products.slice(i, i + size));
+  return out;
+}
+
+function ApGrid({ products, scrollRef, selectedId, handlers }) {
+  const cols = useColumns();
+  const size = cols * CHUNK_ROWS;
+  const chunks = useMemo(() => chunkList(products, size), [products, size]);
+  // The handlers change identity on every parent render; the chunks read them
+  // through this ref so a cart or stock update does not re-render 1,500 cards.
+  const h = useRef(handlers);
+  h.current = handlers;
+  const [live, setLive] = useState(() => new Set(Array.from({ length: INITIAL_LIVE }, (_, i) => i)));
+  // FIRST PAINT FAST: the first FIRST_CHUNKS chunks (about three screens) are
+  // drawn at once; the rest of the list follows GROW_CHUNKS at a time in idle
+  // slots straight after — small commits, so the first screen and its photos
+  // never wait on 1,500 cards and a commit never blocks a frame for long. The
+  // list simply grows below; nothing is drawn empty.
+  const [drawnN, setDrawnN] = useState(FIRST_CHUNKS);
+  const lastScroll = useRef(0);
+  useEffect(() => {
+    if (drawnN >= chunks.length) return undefined;
+    const idle = typeof requestIdleCallback === "function"
+      ? (f) => { const h = requestIdleCallback(f, { timeout: 200 }); return () => cancelIdleCallback(h); }
+      : (f) => { const h = setTimeout(f, 16); return () => clearTimeout(h); };
+    // While the list is being scrolled, grow only when the drawn part is
+    // running out (under three screens left below); otherwise wait for a pause.
+    let cancel = null, timer = null;
+    const step = () => {
+      const el = scrollRef.current;
+      const scrolling = Date.now() - lastScroll.current < 250;
+      const left = el ? el.scrollHeight - el.scrollTop - el.clientHeight : 0;
+      if (scrolling && el && left > el.clientHeight * 3) { timer = setTimeout(() => { cancel = idle(step); }, 150); return; }
+      setDrawnN((n) => n + GROW_CHUNKS);
+    };
+    cancel = idle(step);
+    return () => { if (cancel) cancel(); if (timer) clearTimeout(timer); };
+  }, [drawnN, chunks.length]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const drawn = drawnN >= chunks.length ? chunks : chunks.slice(0, drawnN);
+  const io = useRef(null);
+  const els = useRef(new Map());
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") {
+      setLive(new Set(chunks.map((_, i) => i)));   // no observer: every photo on, as before
+      return undefined;
+    }
+    // A transition: a chunk's photos turning on (or off) 2.5 screens away is never
+    // urgent, so React renders it in slices and the scroll keeps its frames.
+    const obs = new IntersectionObserver((entries) => startTransition(() => {
+      setLive((prev) => {
+        let next = null;
+        for (const e of entries) {
+          const i = Number(e.target.dataset.chunk);
+          // Grow-only: a photo, once mounted, stays. Unmounting it off screen
+          // made WebKit decode it again on the way back (measured: the scroll
+          // stalled on every chunk); the browser already drops decoded
+          // bitmaps of off-screen images under memory pressure.
+          if (!e.isIntersecting || prev.has(i)) continue;
+          next ||= new Set(prev);
+          next.add(i);
+        }
+        return next || prev;
+      });
+    }), { root, rootMargin: slowConnection() ? WINDOW_MARGIN_SLOW : WINDOW_MARGIN });
+    io.current = obs;
+    els.current.forEach((el) => obs.observe(el));
+    return () => { obs.disconnect(); io.current = null; };
+  }, [scrollRef, chunks.length]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // Prefetch (tilePrefetch.js): held while the list scrolls; re-planned when
+  // the window moves or the list changes — rows below the window first.
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return undefined;
+    const on = () => { lastScroll.current = Date.now(); noteTileScroll(); };
+    root.addEventListener("scroll", on, { passive: true });
+    return () => root.removeEventListener("scroll", on);
+  }, [scrollRef]);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const last = live.size ? Math.max(...live) : -1;
+      const item = (p) => ({ id: p.id, src: tilePhotoSrc(p) });
+      const ahead = chunks.slice(last + 1, last + 1 + AHEAD_CHUNKS).flat().map(item);
+      const rest = [...chunks.slice(last + 1 + AHEAD_CHUNKS), ...chunks.slice(0, last + 1)].flat().map(item);
+      setTilePrefetchPlan({ ahead, rest });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [live, chunks]);
+  const refFor = (i) => (el) => {
+    const m = els.current;
+    const old = m.get(i);
+    if (old === el) return;
+    if (old && io.current) io.current.unobserve(old);
+    if (el) { m.set(i, el); if (io.current) io.current.observe(el); } else m.delete(i);
+  };
+  return (
+    <div className="ap-grid-wrap">
+      {drawn.map((items, i) => (
+        <ApChunk key={i} index={i} items={items} live={live.has(i)} h={h} chunkRef={refFor(i)}
+                 selectedId={items.some((p) => p.id === selectedId) ? selectedId : null} />
+      ))}
+    </div>
+  );
+}
+
+const ApChunk = memo(function ApChunk({ index, items, live, h, chunkRef, selectedId }) {
+  return (
+    <div className="ap-grid ap-chunk" data-chunk={index} ref={chunkRef}>
+      {/* The first chunk is the first screen: its photos ask with high priority. */}
+      {items.map((p) => <ApCard key={p.id} p={p} live={live} h={h.current} selected={selectedId === p.id} priority={index === 0} />)}
+    </div>
+  );
+}, (a, b) => a.items === b.items && a.live === b.live && a.selectedId === b.selectedId && a.index === b.index);
+
+function ApCard({ p, live, h, selected, priority }) {
+  const { onOpen, onViewPhotos, photoCount, renderActions, renderDeactivated, isDead } = h;
+  const price = retailPriceOf(p);   // docs/ASSISTANT-NO-PRICE-SET.md
+  const priced = price !== null;
+  const dead = isDead ? isDead(p) : false;
+  const n = photoCount ? photoCount(p) : 0;
+  return (
+    <article className="sky-card sky-glass sky-sheen ap-card" tabIndex={0} data-photo={live ? "on" : "off"}
+             aria-current={selected ? "true" : undefined}
+             onClick={() => onOpen(p)} onKeyDown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) onOpen(p); }}>
+      {/* The photo (or its 👟 stand-in) is a picture, not text. Outside the
+          window: the same-height stage. */}
+      {live
+        ? <div data-contrast-exempt="" style={{ display: "contents" }}><ProductStage p={p} height="var(--ap-stage)" emoji={p.photo || "👟"} tile priority={priority} /></div>
+        : <div className="sky-stage" style={{ height: "var(--ap-stage)" }} data-stage="waiting" aria-hidden="true"><span className="ap-waiting" /></div>}
+      {p.photoUrl && onViewPhotos && (
+        <button type="button" className="ap-zoom" aria-label={n > 1 ? `View ${n} photos` : "View full photo"}
+                onClick={(e) => { e.stopPropagation(); onViewPhotos(p); }}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="M20 20l-4.6-4.6M10.5 8v5M8 10.5h5" /></svg>
+          {n > 1 ? <span>{n}</span> : null}
+        </button>
+      )}
+      {renderActions ? renderActions(p) : null}
+      <div className="ap-body">
+        <div className="sky-name ap-name" data-contrast-exempt="">{p.name}{renderDeactivated ? renderDeactivated(p) : null}</div>
+        {dead ? <div className="ap-dead" data-contrast-exempt="">Deactivated — no sizes on offer</div> : null}
+        <div className="ap-row">
+          {priced
+            ? <span className="sky-price ap-price" data-contrast-exempt="">{fmtR(price)}</span>
+            : <span className="ap-noprice" data-contrast-exempt="">No price set</span>}
+          <SkyPlus label={`Add ${p.name}`} onClick={(e) => { e.stopPropagation(); onOpen(p); }} />
+        </div>
+      </div>
+    </article>
   );
 }
 
@@ -184,6 +353,10 @@ html[data-sky="on"] #root .ap-root .sky-brandchip--all{font:700 13.9px/1 var(--s
 .ap-root .sky-brandchip .sky-chip__txt{font-size:11.7px;font-weight:700;letter-spacing:.04em}
 @media (min-width:768px){.ap-brands{display:none}}
 .ap-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 12px;padding:12px 18.5px 0}
+/* Chunks of the one grid (ApGrid): the same columns and gaps, 14px between chunks. */
+.ap-chunk{padding-top:0}
+.ap-grid-wrap > .ap-chunk:first-child{padding-top:12px}
+.ap-chunk + .ap-chunk{margin-top:14px}
 @media (min-width:600px){.ap-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (min-width:820px){.ap-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
 /* Product cards wear the Home tile's glass (Junid, 7 Nov — IMG_3894): lit top
@@ -195,9 +368,23 @@ html[data-sky="on"] #root .ap-root .ap-card{position:relative;display:flex;flex-
   box-shadow:inset 0 0 16px 1px rgba(255,255,255,.42),inset 0 -16px 22px -10px rgba(255,255,255,.7),var(--sky-shadow)!important;
   -webkit-backdrop-filter:blur(10px) saturate(130%);backdrop-filter:blur(10px) saturate(130%)}
 .ap-card[aria-current="true"]{outline:2px solid #fff;outline-offset:-1px}
+/* Windowed grid (ApGrid): never skip a card's insides. */
+.ap-root .ap-card{content-visibility:visible}
 .ap-root .ap-card .sky-stage{height:114px!important;padding:0;flex:0 0 auto}
 .ap-root .ap-card .sky-frame{inset:13px 0 0;background:none;border-radius:0;align-items:flex-start}
 .ap-root .ap-card .sky-frame img{max-width:92px;max-height:101px;border-radius:9px}
+/* TilePhoto: placeholder and full photo stacked in one cell, the photo fading
+   in over it; the placeholder has the photo's own size (or is the held
+   thumbnail, blurred), so nothing moves. The glass block shows only while
+   nothing at all is known yet. White on the sky — no new colour. */
+.ap-root .tile{display:grid;justify-items:center;align-items:start;border-radius:9px;overflow:hidden}
+.ap-root .tile > *{grid-area:1/1}
+.ap-root .tile__full{transition:opacity .28s ease}
+.ap-root .ap-waiting{position:absolute;top:13px;left:50%;margin-left:-40px;width:80px;height:96px;border-radius:9px;background:rgba(255,255,255,.26)}
+.ap-root .tile__ph--blur{filter:blur(5px)}
+.ap-root .tile__shim{width:80px;height:96px;border-radius:9px;background:rgba(255,255,255,.26);animation:tile-shim 1.4s ease-in-out infinite}
+@keyframes tile-shim{50%{background:rgba(255,255,255,.4)}}
+@media (prefers-reduced-motion:reduce){.ap-root .tile__full{transition:none}.ap-root .tile__shim{animation:none}}
 .ap-root .ap-card .sky-podium{width:70%;bottom:2px}
 .ap-root .ap-card .sky-cutout{max-width:80%}
 .ap-body{padding:7px 9.5px 8.5px 15.5px;display:flex;flex-direction:column;gap:7px;flex:1;background:none}
