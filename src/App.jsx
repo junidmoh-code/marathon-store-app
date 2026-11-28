@@ -181,7 +181,7 @@ import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations, withSeedGaps } from "./components/stock/locations";
 import { useNetwork } from "./utils/useNetwork";
 import { TV_ORDER_KEY_START, TV_ORDER_KEY_END, TV_ONLINE_ORDER_KEY_RANGES, keyInTvOnlineOrdersRange, tvRowsOf } from "./utils/tvOrdersRange";
-import { listenerRetryDelay } from "./utils/listenerRetry";
+import { listenerRetryDelay, subscribeRangesWithRetry } from "./utils/listenerRetry";
 import { currentNetwork } from "./utils/networkStore";
 import { wallAllows, storesOf, backStockHubsOf } from "./utils/networkRegistry";
 import { useMySections } from "./utils/useMySections";
@@ -1073,6 +1073,7 @@ function useOrders(scopeShop = null, enabled = true) {
   // (utils/listenerRetry.js — the TV board sat on 0 all of 28 Nov morning).
   const [retryTick, setRetryTick] = useState(0);
   const retryTries = useRef(0);
+  const retryScope = useRef(null);   // a new scope starts its backoff from the first step
 
   // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
   // /orders is 2.6 MB. The mirror holds the whole node, so a SCOPED caller
@@ -1111,6 +1112,7 @@ function useOrders(scopeShop = null, enabled = true) {
     // shop-scoped read never shares a listener with the whole node or with
     // another shop's.
     const readKey = scopeShop ? childQueryKey("orders", "destShop", scopeShop) : "orders";
+    if (retryScope.current !== readKey) { retryScope.current = readKey; retryTries.current = 0; }
     let retryTimer = null;
     const unsub = subscribeLiveQuery(readKey, () => readRef, (snap) => {
       retryTries.current = 0;
@@ -1233,8 +1235,6 @@ function useHubOrders(hub, network) {
 function useTvOrders() {
   const authReady = useAuthReady();
   const [orders, setOrders] = useState([]);
-  const [retryTick, setRetryTick] = useState(0);   // utils/listenerRetry.js
-  const retryTries = useRef(0);
 
   const shapeTvOrders = useCallback((data) => (
     data
@@ -1272,25 +1272,23 @@ function useTvOrders() {
     // The numeric range, plus the two website-order code ranges
     // (tvOrdersRange.js) — merged into one list. Each is a key range: no index.
     const ranges = [[TV_ORDER_KEY_START, TV_ORDER_KEY_END], ...TV_ONLINE_ORDER_KEY_RANGES];
-    const parts = ranges.map(() => null);
-    let retryTimer = null;
-    const unsubs = ranges.map(([a, b], i) => onValue(
-      query(ref(database, "orders"), orderByKey(), startAt(a), endAt(b)),
-      (snap) => {
-        retryTries.current = 0;
-        parts[i] = i === 0 ? (snap.val() || {}) : tvRowsOf(snap.val()); // codes only — never a prefixed store's "P001"
-        setOrders(shapeTvOrders(Object.assign({}, ...parts.filter(Boolean))));
-      },
-      (err) => {
+    // Each range has its own listener and its own retry (utils/listenerRetry.js):
+    // a refused range never tears down or re-downloads one that is answering,
+    // and its last rows stay on screen while it is retried.
+    return subscribeRangesWithRetry({
+      ranges,
+      open: ([a, b], i, onSnap, onErr) => onValue(
+        query(ref(database, "orders"), orderByKey(), startAt(a), endAt(b)),
+        (snap) => onSnap(i === 0 ? (snap.val() || {}) : tvRowsOf(snap.val())), // codes only — never a prefixed store's "P001"
+        onErr,
+      ),
+      onRows: (parts) => setOrders(shapeTvOrders(Object.assign({}, ...parts.filter(Boolean)))),
+      onError: (err) => {
         console.warn("Firebase read error on /orders (TV key range):", err);
         setOrders((prev) => Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" }));
-        if (retryTimer) return;   // one re-open for the whole set
-        retryTimer = setTimeout(() => setRetryTick((n) => n + 1), listenerRetryDelay(retryTries.current));
-        retryTries.current += 1;
       },
-    ));
-    return () => { if (retryTimer) clearTimeout(retryTimer); unsubs.forEach((u) => u()); };
-  }, [authReady, live, shapeTvOrders, retryTick]);
+    });
+  }, [authReady, live, shapeTvOrders]);
   return orders;
 }
 
@@ -1314,8 +1312,6 @@ function useSectionTvOrders(section) {
   ), [tvNetwork, section]);
   const mirrored = useMirroredPath("orders", authReady);
   const live = mirrored.verdict === "fallback";
-  const [retryTick, setRetryTick] = useState(0);   // utils/listenerRetry.js
-  const retryTries = useRef(0);
 
   useEffect(() => {
     if (live || !mirrored.settled) return;
@@ -1329,21 +1325,21 @@ function useSectionTvOrders(section) {
   useEffect(() => {
     if (!authReady || !live) return undefined;
     // One listener per range, merged by key before shaping.
-    const parts = ranges.map(() => null);
-    let retryTimer = null;
-    const unsubs = ranges.map((r, i) => onValue(
-      query(ref(database, "orders"), orderByKey(), startAt(r.start), endAt(r.end)),
-      (snap) => { retryTries.current = 0; parts[i] = snap.val(); setOrders(shape(Object.assign({}, ...parts.map((p) => p || {})))); },
-      (err) => {
+    // One listener per range, each with its own retry (utils/listenerRetry.js).
+    return subscribeRangesWithRetry({
+      ranges,
+      open: (r, i, onSnap, onErr) => onValue(
+        query(ref(database, "orders"), orderByKey(), startAt(r.start), endAt(r.end)),
+        (snap) => onSnap(snap.val()),
+        onErr,
+      ),
+      onRows: (parts) => setOrders(shape(Object.assign({}, ...parts.map((p) => p || {})))),
+      onError: (err) => {
         console.warn("Firebase read error on /orders (section TV key range):", err);
         setOrders((prev) => Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" }));
-        if (retryTimer) return;
-        retryTimer = setTimeout(() => setRetryTick((n) => n + 1), listenerRetryDelay(retryTries.current));
-        retryTries.current += 1;
       },
-    ));
-    return () => { if (retryTimer) clearTimeout(retryTimer); unsubs.forEach((u) => u()); };
-  }, [authReady, live, shape, ranges, retryTick]);
+    });
+  }, [authReady, live, shape, ranges]);
   return orders;
 }
 

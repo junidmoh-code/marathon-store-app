@@ -89,6 +89,32 @@ async function run(label, { staff = null, hash = "" }) {
   page.on("console", (m) => { if (m.type() === "warning" || m.type() === "error") logs.push(`${m.type()}: ${m.text().slice(0, 220)}`); });
   page.on("pageerror", (e) => logs.push(`pageerror: ${String(e).slice(0, 220)}`));
   await ctx.addInitScript(() => { try { localStorage.setItem("marathon_role", "display"); } catch { /* */ } });
+  // WS=1: print every database request that touches /orders or /users, every
+  // auth frame, and every non-ok answer — what was asked, in what order, and
+  // what the server said (no row content: answers are trimmed to their status).
+  const t0w = Date.now();
+  if (process.env.WS) {
+    const reqs = new Map();
+    page.on("websocket", (ws) => {
+      const tag = (dir, raw) => {
+        let m; try { m = JSON.parse(raw); } catch { return; }
+        const d = m?.d; if (!d) return;
+        const ms = Date.now() - t0w;
+        if (dir === ">" && d.a) {
+          const path = d.b?.p || "";
+          if (d.a === "auth" || d.a === "gauth" || d.a === "unauth") console.log(`  ws ${ms}ms > ${d.a} r=${d.r}`);
+          else if (/^\/?(orders|users)/.test(path)) { reqs.set(d.r, `${d.a} ${path} ${JSON.stringify(d.b?.q || {})}`); console.log(`  ws ${ms}ms > r=${d.r} ${d.a} ${path} q=${JSON.stringify(d.b?.q || {})}`); }
+        } else if (dir === "<") {
+          if (d.r && reqs.has(d.r)) console.log(`  ws ${ms}ms < r=${d.r} ${d.b?.s} (${reqs.get(d.r)})`);
+          else if (d.r && d.b?.s && d.b.s !== "ok") console.log(`  ws ${ms}ms < r=${d.r} ${d.b.s} ${String(d.b.d || "").slice(0, 80)}`);
+          else if (d.a === "c") console.log(`  ws ${ms}ms < CANCEL ${JSON.stringify(d.b).slice(0, 160)}`);
+          else if (d.r && d.b?.s === "ok" && d.b?.d?.auth) console.log(`  ws ${ms}ms < auth ok r=${d.r}`);
+        }
+      };
+      ws.on("framesent", (f) => tag(">", f.payload));
+      ws.on("framereceived", (f) => tag("<", f.payload));
+    });
+  }
   await page.goto(`${URL_BASE}/${hash}`, { waitUntil: "domcontentloaded" });
   if (staff) {
     await page.waitForSelector("input[type=password]", { timeout: 30_000 });
@@ -103,6 +129,18 @@ async function run(label, { staff = null, hash = "" }) {
     await page.waitForTimeout(15_000);
     last = await readBoard(page).catch((e) => ({ error: String(e) }));
     console.log(`  t+${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify(last));
+  }
+  // RELOAD=1: reload the signed-in page (the TV's cold start: auth restored
+  // from the browser, #1019's saved /users copy painting at once) and watch again.
+  if (process.env.RELOAD) {
+    console.log("  ── reload (signed in, saved copy present)");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const t1 = Date.now();
+    while (Date.now() - t1 < WAIT_MS) {
+      await page.waitForTimeout(15_000);
+      last = await readBoard(page).catch((e) => ({ error: String(e) }));
+      console.log(`  after reload t+${Math.round((Date.now() - t1) / 1000)}s`, JSON.stringify(last));
+    }
   }
   const seen = [...new Set(logs)].filter((l) => !/fonts\.g|favicon|preload/i.test(l));
   console.log(`  console (${seen.length} distinct):`);
