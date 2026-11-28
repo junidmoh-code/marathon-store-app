@@ -108,6 +108,27 @@ async function report(run) {
   saveMemory(m);
 }
 
+/**
+ * Families Junid already published (posted.json) or turned down (skipped.json) through the Higgsfield handoff
+ * queue; tiktok-queue-server.mjs writes both when his Claude chat reports. Never posted from here.
+ * An unreadable file stops the run, like an unreadable ledger: posting from a blank memory would repost.
+ */
+const HANDOFF_DIR = process.env.TIKTOK_QUEUE_DIR || join(homedir(), ".marathon-tiktok-queue");
+function handoffTaken() {
+  const keys = new Set();
+  for (const f of ["posted.json", "skipped.json"]) {
+    let map;
+    try { map = JSON.parse(readFileSync(join(HANDOFF_DIR, f), "utf8")); } catch (e) { if (e.code === "ENOENT") continue; throw new Error(`handoff queue ${f} unreadable (${e.code || e.message}); not posting`); }
+    if (!map || typeof map !== "object" || Array.isArray(map)) throw new Error(`handoff queue ${f} is not a map; not posting`);
+    for (const k of Object.keys(map)) keys.add(k);
+  }
+  return keys;
+}
+function notPostedViaHandoff(queue) {
+  const taken = handoffTaken();
+  return queue.filter((c) => !taken.has(c.key));
+}
+
 /** Empty only when there is no ledger yet. An unreadable one stops the run: posting from a blank memory would repost. */
 function readLedger() {
   let text;
@@ -262,6 +283,9 @@ async function postOne(c, ledger) {
     log(`FAILED ${c.key} ${c.media}: ${e.message} (attempt ${entry.attempts}/${MAX_ATTEMPTS}, nothing sent to TikTok)`);
     return { ok: false, abort: false };
   }
+  // Re-read the handoff marks after the slow media work: Junid's chat may have published this family meanwhile.
+  // (A mark landing between this read and the post call can still slip through; that window is milliseconds.)
+  if (handoffTaken().has(c.key)) { log(`skipped ${c.key}: already published or skipped through the Higgsfield handoff`); return { ok: false, abort: false }; }
   fam[c.key] = entry;
   saveLedger(ledger); // "sending" is on disk before the one call that can create a post
   let r;
@@ -319,7 +343,7 @@ async function runOnce(admin, want) {
   if (!st.connected) { log(`TikTok: not connected in Signal Studio (${st.reason || "unknown"}); skipped`); return run; }
 
   const snap = await admin.database().ref("social_posts").once("value");
-  const queue = buildQueue(Object.entries(snap.val() || {}).map(([id, p]) => ({ id, ...p })));
+  const queue = notPostedViaHandoff(buildQueue(Object.entries(snap.val() || {}).map(([id, p]) => ({ id, ...p }))));
   if (!lock()) { log("TikTok: another run is in progress; skipped"); return run; }
   try {
     const ledger = readLedger();
@@ -394,7 +418,7 @@ async function main() {
   // still resolve through it (buildQueue keeps only posted records as sources).
   const snap = await admin.database().ref("social_posts").once("value");
   const posts = Object.entries(snap.val() || {}).map(([id, p]) => ({ id, ...p }));
-  const queue = buildQueue(posts);
+  const queue = notPostedViaHandoff(buildQueue(posts));
   const ledger = readLedger();
   const n = counts(queue, ledger);
   const summary = `queue ${n.total} (${n.photos} photos, ${n.videos} videos): ${n.posted} live, ${n.pending} pending, ${n.failed} failed, ${n.waiting} waiting`;
