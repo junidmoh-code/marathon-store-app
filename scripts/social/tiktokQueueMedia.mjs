@@ -13,7 +13,9 @@ const FFPROBE = existsSync("/opt/homebrew/bin/ffprobe") ? "/opt/homebrew/bin/ffp
 const gone = (msg) => Object.assign(new Error(msg), { gone: true });
 
 /** The tool ran and refused the file (non-zero exit): the media is bad. The tool could not start, timed out or was killed: retry later. */
-const toolRefused = (e) => typeof e?.status === "number" && e.status !== 0 && !e.signal;
+// A full disk or memory pressure also exits non-zero: that is the machine, not the file.
+const MACHINE_TROUBLE = /No space left|Cannot allocate memory|Resource temporarily unavailable|Too many open files/i;
+const toolRefused = (e) => typeof e?.status === "number" && e.status !== 0 && !e.signal && !MACHINE_TROUBLE.test(String(e.stderr || ""));
 const lastLine = (e) => String(e?.stderr || e?.message || "").trim().split("\n").pop().slice(0, 200);
 
 function probe(f) {
@@ -57,7 +59,7 @@ export function toVideo(buf, out) {
     if (!plan.transcode) { renameSync(raw, out); return null; }
     try {
       execFileSync(FFMPEG, ["-y", "-v", "error", "-i", raw, "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-      "-pix_fmt", "yuv420p", "-r", "30", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-f", "mp4", out], { timeout: 15 * 60000, stdio: ["ignore", "ignore", "pipe"] });
+      "-pix_fmt", "yuv420p", "-r", "30", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-f", "mp4", out], { timeout: 3 * 60000, stdio: ["ignore", "ignore", "pipe"] });
     } catch (e) {
       rmSync(out, { force: true });
       if (toolRefused(e)) throw gone(`video re-encode failed: ${lastLine(e)}`);

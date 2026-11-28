@@ -26,7 +26,7 @@
 // is the only writer of posted.json and skipped.json; the builder and the
 // Signal Studio poster only read them.
 import { createHash, timingSafeEqual } from "node:crypto";
-import { createReadStream, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -111,10 +111,14 @@ function markNow(res, path, body) {
       if (typeof postId !== "string" || !POST_ID_RE.test(postId)) return send(res, 400, { error: "post_id missing or malformed" });
       // Read both before changing either, so an unreadable file means nothing changed.
       const maps = Object.values(MARKS).map((f) => [f, readMap(join(DIR, f))]);
-      let removed = false;
-      for (const [f, map] of maps) {
-        if (map[postId]) { delete map[postId]; writeJson(join(DIR, f), map); removed = true; }
-      }
+      // Write every changed map to a temp file first, then rename: a failed write leaves both files as they were.
+      const changed = maps.filter(([, map]) => map[postId]).map(([f, map]) => { delete map[postId]; return [f, map]; });
+      const tmps = [];
+      try {
+        for (const [f, map] of changed) { const t = `${join(DIR, f)}.${process.pid}.unmark`; writeFileSync(t, JSON.stringify(map, null, 1)); tmps.push([t, join(DIR, f)]); }
+      } catch (e) { for (const [t] of tmps) rmSync(t, { force: true }); throw e; }
+      for (const [t, f] of tmps) renameSync(t, f);
+      const removed = changed.length > 0;
       console.log(`${new Date().toISOString()} unmark ${postId}: ${removed ? "removed" : "nothing to remove"}`);
       return send(res, 200, { ok: true, post_id: postId, removed });
     }
@@ -138,7 +142,8 @@ function send(res, status, body, headers = {}) {
 export function withStatus(batch, posted, skipped, ledger = null, now = Date.now()) {
   if (!batch) return null;
   // Sent, live, in flight or of unknown outcome. A refusal created nothing on TikTok, however many times it happened.
-  const viaPoster = (id) => { const e = ledger?.families?.[id]; return !!e && e.state !== "refused" && !eligible(e); };
+  // "failed" with "TikTok FAILED" is TikTok saying it created nothing; only an unknown outcome may be live.
+  const viaPoster = (id) => { const e = ledger?.families?.[id]; return !!e && e.state !== "refused" && !/^TikTok FAILED/.test(e.lastError || "") && !eligible(e); };
   const posts = (batch.posts || []).map((p) => ({
     ...p,
     status: posted[p.post_id] || viaPoster(p.post_id) ? "posted" : skipped[p.post_id] ? "skipped" : "pending",

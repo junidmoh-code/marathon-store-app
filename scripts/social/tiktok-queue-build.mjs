@@ -41,7 +41,9 @@ const DIR = process.env.TIKTOK_QUEUE_DIR || join(homedir(), ".marathon-tiktok-qu
 const POSTER_LEDGER = join(process.env.TIKTOK_POSTER_STATE || join(homedir(), ".marathon-tiktok"), "ledger.json");
 const PUBLIC_BASE = (process.env.TIKTOK_QUEUE_PUBLIC_BASE || "https://mac-mini-von-marathon-3.tail5a5180.ts.net/studio/tiktok-queue").replace(/\/+$/, "");
 
-const PREP_BUDGET_MS = Number(process.env.TIKTOK_QUEUE_BUDGET_MS || 10 * 60000);
+// Under the 5 minutes between launches: launchd never starts a job that is still running, so a run that
+// overstayed would swallow its own retry. A single video re-encode is capped at 3 minutes (our clips are ~6 s).
+const PREP_BUDGET_MS = Number(process.env.TIKTOK_QUEUE_BUDGET_MS || 3.5 * 60000);
 // launchd runs the build at :00/:30 and retries 5 and 10 minutes later (an existing batch is never rebuilt).
 // The last try writes a short batch rather than none.
 const LAST_TRY = args.includes("--last-try") || !!arg("--slot") || (() => { const t = sast().hhmm; return (t >= "09:10" && t < "13:00") || t >= "17:40"; })();
@@ -131,7 +133,9 @@ async function main() {
   if (existsSync(file) && !FORCE && !DRY) {
     // A crash between the batch write and the latest.json write is repaired here, without rebuilding media.
     const newest = listBatches().at(-1);
-    if (newest === id && readJson(join(DIR, "latest.json"), {}).batch_id !== id) { writeJson(join(DIR, "latest.json"), readJson(file, null)); log(`TikTok queue: latest.json repaired to ${id}`); }
+    const kept = readJson(file, null);
+    if (!kept || !Array.isArray(kept.posts)) log(`TikTok queue: batch ${id} is unreadable; latest.json left alone (rebuild with --force)`);
+    else if (newest === id && readJson(join(DIR, "latest.json"), {}).batch_id !== id) { writeJson(join(DIR, "latest.json"), kept); log(`TikTok queue: latest.json repaired to ${id}`); }
     else log(`TikTok queue: batch ${id} already built; kept (use --force to rebuild)`);
     return;
   }

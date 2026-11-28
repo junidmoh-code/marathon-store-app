@@ -134,6 +134,12 @@ describe("marks", () => {
     expect(j.posts[1].status).not.toBe("posted");
     writeFileSync(join(dir, "poster", "ledger.json"), JSON.stringify({ families: {} }));
   });
+  it("a poster post TikTok reported FAILED (nothing created) stays pending", async () => {
+    writeFileSync(join(dir, "poster", "ledger.json"), JSON.stringify({ families: { "-Ptwo": { state: "failed", lastError: "TikTok FAILED: picture_size_check_failed" } } }));
+    const j = await (await fetch(`${base}/latest.json`)).json();
+    expect(j.posts[1].status).not.toBe("posted");
+    writeFileSync(join(dir, "poster", "ledger.json"), JSON.stringify({ families: {} }));
+  });
   it("unmark with one unreadable file changes nothing", async () => {
     await post("/mark-posted", { post_id: "-Pone" });
     const before = readFileSafe("posted.json");
