@@ -239,6 +239,27 @@ and 3 from 18:30 SAST, 15-20 minutes apart. New posts join the end of the queue 
   (one hour, one use), sign in as @marathon.club7, tap "Yes, connect".
 - `--dry-run` shows the queue and the next six; `--kickoff 3` posts three now.
 
+### Connect + test, 28 Nov 2026 (Signal Studio app 7708075265691551752, live in production since 26 Nov)
+
+- Account: **@marathon.club7** ("Marathon Club"), the account Junid created on 14 Nov 2026, not
+  concreteworldofficial. It was connected through Signal Studio's Login Kit, but under the app's **sandbox**
+  keys (`SIGNAL_TIKTOK_SANDBOX_*` in `~/.env` override the production pair). Signal Studio now uses the production
+  keys (client key `aw41…`), so the account has to authorise once more. Junid got a 7-day link on WhatsApp
+  (`POST 127.0.0.1:8796/tiktok/connect-link`).
+- `creator_info` for @marathon.club7: privacy options `PUBLIC_TO_EVERYONE, MUTUAL_FOLLOW_FRIENDS, SELF_ONLY`,
+  max video 3600 s. The account is **public** (Junid, 15 Nov: it stays public).
+- **Test Direct Post, 28 Nov 2026 09:07 SAST** (`tiktok-poster.mjs --kickoff 1`, photo family
+  `-P-kT7-0JLXPAUPMp5J9`): TikTok refused the init for `PUBLIC_TO_EVERYONE` and again for `SELF_ONLY` with
+  `unaudited_client_can_only_post_to_private_accounts` ("Please review our integration guidelines at
+  https://developers.tiktok.com/doc/content-sharing-guidelines/"). **Nothing was created**, so there is no publish
+  id and no privacy status to query. The ledger is unchanged.
+- What that means: until the Direct Post audit passes, TikTok accepts posts from Signal Studio **only for private
+  accounts**, and then only as SELF_ONLY. A public account like @marathon.club7 gets nothing at all, not even
+  private posts. The same app does post to a private account: @signalstudio.demo got a live SELF_ONLY Direct Post
+  on 28 Nov 09:23 SAST (`PUBLISH_COMPLETE`, recorded for the audit video).
+- Higgsfield's TikTok publishing is no bridge: its only connected account is concrete-world, and every Higgsfield
+  publish needs a person to review and submit TikTok's form, so it cannot run on a schedule.
+
 The section below is the history of why this took a separate app.
 
 ## 4a. TikTok — before 14 Nov (history) — honestly, not yet
