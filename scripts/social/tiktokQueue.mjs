@@ -16,9 +16,11 @@
 //   · otherwise → one PHOTO post, preferring the 9:16 story render (it fills a
 //     TikTok screen), then the story's own media, then the feed media.
 //
-// ORDER: oldest first, so the backlog drains before newer posts, and each new
-// day's output joins the end of the queue by itself. Photos and videos
-// alternate while both remain.
+// ORDER (Junid, 28 Nov 2026): photo posts first, oldest first, so the photo
+// backlog drains before any video; videos follow, oldest first. Each new day's
+// output joins the queue by itself. No stories: a family made only of story
+// records (a story with no feed post or reel behind it) is never posted; a
+// story that is the 9:16 twin of a feed post still supplies that post's render.
 
 export const SLOTS = ["08:30", "18:30"];        // SAST
 export const PER_SLOT = 3;
@@ -56,6 +58,7 @@ export function buildQueue(posts) {
   }
   const out = [];
   for (const [key, members] of fams) {
+    if (members.every((m) => formatOf(m) === "story")) continue; // no stories
     const at = Math.min(...members.map((m) => m.postedAt || m.scheduledAt || m.createdAt || Infinity));
     const caption = members.map((m) => String(m.caption || "")).sort((a, b) => b.length - a.length)[0] || "";
     const kind = members.find((m) => m.kind)?.kind || "single";
@@ -82,12 +85,39 @@ export function eligible(entry) {
   return false; // sending, sent, live, failed, unknown
 }
 
-/** The next family: the oldest eligible one, switching type from the last post when the other type is available. */
-export function pickNext(queue, ledger, lastMedia, skip = new Set()) {
+/** The next family: the oldest eligible photo post; a video only once no photo post is left. */
+export function pickNext(queue, ledger, _lastMedia, skip = new Set()) {
   const open = queue.filter((c) => !skip.has(c.key) && eligible(ledger?.families?.[c.key]));
   if (!open.length) return null;
-  if (lastMedia && open[0].media === lastMedia) return open.find((c) => c.media !== lastMedia) || open[0];
-  return open[0];
+  return open.find((c) => c.media === "PHOTO") || open[0];
+}
+
+/**
+ * Should a run that stopped with this reason be tried again in a few minutes? Only our own side or TikTok being
+ * briefly unavailable: never TikTok's audit refusal, a missing connection or a spam limit (those last for hours).
+ */
+export function retryable(reason) {
+  const r = String(reason || "");
+  if (/unaudited|not connected|disconnected|spam_risk|too_many|another run/i.test(r)) return false;
+  return /not reachable|ECONNREFUSED|fetch failed|timeout|aborted|HTTP 5\d\d|internal_error|rate_limit|transient|download failed/i.test(r);
+}
+
+/**
+ * Quiet rule: which run outcomes reach Junid. Only real failures, each kind at most once a day:
+ *   disconnected  TikTok was connected before and is not now (a reconnect is needed)
+ *   unreachable   Signal Studio's poster did not answer on two runs in a row
+ *   failed        TikTok said FAILED for a post, or a post's outcome is unknown
+ *   crashed       the run itself threw
+ * Never: the audit refusal (expected until TikTok passes the audit), waiting for the first connection, an empty queue.
+ */
+export function alertsFor(run, memory, now = Date.now(), day = (t) => new Date(t + 2 * 3600000).toISOString().slice(0, 10)) {
+  const out = [];
+  const once = (kind, text) => { if (memory.sent?.[kind] !== day(now)) out.push({ kind, text }); };
+  if (run.connected === false && memory.everConnected && !run.unreachable) once("disconnected", `TikTok poster: @marathon.club7 is no longer connected to Signal Studio (${run.reason || "no reason given"}). TikTok posting has stopped until it is reconnected.`);
+  if (run.unreachable && (memory.unreachableRuns || 0) >= 1) once("unreachable", `TikTok poster: Signal Studio did not answer on two runs in a row (${run.reason || "no answer"}). No TikTok posts are going out.`);
+  if (run.failed?.length) once("failed", `TikTok poster: ${run.failed.length} post(s) failed at TikTok: ${run.failed.slice(0, 3).join("; ")}`);
+  if (run.crashed) once("crashed", `TikTok poster crashed: ${String(run.crashed).slice(0, 200)}`);
+  return out;
 }
 
 export function counts(queue, ledger) {

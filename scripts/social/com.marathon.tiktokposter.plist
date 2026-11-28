@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- TikTok poster (scripts/social/tiktok-poster.mjs): 3 posts from 08:30 and 3 from
-     18:30 SAST, 15-20 minutes apart, through Signal Studio's 127.0.0.1 poster.
+     18:30 SAST (6 a day, photo posts first), 15-20 minutes apart, through Signal Studio's
+     127.0.0.1 poster. Retries short outages within the slot; WhatsApps Junid only on real
+     failures (SOCIAL-SETUP.md section 4). Re-enabled 28 Nov 2026 (Junid's posting plan).
      StartCalendarInterval uses the machine clock (the mini is on SAST). One run
      posts the whole slot and exits; the script's lock stops any overlap.
      Install: cp to ~/Library/LaunchAgents && launchctl bootstrap gui/$(id -u) <file> -->
