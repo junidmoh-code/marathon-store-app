@@ -389,7 +389,11 @@ export default function TvDisplayMockup({ orders, specials, onExit, feed = null 
   // Nobody touches the TV: a board that stays unhealthy mends itself
   // (tv/useBoardWatchdog.js — reopen the socket at 3 min, reload at 6, never
   // more than one reload per 5 min).
-  useBoardWatchdog({ healthy: status === null || status === "live", enabled: !!feed && !demo });
+  useBoardWatchdog({
+    healthy: status === null || status === "live",
+    neverAnswered: !!feed && (feed.lastOkAt ?? null) == null,
+    enabled: !!feed && !demo,
+  });
 
   // Exit TV mode: drop out of browser fullscreen if we're in it, then leave the TV
   // view (onExit clears the #tv hash / returns to the picker). Reachable by the

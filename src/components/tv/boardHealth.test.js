@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { boardStatus, feedAnswered, watchdogStep, reloadUrl, WATCHDOG_MS, RELOAD_FLOOR_MS } from "./boardHealth";
+import { boardStatus, feedAnswered, watchdogStep, reloadUrl, WATCHDOG_MS, RELOAD_FLOOR_MS, FIRST_ANSWER_MS, MAX_UNRECOVERED_RELOADS } from "./boardHealth";
 
 const list = (props, rows = []) => Object.assign(rows.slice(), props);
 
@@ -44,6 +44,18 @@ describe("watchdogStep", () => {
     const nowMs = 100 * WATCHDOG_MS;
     expect(watchdogStep({ ...base, bouncedAt: nowMs - WATCHDOG_MS, lastReloadAt: nowMs - RELOAD_FLOOR_MS + 1, nowMs })).toBe("none");
     expect(watchdogStep({ ...base, bouncedAt: nowMs - WATCHDOG_MS, lastReloadAt: nowMs - RELOAD_FLOOR_MS, nowMs })).toBe("reload");
+  });
+});
+
+describe("watchdogStep — first answer budget and the reload cap", () => {
+  const base = { healthy: false, since: 0, bouncedAt: null, lastReloadAt: null };
+  it("never-answered boards wait FIRST_ANSWER_MS before the first bounce", () => {
+    expect(watchdogStep({ ...base, neverAnswered: true, nowMs: WATCHDOG_MS })).toBe("none");
+    expect(watchdogStep({ ...base, neverAnswered: true, nowMs: FIRST_ANSWER_MS })).toBe("bounce");
+  });
+  it("after MAX_UNRECOVERED_RELOADS it only reopens the socket", () => {
+    const nowMs = 100 * WATCHDOG_MS;
+    expect(watchdogStep({ ...base, bouncedAt: nowMs - WATCHDOG_MS, unrecoveredReloads: MAX_UNRECOVERED_RELOADS, nowMs })).toBe("bounce-only");
   });
 });
 

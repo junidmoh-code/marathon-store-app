@@ -182,7 +182,7 @@ import { sellableLocations, labelFor, transferTargets, warehouseLocations, withS
 import { useNetwork } from "./utils/useNetwork";
 import { TV_ORDER_KEY_START, TV_ORDER_KEY_END, TV_ONLINE_ORDER_KEY_RANGES, keyInTvOnlineOrdersRange, tvRowsOf } from "./utils/tvOrdersRange";
 import { listenerRetryDelay, subscribeRangesWithRetry } from "./utils/listenerRetry";
-import { feedAnswered } from "./components/tv/boardHealth";
+import { feedAnswered, REFUSED_SHOW_MS } from "./components/tv/boardHealth";
 import { currentNetwork } from "./utils/networkStore";
 import { wallAllows, storesOf, backStockHubsOf } from "./utils/networkRegistry";
 import { useMySections } from "./utils/useMySections";
@@ -1283,11 +1283,15 @@ function useTvOrders() {
         (snap) => onSnap(i === 0 ? (snap.val() || {}) : tvRowsOf(snap.val())), // codes only — never a prefixed store's "P001"
         onErr,
       ),
+      // A range answering while another is refused is a working board with
+      // real rows (partial), not a refused one (Sonnet review, #1027).
       onRows: (parts, failing) => setOrders(Object.assign(shapeTvOrders(Object.assign({}, ...parts.filter(Boolean))),
-        failing ? { error: true } : { answered: true })),
+        { answered: true, partial: failing > 0 })),
       onError: (err) => {
         console.warn("Firebase read error on /orders (TV key range):", err);
-        setOrders((prev) => Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" }));
+        setOrders((prev) => (prev.answered
+          ? Object.assign(prev.slice(), { answered: true, partial: true })
+          : Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" })));
       },
     });
   }, [authReady, live, shapeTvOrders]);
@@ -1336,10 +1340,12 @@ function useSectionTvOrders(section) {
         onErr,
       ),
       onRows: (parts, failing) => setOrders(Object.assign(shape(Object.assign({}, ...parts.map((p) => p || {}))),
-        failing ? { error: true } : { answered: true })),
+        { answered: true, partial: failing > 0 })),
       onError: (err) => {
         console.warn("Firebase read error on /orders (section TV key range):", err);
-        setOrders((prev) => Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" }));
+        setOrders((prev) => (prev.answered
+          ? Object.assign(prev.slice(), { answered: true, partial: true })
+          : Object.assign(prev.slice(), { error: true, errorCode: err?.code || "error" })));
       },
     });
   }, [authReady, live, shape, ranges]);
@@ -22199,10 +22205,20 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
   // Read off the list itself (its error / settled / answered flags — no extra
   // listener): the status line and the watchdog in TvDisplayMockup act on it.
   const [boardFeedOkAt, setBoardFeedOkAt] = useState(null);
+  const feedOk = feedAnswered(ordersRaw);
+  const feedErr = !!ordersRaw?.error;
+  // Stamped on the first good answer and on each recovery — not on every
+  // order update (one extra render per change for nothing).
+  useEffect(() => { if (feedOk) setBoardFeedOkAt((at) => at ?? Date.now()); }, [feedOk]);
+  // A refusal shows red only once it has lasted REFUSED_SHOW_MS: the first
+  // retry (3 s) usually mends a passing cancel.
+  const [refusedShown, setRefusedShown] = useState(false);
   useEffect(() => {
-    if (feedAnswered(ordersRaw)) setBoardFeedOkAt(Date.now());
-  }, [ordersRaw]);
-  const boardFeed = useMemo(() => ({ error: !!ordersRaw?.error, lastOkAt: boardFeedOkAt }), [ordersRaw, boardFeedOkAt]);
+    if (!feedErr) { setRefusedShown(false); return undefined; }
+    const t = setTimeout(() => setRefusedShown(true), REFUSED_SHOW_MS);
+    return () => clearTimeout(t);
+  }, [feedErr]);
+  const boardFeed = useMemo(() => ({ error: feedErr && refusedShown, lastOkAt: boardFeedOkAt }), [feedErr, refusedShown, boardFeedOkAt]);
   // The customer pickup board shows REAL customer orders only. "Shop Refill"
   // rows are internal clothing-refill (CR) requests that live in the SAME
   // /orders node — the warehouse Order Queue already excludes them (see the

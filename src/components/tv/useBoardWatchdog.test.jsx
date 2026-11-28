@@ -10,51 +10,81 @@ window.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), se
 window.location = { pathname: "/", search: "", hash: "" };
 
 const { useBoardWatchdog, watchdogIo, WATCHDOG_CHECK_MS } = await import("./useBoardWatchdog.js");
-const { WATCHDOG_MS, RELOAD_KEY } = await import("./boardHealth.js");
+const { WATCHDOG_MS, FIRST_ANSWER_MS, RELOAD_KEY, RELOAD_COUNT_KEY, MAX_UNRECOVERED_RELOADS } = await import("./boardHealth.js");
 
-function Board({ healthy }) { useBoardWatchdog({ healthy }); return null; }
+function Board(props) { useBoardWatchdog(props); return null; }
 
 describe("useBoardWatchdog — the TV mends itself, and can never reload-loop", () => {
-  let clock; let bounces; let reloads;
+  let clock; let bounces; let reloads; let reachable;
   beforeEach(() => {
-    vi.useFakeTimers(); store.clear(); clock = 0; bounces = 0; reloads = [];
+    vi.useFakeTimers(); store.clear(); clock = 0; bounces = 0; reloads = []; reachable = true;
     watchdogIo.now = () => clock;
     watchdogIo.bounce = () => { bounces += 1; };
     watchdogIo.reload = (u) => { reloads.push(u); };
+    watchdogIo.reachable = async () => reachable;
   });
-  const tick = (ms) => { for (let t = 0; t < ms; t += WATCHDOG_CHECK_MS) { clock += WATCHDOG_CHECK_MS; act(() => { vi.advanceTimersByTime(WATCHDOG_CHECK_MS); }); } };
+  const tick = async (ms) => {
+    for (let t = 0; t < ms; t += WATCHDOG_CHECK_MS) {
+      clock += WATCHDOG_CHECK_MS;
+      await act(async () => { vi.advanceTimersByTime(WATCHDOG_CHECK_MS); await Promise.resolve(); await Promise.resolve(); });
+    }
+  };
+  const mount = (props) => { let r; act(() => { r = TestRenderer.create(React.createElement(Board, props)); }); return r; };
 
-  it("unhealthy: reopens the socket at 3 min, reloads at 6 min, then not again within 5 min", () => {
-    let r; act(() => { r = TestRenderer.create(React.createElement(Board, { healthy: false })); });
-    tick(WATCHDOG_MS);
+  it("refused after an answer: reopens the socket at 3 min, reloads at 6, then not again within 5 min", async () => {
+    const r = mount({ healthy: false });
+    await tick(WATCHDOG_MS);
     expect(bounces).toBe(1); expect(reloads).toHaveLength(0);
-    tick(WATCHDOG_MS);
+    await tick(WATCHDOG_MS);
     expect(reloads).toHaveLength(1);
     expect(reloads[0]).toMatch(/^\/\?_tvr=\d+$/);
-    expect(Number(store.get(RELOAD_KEY))).toBeGreaterThan(0);
-    // The reload did not happen (still the same page, as if the browser ignored it): never faster than 5 min.
-    tick(4 * 60 * 1000);
+    expect(Number(store.get(RELOAD_COUNT_KEY))).toBe(1);
+    await tick(4 * 60 * 1000);                 // the page did not go: still never faster than 5 min
     expect(reloads).toHaveLength(1);
     act(() => r.unmount());
   });
 
-  it("a fresh page after a watchdog reload honours the stored floor", () => {
-    store.set(RELOAD_KEY, String(0));
-    clock = 0;
-    let r; act(() => { r = TestRenderer.create(React.createElement(Board, { healthy: false })); });
-    tick(2 * WATCHDOG_MS);              // 6 min since the stored reload: allowed again (floor is 5)
+  it("never reloads onto an error page: the site must answer first", async () => {
+    reachable = false;
+    const r = mount({ healthy: false });
+    await tick(4 * WATCHDOG_MS);
+    expect(reloads).toHaveLength(0);
+    expect(store.has(RELOAD_KEY)).toBe(false);
+    reachable = true;
+    await tick(2 * WATCHDOG_MS);
     expect(reloads).toHaveLength(1);
     act(() => r.unmount());
   });
 
-  it("healthy boards are left alone, and recovering resets the clock", () => {
-    let r; act(() => { r = TestRenderer.create(React.createElement(Board, { healthy: true })); });
-    tick(30 * 60 * 1000);
+  it("a board still waiting for its FIRST answer gets 10 minutes before anything (a slow first download is not restarted)", async () => {
+    const r = mount({ healthy: false, neverAnswered: true });
+    await tick(FIRST_ANSWER_MS - WATCHDOG_CHECK_MS);
+    expect(bounces + reloads.length).toBe(0);
+    await tick(WATCHDOG_CHECK_MS);
+    expect(bounces).toBe(1);
+    act(() => r.unmount());
+  });
+
+  it(`stops reloading after ${MAX_UNRECOVERED_RELOADS} reloads that did not mend it; healthy resets the count`, async () => {
+    store.set(RELOAD_COUNT_KEY, String(MAX_UNRECOVERED_RELOADS));
+    const r = mount({ healthy: false });
+    await tick(10 * WATCHDOG_MS);
+    expect(reloads).toHaveLength(0);
+    expect(bounces).toBeGreaterThan(1);       // it still reopens the socket
+    act(() => r.update(React.createElement(Board, { healthy: true })));
+    await tick(WATCHDOG_CHECK_MS);
+    expect(store.has(RELOAD_COUNT_KEY)).toBe(false);
+    act(() => r.unmount());
+  });
+
+  it("healthy boards are left alone, and recovering resets the clock", async () => {
+    const r = mount({ healthy: true });
+    await tick(30 * 60 * 1000);
     expect(bounces + reloads.length).toBe(0);
     act(() => r.update(React.createElement(Board, { healthy: false })));
-    tick(WATCHDOG_MS - WATCHDOG_CHECK_MS);
+    await tick(WATCHDOG_MS - WATCHDOG_CHECK_MS);
     act(() => r.update(React.createElement(Board, { healthy: true })));
-    tick(WATCHDOG_MS);
+    await tick(WATCHDOG_MS);
     expect(bounces).toBe(0);
     act(() => r.unmount());
   });
