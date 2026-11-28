@@ -363,7 +363,9 @@ export function getTile(id, src, { priority = "auto", keep = true, warm = false 
       return running.blob ? urlFromBlob(id, src, running.blob) : readTile(id, src, { retain: true });
     });
   }
-  const entry = { upgraded: priority === "high" || !warm, blob: null, wake: () => {}, p: null };
+  // `upgraded`: a PREFETCH that a card in view has since joined — it becomes
+  // ordinary display work. Display requests themselves are not "upgraded".
+  const entry = { upgraded: false, blob: null, wake: () => {}, p: null };
   const woken = new Promise((r) => { entry.wake = r; });
   const gen = generation;
   entry.p = (async () => {
@@ -381,12 +383,13 @@ export function getTile(id, src, { priority = "auto", keep = true, warm = false 
     // have landed (or HIGH_FIRST_MAX_MS) — unless a card in view joins it.
     const high = priority === "high";
     if (high) highInFlight++;
-    else if (!entry.upgraded) await Promise.race([highClear(), woken]);
+    else if (!warm) await highClear();                                   // the rest of the window
+    else if (!entry.upgraded) await Promise.race([highClear(), woken]);  // prefetch, unless joined
     let blob;
     const queued = !warm || entry.upgraded;   // a joined prefetch is display work now
     try {
-      if (queued) await displaySlot(high || entry.upgraded);
-      try { blob = await download(src, entry.upgraded && !high ? "auto" : priority); }
+      if (queued) await displaySlot(high);
+      try { blob = await download(src, warm && !entry.upgraded ? "low" : priority); }
       finally { if (queued) displayDone(); }
     } finally { if (high && --highInFlight === 0) { const w = highWaiters.splice(0); w.forEach((f) => f()); } }
     if (!blob) return warm ? false : null;
