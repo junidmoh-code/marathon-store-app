@@ -111,13 +111,26 @@ async function run(label, { staff = null, hash = "" }) {
   return last;
 }
 
-const staffOpen = await makeStaff({ permissions: ["product_admin"], permFlags: { product_admin: true }, role: "admin" });
-const staffPinned = await makeStaff({ permissions: ["product_admin"], permFlags: { product_admin: true }, role: "store_assistant", destShop: "marathon-pe" });
+// ONLY=open|pinned|anon (comma list) runs a subset; default all three.
+const ONLY = new Set((process.env.ONLY || "open,pinned,anon").split(","));
+const made = [];
 try {
-  await run("staff, no shop pin (like tv / mike), TV Display role", { staff: staffOpen });
-  await run("staff pinned to marathon-pe, TV Display role", { staff: staffPinned });
-  await run("anonymous #tv kiosk", { hash: "?kiosk=1#tv" });
+  if (ONLY.has("open")) {
+    const s = await makeStaff({ permissions: ["product_admin"], permFlags: { product_admin: true }, role: "admin" });
+    made.push(s);
+    await run("staff, no shop pin (like tv / mike), TV Display role", { staff: s });
+  }
+  if (ONLY.has("pinned")) {
+    const s = await makeStaff({ permissions: ["product_admin"], permFlags: { product_admin: true }, role: "store_assistant", destShop: process.env.SHOP || "marathon-pe" });
+    made.push(s);
+    await run(`staff pinned to ${process.env.SHOP || "marathon-pe"}, TV Display role`, { staff: s });
+  }
+  if (ONLY.has("anon")) await run("anonymous #tv kiosk", { hash: "?kiosk=1#tv" });
 } finally {
-  await dropStaff(staffOpen);
-  await dropStaff(staffPinned);
+  // The office line drops now and then: retry the cleanup until it lands.
+  for (const s of made) {
+    for (let i = 0; i < 5; i += 1) {
+      try { await dropStaff(s); break; } catch (e) { console.log(`  cleanup retry (${e.message})`); await new Promise((r) => setTimeout(r, 4000)); }
+    }
+  }
 }
