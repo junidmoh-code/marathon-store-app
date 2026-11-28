@@ -38,3 +38,15 @@ whether by re-pointing, cancelling or letting them be sent, is a refill-request
 decision, and under CLAUDE.md that decision belongs to Junid. Cancelling through the
 Refill Queue's "Out of Stock" is also not neutral: the engine reads a cancel
 with no reason as a human refusal (cooldown and learning).
+
+## Step 3 result (28 Nov 2026)
+
+`apply.mjs` ran against live data and **refused**, as it should. Nothing was
+written: no stock moved and the duplicate was not merged away.
+
+**Simplest way through, with no request change:** let Central send the 21
+requests as they stand. They cover the duplicate's 50 pairs size for size, so
+the pairs end up at Hub 1 and Hub 3 under the duplicate. Then run
+`node scripts/merge-dunk-grey-kids/apply.mjs --apply`. It re-reads everything
+and joins each hub's duplicate cells into the original's cells at that same
+hub, keeping the total. It refuses on its own while any request is still open.
