@@ -163,6 +163,8 @@ describe("retryable", () => {
   it("retries only short outages, never the audit refusal or a missing connection", () => {
     expect(retryable("Signal Studio not reachable (fetch failed)")).toBe(true);
     expect(retryable("download failed: HTTP 503")).toBe(true);
+    expect(retryable("upload refused: HTTP 503 Service Unavailable")).toBe(true);
+    expect(retryable("upload refused: HTTP 400 Send a JPEG (type=jpg) or an MP4 (type=mp4).")).toBe(false);
     expect(retryable("rate_limit_exceeded [transient]")).toBe(true);
     expect(retryable("Please review ... [unaudited_client_can_only_post_to_private_accounts]")).toBe(false);
     expect(retryable("not connected")).toBe(false);

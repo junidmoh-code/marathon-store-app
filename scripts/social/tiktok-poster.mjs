@@ -248,7 +248,7 @@ async function postOne(c, ledger) {
       if (c.media === "PHOTO") bytes = await photoBytes(raw);
       else { const bad = checkVideo(raw); if (bad) throw new Error(`video not usable: ${bad}`); }
       const up = await retrying("upload", () => local(`/tiktok/media?type=${c.media === "PHOTO" ? "jpg" : "mp4"}`, { method: "POST", body: bytes, type: "application/octet-stream" }));
-      if (up.status !== 200) { const e = new Error(`upload refused: ${up.json?.error || up.status}`); e.service = up.status !== 400; throw e; }
+      if (up.status !== 200) { const e = new Error(`upload refused: HTTP ${up.status} ${up.json?.error || ""}`.trim()); e.service = up.status !== 400; throw e; }
       files.push(up.json.name);
     }
   } catch (e) {
@@ -339,7 +339,7 @@ async function runOnce(admin, want) {
       const r = await postOne(c, ledger);
       touchLock();
       if (r.failed) run.failed.push(r.failed);
-      if (r.abort) {
+      if (r.abort || r.unknown) { // an outcome TikTok never confirmed ends the slot too (CodeRabbit, PR #1023)
         run.reason = r.reason;
         if (/unaudited/.test(r.reason || "")) { run.unaudited = true; await verifyPicks(queue, ledger, want - run.posted); }
         else if (!r.unknown) run.stopped = r.reason; // a post whose outcome is unknown is never followed by a retry
