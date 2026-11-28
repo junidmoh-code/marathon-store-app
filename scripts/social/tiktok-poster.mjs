@@ -78,11 +78,15 @@ function token() {
 function readMemory() { try { return JSON.parse(readFileSync(MEMORY, "utf8")); } catch { return { sent: {} }; } }
 function saveMemory(m) { try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(MEMORY, JSON.stringify(m, null, 1)); } catch { /* best effort */ } }
 
-/** WhatsApp to Junid through the Jamie relay (same text at most once per 5 min, 30 a day, on the relay's side). */
+/**
+ * WhatsApp to Junid through the Jamie relay (same text at most once per 5 min, 30 a day, on the relay's side). Junid's
+ * quiet rule (marathon-dm-agent src/jimmy/quietRule.js) lets a line through only as { urgent: true, alert: "outage" };
+ * alertsFor already keeps this to real failures (TikTok posting stopped or broken), so every alert is sent that way.
+ */
 async function alertJunid(text) {
   try {
     const t = readFileSync(join(homedir(), ".config", "marathon", "alert-relay.token"), "utf8").trim();
-    const r = await fetch("http://127.0.0.1:8789/alert-junid", { method: "POST", headers: { "content-type": "application/json", "x-alert-token": t }, body: JSON.stringify({ text }), signal: AbortSignal.timeout(20000) });
+    const r = await fetch("http://127.0.0.1:8789/alert-junid", { method: "POST", headers: { "content-type": "application/json", "x-alert-token": t }, body: JSON.stringify({ text, from: "tiktok-poster", urgent: true, alert: "outage" }), signal: AbortSignal.timeout(20000) });
     log(`alert to Junid (${r.status}): ${text}`);
     return r.ok;
   } catch (e) { log(`alert to Junid not sent (${e.message}): ${text}`); return false; }
