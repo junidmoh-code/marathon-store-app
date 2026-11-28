@@ -109,15 +109,23 @@ async function report(run) {
 }
 
 /**
- * Families Junid already published through the Higgsfield handoff queue (tiktok-queue-server.mjs writes
- * ~/.marathon-tiktok-queue/posted.json when his Claude chat reports a post live). Never posted again from here.
+ * Families Junid already published (posted.json) or turned down (skipped.json) through the Higgsfield handoff
+ * queue; tiktok-queue-server.mjs writes both when his Claude chat reports. Never posted from here.
  * An unreadable file stops the run, like an unreadable ledger: posting from a blank memory would repost.
  */
-const HANDOFF_POSTED = join(process.env.TIKTOK_QUEUE_DIR || join(homedir(), ".marathon-tiktok-queue"), "posted.json");
+const HANDOFF_DIR = process.env.TIKTOK_QUEUE_DIR || join(homedir(), ".marathon-tiktok-queue");
+function handoffTaken() {
+  const keys = new Set();
+  for (const f of ["posted.json", "skipped.json"]) {
+    let map;
+    try { map = JSON.parse(readFileSync(join(HANDOFF_DIR, f), "utf8")); } catch (e) { if (e.code === "ENOENT") continue; throw new Error(`handoff queue ${f} unreadable (${e.code || e.message}); not posting`); }
+    for (const k of Object.keys(map || {})) keys.add(k);
+  }
+  return keys;
+}
 function notPostedViaHandoff(queue) {
-  let posted;
-  try { posted = JSON.parse(readFileSync(HANDOFF_POSTED, "utf8")); } catch (e) { if (e.code === "ENOENT") return queue; throw new Error(`handoff queue posted.json unreadable (${e.code || e.message}); not posting`); }
-  return queue.filter((c) => !posted?.[c.key]);
+  const taken = handoffTaken();
+  return queue.filter((c) => !taken.has(c.key));
 }
 
 /** Empty only when there is no ledger yet. An unreadable one stops the run: posting from a blank memory would repost. */
@@ -274,6 +282,9 @@ async function postOne(c, ledger) {
     log(`FAILED ${c.key} ${c.media}: ${e.message} (attempt ${entry.attempts}/${MAX_ATTEMPTS}, nothing sent to TikTok)`);
     return { ok: false, abort: false };
   }
+  // Re-read the handoff marks after the slow media work: Junid's chat may have published this family meanwhile.
+  // (A mark landing between this read and the post call can still slip through; that window is milliseconds.)
+  if (handoffTaken().has(c.key)) { log(`skipped ${c.key}: already published or skipped through the Higgsfield handoff`); return { ok: false, abort: false }; }
   fam[c.key] = entry;
   saveLedger(ledger); // "sending" is on disk before the one call that can create a post
   let r;

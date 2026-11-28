@@ -1,7 +1,7 @@
 // ── TIKTOK HANDOFF QUEUE — tests for the pure parts (tiktokHfQueue.mjs) ─────
 import { describe, it, expect } from "vitest";
 import {
-  CAPTION_MAX, MAX_OFFERS, applyMark, batchOrder, blocked, carryOver, capEmoji, isVertical, pickBatch, rate, sast, slotFor, tiktokCaption, unsafeSentence, videoPlan,
+  CAPTION_MAX, MAX_OFFERS, applyMark, staleAfter, batchOrder, blocked, carryOver, capEmoji, isVertical, pickBatch, rate, sast, slotFor, tiktokCaption, unsafeSentence, videoPlan,
 } from "./tiktokHfQueue.mjs";
 
 const at = (iso) => Date.parse(iso);
@@ -153,5 +153,23 @@ describe("applyMark", () => {
     expect(applyMark({}, "-Pz", {}, known).error).toMatch(/not in any batch/);
     expect(applyMark({}, "a/b", {}, known).error).toMatch(/malformed/);
     expect(applyMark({}, undefined, {}, known).error).toMatch(/missing/);
+  });
+});
+
+describe("review fixes", () => {
+  it("counts flags and keycaps as emoji", () => {
+    expect(capEmoji("Fresh 🇿🇦🇿🇦🇿🇦")).toBe("Fresh 🇿🇦🇿🇦");
+    expect(capEmoji("1️⃣2️⃣3️⃣ go")).toBe("1️⃣2️⃣ go");
+    expect(capEmoji("👍🏽👨‍👩‍👧🔥 x")).toBe("👍🏽👨‍👩‍👧 x");
+  });
+  it("re-encodes non-AAC audio, accepts silent video", () => {
+    const base = { streams: [{ codec_type: "video", codec_name: "h264", width: 1080, height: 1920, avg_frame_rate: "30/1", pix_fmt: "yuv420p" }], format: { format_name: "mov,mp4", duration: "8" } };
+    expect(videoPlan(base)).toEqual({ ok: true });
+    expect(videoPlan({ ...base, streams: [...base.streams, { codec_type: "audio", codec_name: "mp3" }] }).transcode).toMatch(/audio mp3/);
+    expect(videoPlan({ ...base, streams: [...base.streams, { codec_type: "audio", codec_name: "aac" }] })).toEqual({ ok: true });
+  });
+  it("a batch is stale only after the next batch's ready time plus 30 minutes (overnight included)", () => {
+    expect(new Date(staleAfter("2026-11-28-evening")).toISOString()).toBe("2026-11-29T07:45:00.000Z"); // 09:45 SAST next day
+    expect(new Date(staleAfter("2026-11-28-morning")).toISOString()).toBe("2026-11-28T16:15:00.000Z"); // 18:15 SAST
   });
 });

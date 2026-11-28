@@ -69,7 +69,8 @@ export function batchOrder(a, b) {
 // tail and, on some older posts, an internal styling note that leaked into the
 // caption ("Monochrome, a second accent in the details ...").
 
-const EMOJI_RE = /\p{Extended_Pictographic}(️|‍\p{Extended_Pictographic}️?)*/gu;
+// Whole emoji sequences: pictographs (with ZWJ joins and skin tones), flags (regional-indicator pairs), keycaps.
+const EMOJI_RE = /[\u{1F1E6}-\u{1F1FF}]{2}|[#*0-9]\uFE0F?\u20E3|\p{Extended_Pictographic}[\u{1F3FB}-\u{1F3FF}\uFE0F]*(\u200D\p{Extended_Pictographic}[\u{1F3FB}-\u{1F3FF}\uFE0F]*)*/gu;
 const PHONE_RE = /(\+?\d[\d\s().-]{7,}\d)/;
 const URL_RE = /\b(https?:\/\/\S+|www\.\S+|\S+\.(co\.za|com|africa|shop|store)\b\S*)/i;
 const EMAIL_RE = /\S+@\S+\.\S+/;
@@ -138,6 +139,8 @@ export function videoPlan(probe) {
   if (v.codec_name !== "h264") why.push(`codec ${v.codec_name}`);
   if (!(fps >= VIDEO_MIN_FPS && fps <= VIDEO_MAX_FPS)) why.push(`${fps ? fps.toFixed(2) : "unknown"} fps`);
   if (v.pix_fmt && v.pix_fmt !== "yuv420p") why.push(`pixel format ${v.pix_fmt}`);
+  const a = (probe?.streams || []).find((s) => s.codec_type === "audio");
+  if (a && a.codec_name !== "aac") why.push(`audio ${a.codec_name}`);
   return why.length ? { ok: true, transcode: why.join(", ") } : { ok: true };
 }
 
@@ -209,4 +212,18 @@ export function applyMark(map, postId, info, known) {
   if (typeof info.tiktok_url === "string" && /^https:\/\/(www\.|vm\.|vt\.)?tiktok\.com\/\S{1,300}$/.test(info.tiktok_url)) rec.tiktok_url = info.tiktok_url;
   if (typeof info.note === "string" && info.note.trim()) rec.note = info.note.trim().slice(0, 200);
   return { map: { ...map, [postId]: rec }, already: false };
+}
+
+/**
+ * When a batch stops being current: the next batch's ready time plus 30 minutes
+ * grace. A morning batch is followed by that day's evening one (17:45), an
+ * evening batch by the next morning's (09:15). Past this, a build was missed.
+ */
+export function staleAfter(batchIdOrSlot, date) {
+  const slot = SLOT_NAMES.includes(batchIdOrSlot) ? batchIdOrSlot : String(batchIdOrSlot).slice(11);
+  const d = date || String(batchIdOrSlot).slice(0, 10);
+  const day = Date.parse(`${d}T00:00:00Z`) - SAST_MS; // SAST midnight
+  if (!Number.isFinite(day)) return 0;
+  const [h, m] = (slot === "morning" ? SLOT_READY.evening : SLOT_READY.morning).split(":").map(Number);
+  return day + (slot === "morning" ? 0 : 86400000) + (h * 60 + m + 30) * 60000;
 }

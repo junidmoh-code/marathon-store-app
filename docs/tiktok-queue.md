@@ -20,8 +20,13 @@ Public, no auth, `cache-control: no-store`. Any earlier batch:
 
 | Batch   | Built at (launchd) | Ready by   |
 |---------|--------------------|------------|
-| morning | 09:00 SAST         | 09:15 SAST |
-| evening | 17:30 SAST         | 17:45 SAST |
+| morning | 09:00 SAST (retries 09:05, 09:10) | 09:15 SAST |
+| evening | 17:30 SAST (retries 17:35, 17:40) | 17:45 SAST |
+
+A retry only builds when the first run failed: an existing batch is never
+rebuilt. A run that falls short because Storage or the network is down writes
+nothing and leaves the slot to the retry. The last try (:10 / :40) writes a
+short batch rather than none.
 
 ### What a batch looks like
 
@@ -55,8 +60,9 @@ Public, no auth, `cache-control: no-store`. Any earlier batch:
 ```
 
 - `status`: `pending` (still to post), `posted` (confirmed), `skipped` (Junid declined it).
-- `stale: true` means a build was missed (the batch is over 13 hours old). Check the logs below.
-- `rolled_over: true`: this post was in the previous batch and nobody confirmed it.
+- `stale: true` means a build was missed: it is past the next batch's ready time plus 30 minutes (an evening batch goes stale at 09:45 the next day). Check the logs below.
+- `posted_via: "signal-studio"`: the Signal Studio poster sent this family itself (after the audit). It shows as `posted`, so don't publish it again.
+- `rolled_over: true`: this post was in the previous batch and nobody confirmed it. **Check @marathon.club7 first.** If it is already live (the mark call failed or was forgotten), just mark it posted rather than publishing it again. `instructions` in the JSON says the same.
 - `is_aigc`: the art is AI-generated (everything except New Arrivals posts). Declare it in the TikTok form.
 
 ### Media guarantees
@@ -103,10 +109,12 @@ curl -s -X POST "$BASE/unmark" -H "Authorization: Bearer $TOKEN" -d '{"post_id":
 ```
 
 `X-Queue-Token: <token>` works in place of the Authorization header. For chat
-tools that can only fetch URLs, each endpoint also takes a GET with query
-parameters: `$BASE/mark-posted?post_id=<id>&token=<token>` (plus optional
-`&tiktok_url=`). Marks are idempotent: a second mark returns `already: true`.
-An unknown `post_id` (not in any batch) returns 404, a bad token 401.
+tools that can only fetch URLs, `mark-posted` and `mark-skipped` also take a
+GET with query parameters: `$BASE/mark-posted?post_id=<id>&token=<token>`
+(plus optional `&tiktok_url=`). `unmark` is POST only. Marks are idempotent: a second mark returns `already: true`.
+An unknown `post_id` (not in any batch) returns 404 and a bad token 401. If
+`posted.json` is unreadable, the response is 500 and the file is left
+untouched: a mark never replaces the history.
 
 ## How the posts are chosen
 
@@ -114,7 +122,8 @@ An unknown `post_id` (not in any batch) returns 404, a bad token 401.
 - **Order:** photo posts first, oldest first, then videos (Junid, 28 Nov 2026).
 - **Never a repeat:** a family is never offered again once it is marked posted or skipped, rejected for unusable media, or recorded in the poster's ledger as having reached TikTok (`~/.marathon-tiktok/ledger.json`).
 - **Rollover:** the previous batch's unconfirmed posts come first in the next batch, with the same `post_id` and the same files. After 4 offers without a confirmation, a post goes behind every never-offered family so it can't block the queue.
-- **When the audit passes:** the Signal Studio poster (`tiktok-poster.mjs`) reads `posted.json` and never reposts what went out through Higgsfield.
+- **When the audit passes:** the Signal Studio poster (`tiktok-poster.mjs`) never posts a family in `posted.json` or `skipped.json`. It re-reads both right before each post call. The queue server in turn shows anything the poster sent as `posted`.
+- **Switching over** (the separate build): unload `com.marathon.tiktokqueue.build` first, let Junid's chat finish or skip the last batch's pending posts, then switch the poster on. That way a post that is offered but not yet confirmed can't go out twice.
 
 ## Running it
 

@@ -4,7 +4,9 @@
      posts for Junid's Claude chat to publish through Higgsfield, at 09:00 (ready by 09:15)
      and 17:30 (ready by 17:45) SAST. Posts nothing anywhere. docs/tiktok-queue.md.
      StartCalendarInterval uses the machine clock (the mini is on SAST). A run missed
-     while the mini slept fires on wake; an existing batch is never rebuilt.
+     while the mini slept fires on wake; an existing batch is never rebuilt, so the
+     :05/:10 and :35/:40 retries only build when the first run failed (the :10/:40 one
+     writes a short batch rather than none).
      Install: bash scripts/social/install-tiktok-queue.sh -->
 <plist version="1.0">
 <dict>
@@ -23,7 +25,11 @@
   <key>StartCalendarInterval</key>
   <array>
     <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>10</integer></dict>
     <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>40</integer></dict>
   </array>
   <key>RunAtLoad</key><false/>
   <key>StandardOutPath</key><string>/dev/null</string>

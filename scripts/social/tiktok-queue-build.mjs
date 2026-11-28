@@ -3,7 +3,7 @@
 // Builds the next batch of 3 TikTok posts for Junid's Claude chat to publish
 // through Higgsfield (see docs/tiktok-queue.md and tiktokHfQueue.mjs).
 //
-//   node scripts/social/tiktok-queue-build.mjs            launchd 09:00 / 17:30 SAST: this slot's batch
+//   node scripts/social/tiktok-queue-build.mjs            launchd 09:00 / 17:30 SAST (+ retries 5 and 10 min later)
 //   node scripts/social/tiktok-queue-build.mjs --slot morning|evening [--date YYYY-MM-DD]
 //   node scripts/social/tiktok-queue-build.mjs --force     rebuild a batch that already exists
 //   node scripts/social/tiktok-queue-build.mjs --dry-run   print the picks; writes nothing
@@ -18,13 +18,13 @@
 //
 // It never posts anywhere: Signal Studio's own TikTok connection stays private
 // until the audit passes.
-import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { adminRequire } from "../adminRequire.mjs";
 import { buildQueue } from "./tiktokQueue.mjs";
+import { toPhoto, toVideo } from "./tiktokQueueMedia.mjs";
 import {
   BATCH_ID_RE, PER_BATCH, PHOTO_H, PHOTO_MAX_BYTES, PHOTO_MAX_ITEMS, PHOTO_W, POST_ID_RE, SLOT_NAMES, SLOT_READY,
   batchId, batchOrder, carryOver, isVertical, pickBatch, sast, slotFor, tiktokCaption, videoPlan,
@@ -40,9 +40,13 @@ const LOG = join(HERE, "..", "..", "logs", "tiktok-queue.log");
 const DIR = process.env.TIKTOK_QUEUE_DIR || join(homedir(), ".marathon-tiktok-queue");
 const POSTER_LEDGER = join(process.env.TIKTOK_POSTER_STATE || join(homedir(), ".marathon-tiktok"), "ledger.json");
 const PUBLIC_BASE = (process.env.TIKTOK_QUEUE_PUBLIC_BASE || "https://mac-mini-von-marathon-3.tail5a5180.ts.net/studio/tiktok-queue").replace(/\/+$/, "");
-const FFMPEG = existsSync("/opt/homebrew/bin/ffmpeg") ? "/opt/homebrew/bin/ffmpeg" : "ffmpeg";
+
+const PREP_BUDGET_MS = Number(process.env.TIKTOK_QUEUE_BUDGET_MS || 10 * 60000);
+// launchd runs the build at :00/:30 and retries 5 and 10 minutes later (an existing batch is never rebuilt).
+// The last try writes a short batch rather than none.
+const LAST_TRY = args.includes("--last-try") || !!arg("--slot") || (() => { const t = sast().hhmm; return (t >= "09:10" && t < "13:00") || t >= "17:40"; })();
 const HF_IMPORT_MAX_BYTES = 50 * 1024 * 1024; // Higgsfield media_import_url, the step before tiktok_prepare_publish
-const FFPROBE = existsSync("/opt/homebrew/bin/ffprobe") ? "/opt/homebrew/bin/ffprobe" : "ffprobe";
+
 
 const stamp = () => new Date().toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg", hour12: false });
 function log(line) {
@@ -77,44 +81,6 @@ async function download(url) {
   const err = new Error(`download failed: ${last?.message}`);
   err.gone = !!last?.httpStatus && last.httpStatus >= 400 && last.httpStatus < 500 && ![408, 429].includes(last.httpStatus);
   throw err;
-}
-
-/** JPEG, exactly 1080x1920, at most 20 MB. A non-vertical picture sits on a blurred, darkened fill of itself (the story look). */
-async function toPhoto(buf) {
-  const sharp = adminRequire(import.meta.url)("sharp");
-  const src = sharp(buf).rotate();
-  const { width = 0, height = 0 } = await src.metadata();
-  let img;
-  if (isVertical(width, height)) {
-    img = sharp(buf).rotate().resize(PHOTO_W, PHOTO_H, { fit: "cover" }).flatten({ background: "#ffffff" });
-  } else {
-    const fill = await sharp(buf).rotate().resize(PHOTO_W, PHOTO_H, { fit: "cover" }).blur(40).modulate({ brightness: 0.55 }).flatten({ background: "#000000" }).toBuffer();
-    const fg = await sharp(buf).rotate().resize(PHOTO_W, PHOTO_H, { fit: "inside" }).flatten({ background: "#ffffff" }).toBuffer();
-    img = sharp(fill).composite([{ input: fg, gravity: "center" }]);
-  }
-  const base = await img.toBuffer();
-  for (const q of [90, 82, 72, 60]) {
-    const out = await sharp(base).jpeg({ quality: q, mozjpeg: true }).toBuffer();
-    if (out.length <= PHOTO_MAX_BYTES) return out;
-  }
-  throw Object.assign(new Error("photo over 20 MB even at quality 60"), { gone: true });
-}
-
-/** Writes an MP4 TikTok accepts to `out`, or throws { gone: true } when the source cannot be made to fit. */
-function toVideo(buf, out) {
-  const raw = `${out}.src`;
-  writeFileSync(raw, buf);
-  try {
-    const probe = (f) => JSON.parse(execFileSync(FFPROBE, ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", f]).toString());
-    const plan = videoPlan(probe(raw));
-    if (!plan.ok) throw Object.assign(new Error(`video unusable: ${plan.reason}`), { gone: true });
-    if (!plan.transcode) { renameSync(raw, out); return null; }
-    execFileSync(FFMPEG, ["-y", "-v", "error", "-i", raw, "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-      "-pix_fmt", "yuv420p", "-r", "30", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", out], { timeout: 15 * 60000 });
-    const after = videoPlan(probe(out));
-    if (!after.ok || after.transcode) throw Object.assign(new Error(`video still unusable after re-encode: ${after.reason || after.transcode}`), { gone: true });
-    return plan.transcode;
-  } finally { rmSync(raw, { force: true }); }
 }
 
 /** Files for one post under media/<post_id>/ (reused when already there, e.g. a post rolled over). */
@@ -162,7 +128,13 @@ async function main() {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error(`--date must be YYYY-MM-DD, not ${date}`);
   const id = batchId(date, slot);
   const file = join(DIR, "batches", `${id}.json`);
-  if (existsSync(file) && !FORCE && !DRY) { log(`TikTok queue: batch ${id} already built; kept (use --force to rebuild)`); return; }
+  if (existsSync(file) && !FORCE && !DRY) {
+    // A crash between the batch write and the latest.json write is repaired here, without rebuilding media.
+    const newest = listBatches().at(-1);
+    if (newest === id && readJson(join(DIR, "latest.json"), {}).batch_id !== id) { writeJson(join(DIR, "latest.json"), readJson(file, null)); log(`TikTok queue: latest.json repaired to ${id}`); }
+    else log(`TikTok queue: batch ${id} already built; kept (use --force to rebuild)`);
+    return;
+  }
 
   const admin = adminRequire(import.meta.url)("firebase-admin");
   if (!admin.apps.length) admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
@@ -184,10 +156,16 @@ async function main() {
   const carry = carryOver(prev, queue, state);
   const carried = new Set(carry.map((c) => c.key));
 
+  // Bounded: the batch must be ready within the slot's 15 minutes, and two transient failures in a row mean
+  // Storage or the network is down for everyone, so the rest of the queue is not walked (a retry run follows).
+  const deadline = Date.now() + PREP_BUDGET_MS;
   const posts = [];
   const transient = [];
+  let inARow = 0;
   for (const c of pickBatch(queue, state, Infinity, carry)) {
     if (posts.length >= PER_BATCH) break;
+    if (inARow >= 2) { log("  two transient failures in a row: stopping this run"); break; }
+    if (Date.now() > deadline) { log("  preparation budget used up: stopping this run"); break; }
     try {
       const files = await prepare(c);
       const { caption, hashtags } = tiktokCaption(c);
@@ -204,11 +182,14 @@ async function main() {
         offers_before: state.offered[c.key] || 0,
         rolled_over: carried.has(c.key),
       });
+      inARow = 0;
     } catch (e) {
       if (e.gone) { rejects[c.key] = { at: new Date().toISOString(), reason: e.message }; log(`  ${c.key}: rejected (${e.message})`); }
-      else { transient.push(`${c.key}: ${e.message}`); log(`  ${c.key}: not ready this run (${e.message}); stays in the queue`); } // Storage or the network
+      else { inARow++; transient.push(`${c.key}: ${e.message}`); log(`  ${c.key}: not ready this run (${e.message}); stays in the queue`); } // Storage or the network
     }
   }
+  // Nothing written when the run fell short only because of an outage: the retry launch builds the full batch.
+  if (posts.length < PER_BATCH && transient.length && !LAST_TRY) throw new Error(`batch ${id} short (${posts.length}/${PER_BATCH}) after transient failures, left for the retry run: ${transient.slice(0, 3).join("; ")}`);
   if (!posts.length && transient.length) throw new Error(`no post could be prepared: ${transient.slice(0, 3).join("; ")}`);
 
   const batch = {

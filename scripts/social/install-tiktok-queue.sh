@@ -8,7 +8,7 @@ AGENTS="$HOME/Library/LaunchAgents"
 UIDN=$(id -u)
 TS=$(command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale)
 
-mkdir -p "$HOME/.marathon-tiktok-queue" "$REPO/logs"
+mkdir -p "$HOME/.marathon-tiktok-queue" "$REPO/logs" "$AGENTS"
 
 # mark-posted token (kept if it exists). Junid's Claude chat sends it as "Authorization: Bearer <token>".
 TOKEN="$HOME/.config/marathon/tiktok-queue.token"

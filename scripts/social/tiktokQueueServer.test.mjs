@@ -11,8 +11,9 @@ const dir = mkdtempSync(join(tmpdir(), "tiktok-queue-test-"));
 const TOKEN = "a".repeat(64);
 let base, server;
 
+const today = new Date(Date.now() + 2 * 3600000).toISOString().slice(0, 10);
 const batch = {
-  batch_id: "2026-11-28-morning", slot: "morning", date: "2026-11-28", generated_at: new Date().toISOString(),
+  batch_id: `${today}-evening`, slot: "evening", date: today, generated_at: new Date().toISOString(),
   posts: [
     { post_id: "-Pone", media_type: "PHOTO", media_urls: ["https://x/media/-Pone/1.jpg"], caption: "One", hashtags: ["#MarathonClub", "#OOTD", "#SouthAfrica"] },
     { post_id: "-Ptwo", media_type: "VIDEO", media_urls: ["https://x/media/-Ptwo/1.mp4"], caption: "Two", hashtags: ["#MarathonClub", "#SneakerTok", "#SouthAfrica"] },
@@ -22,7 +23,10 @@ const batch = {
 beforeAll(async () => {
   mkdirSync(join(dir, "batches"), { recursive: true });
   mkdirSync(join(dir, "media", "-Pone"), { recursive: true });
-  writeFileSync(join(dir, "batches", "2026-11-28-morning.json"), JSON.stringify(batch));
+  writeFileSync(join(dir, "batches", `${today}-evening.json`), JSON.stringify(batch));
+  mkdirSync(join(dir, "poster"), { recursive: true });
+  writeFileSync(join(dir, "poster", "ledger.json"), JSON.stringify({ families: {} }));
+  process.env.TIKTOK_POSTER_STATE = join(dir, "poster");
   writeFileSync(join(dir, "latest.json"), JSON.stringify(batch));
   writeFileSync(join(dir, "media", "-Pone", "1.jpg"), Buffer.from("0123456789"));
   writeFileSync(join(dir, "token"), `${TOKEN}\n`);
@@ -45,7 +49,7 @@ describe("reads", () => {
       const r = await fetch(`${base}${p}`);
       expect(r.status).toBe(200);
       const j = await r.json();
-      expect(j.batch_id).toBe("2026-11-28-morning");
+      expect(j.batch_id).toBe(`${today}-evening`);
       expect(j.posts.map((x) => x.status)).toEqual(["pending", "pending"]);
       expect(j.stale).toBe(false);
     }
@@ -107,6 +111,22 @@ describe("marks", () => {
     expect(JSON.parse(readFileSafe("posted.json"))["-Pone"]).toBeUndefined();
     const r = await fetch(`${base}/studio/tiktok-queue/mark-posted?post_id=-Pone&token=${TOKEN}`);
     expect(await r.json()).toMatchObject({ ok: true, status: "posted" });
+  });
+  it("GET cannot unmark (POST only)", async () => {
+    expect((await fetch(`${base}/unmark?post_id=-Pone&token=${TOKEN}`)).status).toBe(404);
+  });
+  it("an unreadable posted.json refuses the mark and is left as it was", async () => {
+    writeFileSync(join(dir, "posted.json"), "{broken");
+    const r = await post("/mark-posted", { post_id: "-Ptwo" });
+    expect(r.status).toBe(500);
+    expect(readFileSafe("posted.json")).toBe("{broken");
+    writeFileSync(join(dir, "posted.json"), "{}");
+  });
+  it("a family the Signal Studio poster sent shows as posted", async () => {
+    writeFileSync(join(dir, "poster", "ledger.json"), JSON.stringify({ families: { "-Ptwo": { state: "live" } } }));
+    const j = await (await fetch(`${base}/latest.json`)).json();
+    expect(j.posts[1]).toMatchObject({ status: "posted", posted_via: "signal-studio" });
+    writeFileSync(join(dir, "poster", "ledger.json"), JSON.stringify({ families: {} }));
   });
   it("rejects bad JSON", async () => {
     const r = await fetch(`${base}/mark-posted`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}` }, body: "{nope" });
