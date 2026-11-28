@@ -32,7 +32,7 @@
 // so nothing starts until auth says there is a user, and everything stops when
 // it says there is not.
 
-import { markMirrorFeedOk, resetMirrorFreshness } from "./resumeFreshness";
+import { markMirrorFeedOk, markMirrorPass, resetMirrorFreshness } from "./resumeFreshness";
 import { openMirrorDb } from "./db";
 import { createRtdbAdapter } from "./rtdbAdapter";
 import { createConnectionTracker } from "./connection";
@@ -352,8 +352,12 @@ export async function startOfflineMirror({
     if (stopped) return;
     if (passRunning) { passAgain = true; return; }
     passRunning = true;
+    // The "Updating…" marker shows only while a pass is actually running
+    // (resumeFreshness.js) — this lock is the one place that knows.
+    markMirrorPass(true);
     try { await tickOnce(); } finally {
       passRunning = false;
+      markMirrorPass(false);
       if (passAgain) { passAgain = false; schedule(0); }
     }
   }
