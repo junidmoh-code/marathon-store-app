@@ -55,11 +55,12 @@ export default function TilePhoto({ p, alt = "", priority = false, fallback = nu
   // The object URL this card shows is HELD while shown (retainTile), so the
   // in-memory list can never revoke it from under a mounted <img>.
   const held = useRef(null);
-  const hold = (url) => {
-    if (held.current && held.current.url === url) return;
+  // `owned`: getTile already took this card's ref on the URL.
+  const hold = (url, owned = false) => {
+    if (held.current && held.current.url === url) { if (owned) releaseTile(id, url); return; }
     if (held.current) releaseTile(held.current.id, held.current.url);
     held.current = url ? { id, url } : null;
-    if (url) retainTile(id, url);
+    if (url && !owned) retainTile(id, url);
   };
   useEffect(() => () => hold(null), []);   // eslint-disable-line react-hooks/exhaustive-deps
   // Hold what is shown; let go only when the card stops showing a cached photo
@@ -70,9 +71,9 @@ export default function TilePhoto({ p, alt = "", priority = false, fallback = nu
     if (!src || cur.ready || cur.mode !== "cache") return undefined;
     let gone = false;
     getTile(id, src, { priority: priority ? "high" : "auto" }).then(async (url) => {
-      if (gone) return;
+      if (gone) { if (url) releaseTile(id, url); return; }
       if (!url) { setSt({ key, url: null, ready: false, mode: "direct" }); return; }
-      hold(url);                // before the decode: nothing may revoke it meanwhile
+      hold(url, true);          // the ref getTile took: held through the decode
       await decoded(url);
       if (!gone) setSt({ key, url, ready: true, mode: "cache" });
     });

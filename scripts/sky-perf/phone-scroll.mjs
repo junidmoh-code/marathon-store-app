@@ -84,7 +84,7 @@ try {
     for (const c of cards) {
       const name = c.querySelector(".ap-name");
       if (!name || (name.checkVisibility && !name.checkVisibility({ contentVisibilityAuto: true }))) noText++;
-      const imgs = [...c.querySelectorAll("img")].filter((i) => !i.dataset.ph);
+      const imgs = [...c.querySelectorAll("img")].filter((i) => !("ph" in i.dataset));
       const shown = imgs.some((i) => i.complete && i.naturalWidth > 0 && getComputedStyle(i).opacity !== "0");
       const ph = [...c.querySelectorAll("img[data-ph]")].some((i) => i.complete && i.naturalWidth > 0);
       if (!shown) noPhoto++;
@@ -135,7 +135,7 @@ try {
         seen++;
         const name = c.querySelector(".ap-name");
         if (!name || !name.textContent || (name.checkVisibility && !name.checkVisibility({ contentVisibilityAuto: true }))) noText++;
-        const full = [...c.querySelectorAll("img")].filter((i) => !i.dataset.ph).some((i) => i.complete && i.naturalWidth > 0 && getComputedStyle(i).opacity !== "0");
+        const full = [...c.querySelectorAll("img")].filter((i) => !("ph" in i.dataset)).some((i) => i.complete && i.naturalWidth > 0 && getComputedStyle(i).opacity !== "0");
         const ph = [...c.querySelectorAll("img[data-ph]")].some((i) => i.complete && i.naturalWidth > 0);
         if (!full) noPhoto++;
         if (!full && !ph) bare++;
@@ -176,4 +176,4 @@ try {
     out.video = mp4;
   }
 } finally { vite.kill(); photoServer.close(); }
-console.log(JSON.stringify({ label: LABEL, engine: ENGINE, viewport: VIEW, net: NET, warm: WARM, bulk: BULK, ...out }, null, 1));
+console.log(JSON.stringify({ label: LABEL, engine: ENGINE, viewport: VIEW, net: ENGINE === "webkit" ? "none (WebKit cannot throttle)" : NET, warm: WARM, bulk: BULK, ...out }, null, 1));

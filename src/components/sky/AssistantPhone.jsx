@@ -39,6 +39,9 @@ export default function AssistantPhone({
   const [topH, setTopH] = useState(0);
   const [brandsH, setBrandsH] = useState(0);
   useLayoutEffect(() => {
+    // The brand row can go (refill mode, one brand): its height goes with it,
+    // or the scroller would keep a gap where it was (CodeRabbit).
+    if (!brandsRef.current) setBrandsH(0);
     const els = [[topRef.current, setTopH], [brandsRef.current, setBrandsH]].filter(([el]) => el);
     const set = () => els.forEach(([el, f]) => f(Math.round(el.getBoundingClientRect().height)));
     set();

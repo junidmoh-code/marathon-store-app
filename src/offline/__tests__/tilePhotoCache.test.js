@@ -124,9 +124,8 @@ describe("tile photo cache", () => {
   });
 
   it("a URL a card is showing is never revoked, however many photos pass through memory", async () => {
-    const shown = await T.getTile("keep", "u-keep");
-    T.retainTile("keep", shown);
-    for (let i = 0; i < 130; i++) await T.getTile(`x${i}`, `u-x${i}`, { keep: false });
+    const shown = await T.getTile("keep", "u-keep");        // handed over already held
+    for (let i = 0; i < 130; i++) { const u = await T.getTile(`x${i}`, `u-x${i}`, { keep: false }); T.releaseTile(`x${i}`, u); }
     expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(shown);
     expect(URL.revokeObjectURL).toHaveBeenCalled();             // unheld ones do go
     T.releaseTile("keep", shown);
@@ -147,6 +146,28 @@ describe("tile photo cache", () => {
     expect(T.tileFetchAllowed()).toBe(false);
     const spy = vi.spyOn(Date, "now").mockReturnValue(now + 11 * 60 * 1000);
     try { expect(T.tileFetchAllowed()).toBe(true); } finally { spy.mockRestore(); }
+  });
+
+  it("a card joining a prefetch gets the downloaded photo itself, at once", async () => {
+    let release;
+    globalThis.fetch.mockImplementation(async () => { await new Promise((r) => { release = r; }); return new Response(photo(), { status: 200 }); });
+    const warm = T.getTile("p1", "u1", { warm: true, priority: "low" });
+    const shown = T.getTile("p1", "u1");
+    await new Promise((r) => setTimeout(r, 10));
+    release();
+    expect(await warm).toBe(true);
+    expect(await shown).toMatch(/^blob:/);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("a clear drops writes still in flight and keeps shown URLs until let go", async () => {
+    const shown = await T.getTile("p1", "u1");                // its write is pending
+    await T.clearTileCache();
+    await T._flushTileWritesForTests();
+    expect(T.isTileHeld("p1", "u1")).toBe(false);
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(shown);
+    T.releaseTile("p1", shown);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(shown);
   });
 
   it("mirror off means off: no fetch, no cache", async () => {

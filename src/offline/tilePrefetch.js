@@ -22,6 +22,8 @@ let running = 0;
 let quietUntil = 0;
 let timer = null;
 let listening = false;
+let plan = 0;          // the current plan; pump waits until ITS first-screen wait is over
+let readyPlan = -1;
 
 /** save-data or a 2g-class connection: no fetching beyond the window. */
 export function slowConnection(nav = typeof navigator === "undefined" ? null : navigator) {
@@ -37,7 +39,7 @@ function later(ms) {
 }
 
 function pump() {
-  if (!queue.length) return;
+  if (!queue.length || readyPlan !== plan) return;
   if (!tileCacheEnabled() || !tileFetchAllowed()) { queue = []; return; }
   if (typeof document !== "undefined" && document.hidden) return;   // visibilitychange resumes
   const wait = quietUntil - Date.now();
@@ -66,12 +68,13 @@ export function setTilePrefetchPlan({ ahead = [], rest = [] }) {
   queue = [...ahead, ...rest].filter((it) => it && it.id && it.src && !seen.has(it.id) && seen.add(it.id));
   // Never in the first screen's way: wait for its photos, then a beat, then
   // the index (one IndexedDB read), then start.
+  const mine = ++plan;
   whenFirstScreenLoaded().then(() => new Promise((r) => setTimeout(r, FIRST_SCREEN_GRACE_MS)))
-    .then(() => loadTileIndex()).then(() => idle(pump));
+    .then(() => loadTileIndex()).then(() => { if (mine === plan) { readyPlan = mine; idle(pump); } });
 }
 
 /** The list moved: hold prefetch until it has been still for SCROLL_QUIET_MS. */
 export function noteTileScroll() { quietUntil = Date.now() + SCROLL_QUIET_MS; }
 
 export function _tilePrefetchStateForTests() { return { queue: queue.slice(), running, quietUntil }; }
-export function _resetTilePrefetchForTests() { queue = []; running = 0; quietUntil = 0; if (timer) clearTimeout(timer); timer = null; }
+export function _resetTilePrefetchForTests() { queue = []; running = 0; quietUntil = 0; if (timer) clearTimeout(timer); timer = null; plan = 0; readyPlan = -1; }

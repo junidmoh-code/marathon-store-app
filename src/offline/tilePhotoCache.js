@@ -74,6 +74,11 @@ let wiredFlush = false;
 // (retainTile / releaseTile); only an UNHELD URL is ever revoked, so a mounted
 // <img> never loses its picture (architect review).
 const memo = new Map();
+// URLs still on a card after their slot was replaced or the cache cleared:
+// url → refs. Revoked when the last card lets go (CodeRabbit).
+const orphans = new Map();
+let generation = 0;              // bumped by clearTileCache: older writes are dropped
+let writeChain = Promise.resolve();   // cache writes one at a time (the budget holds)
 const inflight = new Map();      // `${id}|${src}` → { p, upgraded }
 const listeners = new Set();
 const pendingWrites = new Set();
@@ -158,11 +163,17 @@ function revokeUnheld() {
     try { URL.revokeObjectURL(v.url); } catch { /* */ }
   }
 }
-function remember(id, src, url) {
+function orphan(v) {
+  if (v.refs > 0) orphans.set(v.url, (orphans.get(v.url) || 0) + v.refs);
+  else { try { URL.revokeObjectURL(v.url); } catch { /* */ } }
+}
+// `refs`: 1 when the URL goes straight to a display caller (it owns that ref
+// from the moment it is created — nothing can evict it before the card holds it).
+function remember(id, src, url, refs = 0) {
   const old = memo.get(id);
-  if (old && old.url !== url && old.refs === 0) { try { URL.revokeObjectURL(old.url); } catch { /* */ } }
+  if (old && old.url !== url) orphan(old);
   memo.delete(id);
-  memo.set(id, { src, url, refs: 0 });
+  memo.set(id, { src, url, refs });
   revokeUnheld();
 }
 /** An object URL for this product's photo already in memory, or null. */
@@ -179,7 +190,12 @@ export function retainTile(id, url) {
 }
 export function releaseTile(id, url) {
   const m = memo.get(id);
-  if (m && m.url === url && m.refs > 0) { m.refs -= 1; if (m.refs === 0) revokeUnheld(); }
+  if (m && m.url === url && m.refs > 0) { m.refs -= 1; if (m.refs === 0) revokeUnheld(); return; }
+  const n = orphans.get(url);
+  if (n) {
+    if (n > 1) orphans.set(url, n - 1);
+    else { orphans.delete(url); try { URL.revokeObjectURL(url); } catch { /* */ } }
+  }
 }
 /** Is this exact photo held on the device (per the index)? */
 export function isTileHeld(id, src) {
@@ -196,18 +212,29 @@ async function matchHeld(id, src) {
   return res && res.headers.get("x-tile-src") === src ? res : null;
 }
 
-/** Read the held photo (zero network). Null on a miss or a different URL. */
-export async function readTile(id, src) {
+/** Read the held photo (zero network). Null on a miss or a different URL.
+ *  `retain`: the caller takes one ref on the URL (release it with releaseTile). */
+export async function readTile(id, src, { retain = false } = {}) {
   if (!tileCacheEnabled() || !id || !src) return null;
   const hit = memoTileUrl(id, src);
-  if (hit) return hit;
+  if (hit) { if (retain) retainTile(id, hit); return hit; }
   try {
     const res = await matchHeld(id, src);
     if (!res) return null;
-    const url = URL.createObjectURL(await res.blob());
-    remember(id, src, url);
+    const blob = await res.blob();
+    const again = memoTileUrl(id, src);          // another caller got there first
+    if (again) { if (retain) retainTile(id, again); return again; }
+    const url = URL.createObjectURL(blob);
+    remember(id, src, url, retain ? 1 : 0);
     return url;
   } catch { return null; }
+}
+function urlFromBlob(id, src, blob) {
+  const hit = memoTileUrl(id, src);
+  if (hit) { retainTile(id, hit); return hit; }
+  const url = URL.createObjectURL(blob);
+  remember(id, src, url, 1);
+  return url;
 }
 
 async function underQuota(bytes) {
@@ -322,16 +349,23 @@ async function download(src, priority) {
  */
 export function getTile(id, src, { priority = "auto", keep = true, warm = false } = {}) {
   if (!tileCacheEnabled() || !id || !src) return Promise.resolve(warm ? false : null);
-  if (!warm) { const hit = memoTileUrl(id, src); if (hit) return Promise.resolve(hit); }
+  // Display callers are handed a URL they already hold one ref on.
+  if (!warm) { const hit = memoTileUrl(id, src); if (hit) { retainTile(id, hit); return Promise.resolve(hit); } }
   const k = `${id}|${src}`;
   const running = inflight.get(k);
   if (running) {
     // A card in view joining a prefetch still queued behind the first screen
-    // lifts it out of that wait (architect review: priority inversion).
-    if (priority === "high" || !warm) running.upgraded = true;
-    return running.p.then((r) => (warm ? !!r : typeof r === "string" ? r : readTile(id, src)));
+    // wakes it at once (CodeRabbit) and gets the downloaded photo itself, not
+    // whatever the background cache write has finished by then.
+    if (!warm && !running.upgraded) { running.upgraded = true; running.wake(); }
+    return running.p.then(() => {
+      if (warm) return !!(running.blob || isTileHeld(id, src));
+      return running.blob ? urlFromBlob(id, src, running.blob) : readTile(id, src, { retain: true });
+    });
   }
-  const entry = { upgraded: priority === "high", p: null };
+  const entry = { upgraded: priority === "high" || !warm, blob: null, wake: () => {}, p: null };
+  const woken = new Promise((r) => { entry.wake = r; });
+  const gen = generation;
   entry.p = (async () => {
     // The display path waits on nothing but the photo: the cache check, else
     // the download. The index load and the cache write happen beside it.
@@ -339,43 +373,53 @@ export function getTile(id, src, { priority = "auto", keep = true, warm = false 
       if (isTileHeld(id, src)) return true;
       try { if (await matchHeld(id, src)) return true; } catch { /* fetch it */ }
     } else {
-      const held = await readTile(id, src);
+      const held = await readTile(id, src, { retain: true });
       if (held) return held;
     }
     if (!tileFetchAllowed()) return warm ? false : null;
-    // The first screen first: anything not "high" waits until the high ones
-    // have landed (or HIGH_FIRST_MAX_MS) unless a card in view has joined it.
+    // The first screen first: background work waits until the high downloads
+    // have landed (or HIGH_FIRST_MAX_MS) — unless a card in view joins it.
     const high = priority === "high";
     if (high) highInFlight++;
-    else if (!entry.upgraded) await highClear();
+    else if (!entry.upgraded) await Promise.race([highClear(), woken]);
     let blob;
-    const queued = !warm;                  // prefetch has its own four
+    const queued = !warm || entry.upgraded;   // a joined prefetch is display work now
     try {
       if (queued) await displaySlot(high || entry.upgraded);
       try { blob = await download(src, entry.upgraded && !high ? "auto" : priority); }
       finally { if (queued) displayDone(); }
     } finally { if (high && --highInFlight === 0) { const w = highWaiters.splice(0); w.forEach((f) => f()); } }
     if (!blob) return warm ? false : null;
-    if (keep) { const w = keepTile(id, src, blob).finally(() => pendingWrites.delete(w)); pendingWrites.add(w); }
+    entry.blob = blob;
+    if (keep) { const w = keepTile(id, src, blob, gen).finally(() => pendingWrites.delete(w)); pendingWrites.add(w); }
     if (warm) return true;
-    const url = URL.createObjectURL(blob);
-    remember(id, src, url);
-    return url;
-  })().finally(() => inflight.delete(k));
+    return urlFromBlob(id, src, blob);
+  })().finally(() => { inflight.delete(k); setTimeout(() => { entry.blob = null; }, 0); });
   inflight.set(k, entry);
   return entry.p;
 }
 
-async function keepTile(id, src, blob) {
+// One write at a time: each admission sees the bytes of the one before it, so
+// two overlapping writes can never both pass the budget (CodeRabbit). A clear
+// that happened since the download started wins: its write is dropped.
+function keepTile(id, src, blob, gen = generation) {
+  const run = writeChain.then(() => keepTileNow(id, src, blob, gen));
+  writeChain = run.catch(() => {});
+  return run;
+}
+async function keepTileNow(id, src, blob, gen) {
   try {
+    if (gen !== generation) return;
     await loadTileIndex();
     const bytes = blob.size || 0;
     if (!bytes || bytes > budget || !(await underQuota(bytes))) return;
     const cache = await openCache();
     await evictUntil(cache, bytes, id);
     await cache.put(tileRequest(id), new Response(blob, { headers: { "Content-Type": blob.type || "image/jpeg", "x-tile-src": src } }));
+    if (gen !== generation) { try { await cache.delete(tileRequest(id)); } catch { /* */ } return; }
     const prev = index[id];
     const tiny = prev && prev.src === src && prev.tiny ? { tiny: prev.tiny, w: prev.w, h: prev.h } : await makeTiny(blob);
+    if (gen !== generation) { try { await cache.delete(tileRequest(id)); } catch { /* */ } return; }
     index[id] = { src, bytes, at: Date.now(), ...(tiny || {}) };
     scheduleIndexWrite();
   } catch (e) {
@@ -392,12 +436,14 @@ export function tileCacheStats() {
 /** Drop everything (the quota recovery and the settings "clear" both call this). */
 export async function clearTileCache() {
   let cleared = false;
+  generation += 1;                  // writes still in flight are dropped
   try { if (typeof caches !== "undefined") cleared = (await caches.delete(TILE_CACHE_NAME)) === true; } catch { /* */ }
   cachePromise = null;
   index = {};
   indexDirty = false;
   // Unheld URLs go now; one a card still shows goes when the card lets it go.
-  for (const [k, v] of memo) if (v.refs === 0) { memo.delete(k); try { URL.revokeObjectURL(v.url); } catch { /* */ } }
+  for (const v of memo.values()) orphan(v);
+  memo.clear();
   try { const db = await getMirrorDbHandle(); await db.setMeta(TILE_INDEX_META_KEY, {}); } catch { cleared = false; }
   return cleared;
 }
@@ -410,5 +456,6 @@ export function _resetTileCacheForTests() {
   if (writeTimer) clearTimeout(writeTimer);
   writeTimer = null; fetchAllowed = true; refusedAt = 0; corsStrikes = 0; anySuccess = false; highInFlight = 0; highWaiters.length = 0;
   displayRunning = 0; displayQueue.length = 0;
-  memo.clear(); inflight.clear(); listeners.clear(); pendingWrites.clear(); budget = TILE_CACHE_BYTE_BUDGET;
+  memo.clear(); orphans.clear(); inflight.clear(); listeners.clear(); pendingWrites.clear(); budget = TILE_CACHE_BYTE_BUDGET;
+  generation = 0; writeChain = Promise.resolve();
 }
