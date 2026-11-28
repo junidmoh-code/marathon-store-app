@@ -95,7 +95,7 @@ async function report(run) {
   const day = new Date(Date.now() + 2 * 3600000).toISOString().slice(0, 10);
   for (const a of alertsFor(run, m)) if (await alertJunid(a.text)) m.sent[a.kind] = day;
   if (run.connected) m.everConnected = true;
-  m.unreachableRuns = run.unreachable ? (m.unreachableRuns || 0) + 1 : 0;
+  if (!run.crashed) m.unreachableRuns = run.unreachable ? (m.unreachableRuns || 0) + 1 : 0;
   if (run.connected) {
     if (run.unaudited) m.auditPendingSince ||= day;
     else if (run.posted && m.auditPendingSince) { log(`TikTok audit has passed: posts are going out as ${run.privacy || "public"} (pending since ${m.auditPendingSince})`); delete m.auditPendingSince; }
@@ -273,7 +273,8 @@ async function postOne(c, ledger) {
     fam[c.key] = { ...entry, attempts: v.attempt ? entry.attempts : prev?.attempts || 0, state: v.state, lastError: v.state === "failed" ? `outcome unknown or failed: ${why}` : why };
     saveLedger(ledger);
     log(`FAILED ${c.key} ${c.media}: ${why}${v.state === "failed" ? " (may be live; never retried, check TikTok)" : ` (attempt ${entry.attempts}/${MAX_ATTEMPTS}, created nothing)`}`);
-    return { ok: false, abort: v.abort, reason: why, failed: v.state === "failed" ? `${c.key}: ${why}` : null };
+    // unknown: the post call itself got no clear answer (it may be live). Never an outage to retry: the run ends.
+    return { ok: false, abort: v.abort, reason: why, unknown: v.state === "failed", failed: v.state === "failed" ? `${c.key}: ${why}` : null };
   }
   Object.assign(entry, { state: "sent", publishId: r.json.publishId, privacy: r.json.privacy, at: Date.now() });
   fam[c.key] = entry;
@@ -337,7 +338,7 @@ async function runOnce(admin, want) {
       if (r.abort) {
         run.reason = r.reason;
         if (/unaudited/.test(r.reason || "")) { run.unaudited = true; await verifyPicks(queue, ledger, want - run.posted); }
-        else run.stopped = r.reason;
+        else if (!r.unknown) run.stopped = r.reason; // a post whose outcome is unknown is never followed by a retry
         break;
       }
       if (r.ok) { run.posted++; run.privacy = r.privacy; if (run.posted < want) await sleep(gap()); } else skip.add(c.key);
@@ -372,9 +373,11 @@ async function main() {
     const want = KICKOFF || (SLOT ? PER_SLOT : 1);
     const total = { connected: false, posted: 0, failed: [] };
     for (let attempt = 0; ; attempt++) {
-      const run = await runOnce(admin, want - total.posted);
+      let run;
+      try { run = await runOnce(admin, want - total.posted); }
+      catch (e) { log(`TikTok run error: ${e?.stack || e}`); unlock(); run = { connected: total.connected, posted: 0, failed: [], crashed: e?.message || String(e) }; }
       Object.assign(total, run, { posted: total.posted + run.posted, failed: [...total.failed, ...run.failed] });
-      const why = run.unreachable ? run.reason : run.stopped;
+      const why = run.crashed ? null : run.unreachable ? run.reason : run.stopped;
       if (!why || !retryable(why) || attempt >= RETRIES || total.posted >= want) break;
       log(`TikTok: run stopped on a short outage (${why}); trying again in ${Math.round(RETRY_WAIT_MS / 60000)} min (retry ${attempt + 1}/${RETRIES})`);
       await sleep(RETRY_WAIT_MS);
