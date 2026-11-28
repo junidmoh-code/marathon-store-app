@@ -33,7 +33,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { adminRequire } from "../adminRequire.mjs";
 import {
-  MAX_ATTEMPTS, PER_SLOT, PHOTO_MAX_H, PHOTO_MAX_W, STUCK_MS, VIDEO_MAX_S, VIDEO_MIN_S, backoff, buildQueue, classifyPost, counts, pickNext, slotGap, tiktokText,
+  MAX_ATTEMPTS, PER_SLOT, PHOTO_MAX_H, PHOTO_MAX_W, STUCK_MS, VIDEO_MAX_S, VIDEO_MIN_S, alertsFor, backoff, buildQueue, classifyPost, counts, pickNext, retryable, slotGap, tiktokText,
 } from "./tiktokQueue.mjs";
 
 const args = process.argv.slice(2);
@@ -48,6 +48,9 @@ const LOG = join(HERE, "..", "..", "logs", "tiktok-poster.log");
 const STATE_DIR = process.env.TIKTOK_POSTER_STATE || join(homedir(), ".marathon-tiktok");
 const LEDGER = join(STATE_DIR, "ledger.json");
 const LOCK = join(STATE_DIR, "run.lock");
+const MEMORY = join(STATE_DIR, "alerts.json"); // quiet-rule memory: what was already said today, connection history
+const RETRY_WAIT_MS = Number(process.env.TIKTOK_RETRY_WAIT_MS || 10 * 60000);
+const RETRIES = 2; // a slot whose run stopped on a short outage is tried twice more, 10 minutes apart
 const BASE = `http://127.0.0.1:${process.env.SIGNAL_LOCAL_POST_PORT || 8796}`;
 const FFPROBE = existsSync("/opt/homebrew/bin/ffprobe") ? "/opt/homebrew/bin/ffprobe" : "ffprobe";
 
@@ -70,6 +73,35 @@ function token() {
     const m = /^\s*(?:export\s+)?SIGNAL_LOCAL_POST_TOKEN\s*=\s*["']?([^"'\s#]+)/m.exec(readFileSync(join(homedir(), ".env"), "utf8"));
     return m ? m[1] : null;
   } catch { return null; }
+}
+
+function readMemory() { try { return JSON.parse(readFileSync(MEMORY, "utf8")); } catch { return { sent: {} }; } }
+function saveMemory(m) { try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(MEMORY, JSON.stringify(m, null, 1)); } catch { /* best effort */ } }
+
+/** WhatsApp to Junid through the Jamie relay (same text at most once per 5 min, 30 a day, on the relay's side). */
+async function alertJunid(text) {
+  try {
+    const t = readFileSync(join(homedir(), ".config", "marathon", "alert-relay.token"), "utf8").trim();
+    const r = await fetch("http://127.0.0.1:8789/alert-junid", { method: "POST", headers: { "content-type": "application/json", "x-alert-token": t }, body: JSON.stringify({ text }), signal: AbortSignal.timeout(20000) });
+    log(`alert to Junid (${r.status}): ${text}`);
+    return r.ok;
+  } catch (e) { log(`alert to Junid not sent (${e.message}): ${text}`); return false; }
+}
+
+/** Quiet rule (tiktokQueue.alertsFor): only real failures reach Junid, each kind once a day. */
+async function report(run) {
+  if (DRY || STATUS) return;
+  const m = readMemory(); m.sent ||= {};
+  const day = new Date(Date.now() + 2 * 3600000).toISOString().slice(0, 10);
+  for (const a of alertsFor(run, m)) if (await alertJunid(a.text)) m.sent[a.kind] = day;
+  if (run.connected) m.everConnected = true;
+  m.unreachableRuns = run.unreachable ? (m.unreachableRuns || 0) + 1 : 0;
+  if (run.connected) {
+    if (run.unaudited) m.auditPendingSince ||= day;
+    else if (run.posted && m.auditPendingSince) { log(`TikTok audit has passed: posts are going out as ${run.privacy || "public"} (pending since ${m.auditPendingSince})`); delete m.auditPendingSince; }
+  }
+  m.lastRun = { at: new Date().toISOString(), ...run };
+  saveMemory(m);
 }
 
 /** Empty only when there is no ledger yet. An unreadable one stops the run: posting from a blank memory would repost. */
@@ -219,7 +251,7 @@ async function postOne(c, ledger) {
     // Our own tooling or Signal Studio failing is not this item's fault: stop the run and count nothing.
     if (e.service || e.code === "ENOENT" || /fetch failed|ECONNREFUSED/.test(e.message)) {
       log(`TikTok run stopped before posting ${c.key}: ${e.message}`);
-      return { ok: false, abort: true };
+      return { ok: false, abort: true, reason: e.message };
     }
     fam[c.key] = { ...entry, state: "refused", lastError: e.message.slice(0, 200) };
     saveLedger(ledger);
@@ -237,11 +269,11 @@ async function postOne(c, ledger) {
   const v = classifyPost(r.status, r.json);
   if (v.state !== "sent") {
     const why = String(r.json?.error || r.status).slice(0, 200);
-    if (v.state === null) { restore(); log(`TikTok run stopped at ${c.key}: ${why} (nothing created, nothing counted)`); return { ok: false, abort: true }; }
+    if (v.state === null) { restore(); log(`TikTok run stopped at ${c.key}: ${why} (nothing created, nothing counted)`); return { ok: false, abort: true, reason: `${why} [${r.json?.kind || r.status}]` }; }
     fam[c.key] = { ...entry, attempts: v.attempt ? entry.attempts : prev?.attempts || 0, state: v.state, lastError: v.state === "failed" ? `outcome unknown or failed: ${why}` : why };
     saveLedger(ledger);
     log(`FAILED ${c.key} ${c.media}: ${why}${v.state === "failed" ? " (may be live; never retried, check TikTok)" : ` (attempt ${entry.attempts}/${MAX_ATTEMPTS}, created nothing)`}`);
-    return { ok: false, abort: v.abort };
+    return { ok: false, abort: v.abort, reason: why, failed: v.state === "failed" ? `${c.key}: ${why}` : null };
   }
   Object.assign(entry, { state: "sent", publishId: r.json.publishId, privacy: r.json.privacy, at: Date.now() });
   fam[c.key] = entry;
@@ -249,7 +281,71 @@ async function postOne(c, ledger) {
   saveLedger(ledger);
   await settle(entry, ledger);
   log(`posted ${c.key} ${c.media} privacy=${entry.privacy} publish=${entry.publishId} status=${entry.status || "PROCESSING"}${entry.url ? ` ${entry.url}` : ""}`);
-  return { ok: true, abort: false };
+  return { ok: true, abort: false, privacy: entry.privacy, failed: entry.state === "failed" ? `${c.key}: ${entry.lastError}` : null };
+}
+
+/**
+ * While TikTok refuses every post (audit pending): check the slot's next picks the way a real post would (download,
+ * fit or probe), without sending anything to TikTok, so the queue is known to be ready the day the audit passes.
+ */
+async function verifyPicks(queue, ledger, n) {
+  const sim = JSON.parse(JSON.stringify(ledger)); let ok = 0; const bad = [];
+  for (let i = 0; i < n; i++) {
+    const c = pickNext(queue, sim, null); if (!c) break;
+    sim.families[c.key] = { state: "sent" };
+    try {
+      for (const url of c.urls) { const raw = await download(url); if (c.media === "PHOTO") await photoBytes(raw); else { const b = checkVideo(raw); if (b) throw new Error(b); } }
+      ok++;
+    } catch (e) { bad.push(`${c.key}: ${e.message}`); }
+  }
+  log(`TikTok audit pending: nothing can post to a public account yet; verified the next ${ok}/${n} pick(s) are ready${bad.length ? `, not ready: ${bad.join("; ")}` : ""}`);
+}
+
+/** One slot run. Returns what happened, for the retry decision and the quiet-rule report. */
+async function runOnce(admin, want) {
+  const run = { connected: false, posted: 0, failed: [] };
+  let st;
+  try {
+    const r = await local("/tiktok/status");
+    // 502 = TikTok's own answer passed through (kind: auth/transient/...): only a transient one is an outage.
+    st = r.status === 200 ? r.json : { connected: false, reason: `Signal Studio answered HTTP ${r.status}: ${r.json?.error || ""} [${r.json?.kind || r.status}]`, unreachable: r.status >= 500 && r.json?.kind !== "auth" };
+  } catch (e) { st = { connected: false, reason: `Signal Studio not reachable (${e.message})`, unreachable: true }; }
+  run.connected = !!st.connected; run.reason = st.reason; run.unreachable = !!st.unreachable;
+  if (!st.connected) { log(`TikTok: not connected in Signal Studio (${st.reason || "unknown"}); skipped`); return run; }
+
+  const snap = await admin.database().ref("social_posts").once("value");
+  const queue = buildQueue(Object.entries(snap.val() || {}).map(([id, p]) => ({ id, ...p })));
+  if (!lock()) { log("TikTok: another run is in progress; skipped"); return run; }
+  try {
+    const ledger = readLedger();
+    for (const e of Object.values(ledger.families).filter((x) => x.state === "sent" && x.publishId).slice(0, 5)) {
+      await settle(e, ledger);
+      if (e.state === "failed") run.failed.push(`${e.ids?.[0] || "?"}: ${e.lastError}`);
+    }
+    const n = counts(queue, ledger);
+    const gap = () => (KICKOFF ? 3 * 60000 : slotGap());
+    log(`TikTok run: ${want} post(s) as @${st.username} (${st.nickname}), privacy options ${JSON.stringify(st.privacyOptions)}; queue ${n.total} (${n.photos} photos, ${n.videos} videos): ${n.posted} live, ${n.pending} pending, ${n.failed} failed, ${n.waiting} waiting`);
+    let tries = 0;
+    const skip = new Set();
+    while (run.posted < want && tries < want + 3) {
+      tries++;
+      const c = pickNext(queue, ledger, ledger.last?.media, skip);
+      if (!c) { log("TikTok: queue is empty; nothing left to post"); break; }
+      const r = await postOne(c, ledger);
+      touchLock();
+      if (r.failed) run.failed.push(r.failed);
+      if (r.abort) {
+        run.reason = r.reason;
+        if (/unaudited/.test(r.reason || "")) { run.unaudited = true; await verifyPicks(queue, ledger, want - run.posted); }
+        else run.stopped = r.reason;
+        break;
+      }
+      if (r.ok) { run.posted++; run.privacy = r.privacy; if (run.posted < want) await sleep(gap()); } else skip.add(c.key);
+    }
+    const m = counts(queue, ledger);
+    log(`TikTok run done: ${run.posted}/${want} posted. ${m.posted} live, ${m.pending} pending, ${m.failed} failed, ${m.waiting} waiting`);
+  } finally { unlock(); }
+  return run;
 }
 
 async function main() {
@@ -268,14 +364,31 @@ async function main() {
   const require = adminRequire(import.meta.url);
   const admin = require("firebase-admin");
   if (!admin.apps.length) admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
+
+  if (!DRY && !STATUS) {
+    // Posting: one run, and on a short outage (Signal Studio or TikTok briefly unavailable) up to RETRIES more,
+    // RETRY_WAIT_MS apart, for what is still owed. The audit refusal, a missing connection and spam limits are never
+    // retried within a slot. Junid hears only about real failures (report / alertsFor).
+    const want = KICKOFF || (SLOT ? PER_SLOT : 1);
+    const total = { connected: false, posted: 0, failed: [] };
+    for (let attempt = 0; ; attempt++) {
+      const run = await runOnce(admin, want - total.posted);
+      Object.assign(total, run, { posted: total.posted + run.posted, failed: [...total.failed, ...run.failed] });
+      const why = run.unreachable ? run.reason : run.stopped;
+      if (!why || !retryable(why) || attempt >= RETRIES || total.posted >= want) break;
+      log(`TikTok: run stopped on a short outage (${why}); trying again in ${Math.round(RETRY_WAIT_MS / 60000)} min (retry ${attempt + 1}/${RETRIES})`);
+      await sleep(RETRY_WAIT_MS);
+    }
+    await report(total);
+    return;
+  }
+
   // Every record, not only posted ones: a posted twin's parent may itself have failed, and the family root must
   // still resolve through it (buildQueue keeps only posted records as sources).
   const snap = await admin.database().ref("social_posts").once("value");
   const posts = Object.entries(snap.val() || {}).map(([id, p]) => ({ id, ...p }));
   const queue = buildQueue(posts);
-  const posting = !DRY && !STATUS;
-  if (posting && st?.connected && !lock()) { log("TikTok: another run is in progress; skipped"); return; }
-  const ledger = readLedger(); // after the lock, so another run's posts are seen
+  const ledger = readLedger();
   const n = counts(queue, ledger);
   const summary = `queue ${n.total} (${n.photos} photos, ${n.videos} videos): ${n.posted} live, ${n.pending} pending, ${n.failed} failed, ${n.waiting} waiting`;
 
@@ -294,29 +407,6 @@ async function main() {
     return;
   }
 
-  if (!st?.connected) {
-    log(`TikTok: not connected in Signal Studio (${st?.reason || "unknown"}); skipped. ${summary}`);
-    return;
-  }
-  try {
-    // Anything left processing by an earlier run is settled first (at most 5 per run).
-    for (const e of Object.values(ledger.families).filter((x) => x.state === "sent" && x.publishId).slice(0, 5)) await settle(e, ledger);
-    const want = KICKOFF || (SLOT ? PER_SLOT : 1);
-    const gap = () => (KICKOFF ? 3 * 60000 : slotGap());
-    log(`TikTok run: ${want} post(s) as @${st.username} (${st.nickname}), privacy options ${JSON.stringify(st.privacyOptions)}; ${summary}`);
-    let done = 0, tries = 0;
-    const skip = new Set(); // a family that failed this run waits for a later run
-    while (done < want && tries < want + 3) {
-      tries++;
-      const c = pickNext(queue, ledger, ledger.last?.media, skip);
-      if (!c) { log("TikTok: queue is empty; nothing left to post"); break; }
-      const r = await postOne(c, ledger);
-      touchLock();
-      if (r.abort) break;
-      if (r.ok) { done++; if (done < want) await sleep(gap()); } else skip.add(c.key);
-    }
-    log(`TikTok run done: ${done}/${want} posted. ${(() => { const m = counts(queue, ledger); return `${m.posted} live, ${m.pending} pending, ${m.failed} failed, ${m.waiting} waiting`; })()}`);
-  } finally { unlock(); }
 }
 
-main().then(() => process.exit(0), (e) => { log(`TikTok run error: ${e?.stack || e}`); unlock(); process.exit(0); });
+main().then(() => process.exit(0), async (e) => { log(`TikTok run error: ${e?.stack || e}`); unlock(); await report({ crashed: e?.message || String(e) }).catch(() => {}); process.exit(0); });

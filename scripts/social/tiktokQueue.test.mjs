@@ -1,7 +1,7 @@
 // ── TIKTOK QUEUE — tests for the pure parts (tiktokQueue.mjs) ───────────────
 import { describe, it, expect } from "vitest";
 import {
-  buildQueue, pickNext, classifyPost, eligible, counts, captionParts, cutWords, tiktokText, familyKey, slotGap,
+  buildQueue, pickNext, classifyPost, eligible, counts, captionParts, cutWords, tiktokText, familyKey, slotGap, retryable, alertsFor,
   MAX_ATTEMPTS, GAP_MIN_MS, GAP_MAX_MS, PHOTO_TITLE_MAX, VIDEO_CAPTION_MAX,
 } from "./tiktokQueue.mjs";
 
@@ -63,10 +63,12 @@ describe("pickNext / eligible / counts", () => {
     expect(eligible({ state: "refused", attempts: MAX_ATTEMPTS })).toBe(false);
     expect(pickNext(q, { families: { p1: { state: "live" } } }, null).key).toBe("p2");
   });
-  it("alternates photo and video while both remain", () => {
-    expect(pickNext(q, { families: {} }, "PHOTO").key).toBe("v1");
-    expect(pickNext(q, { families: {} }, "VIDEO").key).toBe("p1");
-    expect(pickNext(q, { families: { v1: { state: "live" } } }, "PHOTO").key).toBe("p1");
+  it("photo posts first (Junid, 28 Nov); a video only once no photo post is left", () => {
+    const vq = [{ key: "v0", media: "VIDEO" }, ...q];
+    expect(pickNext(vq, { families: {} }, "PHOTO").key).toBe("p1");
+    expect(pickNext(vq, { families: {} }, "VIDEO").key).toBe("p1");
+    expect(pickNext(vq, { families: { p1: { state: "live" } } }, "PHOTO").key).toBe("p2");
+    expect(pickNext(vq, { families: { p1: { state: "live" }, p2: { state: "live" } } }, "VIDEO").key).toBe("v0");
     expect(pickNext(q, { families: { p1: { state: "live" }, p2: { state: "live" }, v1: { state: "live" } } }, null)).toBe(null);
   });
   it("counts", () => {
@@ -143,4 +145,46 @@ it("a posted feed twin whose story parent failed still resolves to the parent's 
     { id: "f", format: "feed", twinOf: "s", status: "posted", results: ok, media: [img("f")], postedAt: 2 },
   ]);
   expect(q.map((c) => [c.key, c.urls[0]])).toEqual([["s", "https://x/f.jpg"]]);
+});
+
+describe("no stories", () => {
+  it("a family made only of stories is never posted; a story twin of a feed post still gives its 9:16 render", () => {
+    const q = buildQueue([
+      { id: "s0", format: "story", status: "posted", results: ok, media: [img("s0")], postedAt: 1 },
+      { id: "sv", format: "story", status: "posted", results: ok, media: [vid("sv")], postedAt: 2 },
+      { id: "s1", format: "story", status: "posted", results: ok, media: [img("s1")], artwork: { story: { url: "https://x/s1-916.jpg" } }, postedAt: 3 },
+      { id: "f1", format: "feed", twinOf: "s1", status: "posted", results: ok, media: [img("f1")], postedAt: 4 },
+    ]);
+    expect(q.map((c) => [c.key, c.urls[0]])).toEqual([["s1", "https://x/s1-916.jpg"]]);
+  });
+});
+
+describe("retryable", () => {
+  it("retries only short outages, never the audit refusal or a missing connection", () => {
+    expect(retryable("Signal Studio not reachable (fetch failed)")).toBe(true);
+    expect(retryable("download failed: HTTP 503")).toBe(true);
+    expect(retryable("rate_limit_exceeded [transient]")).toBe(true);
+    expect(retryable("Please review ... [unaudited_client_can_only_post_to_private_accounts]")).toBe(false);
+    expect(retryable("not connected")).toBe(false);
+    expect(retryable("spam_risk_too_many_posts")).toBe(false);
+    expect(retryable("")).toBe(false);
+  });
+});
+
+describe("alertsFor (quiet rule)", () => {
+  const now = Date.parse("2026-11-28T10:00:00Z");
+  it("says nothing for the audit refusal, the first wait for a connection, or a healthy run", () => {
+    expect(alertsFor({ connected: true, unaudited: true }, {}, now)).toEqual([]);
+    expect(alertsFor({ connected: false, reason: "not connected" }, { everConnected: false }, now)).toEqual([]);
+    expect(alertsFor({ connected: true, posted: 3 }, { everConnected: true }, now)).toEqual([]);
+  });
+  it("a lost connection, two silent runs in a row, a failed post or a crash: once a day each", () => {
+    expect(alertsFor({ connected: false, reason: "token revoked" }, { everConnected: true }, now).map((a) => a.kind)).toEqual(["disconnected"]);
+    expect(alertsFor({ connected: false, unreachable: true }, { everConnected: true, unreachableRuns: 0 }, now)).toEqual([]);
+    expect(alertsFor({ connected: false, unreachable: true }, { everConnected: true, unreachableRuns: 1 }, now).map((a) => a.kind)).toEqual(["unreachable"]);
+    expect(alertsFor({ connected: true, failed: ["x: FAILED"] }, {}, now).map((a) => a.kind)).toEqual(["failed"]);
+    expect(alertsFor({ crashed: "boom" }, {}, now).map((a) => a.kind)).toEqual(["crashed"]);
+    expect(alertsFor({ connected: true, failed: ["x"] }, { sent: { failed: "2026-11-28" } }, now)).toEqual([]);
+    expect(alertsFor({ connected: true, failed: ["x"] }, { sent: { failed: "2026-11-27" } }, now)).toHaveLength(1);
+  });
 });
