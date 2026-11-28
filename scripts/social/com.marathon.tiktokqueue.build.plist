@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- TikTok handoff queue builder (scripts/social/tiktok-queue-build.mjs): a batch of 3
+     posts for Junid's Claude chat to publish through Higgsfield, at 09:00 (ready by 09:15)
+     and 17:30 (ready by 17:45) SAST. Posts nothing anywhere. docs/tiktok-queue.md.
+     StartCalendarInterval uses the machine clock (the mini is on SAST). A run missed
+     while the mini slept fires on wake; an existing batch is never rebuilt.
+     Install: bash scripts/social/install-tiktok-queue.sh -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.tiktokqueue.build</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-social/scripts/social/tiktok-queue-build.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-social</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/dev/null</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-social/logs/tiktok-queue.err.log</string>
+</dict>
+</plist>
