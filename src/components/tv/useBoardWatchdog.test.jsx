@@ -89,3 +89,42 @@ describe("useBoardWatchdog — the TV mends itself, and can never reload-loop", 
     act(() => r.unmount());
   });
 });
+
+describe("useBoardWatchdog — CodeRabbit #1027", () => {
+  let clock; let bounces; let reloads;
+  beforeEach(() => {
+    vi.useFakeTimers(); store.clear(); clock = 0; bounces = 0; reloads = [];
+    watchdogIo.now = () => clock;
+    watchdogIo.bounce = () => { bounces += 1; };
+    watchdogIo.reload = (u) => { reloads.push(u); };
+    watchdogIo.reachable = async () => true;
+  });
+  const tick = async (ms) => {
+    for (let t = 0; t < ms; t += WATCHDOG_CHECK_MS) {
+      clock += WATCHDOG_CHECK_MS;
+      await act(async () => { vi.advanceTimersByTime(WATCHDOG_CHECK_MS); await Promise.resolve(); await Promise.resolve(); });
+    }
+  };
+  it("the outage clock starts when health turns false, not at the last healthy poll", async () => {
+    let r; act(() => { r = TestRenderer.create(React.createElement(Board, { healthy: true })); });
+    await tick(WATCHDOG_CHECK_MS);
+    clock += 10_000;                                   // health drops between two polls
+    act(() => r.update(React.createElement(Board, { healthy: false })));
+    await tick(WATCHDOG_MS - WATCHDOG_CHECK_MS);
+    expect(bounces).toBe(0);
+    await tick(WATCHDOG_CHECK_MS);
+    expect(bounces).toBe(1);
+    act(() => r.unmount());
+  });
+  it("the reload floor holds in memory when storage refuses writes", async () => {
+    const realSet = window.localStorage.setItem;
+    window.localStorage.setItem = () => { throw new Error("quota"); };
+    let r; act(() => { r = TestRenderer.create(React.createElement(Board, { healthy: false })); });
+    await tick(2 * WATCHDOG_MS);
+    expect(reloads).toHaveLength(1);
+    await tick(WATCHDOG_MS + 60_000);                  // 4 min after the reload: still inside the 5-min floor
+    expect(reloads).toHaveLength(1);
+    window.localStorage.setItem = realSet;
+    act(() => r.unmount());
+  });
+});

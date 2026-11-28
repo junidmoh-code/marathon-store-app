@@ -1257,7 +1257,7 @@ function useTvOrders() {
   useEffect(() => {
     if (live || !mirrored.settled) return;
     const data = mirrored.value;
-    if (!data) { setOrders([]); return; }
+    if (!data) { setOrders(Object.assign([], { answered: true })); return; }   // an empty answer is still an answer
     // The SAME bound as the server query. TV_ORDER_KEY_END's \uf8ff is
     // invisible in an editor and must never be "tidied" — see
     // src/utils/tvOrdersRange.js for why the range is what it is.
@@ -1285,8 +1285,10 @@ function useTvOrders() {
       ),
       // A range answering while another is refused is a working board with
       // real rows (partial), not a refused one (Sonnet review, #1027).
-      onRows: (parts, failing) => setOrders(Object.assign(shapeTvOrders(Object.assign({}, ...parts.filter(Boolean))),
-        { answered: true, partial: failing > 0 })),
+      // Answered once no range is still loading; a refused one beside answering
+      // ones is "partial" (CodeRabbit, #1027).
+      onRows: (parts, failing, loading) => setOrders(Object.assign(shapeTvOrders(Object.assign({}, ...parts.filter(Boolean))),
+        { answered: loading === 0, partial: failing > 0 })),
       onError: (err) => {
         console.warn("Firebase read error on /orders (TV key range):", err);
         setOrders((prev) => (prev.answered
@@ -1339,8 +1341,10 @@ function useSectionTvOrders(section) {
         (snap) => onSnap(snap.val()),
         onErr,
       ),
-      onRows: (parts, failing) => setOrders(Object.assign(shape(Object.assign({}, ...parts.map((p) => p || {}))),
-        { answered: true, partial: failing > 0 })),
+      // Answered once no range is still loading; a refused one beside answering
+      // ones is "partial" (CodeRabbit, #1027).
+      onRows: (parts, failing, loading) => setOrders(Object.assign(shape(Object.assign({}, ...parts.map((p) => p || {}))),
+        { answered: loading === 0, partial: failing > 0 })),
       onError: (err) => {
         console.warn("Firebase read error on /orders (section TV key range):", err);
         setOrders((prev) => (prev.answered
@@ -20159,7 +20163,7 @@ const INSIGHT_TAB_ICON = {
   reorder:          <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15l-1.9-4.1L5.5 9l4.6-1.4L12 3z" />,
 };
 
-function InsightsView({ onExit }) {
+function InsightsView({ onExit, ordersHeld = false }) {
   const isDesktop = !useIsNarrow(1024);
   const [tab,        setTab]        = usePersistedTab("insights", "overview");
   const [filterMode, setFilterMode] = useState("day");
@@ -20178,7 +20182,9 @@ function InsightsView({ onExit }) {
   const touchStartX = useRef(null);
   const returnsLog = useReturnsLog();
   const products   = useProducts();
-  const orders     = useOrders();
+  // Unscoped read: held like the main feed while the record cannot vouch for
+  // "no shop pin" (a saved copy without destShop — CodeRabbit, #1027).
+  const orders     = useOrders(null, !ordersHeld);
 
   // Compute filterStart / filterEnd (exclusive) / filterLabel from mode + anchor date.
   const { filterStart, filterEnd, filterLabel } = useMemo(() => {
@@ -21998,7 +22004,7 @@ function AppInner() {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
     view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} push={push} mute={mute} />;
-  } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
+  } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} ordersHeld={ordersHeld} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.CUSTOMERS_DB)   view = guard(ROLES.CUSTOMERS_DB, <CustomersView  onExit={() => setRole(null)} />);
@@ -22207,9 +22213,15 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit, section = null }) {
   const [boardFeedOkAt, setBoardFeedOkAt] = useState(null);
   const feedOk = feedAnswered(ordersRaw);
   const feedErr = !!ordersRaw?.error;
-  // Stamped on the first good answer and on each recovery — not on every
-  // order update (one extra render per change for nothing).
-  useEffect(() => { if (feedOk) setBoardFeedOkAt((at) => at ?? Date.now()); }, [feedOk]);
+  // The status is the CURRENT read's: a new scope's read that has not answered
+  // yet (useOrders hands an unsettled list after a shop switch) is "Waiting
+  // for orders", never "live" on the strength of the previous shop's answer
+  // (CodeRabbit, #1027). Stamped on the first good answer of each read — not
+  // on every order update.
+  useEffect(() => {
+    if (feedOk) setBoardFeedOkAt((at) => at ?? Date.now());
+    else if (!feedErr) setBoardFeedOkAt(null);
+  }, [feedOk, feedErr]);
   // A refusal shows red only once it has lasted REFUSED_SHOW_MS: the first
   // retry (3 s) usually mends a passing cancel.
   const [refusedShown, setRefusedShown] = useState(false);

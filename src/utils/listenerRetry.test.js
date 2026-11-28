@@ -72,3 +72,19 @@ describe("subscribeRangesWithRetry", () => {
     vi.useRealTimers();
   });
 });
+
+describe("subscribeRangesWithRetry — loading count (CodeRabbit, #1027)", () => {
+  it("reports ranges still loading, so one answered range is not 'answered'", () => {
+    const calls = [];
+    const opens = [];
+    subscribeRangesWithRetry({
+      ranges: [1, 2],
+      open: (r, i, onSnap, onErr) => { opens.push({ onSnap, onErr }); return () => {}; },
+      onRows: (_p, failing, loading) => calls.push([failing, loading]),
+    });
+    opens[0].onSnap("A");
+    expect(calls.at(-1)).toEqual([0, 1]);
+    opens[1].onSnap("B");
+    expect(calls.at(-1)).toEqual([0, 0]);
+  });
+});

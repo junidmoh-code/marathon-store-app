@@ -56,10 +56,13 @@ export function useBoardWatchdog({ healthy, neverAnswered = false, enabled = tru
   neverRef.current = neverAnswered;
   const since = useRef(watchdogIo.now());   // last moment the board was healthy (or mount / re-enable)
   const bouncedAt = useRef(null);
+  const reloadedAt = useRef(null);          // in memory too: the 5-min floor holds if storage fails (CodeRabbit, #1027)
   const busy = useRef(false);
   useEffect(() => {
-    if (!healthy) return;
+    // Either way the clock restarts at the change: healthy time never counts
+    // toward an outage (CodeRabbit, #1027), and a mended board starts afresh.
     since.current = watchdogIo.now();
+    if (!healthy) return;
     bouncedAt.current = null;
     // Mended: the next outage gets its full set of reloads again.
     try { window.localStorage.removeItem(RELOAD_COUNT_KEY); } catch { /* ignore */ }
@@ -74,7 +77,8 @@ export function useBoardWatchdog({ healthy, neverAnswered = false, enabled = tru
       if (healthyRef.current) { since.current = nowMs; bouncedAt.current = null; return; }
       const step = watchdogStep({
         healthy: false, since: since.current, bouncedAt: bouncedAt.current,
-        lastReloadAt: readNum(RELOAD_KEY), nowMs, neverAnswered: neverRef.current,
+        lastReloadAt: Math.max(readNum(RELOAD_KEY) ?? 0, reloadedAt.current ?? 0) || null,
+        nowMs, neverAnswered: neverRef.current,
         unrecoveredReloads: readNum(RELOAD_COUNT_KEY) ?? 0,
       });
       if (step === "bounce" || step === "bounce-only") {
@@ -89,6 +93,7 @@ export function useBoardWatchdog({ healthy, neverAnswered = false, enabled = tru
         Promise.resolve(watchdogIo.reachable()).then((ok) => {
           if (!ok) { console.warn("TV board watchdog: the site does not answer — not reloading onto an error page"); return; }
           console.warn("TV board watchdog: still no live orders — reloading the board");
+          reloadedAt.current = nowMs;
           writeNum(RELOAD_KEY, nowMs);
           writeNum(RELOAD_COUNT_KEY, (readNum(RELOAD_COUNT_KEY) ?? 0) + 1);
           watchdogIo.reload(reloadUrl(window.location, nowMs));
